@@ -172,6 +172,13 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
             continue;
         }
 
+        // Build batch payload of all tiles for this worker
+        size_t total_batch_size = 0;
+        std::vector<ImageTileMessage> tile_msgs;
+        tile_msgs.reserve(assignment.assigned_tiles.size());
+        std::vector<std::vector<uint8_t>> tile_data_bufs;
+        tile_data_bufs.reserve(assignment.assigned_tiles.size());
+
         for (uint32_t tile_idx : assignment.assigned_tiles) {
             int tile_x = tile_idx % tiles_x;
             int tile_y = tile_idx / tiles_x;
@@ -180,11 +187,52 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
             int w = std::min(tile_size, width - x);
             int h = std::min(tile_size, height - y);
 
-            auto tile_result = send_tile_data(it->second.socket, task_id, tile_idx,
-                                               x, y, w, h, channels, image_data, width, height);
-            if (!tile_result.has_value()) {
-                LOG_ERROR("Coordinator", "Failed to send tile " + std::to_string(tile_idx));
+            // Extract tile data from image_data
+            size_t tile_data_size = static_cast<size_t>(w) * h * channels;
+            std::vector<uint8_t> tile_data(tile_data_size);
+            for (int row = 0; row < h; ++row) {
+                int src_y = y + row;
+                int src_row_offset = (src_y * width + x) * channels;
+                int dst_row_offset = row * w * channels;
+                memcpy(tile_data.data() + dst_row_offset,
+                       image_data.data() + src_row_offset,
+                       w * channels);
             }
+
+            ImageTileMessage msg;
+            std::strncpy(msg.task_id, task_id.c_str(), sizeof(msg.task_id) - 1);
+            msg.tile_index = tile_idx;
+            msg.tile_x = static_cast<uint32_t>(x);
+            msg.tile_y = static_cast<uint32_t>(y);
+            msg.width = static_cast<uint32_t>(w);
+            msg.height = static_cast<uint32_t>(h);
+            msg.channels = static_cast<uint8_t>(channels);
+            msg.pixel_format = 0;
+            msg.data_length = static_cast<uint32_t>(tile_data_size);
+
+            total_batch_size += sizeof(msg) + tile_data_size;
+            tile_msgs.push_back(msg);
+            tile_data_bufs.push_back(std::move(tile_data));
+        }
+
+        // Allocate batch payload buffer
+        std::vector<uint8_t> batch_payload(total_batch_size);
+        size_t batch_offset = 0;
+        for (size_t i = 0; i < tile_msgs.size(); ++i) {
+            memcpy(batch_payload.data() + batch_offset, &tile_msgs[i], sizeof(tile_msgs[i]));
+            batch_offset += sizeof(tile_msgs[i]);
+            memcpy(batch_payload.data() + batch_offset, tile_data_bufs[i].data(), tile_data_bufs[i].size());
+            batch_offset += tile_data_bufs[i].size();
+        }
+
+        // Send batch message
+        MessageHeader batch_header;
+        batch_header.type = MessageType::MSG_TILES_BATCH;
+        batch_header.payload_length = static_cast<uint32_t>(total_batch_size);
+        auto batch_msg = Protocol::serialize(batch_header, batch_payload.data());
+        auto batch_res = it->second.socket->send_all(batch_msg.data(), batch_msg.size());
+        if (!batch_res.has_value()) {
+            LOG_ERROR("Coordinator", "Failed to send tile batch to worker " + assignment.device_id);
         }
 
         ActiveTask at;

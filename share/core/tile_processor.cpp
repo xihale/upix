@@ -3,6 +3,7 @@
 #include "utils/logger.hpp"
 #include <cmath>
 #include <algorithm>
+#include <future>
 
 namespace crossscale {
 
@@ -85,14 +86,21 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
         batch_input_bufs.reserve(batch_count);
         batch_output_bufs.reserve(batch_count);
         
+        // Extract tile inputs in parallel
+        std::vector<std::future<std::vector<float>>> futures;
+        futures.reserve(batch_count);
         for (size_t k = 0; k < batch_count; ++k) {
             const auto& region = regions[i + k];
-            // Extract tile input
-            auto tile_input = extract_tile(input_data, input_width, input_height, channels, region);
+            futures.push_back(std::async(std::launch::async, &TileProcessor::extract_tile, this,
+                                         input_data, input_width, input_height, channels, region));
+        }
+        for (size_t k = 0; k < batch_count; ++k) {
+            auto tile_input = futures[k].get();
             batch_input_bufs.push_back(std::move(tile_input));
             batch_inputs.push_back(batch_input_bufs.back().data());
             
             // Allocate output buffer for this tile
+            const auto& region = regions[i + k];
             int tile_out_w = region.width * scale_factor;
             int tile_out_h = region.height * scale_factor;
             batch_output_bufs.emplace_back(tile_out_w * tile_out_h * channels);

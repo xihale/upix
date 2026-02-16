@@ -208,46 +208,77 @@ auto Worker::execute_task(const Task& task, Engine& engine,
     int scale_factor = engine.get_scale_factor();
     std::vector<ProcessedTile> processed_tiles;
     processed_tiles.reserve(task.tile_indices.size());
-    
-    for (size_t i = 0; i < task.tile_indices.size(); ++i) {
+
+    // Receive batch of tiles in a single network message
+    std::vector<uint8_t> header_buf(Protocol::HEADER_SIZE);
+    auto hdr_res = socket_->receive_all(header_buf.data(), header_buf.size());
+    if (!hdr_res.has_value()) {
+        return WorkerError{4, "Failed to receive batch header"};
+    }
+    auto parsed_hdr = Protocol::parse_header(header_buf.data(), header_buf.size());
+    if (!parsed_hdr || parsed_hdr->type != MessageType::MSG_TILES_BATCH) {
+        return WorkerError{6, "Expected TILES_BATCH message, got type " + std::to_string(parsed_hdr ? static_cast<int>(parsed_hdr->type) : 0)};
+    }
+
+    std::vector<uint8_t> batch_payload(parsed_hdr->payload_length);
+    auto pay_res = socket_->receive_all(batch_payload.data(), batch_payload.size());
+    if (!pay_res.has_value()) {
+        return WorkerError{4, "Failed to receive batch payload"};
+    }
+
+    size_t offset = 0;
+    size_t tile_index = 0;
+    while (offset < batch_payload.size()) {
+        if (offset + sizeof(ImageTileMessage) > batch_payload.size()) {
+            return WorkerError{5, "Invalid batch: incomplete ImageTileMessage"};
+        }
+        ImageTileMessage* tile_msg = reinterpret_cast<ImageTileMessage*>(batch_payload.data() + offset);
+        offset += sizeof(ImageTileMessage);
+
+        size_t data_size = tile_msg->data_length;
+        if (offset + data_size > batch_payload.size()) {
+            return WorkerError{5, "Invalid batch: tile data overflow"};
+        }
+        std::vector<uint8_t> tile_data(data_size);
+        memcpy(tile_data.data(), batch_payload.data() + offset, data_size);
+        offset += data_size;
+
         if (!running_) {
             return WorkerError{7, "Task cancelled"};
         }
-        
-        std::vector<uint8_t> tile_data;
-        uint32_t tile_x = 0, tile_y = 0, tile_width = 0, tile_height = 0;
-        uint8_t channels = 3;
-        
-        auto tile_result = receive_tile_data(tile_x, tile_y, tile_width, tile_height, 
-                                              channels, tile_data);
-        if (!tile_result.has_value()) {
-            return tile_result.error();
-        }
-        
-        LOG_INFO("Worker", "Processing tile " + std::to_string(i + 1) + "/" + 
+
+        uint32_t tile_x = tile_msg->tile_x;
+        uint32_t tile_y = tile_msg->tile_y;
+        uint32_t tile_width = tile_msg->width;
+        uint32_t tile_height = tile_msg->height;
+        uint8_t channels = tile_msg->channels;
+
+        LOG_INFO("Worker", "Processing tile " + std::to_string(tile_index + 1) + "/" + 
                  std::to_string(task.tile_indices.size()) + " [" + std::to_string(tile_width) + 
                  "x" + std::to_string(tile_height) + "]");
-        
+
+        // Convert to float
         std::vector<float> input_float(tile_data.size());
         for (size_t j = 0; j < tile_data.size(); ++j) {
-            input_float[j] = tile_data[j] / 255.0f;
+            input_float[j] = static_cast<float>(tile_data[j]) / 255.0f;
         }
-        
+
         int out_width = tile_width * scale_factor;
         int out_height = tile_height * scale_factor;
         std::vector<float> output_float(out_width * out_height * channels);
-        
-        if (!engine.process(input_float.data(), output_float.data(), 
+
+        if (!engine.process(input_float.data(), output_float.data(),
                            tile_width, tile_height, channels)) {
-            return WorkerError{10, "Engine processing failed for tile " + std::to_string(i)};
+            return WorkerError{10, "Engine processing failed for tile " + std::to_string(tile_index)};
         }
-        
+
+        // Convert back to uint8_t
         std::vector<uint8_t> output_data(output_float.size());
         for (size_t j = 0; j < output_float.size(); ++j) {
             float val = output_float[j] * 255.0f;
             output_data[j] = static_cast<uint8_t>(std::clamp(val, 0.0f, 255.0f));
         }
-        
+
         ProcessedTile pt;
         pt.tile_x = tile_x;
         pt.tile_y = tile_y;
@@ -258,15 +289,21 @@ auto Worker::execute_task(const Task& task, Engine& engine,
         pt.channels = channels;
         pt.data = std::move(output_data);
         processed_tiles.push_back(std::move(pt));
-        
-        float progress = static_cast<float>(i + 1) / task.tile_indices.size();
+
+        float progress = static_cast<float>(tile_index + 1) / task.tile_indices.size();
         if (progress_callback) {
             progress_callback(progress);
         }
-        
         send_progress_update(task.task_id, progress);
+
+        ++tile_index;
     }
-    
+
+    if (tile_index != task.tile_indices.size()) {
+        LOG_WARNING("Worker", "Expected " + std::to_string(task.tile_indices.size()) +
+                    " tiles but received " + std::to_string(tile_index) + " tiles");
+    }
+
     return serialize_processed_tiles(processed_tiles);
 }
 

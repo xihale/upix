@@ -36,6 +36,7 @@ enum class MessageType : uint16_t {
     MSG_IMAGE_INFO = 0x0400,
     MSG_IMAGE_TILE = 0x0401,
     MSG_IMAGE_COMPLETE = 0x0402,
+    MSG_TILES_BATCH = 0x0403,
     
     MSG_CLIENT_SUBMIT = 0x0500,
     MSG_CLIENT_RESPONSE = 0x0501,
