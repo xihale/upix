@@ -51,6 +51,11 @@ auto TCPSocket::connect(const std::string& host, uint16_t port)
     int flag = 1;
     setsockopt(socket_, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
 
+    // Set default socket buffer size (1MB) for better network performance
+    int buf_size = 1 * 1024 * 1024;
+    setsockopt(socket_, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
+    setsockopt(socket_, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
+
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
@@ -135,9 +140,17 @@ void TCPSocket::set_timeout(int timeout_ms) {
     struct timeval tv;
     tv.tv_sec = timeout_ms / 1000;
     tv.tv_usec = (timeout_ms % 1000) * 1000;
-    
+
     setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(socket_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+}
+
+void TCPSocket::set_buffer_size(size_t size) {
+    if (socket_ < 0) return;
+
+    int buf_size = static_cast<int>(size);
+    setsockopt(socket_, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
+    setsockopt(socket_, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
 }
 
 void TCPSocket::close() {
@@ -221,6 +234,11 @@ auto TCPServer::accept()
 
     int flag = 1;
     setsockopt(client_socket, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+
+    // Set default socket buffer size (1MB) for better network performance
+    int buf_size = 1 * 1024 * 1024;
+    setsockopt(client_socket, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
+    setsockopt(client_socket, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
 
     return socket;
 }

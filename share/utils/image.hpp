@@ -87,6 +87,10 @@ public:
     void blend(const Image& other, int x, int y, int overlap = 0);
 
 private:
+    auto save_png(const std::filesystem::path& path) const -> expected<void, ImageError>;
+    auto save_jpeg(const std::filesystem::path& path, int quality) const -> expected<void, ImageError>;
+    auto save_webp(const std::filesystem::path& path, int quality) const -> expected<void, ImageError>;
+
     std::vector<uint8_t> data_;
     int width_ = 0;
     int height_ = 0;

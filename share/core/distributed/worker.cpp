@@ -36,6 +36,56 @@ auto Worker::connect(const std::string& host, uint16_t port, const std::string& 
     return {};
 }
 
+auto Worker::handshake(Engine& engine) -> expected<void, WorkerError> {
+    if (!socket_) {
+        return WorkerError{2, "Not connected"};
+    }
+
+    // 发送认证请求
+    AuthRequest auth_req;
+    std::strncpy(auth_req.auth_key, auth_key_.c_str(), sizeof(auth_req.auth_key) - 1);
+    
+    MessageHeader auth_hdr;
+    auth_hdr.type = MessageType::MSG_AUTH_REQUEST;
+    auth_hdr.payload_length = sizeof(auth_req);
+    auto auth_data = Protocol::serialize(auth_hdr, &auth_req);
+    auto send_res = socket_->send_all(auth_data.data(), auth_data.size());
+    if (!send_res.has_value()) {
+        return WorkerError{100, "Auth send failed: " + send_res.error().message};
+    }
+
+    // 接收认证响应
+    std::vector<uint8_t> hdr_buf(Protocol::HEADER_SIZE);
+    auto hdr_recv = socket_->receive_all(hdr_buf.data(), hdr_buf.size());
+    if (!hdr_recv.has_value()) {
+        return WorkerError{101, "Auth header recv failed: " + hdr_recv.error().message};
+    }
+    auto parsed_hdr = Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
+    if (!parsed_hdr || parsed_hdr->type != MessageType::MSG_AUTH_RESPONSE) {
+        return WorkerError{102, "Unexpected message during auth"};
+    }
+    std::vector<uint8_t> payload(parsed_hdr->payload_length);
+    socket_->receive_all(payload.data(), payload.size());
+    auto* auth_resp = reinterpret_cast<AuthResponse*>(payload.data());
+    if (!auth_resp->authenticated) {
+        return WorkerError{103, "Authentication rejected"};
+    }
+    device_id_ = auth_resp->device_id;
+
+    // 发送设备档案
+    DeviceProfile profile;
+    profile.device_id = device_id_;
+    profile.device_name = "CLI-Worker";
+    profile.type = engine.current_device();
+    profile.tiles_per_second = engine.benchmark(256);
+    profile.recommended_tile_size = 256;
+    profile.max_batch_size = 1;
+    profile.ip_address = socket_->peer_address();
+    profile.port = socket_->peer_port();
+
+    return send_profile(profile);
+}
+
 void Worker::disconnect() {
     running_ = false;
     stop_heartbeat();

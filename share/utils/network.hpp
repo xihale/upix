@@ -48,7 +48,10 @@ public:
     
     // Set timeout (milliseconds)
     void set_timeout(int timeout_ms);
-    
+
+    // Set socket buffer sizes (SO_SNDBUF and SO_RCVBUF)
+    void set_buffer_size(size_t size);
+
     // Close connection
     void close();
     

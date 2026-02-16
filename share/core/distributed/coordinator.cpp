@@ -82,7 +82,8 @@ auto Coordinator::device_count() const -> size_t {
 auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
                                    int width, int height, int channels,
                                    const std::string& model_name,
-                                   int scale_factor)
+                                   int scale_factor,
+                                   const ProcessingConfig& config)
     -> expected<std::vector<uint8_t>, CoordinatorError> {
 
     std::lock_guard<std::mutex> lock(workers_mutex_);
@@ -91,8 +92,22 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
         return CoordinatorError{2, "No workers connected"};
     }
 
-    const int tile_size = 256;
-    const int overlap = 16;
+    // 根据瓦片大小动态配置网络缓冲区
+    // 估算数据传输需求: output tile = (tile_size*scale)^2 * channels * sizeof(float)
+    size_t max_tile_bytes = static_cast<size_t>(config.tile_size) *
+                            config.tile_size *
+                            channels *
+                            sizeof(float) *
+                            static_cast<size_t>(scale_factor) *
+                            static_cast<size_t>(scale_factor);
+    max_tile_bytes *= 2; // 额外余量
+
+    for (auto& [id, conn] : workers_) {
+        conn.socket->set_buffer_size(max_tile_bytes);
+    }
+
+    int tile_size = config.tile_size;
+    int overlap = config.tile_overlap;
 
     int tiles_x = (width + tile_size - 1) / tile_size;
     int tiles_y = (height + tile_size - 1) / tile_size;
@@ -273,6 +288,101 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
         
         if (on_device_connected_) {
             on_device_connected_(workers_[conn.device_id].profile);
+        }
+    }
+    else if (header->type == MessageType::MSG_DEVICE_PROFILE) {
+        std::vector<uint8_t> payload(header->payload_length);
+        conn.socket->receive_all(payload.data(), payload.size());
+        
+        DeviceProfileMessage* msg = reinterpret_cast<DeviceProfileMessage*>(payload.data());
+        
+        // Register device with scheduler
+        DeviceProfile profile;
+        profile.device_id = std::string(msg->device_id);
+        profile.device_name = std::string(msg->device_name);
+        profile.type = static_cast<DeviceType>(msg->device_type);
+        profile.tiles_per_second = msg->tiles_per_second;
+        profile.recommended_tile_size = msg->recommended_tile_size;
+        profile.max_batch_size = msg->max_batch_size;
+        profile.ip_address = std::string(msg->ip_address);
+        profile.port = msg->port;
+        profile.last_heartbeat = std::chrono::steady_clock::now();
+        
+        scheduler_.register_device(profile);
+        LOG_INFO("Coordinator", "Device registered: " + profile.device_id + " (" + profile.device_name + ")");
+        
+        {
+            std::lock_guard<std::mutex> lock(workers_mutex_);
+            auto it = workers_.find(conn.device_id);
+            if (it != workers_.end()) {
+                it->second.profile = profile;
+            }
+        }
+    }
+    else if (header->type == MessageType::MSG_CLIENT_SUBMIT) {
+        std::vector<uint8_t> payload(header->payload_length);
+        conn.socket->receive_all(payload.data(), payload.size());
+        
+        ClientTaskSubmit* task = reinterpret_cast<ClientTaskSubmit*>(payload.data());
+        
+        uint32_t img_width = task->image_width;
+        uint32_t img_height = task->image_height;
+        uint8_t channels = task->channels;
+        std::string model_name(task->model_name);
+        uint32_t tile_size = task->tile_size;
+        uint32_t tile_overlap = task->tile_overlap;
+        uint32_t image_data_len = task->image_data_length;
+        
+        std::vector<uint8_t> image_data(image_data_len);
+        conn.socket->receive_all(image_data.data(), image_data_len);
+        
+        LOG_INFO("Coordinator", "Received client task: " + 
+                 std::to_string(img_width) + "x" + std::to_string(img_height) +
+                 " model=" + model_name);
+        
+        ProcessingConfig config;
+        config.tile_size = static_cast<int>(tile_size);
+        config.tile_overlap = static_cast<int>(tile_overlap);
+        
+        auto result = distribute_task(
+            image_data, 
+            static_cast<int>(img_width),
+            static_cast<int>(img_height),
+            static_cast<int>(channels),
+            model_name,
+            2,
+            config
+        );
+        
+        ClientTaskResponse resp;
+        if (result.has_value()) {
+            resp.success = 1;
+            resp.result_data_length = static_cast<uint32_t>(result->size());
+            
+            MessageHeader resp_header;
+            resp_header.type = MessageType::MSG_CLIENT_RESPONSE;
+            resp_header.payload_length = sizeof(resp) + result->size();
+            
+            auto header_data = Protocol::serialize(resp_header, &resp);
+            conn.socket->send_all(header_data.data(), header_data.size());
+            conn.socket->send_all(result->data(), result->size());
+            
+            LOG_INFO("Coordinator", "Client task completed, sent " + 
+                     std::to_string(result->size()) + " bytes");
+        } else {
+            resp.success = 0;
+            resp.result_data_length = 0;
+            std::strncpy(resp.error_message, result.error().message.c_str(), 
+                         sizeof(resp.error_message) - 1);
+            
+            MessageHeader resp_header;
+            resp_header.type = MessageType::MSG_CLIENT_RESPONSE;
+            resp_header.payload_length = sizeof(resp);
+            
+            auto header_data = Protocol::serialize(resp_header, &resp);
+            conn.socket->send_all(header_data.data(), header_data.size());
+            
+            LOG_ERROR("Coordinator", "Client task failed: " + result.error().message);
         }
     }
 }

@@ -13,10 +13,19 @@
 #include "utils/benchmark.hpp"
 #include "utils/crypto.hpp"
 #include "core/engine.hpp"
-#include "core/model_manager.hpp"
 #include "core/tile_processor.hpp"
+#include "core/model_manager.hpp"
+#include "core/config.hpp"
+#include "core/tile_optimizer.hpp"
 #include "core/distributed/coordinator.hpp"
 #include "core/distributed/worker.hpp"
+#include "core/distributed/protocol.hpp"
+#include "utils/network.hpp"
+#include <fstream>
+#include <cstring>
+#include <algorithm>
+#include <iomanip>
+#include <sstream>
 
 namespace fs = std::filesystem;
 
@@ -78,6 +87,14 @@ int main(int argc, char* argv[]) {
     if (command == "process") {
         std::string input_path, output_path, model_name;
         std::string models_dir = "./models";
+        std::string config_file;
+
+        // 瓦片配置参数
+        int tile_size = 256;
+        int tile_overlap = 16;
+        bool auto_tile = false;
+        int min_tile = 64;
+        int max_tile = 512;
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
@@ -85,6 +102,12 @@ int main(int argc, char* argv[]) {
             else if (arg == "-o" && i + 1 < argc) output_path = argv[++i];
             else if (arg == "-m" && i + 1 < argc) model_name = argv[++i];
             else if (arg == "--models" && i + 1 < argc) models_dir = argv[++i];
+            else if (arg == "--tile-size" && i + 1 < argc) tile_size = std::stoi(argv[++i]);
+            else if (arg == "--tile-overlap" && i + 1 < argc) tile_overlap = std::stoi(argv[++i]);
+            else if (arg == "--auto-tile") auto_tile = true;
+            else if (arg == "--min-tile" && i + 1 < argc) min_tile = std::stoi(argv[++i]);
+            else if (arg == "--max-tile" && i + 1 < argc) max_tile = std::stoi(argv[++i]);
+            else if (arg == "--config" && i + 1 < argc) config_file = argv[++i];
         }
 
         if (input_path.empty() || output_path.empty()) {
@@ -118,25 +141,49 @@ int main(int argc, char* argv[]) {
         LOG_INFO("Engine", std::string("Engine initialized on ") +
                  (engine->current_device() == crossscale::DeviceType::GPU_VULKAN ? "GPU" : "CPU"));
 
+        // 将图像数据转换为 float (0-1 范围)
+        std::vector<float> input_float;
+        input_float.reserve(image.width() * image.height() * image.channels());
+        for (size_t i = 0; i < image.width() * image.height() * image.channels(); ++i) {
+            input_float.push_back(image.data()[i] / 255.0f);
+        }
+
         std::string param_path, bin_path;
 
-        if (!model_name.empty()) {
-            param_path = models_dir + "/" + model_name + ".param";
-            bin_path = models_dir + "/" + model_name + ".bin";
+        // Load model using ModelManager
+        crossscale::ModelManager manager(fs::current_path() / "models");
+        auto models_opt = manager.scan_models();
+        if (!models_opt.has_value() || models_opt->empty()) {
+            LOG_ERROR("Engine", "No models found in " + models_dir);
+            return 1;
+        }
+        auto& models = models_opt.value();
+
+        const crossscale::ModelInfo* selected_model = nullptr;
+        if (model_name.empty()) {
+            selected_model = &models[0];
+            LOG_INFO("Engine", "No model specified, using first available: " + selected_model->name);
         } else {
-            crossscale::ModelManager manager(models_dir);
-            auto models = manager.scan_models();
-            if (models.has_value() && !models.value().empty()) {
-                auto& first_model = models.value()[0];
-                param_path = first_model.param_path;
-                bin_path = first_model.bin_path;
-                model_name = first_model.name;
-                LOG_INFO("Engine", "Using model: " + model_name);
-            } else {
-                LOG_ERROR("Engine", "No models found in " + models_dir);
+            for (const auto& m : models) {
+                if (m.name == model_name) {
+                    selected_model = &m;
+                    break;
+                }
+            }
+            if (!selected_model) {
+                LOG_ERROR("Engine", "Model not found: " + model_name);
+                LOG_ERROR("Engine", "Available models:");
+                for (const auto& m : models) {
+                    LOG_ERROR("Engine", "  - " + m.name + " (" + std::to_string(m.scale_factor) + "x)");
+                }
                 return 1;
             }
         }
+
+        param_path = selected_model->param_path.string();
+        bin_path = selected_model->bin_path.string();
+        model_name = selected_model->name;
+        LOG_INFO("Engine", "Using model: " + model_name + " (" + std::to_string(selected_model->scale_factor) + "x)");
 
         auto load_result = engine->load_model(param_path, bin_path);
         if (!load_result.has_value()) {
@@ -149,82 +196,108 @@ int main(int argc, char* argv[]) {
         int scale = engine->get_scale_factor();
         LOG_INFO("Engine", "Scale factor: " + std::to_string(scale) + "x");
 
-        int out_width = image.width() * scale;
-        int out_height = image.height() * scale;
-        crossscale::Image output_image(out_width, out_height, image.channels());
-
-        LOG_INFO("Engine", "Processing image...");
-
-        const int tile_size = 256;
-        const int overlap = 16;
-
-        int tiles_x = (image.width() + tile_size - 1) / tile_size;
-        int tiles_y = (image.height() + tile_size - 1) / tile_size;
-        int total_tiles = tiles_x * tiles_y;
-        int processed_tiles = 0;
-
-        std::atomic<bool> cancel_flag{false};
-
-        for (int ty = 0; ty < tiles_y && !cancel_flag; ++ty) {
-            for (int tx = 0; tx < tiles_x && !cancel_flag; ++tx) {
-                int x = tx * tile_size;
-                int y = ty * tile_size;
-                int w = std::min(tile_size, image.width() - x);
-                int h = std::min(tile_size, image.height() - y);
-
-                auto tile_image = image.extract_region(x, y, w, h);
-                if (!tile_image.has_value()) {
-                    LOG_ERROR("Engine", "Failed to extract tile at (" + std::to_string(x) + "," + std::to_string(y) + ")");
-                    continue;
-                }
-
-                std::vector<float> input_tile(w * h * image.channels());
-                for (int c = 0; c < image.channels(); ++c) {
-                    for (int row = 0; row < h; ++row) {
-                        for (int col = 0; col < w; ++col) {
-                            input_tile[(row * w + col) * image.channels() + c] =
-                                tile_image.value().at(col, row, c) / 255.0f;
-                        }
-                    }
-                }
-
-                int out_tile_w = w * scale;
-                int out_tile_h = h * scale;
-                std::vector<float> output_tile(out_tile_w * out_tile_h * image.channels());
-
-                auto process_result = engine->process(
-                    input_tile.data(), output_tile.data(),
-                    w, h, image.channels(), cancel_flag
-                );
-
-                if (!process_result.has_value()) {
-                    LOG_ERROR("Engine", "Failed to process tile: " + process_result.error().message);
-                    continue;
-                }
-
-                int out_x = x * scale;
-                int out_y = y * scale;
-
-                for (int c = 0; c < image.channels(); ++c) {
-                    for (int row = 0; row < out_tile_h; ++row) {
-                        for (int col = 0; col < out_tile_w; ++col) {
-                            float val = output_tile[(row * out_tile_w + col) * image.channels() + c];
-                            val = std::clamp(val * 255.0f, 0.0f, 255.0f);
-                            output_image.at(out_x + col, out_y + row, c) = static_cast<uint8_t>(val);
-                        }
-                    }
-                }
-
-                ++processed_tiles;
-                if (processed_tiles % 10 == 0 || processed_tiles == total_tiles) {
-                    LOG_INFO("Engine", "Progress: " + std::to_string(processed_tiles) + "/" +
-                             std::to_string(total_tiles) + " tiles");
-                }
+        // 加载配置文件（如果指定）
+        crossscale::ProcessingConfig config;
+        if (!config_file.empty()) {
+            auto cfg_result = crossscale::ProcessingConfig::load(config_file);
+            if (cfg_result.has_value()) {
+                config = cfg_result.value();
+                LOG_INFO("Config", "Loaded config from " + config_file);
+            } else {
+                LOG_WARNING("Config", "Failed to load config: " + cfg_result.error());
             }
         }
 
-        if (cancel_flag) {
-            LOG_WARNING("Engine", "Processing cancelled");
+        // 命令行参数覆盖配置文件（显式指定的参数优先）
+        config.tile_size = tile_size;
+        config.tile_overlap = tile_overlap;
+        config.auto_tile_size = auto_tile;
+        config.min_tile_size = min_tile;
+        config.max_tile_size = max_tile;
+
+        // 如果启用自动调优，运行基准测试选择最优 tile size
+        if (auto_tile || config.auto_tile_size) {
+            LOG_INFO("Config", "Auto-tile enabled, benchmarking...");
+
+            crossscale::TileSizeOptimizer optimizer;
+            crossscale::ModelConstraints model_constraints;
+            model_constraints.model_name = model_name;
+            model_constraints.scale_factor = scale;
+            model_constraints.input_channels = image.channels();
+            model_constraints.model_size_mb = selected_model->total_size / (1024 * 1024);
+            model_constraints.min_tile_size = config.min_tile_size;
+            model_constraints.max_tile_size = config.max_tile_size;
+
+            config.tile_size = optimizer.find_optimal_tile_size(
+                *engine, model_constraints, config,
+                image.width(), image.height()
+            );
+            config.auto_tile_size = true;
+
+            LOG_INFO("Config", "Optimal tile size determined: " + std::to_string(config.tile_size));
+        }
+
+        // 验证配置
+        auto errors = config.validate();
+        if (!errors.empty()) {
+            LOG_ERROR("Config", "Configuration errors:");
+            for (const auto& err : errors) {
+                LOG_ERROR("Config", "  - " + err);
+            }
+            return 1;
+        }
+
+        // 使用 TileProcessor 进行瓦片处理
+        crossscale::TileProcessor processor;
+        crossscale::TileConfig tile_config;
+        tile_config.tile_size = config.tile_size;
+        tile_config.overlap = config.tile_overlap;
+
+        int out_width = image.width() * scale;
+        int out_height = image.height() * scale;
+        int out_size = out_width * out_height * image.channels();
+
+        // 分配浮点输出缓冲区
+        std::vector<float> output_float(out_size, 0.0f);
+
+        LOG_INFO("Engine", "Processing image with tile_size=" + std::to_string(config.tile_size) +
+                " overlap=" + std::to_string(config.tile_overlap) + "...");
+
+        std::atomic<bool> cancel_flag{false};
+
+        auto process_result = processor.process_image(
+            input_float.data(), output_float.data(),
+            image.width(), image.height(), image.channels(),
+            *engine, tile_config,
+            [&](const crossscale::ProcessingProgress& progress) {
+                if (progress.total_tiles > 0) {
+                    float pct = progress.percentage();
+                    if (progress.completed_tiles % 10 == 0 ||
+                        progress.completed_tiles == progress.total_tiles) {
+                        LOG_INFO("Engine", "Progress: " + std::to_string(progress.completed_tiles) +
+                                "/" + std::to_string(progress.total_tiles) +
+                                " tiles (" + std::to_string(pct) + "%)");
+                    }
+                }
+            },
+            cancel_flag
+        );
+
+        if (!process_result.has_value()) {
+            LOG_ERROR("Engine", "Processing failed: " + process_result.error().message);
+            return 1;
+        }
+
+        // 将浮点输出转换为 uint8 图像
+        crossscale::Image output_image(out_width, out_height, image.channels());
+        for (size_t i = 0; i < output_float.size(); ++i) {
+            float val = output_float[i] * 255.0f;
+            val = std::clamp(val, 0.0f, 255.0f);
+            output_image.data()[i] = static_cast<uint8_t>(val);
+        }
+
+        if (!process_result.has_value()) {
+            LOG_ERROR("Engine", "Processing failed: " + process_result.error().message);
             return 1;
         }
 
@@ -238,6 +311,8 @@ int main(int argc, char* argv[]) {
         LOG_INFO("Engine", "Processing complete: " + std::to_string(out_width) + "x" + std::to_string(out_height));
         return 0;
     }
+
+
 
     if (command == "model") {
         std::string subcommand = argc > 2 ? argv[2] : "";
@@ -381,17 +456,53 @@ int main(int argc, char* argv[]) {
             std::signal(SIGTERM, signal_handler);
 
             auto worker = std::make_unique<crossscale::Worker>();
-
-            auto connect_result = worker->connect(host, port, key);
-            if (!connect_result.has_value()) {
-                LOG_ERROR("Worker", "Failed to connect: " + connect_result.error().message);
+            auto conn_result = worker->connect(host, port, key);
+            if (!conn_result.has_value()) {
+                LOG_ERROR("Worker", "Failed to connect: " + conn_result.error().message);
                 return 1;
             }
 
-            LOG_INFO("Worker", "Connected successfully. Waiting for tasks...");
+            auto engine = crossscale::create_ncnn_engine();
+            auto init_result = engine->initialize(crossscale::DeviceType::GPU_VULKAN);
+            if (!init_result.has_value()) {
+                LOG_WARNING("Worker", "GPU not available, falling back to CPU");
+                auto cpu_result = engine->initialize(crossscale::DeviceType::CPU);
+                if (!cpu_result.has_value()) {
+                    LOG_ERROR("Worker", "Failed to initialize engine");
+                    return 1;
+                }
+            }
+            LOG_INFO("Worker", "Engine initialized on " +
+                     std::string(engine->current_device() == crossscale::DeviceType::GPU_VULKAN ? "GPU" : "CPU"));
+
+            auto handshake_result = worker->handshake(*engine);
+            if (!handshake_result.has_value()) {
+                LOG_ERROR("Worker", "Handshake failed: " + handshake_result.error().message);
+                return 1;
+            }
+            LOG_INFO("Worker", "Handshake complete. Waiting for tasks...");
 
             while (g_running && worker->is_connected()) {
-                std::this_thread::sleep_for(std::chrono::seconds(1));
+                auto task_opt = worker->receive_task();
+                if (!task_opt.has_value()) {
+                    LOG_WARNING("Worker", "Task receive failed or disconnected");
+                    break;
+                }
+                const auto& task = task_opt.value();
+                LOG_INFO("Worker", "Received task: " + std::string(task.task_id) + " model=" + task.model_name);
+
+                auto result_opt = worker->execute_task(task, *engine, [](float) {});
+                if (!result_opt.has_value()) {
+                    LOG_ERROR("Worker", "Task execution failed: " + result_opt.error().message);
+                    continue;
+                }
+
+                auto submit_opt = worker->submit_results(result_opt.value());
+                if (!submit_opt.has_value()) {
+                    LOG_ERROR("Worker", "Submit results failed: " + submit_opt.error().message);
+                } else {
+                    LOG_INFO("Worker", "Task completed and results submitted");
+                }
             }
 
             LOG_INFO("Worker", "Disconnecting...");
@@ -400,6 +511,150 @@ int main(int argc, char* argv[]) {
         }
         
         LOG_ERROR("CLI", "Unknown worker subcommand: " + subcommand);
+        return 1;
+    }
+
+    if (command == "client") {
+        std::string subcommand = argc > 2 ? argv[2] : "";
+        
+        if (subcommand == "process") {
+            std::string input_path, output_path, server_addr, auth_key;
+            int tile_size = 256, tile_overlap = 16;
+            
+            for (int i = 3; i < argc; ++i) {
+                std::string arg = argv[i];
+                if (arg == "-i" && i + 1 < argc) input_path = argv[++i];
+                else if (arg == "-o" && i + 1 < argc) output_path = argv[++i];
+                else if (arg == "-s" && i + 1 < argc) server_addr = argv[++i];
+                else if (arg == "-k" && i + 1 < argc) auth_key = argv[++i];
+                else if (arg == "--tile-size" && i + 1 < argc) tile_size = std::stoi(argv[++i]);
+                else if (arg == "--tile-overlap" && i + 1 < argc) tile_overlap = std::stoi(argv[++i]);
+            }
+            
+            if (input_path.empty() || output_path.empty() || server_addr.empty() || auth_key.empty()) {
+                LOG_ERROR("Client", "Missing required arguments: -i <input> -o <output> -s <host:port> -k <key>");
+                return 1;
+            }
+            
+            size_t colon_pos = server_addr.find(':');
+            if (colon_pos == std::string::npos) {
+                LOG_ERROR("Client", "Invalid server address format. Use <host>:<port>");
+                return 1;
+            }
+            std::string host = server_addr.substr(0, colon_pos);
+            uint16_t port = std::stoi(server_addr.substr(colon_pos + 1));
+            
+            LOG_INFO("Client", "Loading image: " + input_path);
+            auto image_result = crossscale::Image::load(input_path);
+            if (!image_result.has_value()) {
+                LOG_ERROR("Client", "Failed to load image: " + image_result.error().message);
+                return 1;
+            }
+            auto& image = image_result.value();
+            
+            LOG_INFO("Client", "Connecting to coordinator at " + host + ":" + std::to_string(port));
+            
+            crossscale::TCPSocket socket;
+            auto conn_result = socket.connect(host, port);
+            if (!conn_result.has_value()) {
+                LOG_ERROR("Client", "Failed to connect: " + conn_result.error().message);
+                return 1;
+            }
+            
+            // Authenticate
+            crossscale::AuthRequest auth_req{};
+            std::copy_n(auth_key.c_str(), std::min(auth_key.size(), sizeof(auth_req.auth_key)-1), auth_req.auth_key);
+            auth_req.auth_key[sizeof(auth_req.auth_key)-1] = '\0';
+            
+            crossscale::MessageHeader auth_header;
+            auth_header.type = crossscale::MessageType::MSG_AUTH_REQUEST;
+            auth_header.payload_length = sizeof(auth_req);
+            
+            auto auth_data = crossscale::Protocol::serialize(auth_header, &auth_req);
+            socket.send_all(auth_data.data(), auth_data.size());
+            
+            std::vector<uint8_t> resp_header_buf(crossscale::Protocol::HEADER_SIZE);
+            socket.receive_all(resp_header_buf.data(), resp_header_buf.size());
+            auto resp_header = crossscale::Protocol::parse_header(resp_header_buf.data(), resp_header_buf.size());
+            
+            if (!resp_header || resp_header->type != crossscale::MessageType::MSG_AUTH_RESPONSE) {
+                LOG_ERROR("Client", "Invalid auth response");
+                return 1;
+            }
+            
+            std::vector<uint8_t> resp_payload(resp_header->payload_length);
+            socket.receive_all(resp_payload.data(), resp_payload.size());
+            crossscale::AuthResponse* auth_resp = reinterpret_cast<crossscale::AuthResponse*>(resp_payload.data());
+            
+            if (!auth_resp->authenticated) {
+                LOG_ERROR("Client", "Authentication failed");
+                return 1;
+            }
+            
+            LOG_INFO("Client", "Authenticated, submitting task...");
+            
+            // Submit task
+            crossscale::ClientTaskSubmit task_submit{};
+            task_submit.image_width = static_cast<uint32_t>(image.width());
+            task_submit.image_height = static_cast<uint32_t>(image.height());
+            task_submit.channels = static_cast<uint8_t>(image.channels());
+            constexpr std::string_view default_model = "Real-ESRGANv3-anime-x2";
+            std::copy_n(default_model.begin(), std::min(default_model.size(), sizeof(task_submit.model_name)-1), task_submit.model_name);
+            task_submit.model_name[sizeof(task_submit.model_name)-1] = '\0';
+            task_submit.tile_size = static_cast<uint32_t>(tile_size);
+            task_submit.tile_overlap = static_cast<uint32_t>(tile_overlap);
+            task_submit.image_data_length = static_cast<uint32_t>(image.size());
+            
+            crossscale::MessageHeader submit_header;
+            submit_header.type = crossscale::MessageType::MSG_CLIENT_SUBMIT;
+            submit_header.payload_length = sizeof(task_submit);
+            
+            auto submit_header_data = crossscale::Protocol::serialize(submit_header, &task_submit);
+            socket.send_all(submit_header_data.data(), submit_header_data.size());
+            socket.send_all(image.data(), image.size());
+            
+            // Receive result
+            std::vector<uint8_t> result_header_buf(crossscale::Protocol::HEADER_SIZE);
+            socket.receive_all(result_header_buf.data(), result_header_buf.size());
+            auto result_header = crossscale::Protocol::parse_header(result_header_buf.data(), result_header_buf.size());
+            
+            if (!result_header || result_header->type != crossscale::MessageType::MSG_CLIENT_RESPONSE) {
+                LOG_ERROR("Client", "Invalid task response header");
+                return 1;
+            }
+            
+            std::vector<uint8_t> result_resp_payload(result_header->payload_length);
+            socket.receive_all(result_resp_payload.data(), result_resp_payload.size());
+            crossscale::ClientTaskResponse* task_resp = reinterpret_cast<crossscale::ClientTaskResponse*>(result_resp_payload.data());
+            
+            if (!task_resp->success) {
+                LOG_ERROR("Client", "Task failed: " + std::string(task_resp->error_message));
+                return 1;
+            }
+            
+            LOG_INFO("Client", "Task completed, receiving result (" + std::to_string(task_resp->result_data_length) + " bytes)...");
+            
+            std::vector<uint8_t> result_data(task_resp->result_data_length);
+            socket.receive_all(result_data.data(), result_data.size());
+            
+            std::ofstream out_file(output_path, std::ios::binary);
+            if (!out_file.is_open()) {
+                LOG_ERROR("Client", "Failed to open output file: " + output_path);
+                return 1;
+            }
+            out_file.write(reinterpret_cast<const char*>(result_data.data()), result_data.size());
+            out_file.close();
+            
+            if (!out_file) {
+                LOG_ERROR("Client", "Failed to write output file: " + output_path);
+                return 1;
+            }
+            
+            LOG_INFO("Client", "Result saved to: " + output_path);
+            return 0;
+        }
+        
+        LOG_ERROR("CLI", "Unknown client subcommand: " + subcommand);
         return 1;
     }
 

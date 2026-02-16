@@ -37,6 +37,9 @@ enum class MessageType : uint16_t {
     MSG_IMAGE_TILE = 0x0401,
     MSG_IMAGE_COMPLETE = 0x0402,
     
+    MSG_CLIENT_SUBMIT = 0x0500,
+    MSG_CLIENT_RESPONSE = 0x0501,
+    
     MSG_ERROR = 0xFFFF,
 };
 
@@ -101,6 +104,22 @@ struct ImageTileMessage {
     uint8_t channels;
     uint8_t pixel_format;
     uint32_t data_length;
+};
+
+struct ClientTaskSubmit {
+    uint32_t image_width;
+    uint32_t image_height;
+    uint8_t channels;
+    char model_name[64];
+    uint32_t tile_size;
+    uint32_t tile_overlap;
+    uint32_t image_data_length;
+};
+
+struct ClientTaskResponse {
+    uint8_t success;
+    char error_message[128];
+    uint32_t result_data_length;
 };
 
 struct ModelInfoMessage {

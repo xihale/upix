@@ -17,12 +17,15 @@ auto ModelManager::scan_models() -> expected<std::vector<ModelInfo>, ModelManage
     models_.clear();
     
     if (!std::filesystem::exists(models_dir_)) {
+        LOG_WARNING("ModelManager", "Models directory does not exist: " + models_dir_.string());
         return models_;
     }
     
     std::vector<std::filesystem::path> param_files;
-    for (const auto& entry : std::filesystem::directory_iterator(models_dir_)) {
-        if (entry.path().extension() == ".param") {
+    // Recursively search for .param files, following directory symlinks
+    auto iter_opts = std::filesystem::directory_options::follow_directory_symlink;
+    for (const auto& entry : std::filesystem::recursive_directory_iterator(models_dir_, iter_opts)) {
+        if (entry.is_regular_file() && entry.path().extension() == ".param") {
             param_files.push_back(entry.path());
         }
     }
@@ -153,9 +156,22 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
     }
     
     ModelInfo info;
-    info.name = path.stem().string();
+    // Construct model name as "parent_dir-param_stem", e.g., "Real-CUGAN-conservative-x2"
+    std::string parent_name = path.parent_path().stem().string();
+    std::string param_stem = path.stem().string();  // e.g., "x2", "x3"
+    info.name = parent_name + "-" + param_stem;
     info.param_path = path;
-    info.scale_factor = 2;
+    
+    // Infer scale factor from param filename (x2 -> 2, x3 -> 3, etc.)
+    info.scale_factor = 2;  // default
+    if (param_stem.size() > 1 && param_stem[0] == 'x') {
+        try {
+            info.scale_factor = std::stoi(param_stem.substr(1));
+        } catch (...) {
+            // keep default
+        }
+    }
+    
     info.input_channels = 3;
     info.tile_size = 256;
     

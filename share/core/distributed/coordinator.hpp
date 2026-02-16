@@ -3,6 +3,7 @@
 #include "scheduler.hpp"
 #include "protocol.hpp"
 #include "core/model_manager.hpp"
+#include "core/config.hpp"
 #include "utils/expected.hpp"
 #include <string>
 #include <memory>
@@ -72,7 +73,8 @@ public:
         int height,
         int channels,
         const std::string& model_name,
-        int scale_factor = 2
+        int scale_factor,
+        const ProcessingConfig& config
     ) -> expected<std::vector<uint8_t>, CoordinatorError>;
 
     void cancel_current_task();

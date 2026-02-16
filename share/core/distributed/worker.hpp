@@ -28,6 +28,8 @@ public:
     auto connect(const std::string& host, uint16_t port, const std::string& auth_key)
         -> expected<void, WorkerError>;
 
+    auto handshake(Engine& engine) -> expected<void, WorkerError>;
+
     void disconnect();
     bool is_connected() const;
 

@@ -1,7 +1,7 @@
 target("crossscale-core")
     set_kind("static")
     
-    add_packages("ncnn", "libwebp", "stb", "nlohmann_json")
+    add_packages("ncnn", "libwebp", "libpng", "libjpeg", "nlohmann_json")
     add_includedirs(".", {public = true})
     
     add_files(
@@ -9,6 +9,7 @@ target("crossscale-core")
         "core/ncnn_engine.cpp",
         "core/tile_processor.cpp",
         "core/model_manager.cpp",
+        "core/config.cpp",
         "core/distributed/scheduler.cpp",
         "core/distributed/worker.cpp",
         "core/distributed/coordinator.cpp",

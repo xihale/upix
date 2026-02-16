@@ -11,7 +11,8 @@ end
 
 add_requires("ncnn", {configs = {vulkan = true}})
 add_requires("libwebp")
-add_requires("stb")
+add_requires("libpng")
+add_requires("libjpeg")
 add_requires("nlohmann_json")
 add_requires("cxxopts")
 add_requires("qr-code-generator-cpp")

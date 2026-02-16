@@ -12,6 +12,16 @@
 #include <filesystem>
 #include <fstream>
 
+// Platform-specific memory detection
+#if defined(__linux__)
+#include <sys/sysinfo.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#include <psapi.h>
+#elif defined(__APPLE__)
+#include <mach/mach.h>
+#endif
+
 namespace crossscale {
 
 class NCNNEngineImpl : public Engine {
@@ -236,6 +246,39 @@ public:
     bool is_initialized() const override { return initialized_; }
     std::string model_name() const override { return model_name_; }
     int get_scale_factor() const override { return scale_factor_; }
+
+    auto get_memory_info() const -> std::pair<size_t, size_t> override {
+#if defined(__linux__)
+        struct sysinfo info;
+        if (sysinfo(&info) == 0) {
+            size_t total = info.totalram * info.mem_unit / (1024 * 1024);
+            size_t avail = info.freeram * info.mem_unit / (1024 * 1024);
+            return {total, avail};
+        }
+#elif defined(_WIN32)
+        MEMORYSTATUSEX status;
+        status.dwLength = sizeof(status);
+        if (GlobalMemoryStatusEx(&status)) {
+            return {status.ullTotalPhys / (1024 * 1024),
+                    status.ullAvailPhys / (1024 * 1024)};
+        }
+#elif defined(__APPLE__)
+        mach_port_t host = mach_host_self();
+        vm_size_t page_size;
+        host_page_size(host, &page_size);
+        vm_statistics64_data_t vm_stat;
+        mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
+        if (host_statistics64(host, HOST_VM_INFO64,
+            reinterpret_cast<host_info64_t>(&vm_stat), &count) == KERN_SUCCESS) {
+            size_t total = 0;
+            size_t avail = vm_stat.free_count * page_size / (1024 * 1024);
+            // 简化：total 不精确
+            total = avail * 2; // 近似
+            return {total, avail};
+        }
+#endif
+        return {0, 0};
+    }
 
 private:
     bool try_init_vulkan() {

@@ -57,6 +57,11 @@ public:
     virtual std::string model_name() const = 0;
     
     virtual int get_scale_factor() const { return 2; }
+
+    // Get memory info: {total_mb, available_mb}
+    virtual auto get_memory_info() const -> std::pair<size_t, size_t> {
+        return {0, 0};
+    }
 };
 
 std::unique_ptr<Engine> create_ncnn_engine();
