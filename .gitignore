@@ -1,0 +1,54 @@
+# Build directories
+build/
+build_*/
+out/
+Debug/
+Release/
+*.o
+*.a
+*.so
+*.exe
+*.dll
+*.dylib
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# xmake
+.xmake/
+
+# Android
+android/.gradle/
+android/app/build/
+android/local.properties
+android/*.iml
+android/.idea/
+android/captures/
+android/gradle/
+android/gradlew*
+
+# Models (large files)
+models/*.bin
+models/*.param
+!models/README.md
+
+# Logs
+*.log
+logs/
+
+# Test outputs
+test_output/
+*.png
+*.jpg
+*.webp
+!docs/*.png
+
+# Temporary files
+tmp/
+temp/
+*.tmp

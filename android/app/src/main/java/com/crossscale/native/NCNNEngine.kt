@@ -1,0 +1,20 @@
+package com.crossscale.native
+
+object NCNNEngine {
+    init {
+        System.loadLibrary("crossscale-native")
+    }
+    
+    external fun nativeInit(deviceType: Int): Long
+    external fun nativeLoadModel(enginePtr: Long, modelPath: String): Boolean
+    external fun nativeProcessImage(
+        enginePtr: Long,
+        inputImage: ByteArray,
+        width: Int,
+        height: Int,
+        channels: Int
+    ): ByteArray?
+    external fun nativeBenchmark(enginePtr: Long): Float
+    external fun nativeGetDevices(): Array<String>
+    external fun nativeRelease(enginePtr: Long)
+}
