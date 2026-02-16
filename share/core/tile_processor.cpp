@@ -53,34 +53,76 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
     std::vector<float> output_buffer(output_width * output_height * channels, 0.0f);
     std::vector<float> weight_buffer(output_width * output_height * channels, 0.0f);
     
-    for (size_t i = 0; i < regions.size() && !cancel_flag; ++i) {
-        const auto& region = regions[i];
+    // Process tiles in batches for improved GPU utilization
+    size_t batch_size = static_cast<size_t>(config.batch_size);
+    if (batch_size < 1) batch_size = 1;
+    
+    size_t i = 0;
+    while (i < regions.size() && !cancel_flag) {
+        // Determine a batch of tiles with uniform dimensions
+        size_t batch_count = 0;
+        int batch_w = 0, batch_h = 0;
+        size_t j = i;
+        for (; j < regions.size() && batch_count < batch_size; ++j) {
+            const auto& r = regions[j];
+            if (batch_count == 0) {
+                batch_w = r.width;
+                batch_h = r.height;
+            } else if (static_cast<int>(r.width) != batch_w || static_cast<int>(r.height) != batch_h) {
+                break; // size mismatch, process current batch
+            }
+            ++batch_count;
+        }
+        if (batch_count == 0) break;
         
-        auto tile_input = extract_tile(input_data, input_width, input_height, 
-                                        channels, region);
+        // Prepare batch buffers
+        std::vector<const float*> batch_inputs;
+        std::vector<float*> batch_outputs;
+        std::vector<std::vector<float>> batch_input_bufs;
+        std::vector<std::vector<float>> batch_output_bufs;
+        batch_inputs.reserve(batch_count);
+        batch_outputs.reserve(batch_count);
+        batch_input_bufs.reserve(batch_count);
+        batch_output_bufs.reserve(batch_count);
         
-        int tile_out_width = region.width * scale_factor;
-        int tile_out_height = region.height * scale_factor;
-        std::vector<float> tile_output(tile_out_width * tile_out_height * channels);
+        for (size_t k = 0; k < batch_count; ++k) {
+            const auto& region = regions[i + k];
+            // Extract tile input
+            auto tile_input = extract_tile(input_data, input_width, input_height, channels, region);
+            batch_input_bufs.push_back(std::move(tile_input));
+            batch_inputs.push_back(batch_input_bufs.back().data());
+            
+            // Allocate output buffer for this tile
+            int tile_out_w = region.width * scale_factor;
+            int tile_out_h = region.height * scale_factor;
+            batch_output_bufs.emplace_back(tile_out_w * tile_out_h * channels);
+            batch_outputs.push_back(batch_output_bufs.back().data());
+        }
         
-        auto result = engine.process(tile_input.data(), tile_output.data(),
-                                      region.width, region.height, channels, cancel_flag);
-        
+        // Execute batch inference
+        auto result = engine.process_batch(batch_inputs, batch_outputs,
+                                           batch_w, batch_h, channels, cancel_flag);
         if (!result.has_value()) {
-            return TileProcessorError{1, "Processing failed"};
+            return TileProcessorError{1, "Batch processing failed: " + result.error().message};
         }
         
-        blend_tile(tile_output.data(), output_buffer.data(),
-                   output_width, output_height, channels,
-                   region, scale_factor, config.overlap);
-        
-        progress.completed_tiles = static_cast<int>(i + 1);
-        progress.current_tile_x = region.x;
-        progress.current_tile_y = region.y;
-        
-        if (progress_callback) {
-            progress_callback(progress);
+        // Blend each tile's output
+        for (size_t k = 0; k < batch_count; ++k) {
+            const auto& region = regions[i + k];
+            blend_tile(batch_output_bufs[k].data(), output_buffer.data(),
+                       output_width, output_height, channels,
+                       region, scale_factor, config.overlap);
+            
+            progress.completed_tiles = static_cast<int>(i + k + 1);
+            progress.current_tile_x = region.x;
+            progress.current_tile_y = region.y;
+            
+            if (progress_callback) {
+                progress_callback(progress);
+            }
         }
+        
+        i += batch_count;
     }
     
     if (cancel_flag) {

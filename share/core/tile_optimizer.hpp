@@ -69,7 +69,8 @@ auto TileSizeOptimizer::calculate_tile_memory(
 auto TileSizeOptimizer::benchmark_tile_size(
     Engine& engine,
     int tile_size,
-    int iterations
+    int iterations,
+    int warmup
 ) -> DevicePerformanceProfile::TileBenchmark {
 
     DevicePerformanceProfile::TileBenchmark result;
@@ -87,7 +88,7 @@ auto TileSizeOptimizer::benchmark_tile_size(
         auto bench_result = benchmark("tile_bench", [&]() {
             engine.process(input.data(), output.data(),
                           tile_size, tile_size, 3, cancel);
-        }, iterations, 1);
+        }, iterations, warmup);
 
         result.tiles_per_second = 1000.0f / static_cast<float>(bench_result.avg_time_ms);
         result.success = true;
@@ -200,7 +201,7 @@ auto TileSizeOptimizer::find_optimal_tile_size(
     for (int size : test_sizes) {
         LOG_INFO("TileOptimizer", "Benchmarking tile_size=" + std::to_string(size));
 
-        auto bench = benchmark_tile_size(engine, size, 3);
+        auto bench = benchmark_tile_size(engine, size);
 
         if (!bench.success) {
             LOG_WARNING("TileOptimizer", "Tile size " + std::to_string(size) + " failed");
@@ -248,8 +249,8 @@ auto TileSizeOptimizer::find_optimal_tile_size(
         if (c.est_time < min_time) min_time = c.est_time;
     }
 
-    // 容忍阈值：在最小时间的 +2% 范围内，选择最大的 tile size（以提高 GPU 利用率）
-    const float TOLERANCE = 1.02f;
+    // 容忍阈值：在最小时间的 +5% 范围内，选择最大的 tile size（以提高 GPU 利用率）
+    const float TOLERANCE = 1.05f;
     int best_tile = candidates[0].size;
     for (const auto& c : candidates) {
         if (c.est_time <= min_time * TOLERANCE && c.size > best_tile) {

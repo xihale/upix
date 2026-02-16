@@ -105,12 +105,13 @@ public:
         const ModelConstraints& model
     ) const -> size_t;
 
-private:
-    auto benchmark_tile_size(
-        Engine& engine,
-        int tile_size,
-        int iterations
-    ) -> DevicePerformanceProfile::TileBenchmark;
+    private:
+        auto benchmark_tile_size(
+            Engine& engine,
+            int tile_size,
+            int iterations = 10,
+            int warmup = 2
+        ) -> DevicePerformanceProfile::TileBenchmark;
 };
 
 } // namespace crossscale

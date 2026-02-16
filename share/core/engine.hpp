@@ -47,7 +47,28 @@ public:
         int channels,
         const std::atomic<bool>& cancel_flag = {}
     ) -> expected<void, EngineError> = 0;
-    
+
+    // Process a batch of tiles. All tiles must have same width, height, channels.
+    // inputs: vector of input data pointers (each tile: interleaved HWC float)
+    // outputs: vector of output data pointers (each tile: interleaved HWC float, pre-allocated)
+    virtual auto process_batch(
+        const std::vector<const float*>& inputs,
+        const std::vector<float*>& outputs,
+        int width,
+        int height,
+        int channels,
+        const std::atomic<bool>& cancel_flag
+    ) -> expected<void, EngineError> {
+        if (inputs.size() != outputs.size()) {
+            return EngineError{100, "Batch input/output size mismatch"};
+        }
+        for (size_t i = 0; i < inputs.size(); ++i) {
+            auto result = process(inputs[i], outputs[i], width, height, channels, cancel_flag);
+            if (!result) return result;
+        }
+        return {};
+    }
+
     virtual auto benchmark(int test_tile_size = 256) -> float = 0;
     
     virtual void unload_model() = 0;
