@@ -96,7 +96,12 @@ public:
             net_->opt.use_fp16_packed = true;
             net_->opt.use_fp16_storage = true;
             net_->opt.use_fp16_arithmetic = true;
-            net_->opt.num_threads = 8;
+            unsigned int hw_threads = std::thread::hardware_concurrency();
+            int tuned_threads = 2;
+            if (hw_threads > 0) {
+                tuned_threads = std::clamp(static_cast<int>(hw_threads / 4), 1, 4);
+            }
+            net_->opt.num_threads = tuned_threads;
         } else {
             net_->opt.use_vulkan_compute = false;
         }
