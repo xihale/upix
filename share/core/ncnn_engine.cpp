@@ -93,6 +93,7 @@ public:
             net_->opt.use_fp16_packed = true;
             net_->opt.use_fp16_storage = true;
             net_->opt.use_fp16_arithmetic = true;
+            net_->opt.num_threads = 8;
         } else {
             net_->opt.use_vulkan_compute = false;
         }
