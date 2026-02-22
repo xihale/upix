@@ -53,10 +53,9 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
     
     std::vector<float> output_buffer(output_width * output_height * channels, 0.0f);
     
-    // Process tiles in batches (batch_size >= 1)
+    // Process tiles with double buffering
     size_t i = 0;
     while (i < regions.size() && !cancel_flag) {
-        // Determine batch: group consecutive tiles with same dimensions, up to batch_size
         uint32_t batch_w = regions[i].width;
         uint32_t batch_h = regions[i].height;
         size_t batch_end = i + 1;
@@ -67,8 +66,7 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
             ++batch_end;
         }
         size_t batch_count = batch_end - i;
-        
-        // Prepare batch inputs and outputs
+
         std::vector<std::vector<float>> input_buffers;
         std::vector<const float*> batch_inputs;
         std::vector<std::vector<float>> output_buffers;
@@ -77,44 +75,41 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
         batch_inputs.reserve(batch_count);
         output_buffers.reserve(batch_count);
         batch_outputs.reserve(batch_count);
-        
+
+        std::vector<std::future<std::vector<float>>> extract_futures;
+        extract_futures.reserve(batch_count);
         for (size_t j = i; j < batch_end; ++j) {
-            const auto& region = regions[j];
-            auto tile_input = extract_tile(input_data, input_width, input_height, channels, region);
-            input_buffers.push_back(std::move(tile_input));
+            extract_futures.push_back(std::async(std::launch::async,
+                extract_tile, input_data, input_width, input_height, channels, regions[j]));
+        }
+
+        for (auto& fut : extract_futures) {
+            input_buffers.push_back(fut.get());
             batch_inputs.push_back(input_buffers.back().data());
-            
-            int tile_out_w = region.width * scale_factor;
-            int tile_out_h = region.height * scale_factor;
+        }
+
+        for (size_t j = i; j < batch_end; ++j) {
+            int tile_out_w = regions[j].width * scale_factor;
+            int tile_out_h = regions[j].height * scale_factor;
             output_buffers.emplace_back(tile_out_w * tile_out_h * channels);
             batch_outputs.push_back(output_buffers.back().data());
         }
-        
-        // Process batch
-        auto result = engine.process_batch(
-            batch_inputs, batch_outputs,
-            batch_w, batch_h, channels,
-            cancel_flag
-        );
+
+        auto result = engine.process_batch(batch_inputs, batch_outputs, batch_w, batch_h, channels, cancel_flag);
         if (!result.has_value()) {
             return TileProcessorError{1, "Batch processing failed: " + result.error().message};
         }
-        
-        // Blend each tile from the batch into output
+
         for (size_t idx = 0; idx < batch_count; ++idx) {
             const auto& region = regions[i + idx];
             blend_tile(output_buffers[idx].data(), output_buffer.data(),
-                       output_width, output_height, channels,
-                       region, scale_factor, config.overlap);
-            
+                       output_width, output_height, channels, region, scale_factor, config.overlap);
             progress.completed_tiles++;
             progress.current_tile_x = region.x;
             progress.current_tile_y = region.y;
-            if (progress_callback) {
-                progress_callback(progress);
-            }
+            if (progress_callback) progress_callback(progress);
         }
-        
+
         i = batch_end;
     }
     

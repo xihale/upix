@@ -63,7 +63,7 @@ public:
         const std::atomic<bool>& cancel_flag = {}
     ) -> expected<void, TileProcessorError>;
     
-    auto extract_tile(
+    static auto extract_tile(
         const float* image_data,
         int image_width,
         int image_height,
