@@ -9,8 +9,10 @@
 #include <algorithm>
 #include <cmath>
 #include <thread>
+#include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 
 // Platform-specific memory detection
 #if defined(__linux__)
@@ -89,6 +91,7 @@ public:
         // Set Vulkan device if using GPU
 #if NCNN_VULKAN
         if (current_device_ == DeviceType::GPU_VULKAN && vkdev_ != nullptr) {
+            net_->set_vulkan_device(vkdev_);
             net_->opt.use_vulkan_compute = true;
             net_->opt.use_fp16_packed = true;
             net_->opt.use_fp16_storage = true;
@@ -287,11 +290,54 @@ public:
 private:
     bool try_init_vulkan() {
 #if NCNN_VULKAN
-        ncnn::create_gpu_instance();
-        int gpu_count = ncnn::get_gpu_count();
-        if (gpu_count > 0) {
-            vkdev_ = ncnn::get_gpu_device(0);
-            return vkdev_ != nullptr;
+        constexpr int kMaxAttempts = 3;
+        for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
+            ncnn::create_gpu_instance();
+            int gpu_count = ncnn::get_gpu_count();
+            if (gpu_count > 0) {
+                int best_gpu_idx = -1;
+                int best_score = std::numeric_limits<int>::min();
+
+                for (int i = 0; i < gpu_count; ++i) {
+                    const auto& info = ncnn::get_gpu_info(i);
+                    const std::string gpu_name = info.device_name() ? info.device_name() : ("GPU-" + std::to_string(i));
+
+                    int score = 0;
+                    // Prefer discrete GPU strongly, then integrated.
+                    if (info.type() == 0) score += 10000;
+                    else if (info.type() == 1) score += 1000;
+                    else score += 100;
+
+                    score += static_cast<int>(info.compute_queue_count()) * 10;
+                    if (info.support_fp16_arithmetic()) score += 100;
+                    if (info.support_fp16_storage()) score += 50;
+                    if (info.support_fp16_packed()) score += 50;
+
+                    LOG_INFO("Engine", "Vulkan candidate #" + std::to_string(i) +
+                            " name=" + gpu_name +
+                            " type=" + std::to_string(info.type()) +
+                            " compute_queues=" + std::to_string(info.compute_queue_count()) +
+                            " score=" + std::to_string(score));
+
+                    if (score > best_score) {
+                        best_score = score;
+                        best_gpu_idx = i;
+                    }
+                }
+
+                if (best_gpu_idx >= 0) {
+                    vkdev_ = ncnn::get_gpu_device(best_gpu_idx);
+                    if (vkdev_ != nullptr) {
+                        LOG_INFO("Engine", "Selected Vulkan GPU index " + std::to_string(best_gpu_idx));
+                        return true;
+                    }
+                }
+            }
+
+            LOG_WARNING("Engine", "Vulkan init attempt " + std::to_string(attempt) +
+                                  " failed, retrying");
+            ncnn::destroy_gpu_instance();
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
         }
 #endif
         return false;
