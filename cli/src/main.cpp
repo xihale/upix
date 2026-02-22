@@ -406,7 +406,10 @@ int main(int argc, char* argv[]) {
                 
                 size_t success_count = 0;
                 if (use_gpu && tasks.size() > 1) {
-                    constexpr size_t kSaveWorkers = 2;
+                    size_t kSaveWorkers = 2;
+                    if (unsigned int hw_threads = std::thread::hardware_concurrency(); hw_threads > 0) {
+                        kSaveWorkers = std::clamp(static_cast<size_t>(hw_threads / 8), static_cast<size_t>(2), static_cast<size_t>(4));
+                    }
                     constexpr size_t kPreparedQueueLimit = 3;
                     constexpr size_t kProcessedQueueLimit = 2;
                     std::deque<PreparedTask> prepared_queue;
@@ -520,22 +523,41 @@ int main(int argc, char* argv[]) {
                 return success_count == tasks.size() ? 0 : 1;
             } else {
                 if (use_gpu) {
-                    size_t worker_count = std::max(1, jobs);
+                    size_t requested_workers = static_cast<size_t>(std::max(1, jobs));
+                    size_t worker_count = std::min(requested_workers, tasks.size());
+
+                    struct EngineInitResult {
+                        std::unique_ptr<crossscale::Engine> engine;
+                        std::string error;
+                    };
+
+                    std::vector<std::future<EngineInitResult>> init_futures;
+                    init_futures.reserve(worker_count);
+                    for (size_t i = 0; i < worker_count; ++i) {
+                        init_futures.emplace_back(std::async(std::launch::async, [&, i]() -> EngineInitResult {
+                            auto engine = crossscale::create_ncnn_engine();
+                            auto init_result = engine->initialize(crossscale::DeviceType::GPU_VULKAN);
+                            if (!init_result.has_value()) {
+                                return {nullptr, "Failed to initialize GPU engine #" + std::to_string(i)};
+                            }
+                            auto load_result = engine->load_model(param_path, bin_path);
+                            if (!load_result.has_value()) {
+                                return {nullptr, "Failed to load model into GPU engine #" + std::to_string(i) +
+                                                    ": " + load_result.error().message};
+                            }
+                            return {std::move(engine), ""};
+                        }));
+                    }
+
                     std::vector<std::unique_ptr<crossscale::Engine>> gpu_engines;
                     gpu_engines.reserve(worker_count);
-                    for (size_t i = 0; i < worker_count; ++i) {
-                        auto engine = crossscale::create_ncnn_engine();
-                        auto init_result = engine->initialize(crossscale::DeviceType::GPU_VULKAN);
-                        if (!init_result.has_value()) {
-                            LOG_ERROR("Engine", "Failed to initialize GPU engine #" + std::to_string(i));
+                    for (auto& init_future : init_futures) {
+                        auto init_result = init_future.get();
+                        if (!init_result.engine) {
+                            LOG_ERROR("Engine", init_result.error);
                             return 1;
                         }
-                        auto load_result = engine->load_model(param_path, bin_path);
-                        if (!load_result.has_value()) {
-                            LOG_ERROR("Engine", "Failed to load model into GPU engine #" + std::to_string(i) + ": " + load_result.error().message);
-                            return 1;
-                        }
-                        gpu_engines.push_back(std::move(engine));
+                        gpu_engines.push_back(std::move(init_result.engine));
                     }
                     LOG_INFO("Engine", "GPU engine workers ready: " + std::to_string(worker_count));
 
