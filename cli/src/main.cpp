@@ -321,12 +321,13 @@ int main(int argc, char* argv[]) {
             if (jobs <= 1) {
 
                 auto engine = crossscale::create_ncnn_engine();
-                auto init_result = engine->initialize(crossscale::DeviceType::CPU);
+                auto device_type = use_gpu ? crossscale::DeviceType::GPU_VULKAN : crossscale::DeviceType::CPU;
+                auto init_result = engine->initialize(device_type);
                 if (!init_result.has_value()) {
-                    LOG_ERROR("Engine", "Failed to initialize engine on CPU");
+                    LOG_ERROR("Engine", "Failed to initialize engine");
                     return 1;
                 }
-                LOG_INFO("Engine", "Engine initialized on CPU");
+                LOG_INFO("Engine", "Engine initialized on " + std::string(use_gpu ? "GPU" : "CPU"));
                 
                 // Load model once
                 auto load_result = engine->load_model(param_path, bin_path);
