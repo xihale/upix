@@ -7,6 +7,8 @@
 #include <csignal>
 #include <future>
 #include <mutex>
+#include <deque>
+#include <condition_variable>
 
 #include "qrcodegen.hpp"
 
@@ -30,6 +32,7 @@
 #include <iomanip>
 #include <sstream>
 #include <cctype>
+#include <optional>
 
 namespace fs = std::filesystem;
 
@@ -231,38 +234,68 @@ int main(int argc, char* argv[]) {
             
 
 
-            auto process_one = [&](const std::string& in_path, const std::string& out_path, crossscale::Engine& eng) -> bool {
-                LOG_INFO("Engine", "Processing image: " + in_path);
-                
+            struct PreparedTask {
+                std::string in_path;
+                std::string out_path;
+                int width = 0;
+                int height = 0;
+                int channels = 0;
+                std::vector<float> input_float;
+            };
+
+            auto prepare_task = [&](const std::string& in_path, const std::string& out_path) -> std::optional<PreparedTask> {
                 auto img_res = crossscale::Image::load(in_path);
                 if (!img_res.has_value()) {
                     LOG_ERROR("Task", "Failed to load image: " + in_path);
-                    return false;
+                    return std::nullopt;
                 }
-                auto& image = img_res.value();
-                
-                std::vector<float> input_float;
-                input_float.reserve(static_cast<size_t>(image.width()) * image.height() * image.channels());
-                for (size_t i = 0; i < static_cast<size_t>(image.width()) * image.height() * image.channels(); ++i) {
-                    input_float.push_back(image.data()[i] / 255.0f);
+
+                PreparedTask prepared;
+                prepared.in_path = in_path;
+                prepared.out_path = out_path;
+                prepared.width = img_res->width();
+                prepared.height = img_res->height();
+                prepared.channels = img_res->channels();
+
+                const size_t pixel_count = static_cast<size_t>(prepared.width) * prepared.height * prepared.channels;
+                prepared.input_float.resize(pixel_count);
+
+                constexpr float kInv255 = 1.0f / 255.0f;
+                const uint8_t* src = img_res->data();
+                for (size_t i = 0; i < pixel_count; ++i) {
+                    prepared.input_float[i] = static_cast<float>(src[i]) * kInv255;
                 }
-                
+
+                return prepared;
+            };
+
+            struct ProcessedTask {
+                std::string out_path;
+                int out_width = 0;
+                int out_height = 0;
+                int channels = 0;
+                std::vector<float> output_float;
+            };
+
+            auto infer_prepared_task = [&](PreparedTask&& prepared, crossscale::Engine& eng) -> std::optional<ProcessedTask> {
+                LOG_INFO("Engine", "Processing image: " + prepared.in_path);
+
                 crossscale::ProcessingConfig local_config = config;
                 
                 if (auto_tile || local_config.auto_tile_size) {
-                    LOG_INFO("Task", "Auto-tile for " + in_path);
+                    LOG_INFO("Task", "Auto-tile for " + prepared.in_path);
                     crossscale::TileSizeOptimizer optimizer;
                     crossscale::ModelConstraints mc;
                     mc.model_name = model_name_used;
                     mc.scale_factor = eng.get_scale_factor();
-                    mc.input_channels = image.channels();
+                    mc.input_channels = prepared.channels;
                     mc.model_size_mb = static_cast<float>(model_total_size) / (1024 * 1024);
                     mc.min_tile_size = local_config.min_tile_size;
                     mc.max_tile_size = local_config.max_tile_size;
                     
                     local_config.tile_size = optimizer.find_optimal_tile_size(
                         eng, mc, local_config,
-                        image.width(), image.height()
+                        prepared.width, prepared.height
                     );
                     local_config.auto_tile_size = true;
                     LOG_INFO("Task", "Optimal tile size: " + std::to_string(local_config.tile_size));
@@ -273,16 +306,16 @@ int main(int argc, char* argv[]) {
                 tile_config.overlap = local_config.tile_overlap;
                 tile_config.batch_size = local_config.batch_size;
                 
-                int out_width = image.width() * eng.get_scale_factor();
-                int out_height = image.height() * eng.get_scale_factor();
-                int out_size = out_width * out_height * image.channels();
+                int out_width = prepared.width * eng.get_scale_factor();
+                int out_height = prepared.height * eng.get_scale_factor();
+                int out_size = out_width * out_height * prepared.channels;
                 std::vector<float> output_float(out_size, 0.0f);
                 
                 crossscale::TileProcessor processor;
                 std::atomic<bool> cancel_flag{false};
                 auto result = processor.process_image(
-                    input_float.data(), output_float.data(),
-                    image.width(), image.height(), image.channels(),
+                    prepared.input_float.data(), output_float.data(),
+                    prepared.width, prepared.height, prepared.channels,
                     eng, tile_config,
                     [&](const crossscale::ProcessingProgress& prog) {
                         if (prog.total_tiles > 0 && (prog.completed_tiles % 10 == 0 || prog.completed_tiles == prog.total_tiles)) {
@@ -295,27 +328,49 @@ int main(int argc, char* argv[]) {
                 
                 if (!result.has_value()) {
                     LOG_ERROR("Task", "Processing failed: " + result.error().message);
-                    return false;
+                    return std::nullopt;
                 }
                 
-                crossscale::Image output_image(out_width, out_height, image.channels());
-                for (size_t i = 0; i < output_float.size(); ++i) {
-                    float val = output_float[i] * 255.0f;
+                ProcessedTask processed;
+                processed.out_path = prepared.out_path;
+                processed.out_width = out_width;
+                processed.out_height = out_height;
+                processed.channels = prepared.channels;
+                processed.output_float = std::move(output_float);
+                return processed;
+            };
+
+            auto save_processed_task = [&](ProcessedTask&& processed) -> bool {
+                crossscale::Image output_image(processed.out_width, processed.out_height, processed.channels);
+                for (size_t i = 0; i < processed.output_float.size(); ++i) {
+                    float val = processed.output_float[i] * 255.0f;
                     val = std::clamp(val, 0.0f, 255.0f);
                     output_image.data()[i] = static_cast<uint8_t>(val);
                 }
-                
-                std::filesystem::path out_path_obj(out_path);
+
+                std::filesystem::path out_path_obj(processed.out_path);
                 std::filesystem::create_directories(out_path_obj.parent_path());
-                
-                auto save_res = output_image.save(out_path);
+
+                auto save_res = output_image.save(processed.out_path);
                 if (!save_res.has_value()) {
                     LOG_ERROR("Task", "Failed to save output: " + save_res.error().message);
                     return false;
                 }
-                
-                LOG_INFO("Task", "Completed: " + out_path);
+
+                LOG_INFO("Task", "Completed: " + processed.out_path);
                 return true;
+            };
+
+            auto process_one = [&](const std::string& in_path, const std::string& out_path, crossscale::Engine& eng) -> bool {
+                auto prepared = prepare_task(in_path, out_path);
+                if (!prepared.has_value()) {
+                    return false;
+                }
+                auto processed = infer_prepared_task(std::move(prepared.value()), eng);
+                if (!processed.has_value()) {
+                    return false;
+                }
+                return save_processed_task(std::move(processed.value()));
             };
             
             if (jobs <= 1) {
@@ -327,7 +382,8 @@ int main(int argc, char* argv[]) {
                     LOG_ERROR("Engine", "Failed to initialize engine");
                     return 1;
                 }
-                LOG_INFO("Engine", "Engine initialized on " + std::string(use_gpu ? "GPU" : "CPU"));
+                const bool initialized_on_gpu = engine->current_device() == crossscale::DeviceType::GPU_VULKAN;
+                LOG_INFO("Engine", "Engine initialized on " + std::string(initialized_on_gpu ? "GPU" : "CPU"));
                 
                 // Load model once
                 auto load_result = engine->load_model(param_path, bin_path);
@@ -341,9 +397,107 @@ int main(int argc, char* argv[]) {
                 LOG_INFO("Engine", "Scale factor: " + std::to_string(scale) + "x");
                 
                 size_t success_count = 0;
-                for (const auto& task : tasks) {
-                    if (process_one(task.first, task.second, *engine)) {
-                        success_count++;
+                if (use_gpu && tasks.size() > 1) {
+                    constexpr size_t kPreparedQueueLimit = 3;
+                    constexpr size_t kProcessedQueueLimit = 2;
+                    std::deque<PreparedTask> prepared_queue;
+                    std::deque<ProcessedTask> processed_queue;
+                    std::mutex prepared_mutex;
+                    std::mutex processed_mutex;
+                    std::condition_variable prepared_cv;
+                    std::condition_variable processed_cv;
+                    bool prepare_done = false;
+                    bool process_done = false;
+
+                    std::thread prepare_thread([&]() {
+                        for (const auto& task : tasks) {
+                            auto prepared = prepare_task(task.first, task.second);
+                            if (!prepared.has_value()) {
+                                continue;
+                            }
+                            std::unique_lock<std::mutex> lock(prepared_mutex);
+                            prepared_cv.wait(lock, [&]() {
+                                return prepared_queue.size() < kPreparedQueueLimit;
+                            });
+                            {
+                                prepared_queue.emplace_back(std::move(prepared.value()));
+                            }
+                            lock.unlock();
+                            prepared_cv.notify_one();
+                        }
+                        {
+                            std::lock_guard<std::mutex> lock(prepared_mutex);
+                            prepare_done = true;
+                        }
+                        prepared_cv.notify_all();
+                    });
+
+                    std::thread process_thread([&]() {
+                        while (true) {
+                            std::optional<PreparedTask> prepared;
+                            {
+                                std::unique_lock<std::mutex> lock(prepared_mutex);
+                                prepared_cv.wait(lock, [&]() {
+                                    return !prepared_queue.empty() || prepare_done;
+                                });
+                                if (prepared_queue.empty() && prepare_done) {
+                                    break;
+                                }
+                                prepared = std::move(prepared_queue.front());
+                                prepared_queue.pop_front();
+                            }
+                            prepared_cv.notify_one();
+
+                            auto processed = infer_prepared_task(std::move(prepared.value()), *engine);
+                            if (!processed.has_value()) {
+                                continue;
+                            }
+                            {
+                                std::unique_lock<std::mutex> lock(processed_mutex);
+                                processed_cv.wait(lock, [&]() {
+                                    return processed_queue.size() < kProcessedQueueLimit;
+                                });
+                                processed_queue.emplace_back(std::move(processed.value()));
+                            }
+                            processed_cv.notify_one();
+                        }
+                        {
+                            std::lock_guard<std::mutex> lock(processed_mutex);
+                            process_done = true;
+                        }
+                        processed_cv.notify_all();
+                    });
+
+                    std::thread save_thread([&]() {
+                        while (true) {
+                            std::optional<ProcessedTask> processed;
+                            {
+                                std::unique_lock<std::mutex> lock(processed_mutex);
+                                processed_cv.wait(lock, [&]() {
+                                    return !processed_queue.empty() || process_done;
+                                });
+                                if (processed_queue.empty() && process_done) {
+                                    break;
+                                }
+                                processed = std::move(processed_queue.front());
+                                processed_queue.pop_front();
+                            }
+                            processed_cv.notify_one();
+
+                            if (save_processed_task(std::move(processed.value()))) {
+                                success_count++;
+                            }
+                        }
+                    });
+
+                    prepare_thread.join();
+                    process_thread.join();
+                    save_thread.join();
+                } else {
+                    for (const auto& task : tasks) {
+                        if (process_one(task.first, task.second, *engine)) {
+                            success_count++;
+                        }
                     }
                 }
                 
@@ -351,28 +505,49 @@ int main(int argc, char* argv[]) {
                 return success_count == tasks.size() ? 0 : 1;
             } else {
                 if (use_gpu) {
-                    // GPU mode: use a single shared engine sequentially on the current thread
-                    auto shared_engine = crossscale::create_ncnn_engine();
-                    auto init_result = shared_engine->initialize(); // Try GPU first, fallback to CPU
-                    if (!init_result.has_value()) {
-                        LOG_ERROR("Engine", "Failed to initialize GPU engine");
-                        return 1;
-                    }
-                    auto load_result = shared_engine->load_model(param_path, bin_path);
-                    if (!load_result.has_value()) {
-                        LOG_ERROR("Engine", "Failed to load model into GPU engine: " + load_result.error().message);
-                        return 1;
-                    }
-                    LOG_INFO("Engine", "GPU engine ready, processing sequentially");
-                    int scale = shared_engine->get_scale_factor();
-                    LOG_INFO("Engine", "Scale factor: " + std::to_string(scale) + "x");
-
-                    size_t success_count = 0;
-                    for (const auto& task : tasks) {
-                        if (process_one(task.first, task.second, *shared_engine)) {
-                            success_count++;
+                    size_t worker_count = std::max(1, jobs);
+                    std::vector<std::unique_ptr<crossscale::Engine>> gpu_engines;
+                    gpu_engines.reserve(worker_count);
+                    for (size_t i = 0; i < worker_count; ++i) {
+                        auto engine = crossscale::create_ncnn_engine();
+                        auto init_result = engine->initialize(crossscale::DeviceType::GPU_VULKAN);
+                        if (!init_result.has_value()) {
+                            LOG_ERROR("Engine", "Failed to initialize GPU engine #" + std::to_string(i));
+                            return 1;
                         }
+                        auto load_result = engine->load_model(param_path, bin_path);
+                        if (!load_result.has_value()) {
+                            LOG_ERROR("Engine", "Failed to load model into GPU engine #" + std::to_string(i) + ": " + load_result.error().message);
+                            return 1;
+                        }
+                        gpu_engines.push_back(std::move(engine));
                     }
+                    LOG_INFO("Engine", "GPU engine workers ready: " + std::to_string(worker_count));
+
+                    std::atomic<size_t> next_task{0};
+                    std::atomic<size_t> success_count{0};
+                    std::vector<std::thread> workers;
+                    workers.reserve(worker_count);
+
+                    for (size_t i = 0; i < worker_count; ++i) {
+                        workers.emplace_back([&, i]() {
+                            auto& eng = *gpu_engines[i];
+                            while (true) {
+                                size_t idx = next_task.fetch_add(1);
+                                if (idx >= tasks.size()) {
+                                    break;
+                                }
+                                if (process_one(tasks[idx].first, tasks[idx].second, eng)) {
+                                    success_count.fetch_add(1);
+                                }
+                            }
+                        });
+                    }
+
+                    for (auto& w : workers) {
+                        w.join();
+                    }
+
                     LOG_INFO("CLI", "Processing summary: " + std::to_string(success_count) + "/" + std::to_string(tasks.size()) + " succeeded");
                     return success_count == tasks.size() ? 0 : 1;
                 } else {
