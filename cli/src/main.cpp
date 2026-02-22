@@ -33,6 +33,7 @@
 #include <sstream>
 #include <cctype>
 #include <optional>
+#include <cstdlib>
 
 namespace fs = std::filesystem;
 
@@ -269,6 +270,11 @@ int main(int argc, char* argv[]) {
                 return prepared;
             };
 
+            bool enable_progress_log = false;
+            if (const char* progress_env = std::getenv("CROSSSCALE_PROGRESS")) {
+                enable_progress_log = std::string(progress_env) == "1";
+            }
+
             struct ProcessedTask {
                 std::string out_path;
                 int out_width = 0;
@@ -318,7 +324,9 @@ int main(int argc, char* argv[]) {
                     prepared.width, prepared.height, prepared.channels,
                     eng, tile_config,
                     [&](const crossscale::ProcessingProgress& prog) {
-                        if (prog.total_tiles > 0 && (prog.completed_tiles % 10 == 0 || prog.completed_tiles == prog.total_tiles)) {
+                        if (enable_progress_log &&
+                            prog.total_tiles > 0 &&
+                            (prog.completed_tiles % 10 == 0 || prog.completed_tiles == prog.total_tiles)) {
                             float pct = prog.percentage();
                             LOG_INFO("Engine", "Progress: " + std::to_string(prog.completed_tiles) + "/" + std::to_string(prog.total_tiles) + " tiles (" + std::to_string(pct) + "%)");
                         }
@@ -735,13 +743,17 @@ int main(int argc, char* argv[]) {
                 " batch_size=" + std::to_string(batch_size) + "...");
 
         std::atomic<bool> cancel_flag{false};
+        bool enable_progress_log_single = false;
+        if (const char* progress_env = std::getenv("CROSSSCALE_PROGRESS")) {
+            enable_progress_log_single = std::string(progress_env) == "1";
+        }
 
         auto process_result = processor.process_image(
             input_float.data(), output_float.data(),
             image.width(), image.height(), image.channels(),
             *engine, tile_config,
             [&](const crossscale::ProcessingProgress& progress) {
-                if (progress.total_tiles > 0) {
+                if (enable_progress_log_single && progress.total_tiles > 0) {
                     float pct = progress.percentage();
                     if (progress.completed_tiles % 10 == 0 ||
                         progress.completed_tiles == progress.total_tiles) {
