@@ -4,6 +4,12 @@
 #include <cmath>
 #include <algorithm>
 #include <future>
+#include <optional>
+#include <cstring>
+#include <deque>
+#include <mutex>
+#include <condition_variable>
+#include <thread>
 
 namespace crossscale {
 
@@ -53,64 +59,148 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
     
     std::vector<float> output_buffer(output_width * output_height * channels, 0.0f);
     
-    // Process tiles with double buffering
-    size_t i = 0;
-    while (i < regions.size() && !cancel_flag) {
-        uint32_t batch_w = regions[i].width;
-        uint32_t batch_h = regions[i].height;
-        size_t batch_end = i + 1;
-        while (batch_end < regions.size() &&
-               batch_end - i < static_cast<size_t>(config.batch_size) &&
-               regions[batch_end].width == batch_w &&
-               regions[batch_end].height == batch_h) {
-            ++batch_end;
-        }
-        size_t batch_count = batch_end - i;
+    int effective_batch_size = std::max(1, config.batch_size);
+    if (effective_batch_size == 1 && engine.current_device() == DeviceType::GPU_VULKAN) {
+        // A small implicit batch helps keep GPU busy when callers keep the default batch_size.
+        effective_batch_size = 2;
+    }
 
+    struct BatchWork {
+        size_t begin = 0;
+        size_t end = 0;
+        uint32_t width = 0;
+        uint32_t height = 0;
         std::vector<std::vector<float>> input_buffers;
         std::vector<const float*> batch_inputs;
         std::vector<std::vector<float>> output_buffers;
         std::vector<float*> batch_outputs;
-        input_buffers.reserve(batch_count);
-        batch_inputs.reserve(batch_count);
-        output_buffers.reserve(batch_count);
-        batch_outputs.reserve(batch_count);
+    };
 
-        std::vector<std::future<std::vector<float>>> extract_futures;
-        extract_futures.reserve(batch_count);
-        for (size_t j = i; j < batch_end; ++j) {
-            extract_futures.push_back(std::async(std::launch::async,
-                extract_tile, input_data, input_width, input_height, channels, regions[j]));
+    struct CompletedBatch {
+        size_t begin = 0;
+        std::vector<std::vector<float>> output_buffers;
+    };
+
+    auto build_batch = [&](size_t start_idx) -> std::optional<BatchWork> {
+        if (start_idx >= regions.size() || cancel_flag) {
+            return std::nullopt;
         }
 
-        for (auto& fut : extract_futures) {
-            input_buffers.push_back(fut.get());
-            batch_inputs.push_back(input_buffers.back().data());
+        BatchWork batch;
+        batch.begin = start_idx;
+        batch.width = regions[start_idx].width;
+        batch.height = regions[start_idx].height;
+        batch.end = start_idx + 1;
+
+        while (batch.end < regions.size() &&
+               batch.end - start_idx < static_cast<size_t>(effective_batch_size) &&
+               regions[batch.end].width == batch.width &&
+               regions[batch.end].height == batch.height) {
+            ++batch.end;
         }
 
-        for (size_t j = i; j < batch_end; ++j) {
-            int tile_out_w = regions[j].width * scale_factor;
-            int tile_out_h = regions[j].height * scale_factor;
-            output_buffers.emplace_back(tile_out_w * tile_out_h * channels);
-            batch_outputs.push_back(output_buffers.back().data());
+        size_t batch_count = batch.end - batch.begin;
+        batch.input_buffers.reserve(batch_count);
+        batch.batch_inputs.reserve(batch_count);
+        batch.output_buffers.reserve(batch_count);
+        batch.batch_outputs.reserve(batch_count);
+
+        for (size_t j = batch.begin; j < batch.end; ++j) {
+            batch.input_buffers.push_back(
+                extract_tile(input_data, input_width, input_height, channels, regions[j])
+            );
+            batch.batch_inputs.push_back(batch.input_buffers.back().data());
+
+            int tile_out_w = static_cast<int>(regions[j].width) * scale_factor;
+            int tile_out_h = static_cast<int>(regions[j].height) * scale_factor;
+            batch.output_buffers.emplace_back(static_cast<size_t>(tile_out_w) * tile_out_h * channels);
+            batch.batch_outputs.push_back(batch.output_buffers.back().data());
         }
 
-        auto result = engine.process_batch(batch_inputs, batch_outputs, batch_w, batch_h, channels, cancel_flag);
+        return batch;
+    };
+
+    std::deque<CompletedBatch> completed_queue;
+    std::mutex completed_mutex;
+    std::condition_variable completed_cv;
+    bool process_done = false;
+    std::string process_error;
+
+    std::thread blend_thread([&]() {
+        while (true) {
+            CompletedBatch completed_batch;
+            {
+                std::unique_lock<std::mutex> lock(completed_mutex);
+                completed_cv.wait(lock, [&]() {
+                    return !completed_queue.empty() || process_done;
+                });
+                if (completed_queue.empty() && process_done) {
+                    break;
+                }
+                completed_batch = std::move(completed_queue.front());
+                completed_queue.pop_front();
+            }
+
+            for (size_t idx = 0; idx < completed_batch.output_buffers.size(); ++idx) {
+                const auto& region = regions[completed_batch.begin + idx];
+                blend_tile(completed_batch.output_buffers[idx].data(), output_buffer.data(),
+                           output_width, output_height, channels, region, scale_factor, config.overlap);
+                progress.completed_tiles++;
+                progress.current_tile_x = region.x;
+                progress.current_tile_y = region.y;
+                if (progress_callback) progress_callback(progress);
+            }
+        }
+    });
+
+    auto current_batch = build_batch(0);
+    while (current_batch.has_value() && !cancel_flag) {
+        std::future<std::optional<BatchWork>> next_batch_future;
+        if (current_batch->end < regions.size()) {
+            size_t next_start = current_batch->end;
+            next_batch_future = std::async(std::launch::async, [&, next_start]() {
+                return build_batch(next_start);
+            });
+        }
+
+        auto result = engine.process_batch(
+            current_batch->batch_inputs,
+            current_batch->batch_outputs,
+            static_cast<int>(current_batch->width),
+            static_cast<int>(current_batch->height),
+            channels,
+            cancel_flag
+        );
         if (!result.has_value()) {
-            return TileProcessorError{1, "Batch processing failed: " + result.error().message};
+            process_error = "Batch processing failed: " + result.error().message;
+            break;
         }
 
-        for (size_t idx = 0; idx < batch_count; ++idx) {
-            const auto& region = regions[i + idx];
-            blend_tile(output_buffers[idx].data(), output_buffer.data(),
-                       output_width, output_height, channels, region, scale_factor, config.overlap);
-            progress.completed_tiles++;
-            progress.current_tile_x = region.x;
-            progress.current_tile_y = region.y;
-            if (progress_callback) progress_callback(progress);
+        CompletedBatch completed_batch;
+        completed_batch.begin = current_batch->begin;
+        completed_batch.output_buffers = std::move(current_batch->output_buffers);
+        {
+            std::lock_guard<std::mutex> lock(completed_mutex);
+            completed_queue.emplace_back(std::move(completed_batch));
         }
+        completed_cv.notify_one();
 
-        i = batch_end;
+        if (next_batch_future.valid()) {
+            current_batch = next_batch_future.get();
+        } else {
+            current_batch = std::nullopt;
+        }
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(completed_mutex);
+        process_done = true;
+    }
+    completed_cv.notify_all();
+    blend_thread.join();
+
+    if (!process_error.empty()) {
+        return TileProcessorError{1, process_error};
     }
     
     if (cancel_flag) {
@@ -127,14 +217,13 @@ auto TileProcessor::extract_tile(const float* image_data, int image_width, int i
     std::vector<float> tile(static_cast<size_t>(region.width) * region.height * channels);
     
     for (uint32_t y = 0; y < region.height; ++y) {
-        for (uint32_t x = 0; x < region.width; ++x) {
-            size_t src_idx = (static_cast<size_t>(region.y + y) * image_width + region.x + x) * channels;
-            size_t dst_idx = (static_cast<size_t>(y) * region.width + x) * channels;
-            
-            for (int c = 0; c < channels; ++c) {
-                tile[dst_idx + c] = image_data[src_idx + c];
-            }
-        }
+        const size_t src_idx = (static_cast<size_t>(region.y + y) * image_width + region.x) * channels;
+        const size_t dst_idx = static_cast<size_t>(y) * region.width * channels;
+        std::memcpy(
+            tile.data() + dst_idx,
+            image_data + src_idx,
+            static_cast<size_t>(region.width) * channels * sizeof(float)
+        );
     }
     
     return tile;
@@ -150,11 +239,32 @@ auto TileProcessor::blend_tile(const float* tile_data, float* output_data,
     uint32_t out_w = region.width * scale_factor;
     uint32_t out_h = region.height * scale_factor;
     int scaled_overlap = overlap * scale_factor;
+
+    if (scaled_overlap <= 0) {
+        for (uint32_t y = 0; y < out_h; ++y) {
+            size_t dst_idx = (static_cast<size_t>(out_y + y) * output_width + out_x) * channels;
+            size_t src_idx = static_cast<size_t>(y) * out_w * channels;
+            const size_t row_size = static_cast<size_t>(out_w) * channels;
+            for (size_t i = 0; i < row_size; ++i) {
+                output_data[dst_idx + i] += tile_data[src_idx + i];
+            }
+        }
+        return;
+    }
+
+    std::vector<float> x_weight(out_w);
+    std::vector<float> y_weight(out_h);
+    for (uint32_t x = 0; x < out_w; ++x) {
+        x_weight[x] = compute_blend_weight(static_cast<int>(x), static_cast<int>(out_w), scaled_overlap);
+    }
+    for (uint32_t y = 0; y < out_h; ++y) {
+        y_weight[y] = compute_blend_weight(static_cast<int>(y), static_cast<int>(out_h), scaled_overlap);
+    }
     
     for (uint32_t y = 0; y < out_h; ++y) {
+        const float yw = y_weight[y];
         for (uint32_t x = 0; x < out_w; ++x) {
-            float weight = compute_blend_weight(x, out_w, scaled_overlap) *
-                          compute_blend_weight(y, out_h, scaled_overlap);
+            float weight = x_weight[x] * yw;
             
             size_t dst_idx = (static_cast<size_t>(out_y + y) * output_width + out_x + x) * channels;
             size_t src_idx = (static_cast<size_t>(y) * out_w + x) * channels;
