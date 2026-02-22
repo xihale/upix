@@ -398,6 +398,7 @@ int main(int argc, char* argv[]) {
                 
                 size_t success_count = 0;
                 if (use_gpu && tasks.size() > 1) {
+                    constexpr size_t kSaveWorkers = 2;
                     constexpr size_t kPreparedQueueLimit = 3;
                     constexpr size_t kProcessedQueueLimit = 2;
                     std::deque<PreparedTask> prepared_queue;
@@ -408,6 +409,7 @@ int main(int argc, char* argv[]) {
                     std::condition_variable processed_cv;
                     bool prepare_done = false;
                     bool process_done = false;
+                    std::atomic<size_t> save_success_count{0};
 
                     std::thread prepare_thread([&]() {
                         for (const auto& task : tasks) {
@@ -419,9 +421,7 @@ int main(int argc, char* argv[]) {
                             prepared_cv.wait(lock, [&]() {
                                 return prepared_queue.size() < kPreparedQueueLimit;
                             });
-                            {
-                                prepared_queue.emplace_back(std::move(prepared.value()));
-                            }
+                            prepared_queue.emplace_back(std::move(prepared.value()));
                             lock.unlock();
                             prepared_cv.notify_one();
                         }
@@ -468,31 +468,38 @@ int main(int argc, char* argv[]) {
                         processed_cv.notify_all();
                     });
 
-                    std::thread save_thread([&]() {
-                        while (true) {
-                            std::optional<ProcessedTask> processed;
-                            {
-                                std::unique_lock<std::mutex> lock(processed_mutex);
-                                processed_cv.wait(lock, [&]() {
-                                    return !processed_queue.empty() || process_done;
-                                });
-                                if (processed_queue.empty() && process_done) {
-                                    break;
+                    std::vector<std::thread> save_threads;
+                    save_threads.reserve(kSaveWorkers);
+                    for (size_t i = 0; i < kSaveWorkers; ++i) {
+                        save_threads.emplace_back([&]() {
+                            while (true) {
+                                std::optional<ProcessedTask> processed;
+                                {
+                                    std::unique_lock<std::mutex> lock(processed_mutex);
+                                    processed_cv.wait(lock, [&]() {
+                                        return !processed_queue.empty() || process_done;
+                                    });
+                                    if (processed_queue.empty() && process_done) {
+                                        break;
+                                    }
+                                    processed = std::move(processed_queue.front());
+                                    processed_queue.pop_front();
                                 }
-                                processed = std::move(processed_queue.front());
-                                processed_queue.pop_front();
-                            }
-                            processed_cv.notify_one();
+                                processed_cv.notify_one();
 
-                            if (save_processed_task(std::move(processed.value()))) {
-                                success_count++;
+                                if (save_processed_task(std::move(processed.value()))) {
+                                    save_success_count.fetch_add(1);
+                                }
                             }
-                        }
-                    });
+                        });
+                    }
 
                     prepare_thread.join();
                     process_thread.join();
-                    save_thread.join();
+                    for (auto& save_thread : save_threads) {
+                        save_thread.join();
+                    }
+                    success_count = save_success_count.load();
                 } else {
                     for (const auto& task : tasks) {
                         if (process_one(task.first, task.second, *engine)) {
