@@ -5,6 +5,8 @@
 #include <thread>
 #include <chrono>
 #include <csignal>
+#include <future>
+#include <mutex>
 
 #include "qrcodegen.hpp"
 
@@ -20,12 +22,14 @@
 #include "core/distributed/coordinator.hpp"
 #include "core/distributed/worker.hpp"
 #include "core/distributed/protocol.hpp"
+#include "core/engine_pool.hpp"
 #include "utils/network.hpp"
 #include <fstream>
 #include <cstring>
 #include <algorithm>
 #include <iomanip>
 #include <sstream>
+#include <cctype>
 
 namespace fs = std::filesystem;
 
@@ -95,6 +99,9 @@ int main(int argc, char* argv[]) {
         bool auto_tile = false;
         int min_tile = 64;
         int max_tile = 512;
+        int batch_size = 1;
+        int jobs = 1;
+        bool use_gpu = false;  // for directory mode with --jobs > 1
 
         for (int i = 2; i < argc; ++i) {
             std::string arg = argv[i];
@@ -104,9 +111,13 @@ int main(int argc, char* argv[]) {
             else if (arg == "--models" && i + 1 < argc) models_dir = argv[++i];
             else if (arg == "--tile-size" && i + 1 < argc) tile_size = std::stoi(argv[++i]);
             else if (arg == "--tile-overlap" && i + 1 < argc) tile_overlap = std::stoi(argv[++i]);
+            else if (arg == "--batch-size" && i + 1 < argc) batch_size = std::stoi(argv[++i]);
             else if (arg == "--auto-tile") auto_tile = true;
             else if (arg == "--min-tile" && i + 1 < argc) min_tile = std::stoi(argv[++i]);
             else if (arg == "--max-tile" && i + 1 < argc) max_tile = std::stoi(argv[++i]);
+            else if (arg == "--jobs" && i + 1 < argc) jobs = std::stoi(argv[++i]);
+            else if (arg == "-j" && i + 1 < argc) jobs = std::stoi(argv[++i]);
+            else if (arg == "--gpu") use_gpu = true;
             else if (arg == "--config" && i + 1 < argc) config_file = argv[++i];
         }
 
@@ -115,6 +126,288 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
+        // Check if input is a directory for batch processing
+        bool is_dir = fs::is_directory(input_path);
+        LOG_INFO("Debug", "Input path: " + input_path + " is_dir: " + std::to_string(is_dir));
+        if (is_dir) {
+            // Validate output path
+            if (output_path.empty()) {
+                LOG_ERROR("CLI", "Output path required when input is a directory");
+                return 1;
+            }
+            if (fs::exists(output_path) && !fs::is_directory(output_path)) {
+                LOG_ERROR("CLI", "Output path must be a directory when input is a directory");
+                return 1;
+            }
+            fs::create_directories(output_path);
+            
+            // Gather image files recursively
+            std::vector<std::string> extensions = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"};
+            std::vector<std::pair<std::string, std::string>> tasks;
+            for (auto& p : fs::recursive_directory_iterator(input_path)) {
+                if (!p.is_regular_file()) continue;
+                std::string ext = p.path().extension().string();
+                std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                bool is_img = false;
+                for (const auto& e : extensions) {
+                    if (ext == e) { is_img = true; break; }
+                }
+                if (!is_img) continue;
+                std::string rel = fs::relative(p.path(), input_path).string();
+                std::string out_file = fs::path(output_path) / rel;
+                tasks.emplace_back(p.path().string(), out_file);
+            }
+            if (tasks.empty()) {
+                LOG_WARNING("CLI", "No image files found in input directory");
+                return 0;
+            }
+            LOG_INFO("CLI", "Found " + std::to_string(tasks.size()) + " images to process");
+            
+            // Model selection
+            crossscale::ModelManager manager(fs::current_path() / "models");
+            auto models_opt = manager.scan_models();
+            if (!models_opt.has_value() || models_opt->empty()) {
+                LOG_ERROR("Engine", "No models found in " + models_dir);
+                return 1;
+            }
+            auto& models = models_opt.value();
+            
+            const crossscale::ModelInfo* selected_model = nullptr;
+            if (model_name.empty()) {
+                selected_model = &models[0];
+                LOG_INFO("Engine", "No model specified, using first available: " + selected_model->name);
+            } else {
+                for (const auto& m : models) {
+                    if (m.name == model_name) {
+                        selected_model = &m;
+                        break;
+                    }
+                }
+                if (!selected_model) {
+                    LOG_ERROR("Engine", "Model not found: " + model_name);
+                    LOG_ERROR("Engine", "Available models:");
+                    for (const auto& m : models) {
+                        LOG_ERROR("Engine", "  - " + m.name + " (" + std::to_string(m.scale_factor) + "x)");
+                    }
+                    return 1;
+                }
+            }
+            
+            std::string param_path = selected_model->param_path.string();
+            std::string bin_path = selected_model->bin_path.string();
+            std::string model_name_used = selected_model->name;
+            size_t model_total_size = selected_model->total_size;
+            LOG_INFO("Engine", "Using model: " + model_name_used + " (" + std::to_string(selected_model->scale_factor) + "x)");
+            
+            // Load configuration if specified
+            crossscale::ProcessingConfig config;
+            if (!config_file.empty()) {
+                auto cfg_result = crossscale::ProcessingConfig::load(config_file);
+                if (cfg_result.has_value()) {
+                    config = cfg_result.value();
+                    LOG_INFO("Config", "Loaded config from " + config_file);
+                } else {
+                    LOG_WARNING("Config", "Failed to load config: " + cfg_result.error());
+                }
+            }
+            
+            // Override with CLI arguments
+            config.tile_size = tile_size;
+            config.tile_overlap = tile_overlap;
+            config.batch_size = batch_size;
+            config.auto_tile_size = auto_tile;
+            config.min_tile_size = min_tile;
+            config.max_tile_size = max_tile;
+            
+            // Validate configuration
+            auto errors = config.validate();
+            if (!errors.empty()) {
+                LOG_ERROR("Config", "Configuration errors:");
+                for (const auto& err : errors) {
+                    LOG_ERROR("Config", "  - " + err);
+                }
+                return 1;
+            }
+            
+
+
+            auto process_one = [&](const std::string& in_path, const std::string& out_path, crossscale::Engine& eng) -> bool {
+                LOG_INFO("Engine", "Processing image: " + in_path);
+                
+                auto img_res = crossscale::Image::load(in_path);
+                if (!img_res.has_value()) {
+                    LOG_ERROR("Task", "Failed to load image: " + in_path);
+                    return false;
+                }
+                auto& image = img_res.value();
+                
+                std::vector<float> input_float;
+                input_float.reserve(static_cast<size_t>(image.width()) * image.height() * image.channels());
+                for (size_t i = 0; i < static_cast<size_t>(image.width()) * image.height() * image.channels(); ++i) {
+                    input_float.push_back(image.data()[i] / 255.0f);
+                }
+                
+                crossscale::ProcessingConfig local_config = config;
+                
+                if (auto_tile || local_config.auto_tile_size) {
+                    LOG_INFO("Task", "Auto-tile for " + in_path);
+                    crossscale::TileSizeOptimizer optimizer;
+                    crossscale::ModelConstraints mc;
+                    mc.model_name = model_name_used;
+                    mc.scale_factor = eng.get_scale_factor();
+                    mc.input_channels = image.channels();
+                    mc.model_size_mb = static_cast<float>(model_total_size) / (1024 * 1024);
+                    mc.min_tile_size = local_config.min_tile_size;
+                    mc.max_tile_size = local_config.max_tile_size;
+                    
+                    local_config.tile_size = optimizer.find_optimal_tile_size(
+                        eng, mc, local_config,
+                        image.width(), image.height()
+                    );
+                    local_config.auto_tile_size = true;
+                    LOG_INFO("Task", "Optimal tile size: " + std::to_string(local_config.tile_size));
+                }
+                
+                crossscale::TileConfig tile_config;
+                tile_config.tile_size = local_config.tile_size;
+                tile_config.overlap = local_config.tile_overlap;
+                tile_config.batch_size = local_config.batch_size;
+                
+                int out_width = image.width() * eng.get_scale_factor();
+                int out_height = image.height() * eng.get_scale_factor();
+                int out_size = out_width * out_height * image.channels();
+                std::vector<float> output_float(out_size, 0.0f);
+                
+                crossscale::TileProcessor processor;
+                std::atomic<bool> cancel_flag{false};
+                auto result = processor.process_image(
+                    input_float.data(), output_float.data(),
+                    image.width(), image.height(), image.channels(),
+                    eng, tile_config,
+                    [&](const crossscale::ProcessingProgress& prog) {
+                        if (prog.total_tiles > 0 && (prog.completed_tiles % 10 == 0 || prog.completed_tiles == prog.total_tiles)) {
+                            float pct = prog.percentage();
+                            LOG_INFO("Engine", "Progress: " + std::to_string(prog.completed_tiles) + "/" + std::to_string(prog.total_tiles) + " tiles (" + std::to_string(pct) + "%)");
+                        }
+                    },
+                    cancel_flag
+                );
+                
+                if (!result.has_value()) {
+                    LOG_ERROR("Task", "Processing failed: " + result.error().message);
+                    return false;
+                }
+                
+                crossscale::Image output_image(out_width, out_height, image.channels());
+                for (size_t i = 0; i < output_float.size(); ++i) {
+                    float val = output_float[i] * 255.0f;
+                    val = std::clamp(val, 0.0f, 255.0f);
+                    output_image.data()[i] = static_cast<uint8_t>(val);
+                }
+                
+                std::filesystem::path out_path_obj(out_path);
+                std::filesystem::create_directories(out_path_obj.parent_path());
+                
+                auto save_res = output_image.save(out_path);
+                if (!save_res.has_value()) {
+                    LOG_ERROR("Task", "Failed to save output: " + save_res.error().message);
+                    return false;
+                }
+                
+                LOG_INFO("Task", "Completed: " + out_path);
+                return true;
+            };
+            
+            if (jobs <= 1) {
+
+                auto engine = crossscale::create_ncnn_engine();
+                auto init_result = engine->initialize(crossscale::DeviceType::CPU);
+                if (!init_result.has_value()) {
+                    LOG_ERROR("Engine", "Failed to initialize engine on CPU");
+                    return 1;
+                }
+                LOG_INFO("Engine", "Engine initialized on CPU");
+                
+                // Load model once
+                auto load_result = engine->load_model(param_path, bin_path);
+                if (!load_result.has_value()) {
+                    LOG_ERROR("Engine", "Failed to load model: " + load_result.error().message);
+                    return 1;
+                }
+                LOG_INFO("Engine", "Model loaded successfully");
+                
+                int scale = engine->get_scale_factor();
+                LOG_INFO("Engine", "Scale factor: " + std::to_string(scale) + "x");
+                
+                size_t success_count = 0;
+                for (const auto& task : tasks) {
+                    if (process_one(task.first, task.second, *engine)) {
+                        success_count++;
+                    }
+                }
+                
+                LOG_INFO("CLI", "Processing summary: " + std::to_string(success_count) + "/" + std::to_string(tasks.size()) + " succeeded");
+                return success_count == tasks.size() ? 0 : 1;
+            } else {
+                if (use_gpu) {
+                    // GPU mode: use a single shared engine sequentially on the current thread
+                    auto shared_engine = crossscale::create_ncnn_engine();
+                    auto init_result = shared_engine->initialize(); // Try GPU first, fallback to CPU
+                    if (!init_result.has_value()) {
+                        LOG_ERROR("Engine", "Failed to initialize GPU engine");
+                        return 1;
+                    }
+                    auto load_result = shared_engine->load_model(param_path, bin_path);
+                    if (!load_result.has_value()) {
+                        LOG_ERROR("Engine", "Failed to load model into GPU engine: " + load_result.error().message);
+                        return 1;
+                    }
+                    LOG_INFO("Engine", "GPU engine ready, processing sequentially");
+                    int scale = shared_engine->get_scale_factor();
+                    LOG_INFO("Engine", "Scale factor: " + std::to_string(scale) + "x");
+
+                    size_t success_count = 0;
+                    for (const auto& task : tasks) {
+                        if (process_one(task.first, task.second, *shared_engine)) {
+                            success_count++;
+                        }
+                    }
+                    LOG_INFO("CLI", "Processing summary: " + std::to_string(success_count) + "/" + std::to_string(tasks.size()) + " succeeded");
+                    return success_count == tasks.size() ? 0 : 1;
+                } else {
+                    // CPU EnginePool
+                    crossscale::EnginePool pool(static_cast<size_t>(jobs), param_path, bin_path, crossscale::DeviceType::CPU);
+                    LOG_INFO("Engine", "Created engine pool with " + std::to_string(jobs) + " CPU engines");
+
+                    std::vector<std::future<bool>> futures;
+                    futures.reserve(tasks.size());
+
+                    for (const auto& task : tasks) {
+                        futures.emplace_back(std::async(std::launch::async, [&, task]() -> bool {
+                            crossscale::Engine* eng = pool.acquire();
+                            bool ok = false;
+                            try {
+                                ok = process_one(task.first, task.second, *eng);
+                            } catch (...) {
+                                ok = false;
+                            }
+                            pool.release(eng);
+                            return ok;
+                        }));
+                    }
+
+                    size_t success_count = 0;
+                    for (auto& fut : futures) {
+                        if (fut.get()) success_count++;
+                    }
+
+                    LOG_INFO("CLI", "Processing summary: " + std::to_string(success_count) + "/" + std::to_string(tasks.size()) + " succeeded");
+                    return success_count == tasks.size() ? 0 : 1;
+                }
+            }
+        }
+        
+        // Single file processing continues...
         LOG_INFO("Engine", "Loading image: " + input_path);
 
         auto image_result = crossscale::Image::load(input_path);
@@ -128,18 +421,11 @@ int main(int argc, char* argv[]) {
                  std::to_string(image.height()) + " (" + std::to_string(image.channels()) + " channels)");
 
         auto engine = crossscale::create_ncnn_engine();
-        auto init_result = engine->initialize(crossscale::DeviceType::GPU_VULKAN);
+        auto init_result = engine->initialize();  // Try GPU first, fallback to CPU
         if (!init_result.has_value()) {
-            LOG_WARNING("Engine", "GPU not available, falling back to CPU");
-            auto cpu_result = engine->initialize(crossscale::DeviceType::CPU);
-            if (!cpu_result.has_value()) {
-                LOG_ERROR("Engine", "Failed to initialize engine");
-                return 1;
-            }
+            LOG_ERROR("Engine", "Failed to initialize engine");
+            return 1;
         }
-
-        LOG_INFO("Engine", std::string("Engine initialized on ") +
-                 (engine->current_device() == crossscale::DeviceType::GPU_VULKAN ? "GPU" : "CPU"));
 
         // 将图像数据转换为 float (0-1 范围)
         std::vector<float> input_float;
@@ -252,6 +538,7 @@ int main(int argc, char* argv[]) {
         crossscale::TileConfig tile_config;
         tile_config.tile_size = config.tile_size;
         tile_config.overlap = config.tile_overlap;
+        tile_config.batch_size = batch_size;
 
         int out_width = image.width() * scale;
         int out_height = image.height() * scale;
@@ -261,7 +548,8 @@ int main(int argc, char* argv[]) {
         std::vector<float> output_float(out_size, 0.0f);
 
         LOG_INFO("Engine", "Processing image with tile_size=" + std::to_string(config.tile_size) +
-                " overlap=" + std::to_string(config.tile_overlap) + "...");
+                " overlap=" + std::to_string(config.tile_overlap) +
+                " batch_size=" + std::to_string(batch_size) + "...");
 
         std::atomic<bool> cancel_flag{false};
 

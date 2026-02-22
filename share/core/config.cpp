@@ -72,6 +72,7 @@ auto ProcessingConfig::load(const std::filesystem::path& path)
     ProcessingConfig config;
     config.tile_size = extract_json_int(json, "tile_size", 256);
     config.tile_overlap = extract_json_int(json, "tile_overlap", 16);
+    config.batch_size = extract_json_int(json, "batch_size", 1);
     config.auto_tile_size = extract_json_bool(json, "auto_tile_size", false);
     config.min_tile_size = extract_json_int(json, "min_tile_size", 64);
     config.max_tile_size = extract_json_int(json, "max_tile_size", 512);
@@ -96,6 +97,7 @@ auto ProcessingConfig::save(const std::filesystem::path& path) const
     file << "{\n"
          << "  \"tile_size\": " << tile_size << ",\n"
          << "  \"tile_overlap\": " << tile_overlap << ",\n"
+         << "  \"batch_size\": " << batch_size << ",\n"
          << "  \"auto_tile_size\": " << (auto_tile_size ? "true" : "false") << ",\n"
          << "  \"min_tile_size\": " << min_tile_size << ",\n"
          << "  \"max_tile_size\": " << max_tile_size << ",\n"
@@ -119,6 +121,10 @@ auto ProcessingConfig::validate() const -> std::vector<std::string> {
 
     if (tile_overlap < 0 || tile_overlap >= tile_size / 2) {
         errors.push_back("tile_overlap must be between 0 and tile_size/2");
+    }
+
+    if (batch_size < 1 || batch_size > 64) {
+        errors.push_back("batch_size must be between 1 and 64");
     }
 
     if (min_tile_size > max_tile_size) {

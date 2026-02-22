@@ -4,6 +4,11 @@ set_languages("c++23")
 
 add_rules("mode.debug", "mode.release")
 
+if is_mode("debug") then
+    add_cxflags("-fsanitize=address")
+    add_ldflags("-fsanitize=address")
+end
+
 if is_mode("release") then
     set_optimize("fastest")
     set_strip("all")

@@ -10,6 +10,7 @@ target("crossscale-core")
         "core/tile_processor.cpp",
         "core/model_manager.cpp",
         "core/config.cpp",
+        "core/engine_pool.cpp",
         "core/distributed/scheduler.cpp",
         "core/distributed/worker.cpp",
         "core/distributed/coordinator.cpp",

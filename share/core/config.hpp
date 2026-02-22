@@ -18,6 +18,9 @@ struct ProcessingConfig {
     int min_tile_size = 64;
     int max_tile_size = 512;
 
+    // 批处理设置
+    int batch_size = 1;
+
     // 内存约束 (MB)
     size_t max_memory_mb = 0;  // 0 = 自动检测
 

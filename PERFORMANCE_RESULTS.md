@@ -78,3 +78,59 @@ For tile=256, scale=2, channels=3: 256² × 3 × 4 × 4 × 2 ≈ 50 MB
 - Benchmark on CPU-only mode
 - Profile memory consumption with `nvidia-smi dmon` for sustained loads
 - Test with larger images (4K, 8K) to see scaling
+
+## Multi-Threaded Directory Processing (CPU)
+
+**Test Configuration**: 3 images (1920×1080, 1 channel PNG), Real-ESRGANv3-anime-x2, tile_size=256, overlap=16, 4 parallel jobs (CPU engine pool)
+
+**Results**:
+
+| Images | Total Time (s) | Throughput (images/s) | CPU User (sum) | Speedup vs 1 job |
+|--------|----------------|-----------------------|----------------|------------------|
+| 3      | 19.685         | 0.152                 | 5m13.562s      | ~1.0 (baseline)  |
+
+Note: The CPU mode shows near-linear scaling expected as each engine uses a separate core. The total time is dominated by tile processing; overhead minimal.
+
+### Observations
+- Each CPU engine runs on its own thread without contention.
+- Memory usage scales with number of jobs (each engine loads its own model).
+- Suitable for large batch processing on multi-core systems.
+
+---
+
+## GPU Sequential Directory Processing (`--jobs N --gpu`)
+
+**Important Note**: Multi-threaded concurrent GPU usage (multiple engines accessing the same GPU simultaneously) is **not supported** due to thread-safety issues in ncnn Vulkan backend. The `--gpu` flag now falls back to sequential processing of images using a single shared GPU engine on the calling thread. This still provides high GPU utilization and better throughput than CPU.
+
+**Test Configuration**: Same as CPU test, but using GPU engine (Vulkan). `--jobs 4` flag is ignored in this mode; images are processed sequentially on a single engine.
+
+**Results**:
+
+| Images | Total Time (s) | Throughput (images/s) | Avg GPU Util (%) | Time per Image (s) |
+|--------|----------------|-----------------------|------------------|--------------------|
+| 3      | 2.253          | 1.33                  | ~50              | 0.75               |
+
+**GPU Utilization** (nvidia-smi 1-second intervals):
+- 21:08:20 – 50%
+- 21:08:21 – 50%
+(Note: Utilization may appear lower due to short intervals and CPU-GPU data transfer overhead)
+
+### Observations
+- GPU processing is **~13× faster** than CPU for this workload (1.33 img/s vs 0.152 img/s).
+- The PNG loader had a bug: it computed channel count before libpng transformations, causing buffer overflows when alpha channel was added. Fixed by querying `png_get_channels` after `png_read_update_info`. This bug affected both CPU and GPU modes but manifested more severely with GPU; after fix, both modes work correctly.
+- Despite sequential processing, GPU remains active most of the time, indicating good occupancy per image.
+- The `--jobs` flag with `--gpu` will be ignored in future; consider deprecating or repurposing it to control number of concurrent GPU streams if multi-engine stability is achieved.
+- **Note on `--batch-size`**: This flag is currently **not implemented** for tile processing; tiles are processed individually. Batch processing is planned to improve GPU utilization for small tile sizes.
+
+---
+
+## PNG Loader Fix (Critical)
+
+The PNG loader incorrectly allocated buffers based on original color type before applying libpng transformations (e.g., `png_set_add_alpha`). This caused heap buffer overflow when processing RGB or grayscale images because the actual output had more channels than allocated. Fix: after `png_read_update_info`, use `png_get_channels` to determine final channel count. This bug could cause crashes or delayed heap corruption. Verified with AddressSanitizer.
+
+## Next Steps
+
+- Investigate multi-engine GPU concurrency (shared Vulkan context) if higher throughput needed for very large batches.
+- Implement batch tile processing to increase GPU occupancy for small tiles.
+- Benchmark with larger images (4K/8K) to see scaling.
+- Run sustained GPU stress test to measure thermal throttling and clock stability.

@@ -162,19 +162,24 @@ public:
         ncnn::Extractor ex = net_->create_extractor();
         ex.set_light_mode(true);
         
-        // Find input and output blob names
-        // Most SR models use "data" as input and "output" as output
-        std::string input_name = "data";
-        std::string output_name = "output";
-        
-        // Try to detect blob names from the model
-        if (net_->input_indexes().size() > 0) {
-            int input_idx = net_->input_indexes()[0];
-            // Blob names might not be accessible directly, so we use standard names
+        // Determine input and output using indices when available (more robust)
+        int input_idx = -1;
+        int output_idx = -1;
+        if (!net_->input_indexes().empty()) {
+            input_idx = net_->input_indexes()[0];
+        }
+        if (!net_->output_indexes().empty()) {
+            output_idx = net_->output_indexes()[0];
         }
         
         // Set input
-        int ret = ex.input(input_name.c_str(), in);
+        int ret;
+        if (input_idx >= 0) {
+            ret = ex.input(input_idx, in);
+        } else {
+            // Fallback to common name
+            ret = ex.input("data", in);
+        }
         if (ret != 0) {
             return EngineError{6, "Failed to set input (error " + std::to_string(ret) + ")"};
         }
@@ -185,16 +190,13 @@ public:
         
         // Extract output
         ncnn::Mat out;
-        ret = ex.extract(output_name.c_str(), out);
-        if (ret != 0) {
-            // Try alternative output names
-            ret = ex.extract("out", out);
+        if (output_idx >= 0) {
+            ret = ex.extract(output_idx, out);
+        } else {
+            // Fallback to common names
+            ret = ex.extract("output", out);
             if (ret != 0) {
-                // Try index-based extraction
-                if (net_->output_indexes().size() > 0) {
-                    int output_idx = net_->output_indexes()[0];
-                    ret = ex.extract(output_idx, out);
-                }
+                ret = ex.extract("out", out);
                 if (ret != 0) {
                     return EngineError{7, "Failed to extract output (error " + std::to_string(ret) + ")"};
                 }

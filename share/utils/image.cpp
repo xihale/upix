@@ -76,37 +76,29 @@ namespace {
         int height = png_get_image_height(png, info);
         png_byte color_type = png_get_color_type(png, info);
         png_byte bit_depth = png_get_bit_depth(png, info);
-        
-        int channels;
-        if (color_type == PNG_COLOR_TYPE_GRAY) {
-            channels = 1;
-        } else if (color_type == PNG_COLOR_TYPE_GRAY_ALPHA) {
-            channels = 2;
-        } else if (color_type == PNG_COLOR_TYPE_RGB) {
-            channels = 3;
-        } else if (color_type == PNG_COLOR_TYPE_RGBA) {
-            channels = 4;
-        } else {
-            png_destroy_read_struct(&png, &info, nullptr);
-            return ImageError{5, "Unsupported PNG color type"};
-        }
-        
+
         if (bit_depth == 16) {
             png_set_strip_16(png);
         } else if (bit_depth < 8) {
             png_set_packing(png);
         }
-        
+
         if (color_type == PNG_COLOR_TYPE_PALETTE) {
             png_set_palette_to_rgb(png);
         }
-        
+
         if (color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_RGB) {
             png_set_add_alpha(png, 0xFF, PNG_FILLER_AFTER);
         }
-        
+
         png_read_update_info(png, info);
-        
+
+        int channels = png_get_channels(png, info);
+        if (channels <= 0) {
+            png_destroy_read_struct(&png, &info, nullptr);
+            return ImageError{5, "Invalid channel count from PNG"};
+        }
+
         Image img(width, height, channels);
         std::vector<png_bytep> row_pointers(height);
         for (int y = 0; y < height; ++y) {
