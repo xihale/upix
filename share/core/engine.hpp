@@ -63,15 +63,29 @@ public:
         if (inputs.size() != outputs.size()) {
             return EngineError{100, "Batch input/output size mismatch"};
         }
+        // Vulkan backend is not safe for concurrent submits from multiple async tasks.
+        // Keep GPU batch execution serialized and let upper layers pipeline CPU prep.
+        if (current_device() == DeviceType::GPU_VULKAN) {
+            for (size_t i = 0; i < inputs.size(); ++i) {
+                auto result = process(inputs[i], outputs[i], width, height, channels, cancel_flag);
+                if (!result) return result;
+            }
+            return {};
+        }
+
         if (inputs.size() == 1) {
             return process(inputs[0], outputs[0], width, height, channels, cancel_flag);
         }
 
         std::vector<std::future<expected<void, EngineError>>> futures;
+        futures.reserve(inputs.size());
         for (size_t i = 0; i < inputs.size(); ++i) {
-            futures.push_back(std::async(std::launch::async, [this, i, &inputs, &outputs, width, height, channels, &cancel_flag]() {
-                return process(inputs[i], outputs[i], width, height, channels, cancel_flag);
-            }));
+            futures.push_back(std::async(
+                std::launch::async,
+                [this, i, &inputs, &outputs, width, height, channels, &cancel_flag]() {
+                    return process(inputs[i], outputs[i], width, height, channels, cancel_flag);
+                }
+            ));
         }
 
         for (auto& fut : futures) {
