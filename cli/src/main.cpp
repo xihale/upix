@@ -410,8 +410,12 @@ int main(int argc, char* argv[]) {
                     if (unsigned int hw_threads = std::thread::hardware_concurrency(); hw_threads > 0) {
                         kSaveWorkers = std::clamp(static_cast<size_t>(hw_threads / 8), static_cast<size_t>(2), static_cast<size_t>(4));
                     }
-                    constexpr size_t kPreparedQueueLimit = 3;
-                    constexpr size_t kProcessedQueueLimit = 2;
+                    size_t kPrepareWorkers = 2;
+                    if (unsigned int hw_threads = std::thread::hardware_concurrency(); hw_threads > 0) {
+                        kPrepareWorkers = std::clamp(static_cast<size_t>(hw_threads / 4), static_cast<size_t>(2), static_cast<size_t>(6));
+                    }
+                    const size_t prepared_queue_limit = std::max(static_cast<size_t>(4), kPrepareWorkers * 2);
+                    const size_t processed_queue_limit = std::max(static_cast<size_t>(2), kSaveWorkers * 2);
                     std::deque<PreparedTask> prepared_queue;
                     std::deque<ProcessedTask> processed_queue;
                     std::mutex prepared_mutex;
@@ -421,27 +425,38 @@ int main(int argc, char* argv[]) {
                     bool prepare_done = false;
                     bool process_done = false;
                     std::atomic<size_t> save_success_count{0};
+                    std::atomic<size_t> active_preparers{kPrepareWorkers};
 
-                    std::thread prepare_thread([&]() {
-                        for (const auto& task : tasks) {
-                            auto prepared = prepare_task(task.first, task.second);
-                            if (!prepared.has_value()) {
-                                continue;
+                    std::atomic<size_t> next_prepare{0};
+                    std::vector<std::thread> prepare_threads;
+                    prepare_threads.reserve(kPrepareWorkers);
+                    for (size_t i = 0; i < kPrepareWorkers; ++i) {
+                        prepare_threads.emplace_back([&]() {
+                            while (true) {
+                                size_t idx = next_prepare.fetch_add(1);
+                                if (idx >= tasks.size()) {
+                                    break;
+                                }
+                                const auto& task = tasks[idx];
+                                auto prepared = prepare_task(task.first, task.second);
+                                if (!prepared.has_value()) {
+                                    continue;
+                                }
+                                std::unique_lock<std::mutex> lock(prepared_mutex);
+                                prepared_cv.wait(lock, [&]() {
+                                    return prepared_queue.size() < prepared_queue_limit;
+                                });
+                                prepared_queue.emplace_back(std::move(prepared.value()));
+                                lock.unlock();
+                                prepared_cv.notify_one();
                             }
-                            std::unique_lock<std::mutex> lock(prepared_mutex);
-                            prepared_cv.wait(lock, [&]() {
-                                return prepared_queue.size() < kPreparedQueueLimit;
-                            });
-                            prepared_queue.emplace_back(std::move(prepared.value()));
-                            lock.unlock();
-                            prepared_cv.notify_one();
-                        }
-                        {
-                            std::lock_guard<std::mutex> lock(prepared_mutex);
-                            prepare_done = true;
-                        }
-                        prepared_cv.notify_all();
-                    });
+                            if (active_preparers.fetch_sub(1) == 1) {
+                                std::lock_guard<std::mutex> lock(prepared_mutex);
+                                prepare_done = true;
+                                prepared_cv.notify_all();
+                            }
+                        });
+                    }
 
                     std::thread process_thread([&]() {
                         while (true) {
@@ -466,7 +481,7 @@ int main(int argc, char* argv[]) {
                             {
                                 std::unique_lock<std::mutex> lock(processed_mutex);
                                 processed_cv.wait(lock, [&]() {
-                                    return processed_queue.size() < kProcessedQueueLimit;
+                                    return processed_queue.size() < processed_queue_limit;
                                 });
                                 processed_queue.emplace_back(std::move(processed.value()));
                             }
@@ -505,7 +520,9 @@ int main(int argc, char* argv[]) {
                         });
                     }
 
-                    prepare_thread.join();
+                    for (auto& prepare_thread : prepare_threads) {
+                        prepare_thread.join();
+                    }
                     process_thread.join();
                     for (auto& save_thread : save_threads) {
                         save_thread.join();
