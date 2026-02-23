@@ -1002,6 +1002,7 @@ public:
         progress.completed_tiles = 0;
 
         const size_t tiles_per_cmd = static_cast<size_t>(std::max(1, config.batch_size));
+        const size_t tiles_per_submit = tiles_per_cmd * 4;
         const size_t in_total_full = static_cast<size_t>(input_width) * input_height * channels;
         if (in_total_full > static_cast<size_t>(std::numeric_limits<int>::max())) {
             return EngineError{205, "Input image too large for Vulkan tile pipeline"};
@@ -1167,7 +1168,7 @@ public:
                     return EngineError{3, "Processing cancelled"};
                 }
 
-                size_t batch_end = std::min(regions.size(), region_idx + tiles_per_cmd);
+                size_t batch_end = std::min(regions.size(), region_idx + tiles_per_submit);
                 ncnn::VkCompute cmd(vkdev_);
                 for (size_t i = region_idx; i < batch_end; ++i) {
                     const auto& region = regions[i];
@@ -1449,6 +1450,7 @@ public:
         progress.completed_tiles = 0;
 
         const size_t tiles_per_cmd = static_cast<size_t>(std::max(1, config.batch_size));
+        const size_t tiles_per_submit = tiles_per_cmd * 4;
         const size_t in_total_full = static_cast<size_t>(input_width) * input_height * channels;
         if (in_total_full > static_cast<size_t>(std::numeric_limits<int>::max())) {
             return EngineError{205, "Input image too large for Vulkan tile pipeline"};
@@ -1615,7 +1617,7 @@ public:
                     return EngineError{3, "Processing cancelled"};
                 }
 
-                size_t batch_end = std::min(regions.size(), region_idx + tiles_per_cmd);
+                size_t batch_end = std::min(regions.size(), region_idx + tiles_per_submit);
                 ncnn::VkCompute cmd(vkdev_);
                 for (size_t i = region_idx; i < batch_end; ++i) {
                     const auto& region = regions[i];
