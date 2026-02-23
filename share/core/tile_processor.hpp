@@ -70,7 +70,6 @@ public:
     ) -> void;
 
 private:
-    auto compute_blend_weight(int pos, int size, int overlap) -> float;
 };
 
 } // namespace crossscale

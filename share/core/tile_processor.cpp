@@ -399,18 +399,4 @@ auto TileProcessor::blend_tile(const float* tile_data, float* output_data,
     }
 }
 
-auto TileProcessor::compute_blend_weight(int pos, int size, int overlap) -> float {
-    if (overlap <= 0) return 1.0f;
-    
-    float w = 1.0f;
-    
-    if (pos < overlap) {
-        w = static_cast<float>(pos + 1) / overlap;
-    } else if (pos >= size - overlap) {
-        w = static_cast<float>(size - pos) / overlap;
-    }
-    
-    return w * w;
-}
-
 } // namespace crossscale
