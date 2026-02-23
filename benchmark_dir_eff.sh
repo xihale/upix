@@ -194,9 +194,15 @@ for _ in $(seq 1 20); do
     sleep 0.05
 done
 
-completed_images="$(rg -c "Completed:" "${RUN_LOG_FILE}" || true)"
+completed_images="$(rg -o 'Processing summary: [0-9]+/' "${RUN_LOG_FILE}" | tail -n 1 | rg -o '[0-9]+' | head -n 1 || true)"
 if [[ -z "${completed_images}" ]]; then
-    completed_images=0
+    completed_images="$(rg -c "Completed:" "${RUN_LOG_FILE}" || true)"
+fi
+if [[ -z "${completed_images}" || "${completed_images}" == "0" ]]; then
+    completed_images="$(find "${OUTPUT_DIR}" -type f | rg -i '\.(png|jpe?g|webp|bmp|tiff?)$' | wc -l | tr -d ' ')"
+fi
+if (( completed_images > image_count )); then
+    completed_images="${image_count}"
 fi
 throughput_completed="$(awk "BEGIN {if (${duration_sec} > 0) print ${completed_images} / ${duration_sec}; else print 0}")"
 

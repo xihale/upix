@@ -285,7 +285,9 @@ int main(int argc, char* argv[]) {
             };
 
             auto infer_prepared_task = [&](PreparedTask&& prepared, crossscale::Engine& eng) -> std::optional<ProcessedTask> {
-                LOG_INFO("Engine", "Processing image: " + prepared.in_path);
+                if (enable_progress_log) {
+                    LOG_INFO("Engine", "Processing image: " + prepared.in_path);
+                }
 
                 crossscale::ProcessingConfig local_config = config;
                 
@@ -358,7 +360,9 @@ int main(int argc, char* argv[]) {
                     return false;
                 }
 
-                LOG_INFO("Task", "Completed: " + processed.out_path);
+                if (enable_progress_log) {
+                    LOG_INFO("Task", "Completed: " + processed.out_path);
+                }
                 return true;
             };
 
@@ -511,7 +515,9 @@ int main(int argc, char* argv[]) {
                             queue_items.reserve(prepared_batch.size());
 
                             for (auto& prepared : prepared_batch) {
-                                LOG_INFO("Engine", "Processing image: " + prepared.in_path);
+                                if (enable_progress_log) {
+                                    LOG_INFO("Engine", "Processing image: " + prepared.in_path);
+                                }
 
                                 crossscale::TileConfig tile_config;
                                 tile_config.tile_size = config.tile_size;
