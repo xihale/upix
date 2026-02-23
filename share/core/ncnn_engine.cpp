@@ -468,6 +468,50 @@ void main()
 }
 )";
 
+constexpr const char* kNormalizeQuantizeByWeightComp = R"(
+#version 450
+
+#if NCNN_int8_storage
+#extension GL_EXT_shader_8bit_storage: require
+#endif
+
+layout (binding = 0) readonly buffer src_blob { float src_data[]; };
+layout (binding = 1) readonly buffer weight_blob { float weight_data[]; };
+#if NCNN_int8_storage
+layout (binding = 2) writeonly buffer dst_blob { uint8_t dst_data[]; };
+#else
+layout (binding = 2) writeonly buffer dst_blob { float dst_data[]; };
+#endif
+
+layout (push_constant) uniform parameter
+{
+    int total;
+    int channels;
+} p;
+
+void main()
+{
+    const int gx = int(gl_GlobalInvocationID.x);
+    if (gx >= p.total)
+        return;
+
+    const int pixel_idx = gx / p.channels;
+    const float w = weight_data[pixel_idx];
+    float normalized = 0.0;
+    if (w > 1e-6) {
+        normalized = src_data[gx] / w;
+    }
+
+    const float v = clamp(normalized * 255.0, 0.0, 255.0);
+#if NCNN_int8_storage
+    const uint v32 = clamp(uint(floor(v + 0.5)), 0u, 255u);
+    dst_data[gx] = uint8_t(v32);
+#else
+    dst_data[gx] = v;
+#endif
+}
+)";
+
 } // namespace
 #endif
 
@@ -1890,48 +1934,36 @@ public:
             }
         }
 
-        if (quantize_hwc_to_u8_ == nullptr) {
-            return EngineError{212, "Vulkan quantize pipeline not available"};
+        if (normalize_quantize_output_pipeline_ == nullptr) {
+            return EngineError{212, "Vulkan normalize+quantize pipeline not available"};
         }
 
         {
             ncnn::VkCompute cmd(vkdev_);
-            std::vector<ncnn::VkMat> normalize_bindings(2);
-            normalize_bindings[0] = out_gpu_hwc;
-            normalize_bindings[1] = out_gpu_weight;
-
-            std::vector<ncnn::vk_constant_type> normalize_constants(2);
-            normalize_constants[0].i = static_cast<int>(out_total);
-            normalize_constants[1].i = channels;
-
-            ncnn::VkMat normalize_dispatcher;
-            normalize_dispatcher.w = static_cast<int>(out_total);
-            normalize_dispatcher.h = 1;
-            normalize_dispatcher.c = 1;
-            cmd.record_pipeline(normalize_output_pipeline_.get(), normalize_bindings, normalize_constants,
-                                normalize_dispatcher);
-
             ncnn::VkMat out_gpu_u8;
             out_gpu_u8.create(static_cast<int>(out_total), 1u, blob_vkallocator);
 
-            std::vector<ncnn::VkMat> quant_bindings(2);
-            quant_bindings[0] = out_gpu_hwc;
-            quant_bindings[1] = out_gpu_u8;
+            std::vector<ncnn::VkMat> normalize_quantize_bindings(3);
+            normalize_quantize_bindings[0] = out_gpu_hwc;
+            normalize_quantize_bindings[1] = out_gpu_weight;
+            normalize_quantize_bindings[2] = out_gpu_u8;
 
-            std::vector<ncnn::vk_constant_type> quant_constants(1);
-            quant_constants[0].i = static_cast<int>(out_total);
+            std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
+            normalize_quantize_constants[0].i = static_cast<int>(out_total);
+            normalize_quantize_constants[1].i = channels;
 
-            ncnn::VkMat quant_dispatcher;
-            quant_dispatcher.w = static_cast<int>(out_total);
-            quant_dispatcher.h = 1;
-            quant_dispatcher.c = 1;
-            cmd.record_pipeline(quantize_hwc_to_u8_.get(), quant_bindings, quant_constants, quant_dispatcher);
+            ncnn::VkMat normalize_quantize_dispatcher;
+            normalize_quantize_dispatcher.w = static_cast<int>(out_total);
+            normalize_quantize_dispatcher.h = 1;
+            normalize_quantize_dispatcher.c = 1;
+            cmd.record_pipeline(normalize_quantize_output_pipeline_.get(), normalize_quantize_bindings,
+                                normalize_quantize_constants, normalize_quantize_dispatcher);
 
             ncnn::Mat out_cpu(static_cast<int>(out_total), output_data, 1u);
             cmd.record_clone(out_gpu_u8, out_cpu, opt);
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
-                return EngineError{214, "Vulkan normalize/quantize/download failed (error " + std::to_string(submit_ret) + ")"};
+                return EngineError{214, "Vulkan normalize+quantize/download failed (error " + std::to_string(submit_ret) + ")"};
             }
         }
 
@@ -1982,6 +2014,7 @@ public:
         clear_output_pipeline_.reset();
         blend_tile_pipeline_.reset();
         normalize_output_pipeline_.reset();
+        normalize_quantize_output_pipeline_.reset();
         gpu_crop_pipeline_ready_ = false;
         gpu_crop_u8_pipeline_ready_ = false;
         gpu_tile_pipeline_ready_ = false;
@@ -2191,6 +2224,7 @@ private:
         static std::vector<uint32_t> spirv_clear;
         static std::vector<uint32_t> spirv_blend;
         static std::vector<uint32_t> spirv_normalize;
+        static std::vector<uint32_t> spirv_normalize_quantize;
         static std::mutex spirv_mutex;
 
         {
@@ -2210,6 +2244,12 @@ private:
             if (spirv_normalize.empty()) {
                 if (ncnn::compile_spirv_module(kNormalizeByWeightComp, net_->opt, spirv_normalize) != 0) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan normalize shader");
+                    return false;
+                }
+            }
+            if (spirv_normalize_quantize.empty()) {
+                if (ncnn::compile_spirv_module(kNormalizeQuantizeByWeightComp, net_->opt, spirv_normalize_quantize) != 0) {
+                    LOG_WARNING("Engine", "Failed to compile Vulkan normalize+quantize shader");
                     return false;
                 }
             }
@@ -2236,6 +2276,17 @@ private:
         normalize_output_pipeline_->set_optimal_local_size_xyz(256, 1, 1);
         if (normalize_output_pipeline_->create(spirv_normalize.data(), spirv_normalize.size() * 4, {}) != 0) {
             LOG_WARNING("Engine", "Failed to create Vulkan normalize pipeline");
+            normalize_output_pipeline_.reset();
+            blend_tile_pipeline_.reset();
+            clear_output_pipeline_.reset();
+            return false;
+        }
+
+        normalize_quantize_output_pipeline_ = std::make_unique<ncnn::Pipeline>(vkdev_);
+        normalize_quantize_output_pipeline_->set_optimal_local_size_xyz(256, 1, 1);
+        if (normalize_quantize_output_pipeline_->create(spirv_normalize_quantize.data(), spirv_normalize_quantize.size() * 4, {}) != 0) {
+            LOG_WARNING("Engine", "Failed to create Vulkan normalize+quantize pipeline");
+            normalize_quantize_output_pipeline_.reset();
             normalize_output_pipeline_.reset();
             blend_tile_pipeline_.reset();
             clear_output_pipeline_.reset();
@@ -2724,6 +2775,7 @@ private:
     std::unique_ptr<ncnn::Pipeline> clear_output_pipeline_;
     std::unique_ptr<ncnn::Pipeline> blend_tile_pipeline_;
     std::unique_ptr<ncnn::Pipeline> normalize_output_pipeline_;
+    std::unique_ptr<ncnn::Pipeline> normalize_quantize_output_pipeline_;
     bool gpu_layout_pipeline_ready_ = false;
     bool gpu_layout_u8_pipeline_ready_ = false;
     bool gpu_crop_pipeline_ready_ = false;
