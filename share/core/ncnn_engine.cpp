@@ -1083,6 +1083,7 @@ public:
 
         struct QueueTaskState {
             const GPUTileTaskU8* task = nullptr;
+            size_t task_index = 0;
             int out_width = 0;
             int out_height = 0;
             size_t out_total = 0;
@@ -1094,8 +1095,42 @@ public:
             ProcessingProgress progress;
         };
 
+        auto compute_pad = [&](const GPUTileTaskU8& task, const TileRegion& region) -> TilePadInfo {
+            TilePadInfo info;
+            const int rx = static_cast<int>(region.x);
+            const int ry = static_cast<int>(region.y);
+            const int rw = static_cast<int>(region.width);
+            const int rh = static_cast<int>(region.height);
+            const int pad = std::max(0, task.config.overlap);
+            const int align = (scale_factor_ == 2 || scale_factor_ == 4) ? 2 : 4;
+
+            info.pad_left = (rx == 0) ? pad : 0;
+            info.pad_top = (ry == 0) ? pad : 0;
+            info.pad_right = (rx + rw >= task.input_width) ? pad : 0;
+            info.pad_bottom = (ry + rh >= task.input_height) ? pad : 0;
+
+            int tile_in_w = rw + info.pad_left + info.pad_right;
+            int tile_in_h = rh + info.pad_top + info.pad_bottom;
+            if (align > 1) {
+                const int aligned_w = (tile_in_w + align - 1) / align * align;
+                const int aligned_h = (tile_in_h + align - 1) / align * align;
+                info.pad_right += aligned_w - tile_in_w;
+                info.pad_bottom += aligned_h - tile_in_h;
+                tile_in_w = aligned_w;
+                tile_in_h = aligned_h;
+            }
+
+            info.in_w = tile_in_w;
+            info.in_h = tile_in_h;
+            info.tile_x = rx - info.pad_left;
+            info.tile_y = ry - info.pad_top;
+            return info;
+        };
+
         std::vector<QueueTaskState> states;
         states.reserve(tasks.size());
+        std::vector<std::vector<TilePadInfo>> task_pad_infos;
+        task_pad_infos.reserve(tasks.size());
         size_t submit_budget = 0;
         size_t total_tiles = 0;
         size_t total_tile_pixels = 0;
@@ -1110,6 +1145,7 @@ public:
 
             QueueTaskState state;
             state.task = &task;
+            state.task_index = states.size();
             state.out_width = task.input_width * scale_factor_;
             state.out_height = task.input_height * scale_factor_;
             state.out_total = static_cast<size_t>(state.out_width) * state.out_height * task.channels;
@@ -1128,9 +1164,13 @@ public:
             submit_budget += static_cast<size_t>(std::max(1, task.config.batch_size));
             total_tiles += task.regions->size();
             max_task_channels = std::max(max_task_channels, static_cast<size_t>(task.channels));
+            std::vector<TilePadInfo> pad_infos;
+            pad_infos.reserve(task.regions->size());
             for (const auto& region : *task.regions) {
                 total_tile_pixels += static_cast<size_t>(region.width) * static_cast<size_t>(region.height);
+                pad_infos.emplace_back(compute_pad(task, region));
             }
+            task_pad_infos.emplace_back(std::move(pad_infos));
         }
         if (total_tiles == 0) {
             return {};
@@ -1228,38 +1268,6 @@ public:
                 tile_input_pool[inflight.first].emplace_back(std::move(inflight.second));
             }
             inflight_inputs.clear();
-        };
-
-        auto compute_pad = [&](const GPUTileTaskU8& task, const TileRegion& region) -> TilePadInfo {
-            TilePadInfo info;
-            const int rx = static_cast<int>(region.x);
-            const int ry = static_cast<int>(region.y);
-            const int rw = static_cast<int>(region.width);
-            const int rh = static_cast<int>(region.height);
-            const int pad = std::max(0, task.config.overlap);
-            const int align = (scale_factor_ == 2 || scale_factor_ == 4) ? 2 : 4;
-
-            info.pad_left = (rx == 0) ? pad : 0;
-            info.pad_top = (ry == 0) ? pad : 0;
-            info.pad_right = (rx + rw >= task.input_width) ? pad : 0;
-            info.pad_bottom = (ry + rh >= task.input_height) ? pad : 0;
-
-            int tile_in_w = rw + info.pad_left + info.pad_right;
-            int tile_in_h = rh + info.pad_top + info.pad_bottom;
-            if (align > 1) {
-                const int aligned_w = (tile_in_w + align - 1) / align * align;
-                const int aligned_h = (tile_in_h + align - 1) / align * align;
-                info.pad_right += aligned_w - tile_in_w;
-                info.pad_bottom += aligned_h - tile_in_h;
-                tile_in_w = aligned_w;
-                tile_in_h = aligned_h;
-            }
-
-            info.in_w = tile_in_w;
-            info.in_h = tile_in_h;
-            info.tile_x = rx - info.pad_left;
-            info.tile_y = ry - info.pad_top;
-            return info;
         };
 
         std::vector<ncnn::VkMat> blend_bindings(3);
@@ -1412,7 +1420,7 @@ public:
                        state.region_cursor < regions.size() &&
                        scheduled_tiles < submit_budget) {
                     const auto& region = regions[state.region_cursor];
-                    const TilePadInfo pad_info = compute_pad(*state.task, region);
+                    const auto& pad_info = task_pad_infos[state.task_index][state.region_cursor];
                     const int tile_in_w = pad_info.in_w;
                     const int tile_in_h = pad_info.in_h;
                     const size_t tile_in_total = static_cast<size_t>(tile_in_w) * tile_in_h * state.task->channels;
