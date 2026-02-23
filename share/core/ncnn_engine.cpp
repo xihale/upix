@@ -1079,6 +1079,7 @@ public:
                                        const TileRegion& region,
                                        const TilePadInfo& pad_info,
                                        ncnn::VkMat& in_gpu_chw,
+                                       std::vector<ncnn::VkMat>& batch_keepalive,
                                        int tile_in_w,
                                        int tile_in_h) -> expected<void, EngineError> {
             const int tile_out_full_w = tile_in_w * scale_factor_;
@@ -1154,6 +1155,8 @@ public:
             blend_dispatcher.h = tile_out_inner_h;
             blend_dispatcher.c = channels;
             cmd.record_pipeline(blend_tile_pipeline_.get(), blend_bindings, blend_constants, blend_dispatcher);
+            batch_keepalive.emplace_back(in_gpu_chw);
+            batch_keepalive.emplace_back(out_gpu);
 
             return {};
         };
@@ -1170,6 +1173,8 @@ public:
 
                 size_t batch_end = std::min(regions.size(), region_idx + tiles_per_submit);
                 ncnn::VkCompute cmd(vkdev_);
+                std::vector<ncnn::VkMat> batch_keepalive;
+                batch_keepalive.reserve((batch_end - region_idx) * 2);
                 for (size_t i = region_idx; i < batch_end; ++i) {
                     const auto& region = regions[i];
                     const TilePadInfo pad_info = compute_pad(region);
@@ -1203,7 +1208,8 @@ public:
                     pre_dispatcher.c = channels;
                     cmd.record_pipeline(preproc_hwc_crop_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
 
-                    auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, tile_in_w, tile_in_h);
+                    auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, batch_keepalive,
+                                                             tile_in_w, tile_in_h);
                     if (!record_result.has_value()) {
                         return record_result.error();
                     }
@@ -1288,6 +1294,8 @@ public:
                 }
 
                 ncnn::VkCompute cmd(vkdev_);
+                std::vector<ncnn::VkMat> batch_keepalive;
+                batch_keepalive.reserve(current_batch->input_buffers.size() * 3);
                 for (size_t idx = 0; idx < current_batch->input_buffers.size(); ++idx) {
                     const size_t region_idx = current_batch->begin + idx;
                     const auto& region = regions[region_idx];
@@ -1323,10 +1331,12 @@ public:
                     pre_dispatcher.h = tile_in_h;
                     pre_dispatcher.c = channels;
                     cmd.record_pipeline(preproc_hwc_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
-                    auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, tile_in_w, tile_in_h);
+                    auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, batch_keepalive,
+                                                             tile_in_w, tile_in_h);
                     if (!record_result.has_value()) {
                         return record_result.error();
                     }
+                    batch_keepalive.emplace_back(in_gpu_hwc);
                 }
 
                 int submit_ret = cmd.submit_and_wait();
@@ -1527,6 +1537,7 @@ public:
                                        const TileRegion& region,
                                        const TilePadInfo& pad_info,
                                        ncnn::VkMat& in_gpu_chw,
+                                       std::vector<ncnn::VkMat>& batch_keepalive,
                                        int tile_in_w,
                                        int tile_in_h) -> expected<void, EngineError> {
             const int tile_out_full_w = tile_in_w * scale_factor_;
@@ -1602,6 +1613,8 @@ public:
             blend_dispatcher.h = tile_out_inner_h;
             blend_dispatcher.c = channels;
             cmd.record_pipeline(blend_tile_pipeline_.get(), blend_bindings, blend_constants, blend_dispatcher);
+            batch_keepalive.emplace_back(in_gpu_chw);
+            batch_keepalive.emplace_back(out_gpu);
 
             return {};
         };
@@ -1619,6 +1632,8 @@ public:
 
                 size_t batch_end = std::min(regions.size(), region_idx + tiles_per_submit);
                 ncnn::VkCompute cmd(vkdev_);
+                std::vector<ncnn::VkMat> batch_keepalive;
+                batch_keepalive.reserve((batch_end - region_idx) * 2);
                 for (size_t i = region_idx; i < batch_end; ++i) {
                     const auto& region = regions[i];
                     const TilePadInfo pad_info = compute_pad(region);
@@ -1652,7 +1667,8 @@ public:
                     pre_dispatcher.c = channels;
                     cmd.record_pipeline(preproc_hwc_crop_u8_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
 
-                    auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, tile_in_w, tile_in_h);
+                    auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, batch_keepalive,
+                                                             tile_in_w, tile_in_h);
                     if (!record_result.has_value()) {
                         return record_result.error();
                     }
@@ -1737,6 +1753,8 @@ public:
                 }
 
                 ncnn::VkCompute cmd(vkdev_);
+                std::vector<ncnn::VkMat> batch_keepalive;
+                batch_keepalive.reserve(current_batch->input_buffers.size() * 3);
                 for (size_t idx = 0; idx < current_batch->input_buffers.size(); ++idx) {
                     const size_t region_idx = current_batch->begin + idx;
                     const auto& region = regions[region_idx];
@@ -1772,10 +1790,12 @@ public:
                     pre_dispatcher.h = tile_in_h;
                     pre_dispatcher.c = channels;
                     cmd.record_pipeline(preproc_hwc_u8_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
-                    auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, tile_in_w, tile_in_h);
+                    auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, batch_keepalive,
+                                                             tile_in_w, tile_in_h);
                     if (!record_result.has_value()) {
                         return record_result.error();
                     }
+                    batch_keepalive.emplace_back(in_gpu_hwc);
                 }
 
                 int submit_ret = cmd.submit_and_wait();
