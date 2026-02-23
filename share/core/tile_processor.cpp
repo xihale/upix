@@ -16,27 +16,45 @@ namespace crossscale {
 auto TileProcessor::compute_tile_layout(int image_width, int image_height,
                                          const TileConfig& config) -> std::vector<TileRegion> {
     std::vector<TileRegion> regions;
-    
-    int tile_size = config.tile_size;
-    int overlap = config.overlap;
-    int step = tile_size - overlap;
-    
-    int tiles_x = std::max(1, (image_width - overlap + step - 1) / step);
-    int tiles_y = std::max(1, (image_height - overlap + step - 1) / step);
-    
-    for (int ty = 0; ty < tiles_y; ++ty) {
-        for (int tx = 0; tx < tiles_x; ++tx) {
+
+    const int tile_size = std::max(1, config.tile_size);
+    const int overlap = std::clamp(config.overlap, 0, tile_size - 1);
+    const int step = std::max(1, tile_size - overlap);
+
+    std::vector<int> starts_x;
+    std::vector<int> starts_y;
+    for (int x = 0; x < image_width; x += step) {
+        starts_x.push_back(x);
+        if (x + tile_size >= image_width) {
+            break;
+        }
+    }
+    for (int y = 0; y < image_height; y += step) {
+        starts_y.push_back(y);
+        if (y + tile_size >= image_height) {
+            break;
+        }
+    }
+    if (starts_x.empty()) {
+        starts_x.push_back(0);
+    }
+    if (starts_y.empty()) {
+        starts_y.push_back(0);
+    }
+
+    regions.reserve(starts_x.size() * starts_y.size());
+    for (int y : starts_y) {
+        for (int x : starts_x) {
             TileRegion region;
-            region.x = static_cast<uint32_t>(std::min(tx * step, std::max(0, image_width - tile_size)));
-            region.y = static_cast<uint32_t>(std::min(ty * step, std::max(0, image_height - tile_size)));
-            region.width = static_cast<uint32_t>(std::min(tile_size, image_width - static_cast<int>(region.x)));
-            region.height = static_cast<uint32_t>(std::min(tile_size, image_height - static_cast<int>(region.y)));
+            region.x = static_cast<uint32_t>(x);
+            region.y = static_cast<uint32_t>(y);
+            region.width = static_cast<uint32_t>(std::min(tile_size, image_width - x));
+            region.height = static_cast<uint32_t>(std::min(tile_size, image_height - y));
             region.overlap = static_cast<uint32_t>(overlap);
-            
             regions.push_back(region);
         }
     }
-    
+
     return regions;
 }
 
@@ -83,6 +101,7 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
     int output_height = input_height * scale_factor;
     
     std::vector<float> output_buffer(output_width * output_height * channels, 0.0f);
+    std::vector<float> weight_buffer(static_cast<size_t>(output_width) * output_height, 0.0f);
     
     int effective_batch_size = std::max(1, config.batch_size);
     if (effective_batch_size == 1 && engine.current_device() == DeviceType::GPU_VULKAN) {
@@ -169,6 +188,7 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
             for (size_t idx = 0; idx < completed_batch.output_buffers.size(); ++idx) {
                 const auto& region = regions[completed_batch.begin + idx];
                 blend_tile(completed_batch.output_buffers[idx].data(), output_buffer.data(),
+                           weight_buffer.data(),
                            output_width, output_height, channels, region, scale_factor, config.overlap);
                 progress.completed_tiles++;
                 progress.current_tile_x = region.x;
@@ -231,7 +251,19 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
     if (cancel_flag) {
         return TileProcessorError{2, "Processing cancelled"};
     }
-    
+
+    const size_t pixel_count = static_cast<size_t>(output_width) * output_height;
+    for (size_t p = 0; p < pixel_count; ++p) {
+        const float w = weight_buffer[p];
+        if (w <= 1e-6f) {
+            continue;
+        }
+        const size_t base = p * static_cast<size_t>(channels);
+        for (int c = 0; c < channels; ++c) {
+            output_buffer[base + static_cast<size_t>(c)] /= w;
+        }
+    }
+
     std::copy(output_buffer.begin(), output_buffer.end(), output_data);
     return {};
 }
@@ -331,6 +363,7 @@ auto TileProcessor::extract_tile(const float* image_data, int image_width, int i
 }
 
 auto TileProcessor::blend_tile(const float* tile_data, float* output_data,
+                                float* weight_data,
                                 int output_width, int output_height, int channels,
                                 const TileRegion& region, int scale_factor,
                                 int overlap) -> void {
@@ -347,11 +380,14 @@ auto TileProcessor::blend_tile(const float* tile_data, float* output_data,
 
     if (scaled_overlap <= 0) {
         for (uint32_t y = 0; y < out_h; ++y) {
-            size_t dst_idx = (static_cast<size_t>(out_y + y) * output_width + out_x) * channels;
-            size_t src_idx = static_cast<size_t>(y) * out_w * channels;
-            const size_t row_size = static_cast<size_t>(out_w) * channels;
-            for (size_t i = 0; i < row_size; ++i) {
-                output_data[dst_idx + i] += tile_data[src_idx + i];
+            for (uint32_t x = 0; x < out_w; ++x) {
+                const size_t dst_pixel = static_cast<size_t>(out_y + y) * output_width + out_x + x;
+                const size_t src_idx = (static_cast<size_t>(y) * out_w + x) * channels;
+                const size_t dst_idx = dst_pixel * static_cast<size_t>(channels);
+                for (int c = 0; c < channels; ++c) {
+                    output_data[dst_idx + static_cast<size_t>(c)] += tile_data[src_idx + static_cast<size_t>(c)];
+                }
+                weight_data[dst_pixel] += 1.0f;
             }
         }
         return;
@@ -395,6 +431,8 @@ auto TileProcessor::blend_tile(const float* tile_data, float* output_data,
             for (int c = 0; c < channels; ++c) {
                 output_data[dst_idx + c] += tile_data[src_idx + c] * weight;
             }
+            const size_t dst_pixel = static_cast<size_t>(out_y + y) * output_width + out_x + x;
+            weight_data[dst_pixel] += weight;
         }
     }
 }

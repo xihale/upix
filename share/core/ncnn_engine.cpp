@@ -377,6 +377,7 @@ constexpr const char* kBlendTileComp = R"(
 
 layout (binding = 0) readonly buffer src_blob { sfp src_data[]; };
 layout (binding = 1) buffer dst_blob { float dst_data[]; };
+layout (binding = 2) buffer weight_blob { float weight_data[]; };
 
 layout (push_constant) uniform parameter
 {
@@ -397,13 +398,14 @@ layout (push_constant) uniform parameter
 
 float blend_weight(int pos, int size, int overlap, int tile_start, int full_size)
 {
-    if (overlap <= 0)
+    const int effective_overlap = min(overlap, size);
+    if (effective_overlap <= 0)
         return 1.0;
     float w = 1.0;
-    if (tile_start > 0 && pos < overlap)
-        w = float(pos + 1) / float(overlap);
-    else if (tile_start + size < full_size && pos >= size - overlap)
-        w = float(size - pos) / float(overlap);
+    if (tile_start > 0 && pos < effective_overlap)
+        w = float(pos + 1) / float(effective_overlap);
+    else if (tile_start + size < full_size && pos >= size - effective_overlap)
+        w = float(size - pos) / float(effective_overlap);
     return w * w;
 }
 
@@ -433,6 +435,36 @@ void main()
     const int src_idx = gz * p.src_cstep + src_y * p.src_w + src_x;
     const int dst_idx = (out_py * p.out_w + out_px) * p.channels + gz;
     dst_data[dst_idx] += float(src_data[src_idx]) * w;
+    if (gz == 0) {
+        const int weight_idx = out_py * p.out_w + out_px;
+        weight_data[weight_idx] += w;
+    }
+}
+)";
+
+constexpr const char* kNormalizeByWeightComp = R"(
+#version 450
+
+layout (binding = 0) buffer dst_blob { float dst_data[]; };
+layout (binding = 1) readonly buffer weight_blob { float weight_data[]; };
+
+layout (push_constant) uniform parameter
+{
+    int total;
+    int channels;
+} p;
+
+void main()
+{
+    const int gx = int(gl_GlobalInvocationID.x);
+    if (gx >= p.total)
+        return;
+
+    const int pixel_idx = gx / p.channels;
+    const float w = weight_data[pixel_idx];
+    if (w > 1e-6) {
+        dst_data[gx] = dst_data[gx] / w;
+    }
 }
 )";
 
@@ -954,6 +986,7 @@ public:
         const int out_width = input_width * scale_factor_;
         const int out_height = input_height * scale_factor_;
         const size_t out_total = static_cast<size_t>(out_width) * out_height * channels;
+        const size_t out_total_pixels = static_cast<size_t>(out_width) * out_height;
         if (out_total > static_cast<size_t>(std::numeric_limits<int>::max())) {
             return EngineError{203, "Output image too large for Vulkan tile pipeline"};
         }
@@ -979,18 +1012,26 @@ public:
 
         ncnn::VkMat out_gpu_hwc;
         out_gpu_hwc.create(static_cast<int>(out_total), 4u, blob_vkallocator);
+        ncnn::VkMat out_gpu_weight;
+        out_gpu_weight.create(static_cast<int>(out_total_pixels), 4u, blob_vkallocator);
 
         {
             ncnn::VkCompute cmd(vkdev_);
-            std::vector<ncnn::VkMat> bindings(1);
-            bindings[0] = out_gpu_hwc;
             std::vector<ncnn::vk_constant_type> constants(1);
+            ncnn::VkMat dispatcher{};
             constants[0].i = static_cast<int>(out_total);
-            ncnn::VkMat dispatcher;
             dispatcher.w = static_cast<int>(out_total);
             dispatcher.h = 1;
             dispatcher.c = 1;
-            cmd.record_pipeline(clear_output_pipeline_.get(), bindings, constants, dispatcher);
+            std::vector<ncnn::VkMat> output_bindings(1);
+            output_bindings[0] = out_gpu_hwc;
+            cmd.record_pipeline(clear_output_pipeline_.get(), output_bindings, constants, dispatcher);
+
+            constants[0].i = static_cast<int>(out_total_pixels);
+            dispatcher.w = static_cast<int>(out_total_pixels);
+            std::vector<ncnn::VkMat> weight_bindings(1);
+            weight_bindings[0] = out_gpu_weight;
+            cmd.record_pipeline(clear_output_pipeline_.get(), weight_bindings, constants, dispatcher);
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
                 return EngineError{204, "Vulkan clear failed (error " + std::to_string(submit_ret) + ")"};
@@ -1131,9 +1172,10 @@ public:
                 return EngineError{209, "Vulkan output shape mismatch"};
             }
 
-            std::vector<ncnn::VkMat> blend_bindings(2);
+            std::vector<ncnn::VkMat> blend_bindings(3);
             blend_bindings[0] = out_gpu;
             blend_bindings[1] = out_gpu_hwc;
+            blend_bindings[2] = out_gpu_weight;
 
             std::vector<ncnn::vk_constant_type> blend_constants(13);
             blend_constants[0].i = tile_out_inner_w;
@@ -1364,11 +1406,26 @@ public:
 
         {
             ncnn::VkCompute cmd(vkdev_);
+            std::vector<ncnn::VkMat> normalize_bindings(2);
+            normalize_bindings[0] = out_gpu_hwc;
+            normalize_bindings[1] = out_gpu_weight;
+
+            std::vector<ncnn::vk_constant_type> normalize_constants(2);
+            normalize_constants[0].i = static_cast<int>(out_total);
+            normalize_constants[1].i = channels;
+
+            ncnn::VkMat normalize_dispatcher;
+            normalize_dispatcher.w = static_cast<int>(out_total);
+            normalize_dispatcher.h = 1;
+            normalize_dispatcher.c = 1;
+            cmd.record_pipeline(normalize_output_pipeline_.get(), normalize_bindings, normalize_constants,
+                                normalize_dispatcher);
+
             ncnn::Mat out_cpu(static_cast<int>(out_total), output_data, 4u);
             cmd.record_clone(out_gpu_hwc, out_cpu, opt);
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
-                return EngineError{211, "Vulkan download failed (error " + std::to_string(submit_ret) + ")"};
+                return EngineError{214, "Vulkan normalize/download failed (error " + std::to_string(submit_ret) + ")"};
             }
         }
 
@@ -1412,6 +1469,7 @@ public:
         const int out_width = input_width * scale_factor_;
         const int out_height = input_height * scale_factor_;
         const size_t out_total = static_cast<size_t>(out_width) * out_height * channels;
+        const size_t out_total_pixels = static_cast<size_t>(out_width) * out_height;
         if (out_total > static_cast<size_t>(std::numeric_limits<int>::max())) {
             return EngineError{203, "Output image too large for Vulkan tile pipeline"};
         }
@@ -1437,18 +1495,28 @@ public:
 
         ncnn::VkMat out_gpu_hwc;
         out_gpu_hwc.create(static_cast<int>(out_total), 4u, blob_vkallocator);
+        ncnn::VkMat out_gpu_weight;
+        out_gpu_weight.create(static_cast<int>(out_total_pixels), 4u, blob_vkallocator);
 
         {
             ncnn::VkCompute cmd(vkdev_);
-            std::vector<ncnn::VkMat> bindings(1);
-            bindings[0] = out_gpu_hwc;
             std::vector<ncnn::vk_constant_type> constants(1);
+            ncnn::VkMat dispatcher{};
             constants[0].i = static_cast<int>(out_total);
-            ncnn::VkMat dispatcher;
             dispatcher.w = static_cast<int>(out_total);
             dispatcher.h = 1;
             dispatcher.c = 1;
-            cmd.record_pipeline(clear_output_pipeline_.get(), bindings, constants, dispatcher);
+
+            std::vector<ncnn::VkMat> output_bindings(1);
+            output_bindings[0] = out_gpu_hwc;
+            cmd.record_pipeline(clear_output_pipeline_.get(), output_bindings, constants, dispatcher);
+
+            constants[0].i = static_cast<int>(out_total_pixels);
+            dispatcher.w = static_cast<int>(out_total_pixels);
+            std::vector<ncnn::VkMat> weight_bindings(1);
+            weight_bindings[0] = out_gpu_weight;
+            cmd.record_pipeline(clear_output_pipeline_.get(), weight_bindings, constants, dispatcher);
+
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
                 return EngineError{204, "Vulkan clear failed (error " + std::to_string(submit_ret) + ")"};
@@ -1589,9 +1657,10 @@ public:
                 return EngineError{209, "Vulkan output shape mismatch"};
             }
 
-            std::vector<ncnn::VkMat> blend_bindings(2);
+            std::vector<ncnn::VkMat> blend_bindings(3);
             blend_bindings[0] = out_gpu;
             blend_bindings[1] = out_gpu_hwc;
+            blend_bindings[2] = out_gpu_weight;
 
             std::vector<ncnn::vk_constant_type> blend_constants(13);
             blend_constants[0].i = tile_out_inner_w;
@@ -1827,6 +1896,21 @@ public:
 
         {
             ncnn::VkCompute cmd(vkdev_);
+            std::vector<ncnn::VkMat> normalize_bindings(2);
+            normalize_bindings[0] = out_gpu_hwc;
+            normalize_bindings[1] = out_gpu_weight;
+
+            std::vector<ncnn::vk_constant_type> normalize_constants(2);
+            normalize_constants[0].i = static_cast<int>(out_total);
+            normalize_constants[1].i = channels;
+
+            ncnn::VkMat normalize_dispatcher;
+            normalize_dispatcher.w = static_cast<int>(out_total);
+            normalize_dispatcher.h = 1;
+            normalize_dispatcher.c = 1;
+            cmd.record_pipeline(normalize_output_pipeline_.get(), normalize_bindings, normalize_constants,
+                                normalize_dispatcher);
+
             ncnn::VkMat out_gpu_u8;
             out_gpu_u8.create(static_cast<int>(out_total), 1u, blob_vkallocator);
 
@@ -1847,7 +1931,7 @@ public:
             cmd.record_clone(out_gpu_u8, out_cpu, opt);
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
-                return EngineError{213, "Vulkan u8 download failed (error " + std::to_string(submit_ret) + ")"};
+                return EngineError{214, "Vulkan normalize/quantize/download failed (error " + std::to_string(submit_ret) + ")"};
             }
         }
 
@@ -1897,6 +1981,7 @@ public:
         gpu_layout_u8_pipeline_ready_ = false;
         clear_output_pipeline_.reset();
         blend_tile_pipeline_.reset();
+        normalize_output_pipeline_.reset();
         gpu_crop_pipeline_ready_ = false;
         gpu_crop_u8_pipeline_ready_ = false;
         gpu_tile_pipeline_ready_ = false;
@@ -2105,6 +2190,7 @@ private:
 
         static std::vector<uint32_t> spirv_clear;
         static std::vector<uint32_t> spirv_blend;
+        static std::vector<uint32_t> spirv_normalize;
         static std::mutex spirv_mutex;
 
         {
@@ -2118,6 +2204,12 @@ private:
             if (spirv_blend.empty()) {
                 if (ncnn::compile_spirv_module(kBlendTileComp, net_->opt, spirv_blend) != 0) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan blend shader");
+                    return false;
+                }
+            }
+            if (spirv_normalize.empty()) {
+                if (ncnn::compile_spirv_module(kNormalizeByWeightComp, net_->opt, spirv_normalize) != 0) {
+                    LOG_WARNING("Engine", "Failed to compile Vulkan normalize shader");
                     return false;
                 }
             }
@@ -2135,6 +2227,16 @@ private:
         blend_tile_pipeline_->set_optimal_local_size_xyz(8, 8, 1);
         if (blend_tile_pipeline_->create(spirv_blend.data(), spirv_blend.size() * 4, {}) != 0) {
             LOG_WARNING("Engine", "Failed to create Vulkan tile blend pipeline");
+            blend_tile_pipeline_.reset();
+            clear_output_pipeline_.reset();
+            return false;
+        }
+
+        normalize_output_pipeline_ = std::make_unique<ncnn::Pipeline>(vkdev_);
+        normalize_output_pipeline_->set_optimal_local_size_xyz(256, 1, 1);
+        if (normalize_output_pipeline_->create(spirv_normalize.data(), spirv_normalize.size() * 4, {}) != 0) {
+            LOG_WARNING("Engine", "Failed to create Vulkan normalize pipeline");
+            normalize_output_pipeline_.reset();
             blend_tile_pipeline_.reset();
             clear_output_pipeline_.reset();
             return false;
@@ -2621,6 +2723,7 @@ private:
     std::unique_ptr<ncnn::Pipeline> quantize_hwc_to_u8_;
     std::unique_ptr<ncnn::Pipeline> clear_output_pipeline_;
     std::unique_ptr<ncnn::Pipeline> blend_tile_pipeline_;
+    std::unique_ptr<ncnn::Pipeline> normalize_output_pipeline_;
     bool gpu_layout_pipeline_ready_ = false;
     bool gpu_layout_u8_pipeline_ready_ = false;
     bool gpu_crop_pipeline_ready_ = false;

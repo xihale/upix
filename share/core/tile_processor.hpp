@@ -61,6 +61,7 @@ public:
     auto blend_tile(
         const float* tile_data,
         float* output_data,
+        float* weight_data,
         int output_width,
         int output_height,
         int channels,
