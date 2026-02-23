@@ -30,6 +30,17 @@ struct EngineError {
     std::string message;
 };
 
+struct GPUTileTaskU8 {
+    const uint8_t* input_data = nullptr;
+    uint8_t* output_data = nullptr;
+    int input_width = 0;
+    int input_height = 0;
+    int channels = 0;
+    const std::vector<TileRegion>* regions = nullptr;
+    TileConfig config{};
+    std::function<void(const ProcessingProgress&)> progress_callback{};
+};
+
 class Engine {
 public:
     virtual ~Engine() = default;
@@ -131,6 +142,7 @@ public:
 
     virtual bool supports_gpu_tile_pipeline() const { return false; }
     virtual bool supports_gpu_tile_pipeline_u8() const { return false; }
+    virtual bool supports_gpu_tile_pipeline_u8_queue() const { return false; }
 
     virtual auto process_tiles_gpu(
         const float* input_data,
@@ -176,6 +188,32 @@ public:
         (void)progress_callback;
         (void)cancel_flag;
         return EngineError{201, "GPU u8 tile pipeline not supported"};
+    }
+
+    virtual auto process_tiles_gpu_u8_queue(
+        const std::vector<GPUTileTaskU8>& tasks,
+        const std::atomic<bool>& cancel_flag
+    ) -> expected<void, EngineError> {
+        for (const auto& task : tasks) {
+            if (task.regions == nullptr) {
+                return EngineError{202, "GPU u8 queue task has null regions"};
+            }
+            auto result = process_tiles_gpu_u8(
+                task.input_data,
+                task.output_data,
+                task.input_width,
+                task.input_height,
+                task.channels,
+                *task.regions,
+                task.config,
+                task.progress_callback,
+                cancel_flag
+            );
+            if (!result.has_value()) {
+                return result;
+            }
+        }
+        return {};
     }
 };
 

@@ -266,6 +266,15 @@ int main(int argc, char* argv[]) {
             if (const char* progress_env = std::getenv("CROSSSCALE_PROGRESS")) {
                 enable_progress_log = std::string(progress_env) == "1";
             }
+            size_t gpu_submit_queue = 3;
+            if (const char* queue_env = std::getenv("CROSSSCALE_GPU_SUBMIT_QUEUE")) {
+                try {
+                    gpu_submit_queue = static_cast<size_t>(std::stoul(queue_env));
+                } catch (...) {
+                    gpu_submit_queue = 3;
+                }
+            }
+            gpu_submit_queue = std::clamp(gpu_submit_queue, static_cast<size_t>(1), static_cast<size_t>(8));
 
             struct ProcessedTask {
                 std::string out_path;
@@ -443,8 +452,27 @@ int main(int argc, char* argv[]) {
                     }
 
                     std::thread process_thread([&]() {
+                        crossscale::TileProcessor queue_processor;
+                        const bool use_gpu_submit_queue =
+                            gpu_submit_queue > 1 &&
+                            engine->supports_gpu_tile_pipeline_u8_queue() &&
+                            !(auto_tile || config.auto_tile_size);
+                        if (use_gpu_submit_queue) {
+                            LOG_INFO("Engine", "GPU submit queue enabled, depth=" + std::to_string(gpu_submit_queue));
+                        }
+
+                        auto enqueue_processed = [&](ProcessedTask&& processed) {
+                            std::unique_lock<std::mutex> lock(processed_mutex);
+                            processed_cv.wait(lock, [&]() {
+                                return processed_queue.size() < processed_queue_limit;
+                            });
+                            processed_queue.emplace_back(std::move(processed));
+                            lock.unlock();
+                            processed_cv.notify_one();
+                        };
+
                         while (true) {
-                            std::optional<PreparedTask> prepared;
+                            std::vector<PreparedTask> prepared_batch;
                             {
                                 std::unique_lock<std::mutex> lock(prepared_mutex);
                                 prepared_cv.wait(lock, [&]() {
@@ -453,23 +481,94 @@ int main(int argc, char* argv[]) {
                                 if (prepared_queue.empty() && prepare_done) {
                                     break;
                                 }
-                                prepared = std::move(prepared_queue.front());
+                                prepared_batch.emplace_back(std::move(prepared_queue.front()));
                                 prepared_queue.pop_front();
+                                while (prepared_batch.size() < gpu_submit_queue && !prepared_queue.empty()) {
+                                    prepared_batch.emplace_back(std::move(prepared_queue.front()));
+                                    prepared_queue.pop_front();
+                                }
                             }
-                            prepared_cv.notify_one();
+                            prepared_cv.notify_all();
 
-                            auto processed = infer_prepared_task(std::move(prepared.value()), *engine);
-                            if (!processed.has_value()) {
+                            if (!use_gpu_submit_queue || prepared_batch.size() == 1) {
+                                for (auto& prepared : prepared_batch) {
+                                    auto processed = infer_prepared_task(std::move(prepared), *engine);
+                                    if (!processed.has_value()) {
+                                        continue;
+                                    }
+                                    enqueue_processed(std::move(processed.value()));
+                                }
                                 continue;
                             }
-                            {
-                                std::unique_lock<std::mutex> lock(processed_mutex);
-                                processed_cv.wait(lock, [&]() {
-                                    return processed_queue.size() < processed_queue_limit;
-                                });
-                                processed_queue.emplace_back(std::move(processed.value()));
+
+                            struct QueueBatchItem {
+                                PreparedTask prepared;
+                                ProcessedTask processed;
+                                std::vector<crossscale::TileRegion> regions;
+                                crossscale::TileConfig tile_config;
+                            };
+                            std::vector<QueueBatchItem> queue_items;
+                            queue_items.reserve(prepared_batch.size());
+
+                            for (auto& prepared : prepared_batch) {
+                                LOG_INFO("Engine", "Processing image: " + prepared.in_path);
+
+                                crossscale::TileConfig tile_config;
+                                tile_config.tile_size = config.tile_size;
+                                tile_config.overlap = config.tile_overlap;
+                                tile_config.batch_size = config.batch_size;
+
+                                QueueBatchItem item;
+                                item.prepared = std::move(prepared);
+                                item.tile_config = tile_config;
+                                item.regions = queue_processor.compute_tile_layout(
+                                    item.prepared.width, item.prepared.height, tile_config
+                                );
+                                item.processed.out_path = item.prepared.out_path;
+                                item.processed.out_width = item.prepared.width * engine->get_scale_factor();
+                                item.processed.out_height = item.prepared.height * engine->get_scale_factor();
+                                item.processed.channels = item.prepared.channels;
+                                item.processed.output_image = crossscale::Image(
+                                    item.processed.out_width,
+                                    item.processed.out_height,
+                                    item.processed.channels
+                                );
+                                queue_items.emplace_back(std::move(item));
                             }
-                            processed_cv.notify_one();
+
+                            std::vector<crossscale::GPUTileTaskU8> gpu_tasks;
+                            gpu_tasks.reserve(queue_items.size());
+                            for (auto& item : queue_items) {
+                                gpu_tasks.push_back(crossscale::GPUTileTaskU8{
+                                    .input_data = item.prepared.input_image.data(),
+                                    .output_data = item.processed.output_image.data(),
+                                    .input_width = item.prepared.width,
+                                    .input_height = item.prepared.height,
+                                    .channels = item.prepared.channels,
+                                    .regions = &item.regions,
+                                    .config = item.tile_config,
+                                    .progress_callback = {}
+                                });
+                            }
+
+                            std::atomic<bool> cancel_flag{false};
+                            auto queue_result = engine->process_tiles_gpu_u8_queue(gpu_tasks, cancel_flag);
+                            if (!queue_result.has_value()) {
+                                LOG_WARNING("Engine", "GPU submit queue failed, fallback to single image path: " +
+                                                      queue_result.error().message);
+                                for (auto& item : queue_items) {
+                                    auto processed = infer_prepared_task(std::move(item.prepared), *engine);
+                                    if (!processed.has_value()) {
+                                        continue;
+                                    }
+                                    enqueue_processed(std::move(processed.value()));
+                                }
+                                continue;
+                            }
+
+                            for (auto& item : queue_items) {
+                                enqueue_processed(std::move(item.processed));
+                            }
                         }
                         {
                             std::lock_guard<std::mutex> lock(processed_mutex);

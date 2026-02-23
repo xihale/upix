@@ -1005,6 +1005,431 @@ public:
 #endif
     }
 
+    bool supports_gpu_tile_pipeline_u8_queue() const override {
+#if NCNN_VULKAN
+        return supports_gpu_tile_pipeline_u8() &&
+               gpu_crop_u8_pipeline_ready_ &&
+               normalize_quantize_output_pipeline_ != nullptr;
+#else
+        return false;
+#endif
+    }
+
+    auto process_tiles_gpu_u8_queue(
+        const std::vector<GPUTileTaskU8>& tasks,
+        const std::atomic<bool>& cancel_flag
+    ) -> expected<void, EngineError> override {
+#if NCNN_VULKAN
+        if (tasks.empty()) {
+            return {};
+        }
+        if (!supports_gpu_tile_pipeline_u8_queue()) {
+            return Engine::process_tiles_gpu_u8_queue(tasks, cancel_flag);
+        }
+        if (tasks.size() == 1) {
+            return Engine::process_tiles_gpu_u8_queue(tasks, cancel_flag);
+        }
+        if (cancel_flag) {
+            return EngineError{3, "Processing cancelled"};
+        }
+
+        ncnn::VkAllocator* blob_vkallocator = vkdev_->acquire_blob_allocator();
+        ncnn::VkAllocator* staging_vkallocator = vkdev_->acquire_staging_allocator();
+        struct VkAllocGuard {
+            ncnn::VulkanDevice* dev = nullptr;
+            ncnn::VkAllocator* blob = nullptr;
+            ncnn::VkAllocator* staging = nullptr;
+            ~VkAllocGuard() {
+                if (dev != nullptr) {
+                    if (blob) dev->reclaim_blob_allocator(blob);
+                    if (staging) dev->reclaim_staging_allocator(staging);
+                }
+            }
+        } alloc_guard{vkdev_, blob_vkallocator, staging_vkallocator};
+
+        ncnn::Option opt = net_->opt;
+        opt.blob_vkallocator = blob_vkallocator;
+        opt.workspace_vkallocator = blob_vkallocator;
+        opt.staging_vkallocator = staging_vkallocator;
+
+        struct TilePadInfo {
+            int in_w = 0;
+            int in_h = 0;
+            int pad_left = 0;
+            int pad_top = 0;
+            int pad_right = 0;
+            int pad_bottom = 0;
+            int tile_x = 0;
+            int tile_y = 0;
+        };
+
+        struct QueueTaskState {
+            const GPUTileTaskU8* task = nullptr;
+            int out_width = 0;
+            int out_height = 0;
+            size_t out_total = 0;
+            size_t out_total_pixels = 0;
+            ncnn::VkMat out_gpu_hwc;
+            ncnn::VkMat out_gpu_weight;
+            ncnn::VkMat in_gpu_full;
+            size_t region_cursor = 0;
+            ProcessingProgress progress;
+        };
+
+        std::vector<QueueTaskState> states;
+        states.reserve(tasks.size());
+        size_t submit_budget = 0;
+        for (const auto& task : tasks) {
+            if (task.input_data == nullptr || task.output_data == nullptr || task.regions == nullptr) {
+                return EngineError{205, "GPU queue task has null buffers"};
+            }
+            if (task.channels <= 0 || task.input_width <= 0 || task.input_height <= 0) {
+                return EngineError{202, "Invalid input dimensions"};
+            }
+
+            QueueTaskState state;
+            state.task = &task;
+            state.out_width = task.input_width * scale_factor_;
+            state.out_height = task.input_height * scale_factor_;
+            state.out_total = static_cast<size_t>(state.out_width) * state.out_height * task.channels;
+            state.out_total_pixels = static_cast<size_t>(state.out_width) * state.out_height;
+            if (state.out_total > static_cast<size_t>(std::numeric_limits<int>::max()) ||
+                state.out_total_pixels > static_cast<size_t>(std::numeric_limits<int>::max())) {
+                return EngineError{203, "Output image too large for Vulkan tile pipeline"};
+            }
+
+            state.out_gpu_hwc.create(static_cast<int>(state.out_total), 4u, blob_vkallocator);
+            state.out_gpu_weight.create(static_cast<int>(state.out_total_pixels), 4u, blob_vkallocator);
+            state.progress.total_tiles = static_cast<int>(task.regions->size());
+            state.progress.completed_tiles = 0;
+            states.emplace_back(std::move(state));
+
+            submit_budget += static_cast<size_t>(std::max(1, task.config.batch_size));
+        }
+        submit_budget = std::max(static_cast<size_t>(8), submit_budget * 4);
+
+        {
+            ncnn::VkCompute cmd(vkdev_);
+            for (const auto& state : states) {
+                std::vector<ncnn::vk_constant_type> clear_constants(1);
+                clear_constants[0].i = static_cast<int>(state.out_total);
+
+                ncnn::VkMat clear_dispatcher;
+                clear_dispatcher.w = static_cast<int>(state.out_total);
+                clear_dispatcher.h = 1;
+                clear_dispatcher.c = 1;
+
+                std::vector<ncnn::VkMat> clear_output_bindings(1);
+                clear_output_bindings[0] = state.out_gpu_hwc;
+                cmd.record_pipeline(clear_output_pipeline_.get(), clear_output_bindings, clear_constants, clear_dispatcher);
+
+                clear_constants[0].i = static_cast<int>(state.out_total_pixels);
+                clear_dispatcher.w = static_cast<int>(state.out_total_pixels);
+                std::vector<ncnn::VkMat> clear_weight_bindings(1);
+                clear_weight_bindings[0] = state.out_gpu_weight;
+                cmd.record_pipeline(clear_output_pipeline_.get(), clear_weight_bindings, clear_constants, clear_dispatcher);
+            }
+
+            int submit_ret = cmd.submit_and_wait();
+            if (submit_ret != 0) {
+                return EngineError{204, "Vulkan clear failed (error " + std::to_string(submit_ret) + ")"};
+            }
+        }
+
+        {
+            ncnn::VkCompute cmd(vkdev_);
+            for (auto& state : states) {
+                const size_t in_total = static_cast<size_t>(state.task->input_width) *
+                                        state.task->input_height * state.task->channels;
+                if (in_total > static_cast<size_t>(std::numeric_limits<int>::max())) {
+                    return EngineError{205, "Input image too large for Vulkan tile pipeline"};
+                }
+                ncnn::Mat in_cpu_full(static_cast<int>(in_total),
+                                      const_cast<uint8_t*>(state.task->input_data), 1u);
+                cmd.record_clone(in_cpu_full, state.in_gpu_full, opt);
+            }
+            int submit_ret = cmd.submit_and_wait();
+            if (submit_ret != 0) {
+                return EngineError{206, "Vulkan input upload failed (error " + std::to_string(submit_ret) + ")"};
+            }
+        }
+
+        int input_idx = -1;
+        int output_idx = -1;
+        if (!net_->input_indexes().empty()) {
+            input_idx = net_->input_indexes()[0];
+        }
+        if (!net_->output_indexes().empty()) {
+            output_idx = net_->output_indexes()[0];
+        }
+
+        const size_t in_elemsize = opt.use_fp16_storage ? 2u : 4u;
+        auto compute_pad = [&](const GPUTileTaskU8& task, const TileRegion& region) -> TilePadInfo {
+            TilePadInfo info;
+            const int rx = static_cast<int>(region.x);
+            const int ry = static_cast<int>(region.y);
+            const int rw = static_cast<int>(region.width);
+            const int rh = static_cast<int>(region.height);
+            const int pad = std::max(0, task.config.overlap);
+            const int align = (scale_factor_ == 2 || scale_factor_ == 4) ? 2 : 4;
+
+            info.pad_left = (rx == 0) ? pad : 0;
+            info.pad_top = (ry == 0) ? pad : 0;
+            info.pad_right = (rx + rw >= task.input_width) ? pad : 0;
+            info.pad_bottom = (ry + rh >= task.input_height) ? pad : 0;
+
+            int tile_in_w = rw + info.pad_left + info.pad_right;
+            int tile_in_h = rh + info.pad_top + info.pad_bottom;
+            if (align > 1) {
+                const int aligned_w = (tile_in_w + align - 1) / align * align;
+                const int aligned_h = (tile_in_h + align - 1) / align * align;
+                info.pad_right += aligned_w - tile_in_w;
+                info.pad_bottom += aligned_h - tile_in_h;
+                tile_in_w = aligned_w;
+                tile_in_h = aligned_h;
+            }
+
+            info.in_w = tile_in_w;
+            info.in_h = tile_in_h;
+            info.tile_x = rx - info.pad_left;
+            info.tile_y = ry - info.pad_top;
+            return info;
+        };
+
+        auto record_tile_outputs = [&](ncnn::VkCompute& cmd,
+                                       QueueTaskState& state,
+                                       const TileRegion& region,
+                                       const TilePadInfo& pad_info,
+                                       ncnn::VkMat& in_gpu_chw,
+                                       std::vector<ncnn::VkMat>& batch_keepalive,
+                                       int tile_in_w,
+                                       int tile_in_h) -> expected<void, EngineError> {
+            const int channels = state.task->channels;
+            const int tile_out_full_w = tile_in_w * scale_factor_;
+            const int tile_out_full_h = tile_in_h * scale_factor_;
+            const int tile_out_inner_w = static_cast<int>(region.width) * scale_factor_;
+            const int tile_out_inner_h = static_cast<int>(region.height) * scale_factor_;
+            const int src_offset_x = pad_info.pad_left * scale_factor_;
+            const int src_offset_y = pad_info.pad_top * scale_factor_;
+            if (tile_out_full_w <= 0 || tile_out_full_h <= 0) {
+                return EngineError{206, "Invalid tile dimensions"};
+            }
+
+            ncnn::Extractor ex = net_->create_extractor();
+            ex.set_light_mode(true);
+            ex.set_blob_vkallocator(blob_vkallocator);
+            ex.set_workspace_vkallocator(blob_vkallocator);
+            ex.set_staging_vkallocator(staging_vkallocator);
+
+            int ret = 0;
+            if (input_idx >= 0) {
+                ret = ex.input(input_idx, in_gpu_chw);
+            } else {
+                ret = ex.input("data", in_gpu_chw);
+            }
+            if (ret != 0) {
+                return EngineError{207, "Failed to set Vulkan input (error " + std::to_string(ret) + ")"};
+            }
+
+            ncnn::VkMat out_gpu;
+            if (output_idx >= 0) {
+                ret = ex.extract(output_idx, out_gpu, cmd);
+            } else {
+                ret = ex.extract("output", out_gpu, cmd);
+                if (ret != 0) {
+                    ret = ex.extract("out", out_gpu, cmd);
+                    if (ret != 0) {
+                        return EngineError{208, "Failed to extract Vulkan output (error " + std::to_string(ret) + ")"};
+                    }
+                }
+            }
+
+            if (out_gpu.elempack != 1) {
+                ncnn::VkMat out_unpacked;
+                vkdev_->convert_packing(out_gpu, out_unpacked, 1, cmd, opt);
+                out_gpu = out_unpacked;
+            }
+
+            if (out_gpu.w != tile_out_full_w || out_gpu.h != tile_out_full_h || out_gpu.c != channels) {
+                return EngineError{209, "Vulkan output shape mismatch"};
+            }
+
+            std::vector<ncnn::VkMat> blend_bindings(3);
+            blend_bindings[0] = out_gpu;
+            blend_bindings[1] = state.out_gpu_hwc;
+            blend_bindings[2] = state.out_gpu_weight;
+
+            std::vector<ncnn::vk_constant_type> blend_constants(13);
+            blend_constants[0].i = tile_out_inner_w;
+            blend_constants[1].i = tile_out_inner_h;
+            blend_constants[2].i = channels;
+            blend_constants[3].i = state.out_width;
+            blend_constants[4].i = state.out_height;
+            blend_constants[5].i = static_cast<int>(region.x) * scale_factor_;
+            blend_constants[6].i = static_cast<int>(region.y) * scale_factor_;
+            blend_constants[7].i = state.task->config.overlap * scale_factor_;
+            blend_constants[8].i = tile_out_full_w;
+            blend_constants[9].i = tile_out_full_h;
+            blend_constants[10].i = src_offset_x;
+            blend_constants[11].i = src_offset_y;
+            blend_constants[12].i = static_cast<int>(out_gpu.cstep);
+
+            ncnn::VkMat blend_dispatcher;
+            blend_dispatcher.w = tile_out_inner_w;
+            blend_dispatcher.h = tile_out_inner_h;
+            blend_dispatcher.c = channels;
+            cmd.record_pipeline(blend_tile_pipeline_.get(), blend_bindings, blend_constants, blend_dispatcher);
+
+            batch_keepalive.emplace_back(in_gpu_chw);
+            batch_keepalive.emplace_back(out_gpu);
+            return {};
+        };
+
+        size_t rr_cursor = 0;
+        while (true) {
+            if (cancel_flag) {
+                return EngineError{3, "Processing cancelled"};
+            }
+
+            ncnn::VkCompute cmd(vkdev_);
+            std::vector<ncnn::VkMat> batch_keepalive;
+            batch_keepalive.reserve(submit_budget * 2);
+            std::vector<int> submitted_tiles(states.size(), 0);
+            size_t scheduled_tiles = 0;
+            size_t idle_rounds = 0;
+
+            while (scheduled_tiles < submit_budget && idle_rounds < states.size()) {
+                QueueTaskState& state = states[rr_cursor];
+                const auto& regions = *state.task->regions;
+                bool did_work = false;
+                int local_budget = std::max(1, state.task->config.batch_size);
+                while (local_budget > 0 &&
+                       state.region_cursor < regions.size() &&
+                       scheduled_tiles < submit_budget) {
+                    const auto& region = regions[state.region_cursor];
+                    const TilePadInfo pad_info = compute_pad(*state.task, region);
+                    const int tile_in_w = pad_info.in_w;
+                    const int tile_in_h = pad_info.in_h;
+                    const size_t tile_in_total = static_cast<size_t>(tile_in_w) * tile_in_h * state.task->channels;
+                    if (tile_in_total == 0) {
+                        return EngineError{206, "Invalid tile dimensions"};
+                    }
+
+                    ncnn::VkMat in_gpu_chw;
+                    in_gpu_chw.create(tile_in_w, tile_in_h, state.task->channels, in_elemsize, 1, blob_vkallocator);
+
+                    std::vector<ncnn::VkMat> pre_bindings(2);
+                    pre_bindings[0] = state.in_gpu_full;
+                    pre_bindings[1] = in_gpu_chw;
+
+                    std::vector<ncnn::vk_constant_type> pre_constants(8);
+                    pre_constants[0].i = state.task->input_width;
+                    pre_constants[1].i = state.task->input_height;
+                    pre_constants[2].i = state.task->channels;
+                    pre_constants[3].i = pad_info.tile_x;
+                    pre_constants[4].i = pad_info.tile_y;
+                    pre_constants[5].i = tile_in_w;
+                    pre_constants[6].i = tile_in_h;
+                    pre_constants[7].i = static_cast<int>(in_gpu_chw.cstep);
+
+                    ncnn::VkMat pre_dispatcher;
+                    pre_dispatcher.w = tile_in_w;
+                    pre_dispatcher.h = tile_in_h;
+                    pre_dispatcher.c = state.task->channels;
+                    cmd.record_pipeline(preproc_hwc_crop_u8_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
+
+                    auto record_result = record_tile_outputs(cmd, state, region, pad_info, in_gpu_chw,
+                                                             batch_keepalive, tile_in_w, tile_in_h);
+                    if (!record_result.has_value()) {
+                        return record_result.error();
+                    }
+
+                    state.region_cursor++;
+                    submitted_tiles[rr_cursor]++;
+                    scheduled_tiles++;
+                    local_budget--;
+                    did_work = true;
+                    state.progress.current_tile_x = region.x;
+                    state.progress.current_tile_y = region.y;
+                }
+
+                rr_cursor = (rr_cursor + 1) % states.size();
+                idle_rounds = did_work ? 0 : (idle_rounds + 1);
+            }
+
+            if (scheduled_tiles == 0) {
+                break;
+            }
+
+            int submit_ret = cmd.submit_and_wait();
+            if (submit_ret != 0) {
+                return EngineError{210, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"};
+            }
+
+            for (size_t i = 0; i < states.size(); ++i) {
+                const int completed = submitted_tiles[i];
+                if (completed <= 0) {
+                    continue;
+                }
+
+                auto& state = states[i];
+                state.progress.completed_tiles += completed;
+                if (state.progress.completed_tiles > state.progress.total_tiles) {
+                    state.progress.completed_tiles = state.progress.total_tiles;
+                }
+                if (state.task->progress_callback) {
+                    state.task->progress_callback(state.progress);
+                }
+            }
+        }
+
+        {
+            ncnn::VkCompute cmd(vkdev_);
+            std::vector<ncnn::VkMat> keepalive_u8;
+            keepalive_u8.reserve(states.size());
+
+            for (auto& state : states) {
+                ncnn::VkMat out_gpu_u8;
+                out_gpu_u8.create(static_cast<int>(state.out_total), 1u, blob_vkallocator);
+
+                std::vector<ncnn::VkMat> normalize_quantize_bindings(3);
+                normalize_quantize_bindings[0] = state.out_gpu_hwc;
+                normalize_quantize_bindings[1] = state.out_gpu_weight;
+                normalize_quantize_bindings[2] = out_gpu_u8;
+
+                std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
+                normalize_quantize_constants[0].i = static_cast<int>(state.out_total);
+                normalize_quantize_constants[1].i = state.task->channels;
+
+                ncnn::VkMat normalize_quantize_dispatcher;
+                normalize_quantize_dispatcher.w = static_cast<int>(state.out_total);
+                normalize_quantize_dispatcher.h = 1;
+                normalize_quantize_dispatcher.c = 1;
+                cmd.record_pipeline(normalize_quantize_output_pipeline_.get(),
+                                    normalize_quantize_bindings,
+                                    normalize_quantize_constants,
+                                    normalize_quantize_dispatcher);
+
+                ncnn::Mat out_cpu(static_cast<int>(state.out_total), state.task->output_data, 1u);
+                cmd.record_clone(out_gpu_u8, out_cpu, opt);
+                keepalive_u8.emplace_back(out_gpu_u8);
+            }
+
+            int submit_ret = cmd.submit_and_wait();
+            if (submit_ret != 0) {
+                return EngineError{214, "Vulkan queue normalize+quantize/download failed (error " +
+                                        std::to_string(submit_ret) + ")"};
+            }
+        }
+
+        return {};
+#else
+        (void)tasks;
+        (void)cancel_flag;
+        return EngineError{200, "Vulkan not available"};
+#endif
+    }
+
     auto process_tiles_gpu(
         const float* input_data,
         float* output_data,
