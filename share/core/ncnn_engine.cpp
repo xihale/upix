@@ -36,6 +36,8 @@ namespace crossscale {
 #if NCNN_VULKAN
 namespace {
 
+std::mutex g_vulkan_init_mutex;
+
 constexpr const char* kHwcToChwComp = R"(
 #version 450
 
@@ -3241,49 +3243,60 @@ private:
         retry_delay_ms = std::clamp(retry_delay_ms, 50, 2000);
 
         for (int attempt = 1; attempt <= max_attempts; ++attempt) {
-            ncnn::create_gpu_instance();
-            int gpu_count = ncnn::get_gpu_count();
-            if (gpu_count > 0) {
-                int best_gpu_idx = -1;
-                int best_score = std::numeric_limits<int>::min();
+            bool attempt_ok = false;
+            {
+                // ncnn GPU instance creation/destruction is process-global. Serialize retries
+                // so one engine does not tear down Vulkan state while another is probing.
+                std::lock_guard<std::mutex> lock(g_vulkan_init_mutex);
 
-                for (int i = 0; i < gpu_count; ++i) {
-                    const auto& info = ncnn::get_gpu_info(i);
-                    const std::string gpu_name = info.device_name() ? info.device_name() : ("GPU-" + std::to_string(i));
+                ncnn::create_gpu_instance();
+                int gpu_count = ncnn::get_gpu_count();
+                if (gpu_count > 0) {
+                    int best_gpu_idx = -1;
+                    int best_score = std::numeric_limits<int>::min();
 
-                    int score = 0;
-                    // Prefer discrete GPU strongly, then integrated.
-                    if (info.type() == 0) score += 10000;
-                    else if (info.type() == 1) score += 1000;
-                    else score += 100;
+                    for (int i = 0; i < gpu_count; ++i) {
+                        const auto& info = ncnn::get_gpu_info(i);
+                        const std::string gpu_name = info.device_name() ? info.device_name() : ("GPU-" + std::to_string(i));
 
-                    score += static_cast<int>(info.compute_queue_count()) * 10;
-                    if (info.support_fp16_arithmetic()) score += 100;
-                    if (info.support_fp16_storage()) score += 50;
-                    if (info.support_fp16_packed()) score += 50;
+                        int score = 0;
+                        // Prefer discrete GPU strongly, then integrated.
+                        if (info.type() == 0) score += 10000;
+                        else if (info.type() == 1) score += 1000;
+                        else score += 100;
 
-                    LOG_INFO("Engine", "Vulkan candidate #" + std::to_string(i) +
-                            " name=" + gpu_name +
-                            " type=" + std::to_string(info.type()) +
-                            " compute_queues=" + std::to_string(info.compute_queue_count()) +
-                            " score=" + std::to_string(score));
+                        score += static_cast<int>(info.compute_queue_count()) * 10;
+                        if (info.support_fp16_arithmetic()) score += 100;
+                        if (info.support_fp16_storage()) score += 50;
+                        if (info.support_fp16_packed()) score += 50;
 
-                    if (score > best_score) {
-                        best_score = score;
-                        best_gpu_idx = i;
+                        LOG_INFO("Engine", "Vulkan candidate #" + std::to_string(i) +
+                                " name=" + gpu_name +
+                                " type=" + std::to_string(info.type()) +
+                                " compute_queues=" + std::to_string(info.compute_queue_count()) +
+                                " score=" + std::to_string(score));
+
+                        if (score > best_score) {
+                            best_score = score;
+                            best_gpu_idx = i;
+                        }
+                    }
+
+                    if (best_gpu_idx >= 0) {
+                        vkdev_ = ncnn::get_gpu_device(best_gpu_idx);
+                        if (vkdev_ != nullptr) {
+                            LOG_INFO("Engine", "Selected Vulkan GPU index " + std::to_string(best_gpu_idx));
+                            attempt_ok = true;
+                        }
                     }
                 }
 
-                if (best_gpu_idx >= 0) {
-                    vkdev_ = ncnn::get_gpu_device(best_gpu_idx);
-                    if (vkdev_ != nullptr) {
-                        LOG_INFO("Engine", "Selected Vulkan GPU index " + std::to_string(best_gpu_idx));
-                        return true;
-                    }
-                }
             }
 
-            ncnn::destroy_gpu_instance();
+            if (attempt_ok) {
+                return true;
+            }
+
             if (attempt < max_attempts) {
                 LOG_WARNING("Engine", "Vulkan init attempt " + std::to_string(attempt) +
                                       " failed, retrying in " + std::to_string(retry_delay_ms) + "ms");
