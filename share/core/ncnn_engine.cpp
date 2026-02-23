@@ -17,6 +17,7 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <mutex>
 #include <optional>
 
@@ -1142,6 +1143,30 @@ public:
         }
 
         const size_t in_elemsize = opt.use_fp16_storage ? 2u : 4u;
+        using TileInputKey = std::tuple<int, int, int>;
+        std::map<TileInputKey, std::vector<ncnn::VkMat>> tile_input_pool;
+        auto acquire_tile_input = [&](int w, int h, int channels)
+            -> std::pair<TileInputKey, ncnn::VkMat> {
+            TileInputKey key{w, h, channels};
+            auto& bucket = tile_input_pool[key];
+            if (!bucket.empty()) {
+                ncnn::VkMat mat = std::move(bucket.back());
+                bucket.pop_back();
+                return {key, std::move(mat)};
+            }
+
+            ncnn::VkMat mat;
+            mat.create(w, h, channels, in_elemsize, 1, blob_vkallocator);
+            return {key, std::move(mat)};
+        };
+
+        auto recycle_tile_inputs = [&](std::vector<std::pair<TileInputKey, ncnn::VkMat>>& inflight_inputs) {
+            for (auto& inflight : inflight_inputs) {
+                tile_input_pool[inflight.first].emplace_back(std::move(inflight.second));
+            }
+            inflight_inputs.clear();
+        };
+
         auto compute_pad = [&](const GPUTileTaskU8& task, const TileRegion& region) -> TilePadInfo {
             TilePadInfo info;
             const int rx = static_cast<int>(region.x);
@@ -1174,12 +1199,14 @@ public:
             return info;
         };
 
+        std::vector<ncnn::VkMat> blend_bindings(3);
+        std::vector<ncnn::vk_constant_type> blend_constants(13);
         auto record_tile_outputs = [&](ncnn::VkCompute& cmd,
                                        QueueTaskState& state,
                                        const TileRegion& region,
                                        const TilePadInfo& pad_info,
                                        ncnn::VkMat& in_gpu_chw,
-                                       std::vector<ncnn::VkMat>& batch_keepalive,
+                                       std::vector<ncnn::VkMat>& batch_output_keepalive,
                                        int tile_in_w,
                                        int tile_in_h) -> expected<void, EngineError> {
             const int channels = state.task->channels;
@@ -1232,12 +1259,10 @@ public:
                 return EngineError{209, "Vulkan output shape mismatch"};
             }
 
-            std::vector<ncnn::VkMat> blend_bindings(3);
             blend_bindings[0] = out_gpu;
             blend_bindings[1] = state.out_gpu_hwc;
             blend_bindings[2] = state.out_gpu_weight;
 
-            std::vector<ncnn::vk_constant_type> blend_constants(13);
             blend_constants[0].i = tile_out_inner_w;
             blend_constants[1].i = tile_out_inner_h;
             blend_constants[2].i = channels;
@@ -1258,8 +1283,7 @@ public:
             blend_dispatcher.c = 1;
             cmd.record_pipeline(blend_tile_pipeline_.get(), blend_bindings, blend_constants, blend_dispatcher);
 
-            batch_keepalive.emplace_back(in_gpu_chw);
-            batch_keepalive.emplace_back(out_gpu);
+            batch_output_keepalive.emplace_back(out_gpu);
             return {};
         };
 
@@ -1306,11 +1330,15 @@ public:
                     cmd.record_clone(in_cpu_full, state.in_gpu_full, opt);
                 }
             }
-            std::vector<ncnn::VkMat> batch_keepalive;
-            batch_keepalive.reserve(submit_budget * 2);
+            std::vector<ncnn::VkMat> batch_output_keepalive;
+            batch_output_keepalive.reserve(submit_budget);
+            std::vector<std::pair<TileInputKey, ncnn::VkMat>> inflight_tile_inputs;
+            inflight_tile_inputs.reserve(submit_budget);
             std::vector<int> submitted_tiles(states.size(), 0);
             size_t scheduled_tiles = 0;
             size_t idle_rounds = 0;
+            std::vector<ncnn::VkMat> pre_bindings(2);
+            std::vector<ncnn::vk_constant_type> pre_constants(8);
 
             while (scheduled_tiles < submit_budget && idle_rounds < states.size()) {
                 QueueTaskState& state = states[rr_cursor];
@@ -1329,14 +1357,12 @@ public:
                         return EngineError{206, "Invalid tile dimensions"};
                     }
 
-                    ncnn::VkMat in_gpu_chw;
-                    in_gpu_chw.create(tile_in_w, tile_in_h, state.task->channels, in_elemsize, 1, blob_vkallocator);
+                    auto pooled_input = acquire_tile_input(tile_in_w, tile_in_h, state.task->channels);
+                    ncnn::VkMat in_gpu_chw = std::move(pooled_input.second);
 
-                    std::vector<ncnn::VkMat> pre_bindings(2);
                     pre_bindings[0] = state.in_gpu_full;
                     pre_bindings[1] = in_gpu_chw;
 
-                    std::vector<ncnn::vk_constant_type> pre_constants(8);
                     pre_constants[0].i = state.task->input_width;
                     pre_constants[1].i = state.task->input_height;
                     pre_constants[2].i = state.task->channels;
@@ -1353,10 +1379,11 @@ public:
                     cmd.record_pipeline(preproc_hwc_crop_u8_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
 
                     auto record_result = record_tile_outputs(cmd, state, region, pad_info, in_gpu_chw,
-                                                             batch_keepalive, tile_in_w, tile_in_h);
+                                                             batch_output_keepalive, tile_in_w, tile_in_h);
                     if (!record_result.has_value()) {
                         return record_result.error();
                     }
+                    inflight_tile_inputs.emplace_back(std::move(pooled_input.first), std::move(in_gpu_chw));
 
                     state.region_cursor++;
                     submitted_tiles[rr_cursor]++;
@@ -1386,16 +1413,16 @@ public:
             std::vector<ncnn::VkMat> keepalive_u8;
             if (all_tiles_scheduled) {
                 keepalive_u8.reserve(states.size());
+                std::vector<ncnn::VkMat> normalize_quantize_bindings(3);
+                std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
                 for (auto& state : states) {
                     ncnn::VkMat out_gpu_u8;
                     out_gpu_u8.create(static_cast<int>(state.out_total), 1u, blob_vkallocator);
 
-                    std::vector<ncnn::VkMat> normalize_quantize_bindings(3);
                     normalize_quantize_bindings[0] = state.out_gpu_hwc;
                     normalize_quantize_bindings[1] = state.out_gpu_weight;
                     normalize_quantize_bindings[2] = out_gpu_u8;
 
-                    std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
                     normalize_quantize_constants[0].i = static_cast<int>(state.out_total_pixels);
                     normalize_quantize_constants[1].i = state.task->channels;
 
@@ -1425,6 +1452,7 @@ public:
                 }
                 return EngineError{210, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"};
             }
+            recycle_tile_inputs(inflight_tile_inputs);
             need_init_submit = false;
 
             for (size_t i = 0; i < states.size(); ++i) {
@@ -1453,17 +1481,17 @@ public:
             ncnn::VkCompute cmd(vkdev_);
             std::vector<ncnn::VkMat> keepalive_u8;
             keepalive_u8.reserve(states.size());
+            std::vector<ncnn::VkMat> normalize_quantize_bindings(3);
+            std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
 
             for (auto& state : states) {
                 ncnn::VkMat out_gpu_u8;
                 out_gpu_u8.create(static_cast<int>(state.out_total), 1u, blob_vkallocator);
 
-                std::vector<ncnn::VkMat> normalize_quantize_bindings(3);
                 normalize_quantize_bindings[0] = state.out_gpu_hwc;
                 normalize_quantize_bindings[1] = state.out_gpu_weight;
                 normalize_quantize_bindings[2] = out_gpu_u8;
 
-                std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
                 normalize_quantize_constants[0].i = static_cast<int>(state.out_total_pixels);
                 normalize_quantize_constants[1].i = state.task->channels;
 
