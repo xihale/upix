@@ -1099,6 +1099,8 @@ public:
         states.reserve(tasks.size());
         size_t submit_budget = 0;
         size_t total_tiles = 0;
+        size_t total_tile_pixels = 0;
+        size_t max_task_channels = 1;
         for (const auto& task : tasks) {
             if (task.input_data == nullptr || task.output_data == nullptr || task.regions == nullptr) {
                 return EngineError{205, "GPU queue task has null buffers"};
@@ -1126,12 +1128,65 @@ public:
 
             submit_budget += static_cast<size_t>(std::max(1, task.config.batch_size));
             total_tiles += task.regions->size();
+            max_task_channels = std::max(max_task_channels, static_cast<size_t>(task.channels));
+            for (const auto& region : *task.regions) {
+                total_tile_pixels += static_cast<size_t>(region.width) * static_cast<size_t>(region.height);
+            }
         }
         if (total_tiles == 0) {
             return {};
         }
-        submit_budget = std::max(static_cast<size_t>(16), submit_budget * 8);
-        size_t submit_budget_cap = std::min(total_tiles, static_cast<size_t>(96));
+        const size_t in_elemsize = opt.use_fp16_storage ? 2u : 4u;
+        const double avg_tile_pixels = static_cast<double>(total_tile_pixels) /
+                                       static_cast<double>(std::max<size_t>(1, total_tiles));
+
+        size_t tiles_per_task_target = 24;
+        if (avg_tile_pixels <= (256.0 * 256.0)) {
+            tiles_per_task_target = 40;
+        } else if (avg_tile_pixels <= (384.0 * 384.0)) {
+            tiles_per_task_target = 32;
+        }
+        if (const char* target_env = std::getenv("CROSSSCALE_GPU_SUBMIT_TILES_PER_TASK")) {
+            try {
+                tiles_per_task_target = std::clamp(
+                    static_cast<size_t>(std::stoul(target_env)),
+                    static_cast<size_t>(8),
+                    static_cast<size_t>(96)
+                );
+            } catch (...) {
+                // Ignore malformed env input and keep adaptive target.
+            }
+        }
+
+        submit_budget = std::max(submit_budget * 8, tasks.size() * tiles_per_task_target);
+        submit_budget = std::max(submit_budget, static_cast<size_t>(32));
+
+        size_t submit_memory_budget_mb = 768;
+        if (const char* mem_env = std::getenv("CROSSSCALE_GPU_SUBMIT_MB")) {
+            try {
+                submit_memory_budget_mb = std::clamp(
+                    static_cast<size_t>(std::stoul(mem_env)),
+                    static_cast<size_t>(128),
+                    static_cast<size_t>(2048)
+                );
+            } catch (...) {
+                // Ignore malformed env input and keep default memory budget.
+            }
+        }
+
+        const double scale_squared = static_cast<double>(scale_factor_) * static_cast<double>(scale_factor_);
+        const double bytes_per_tile = std::max(
+            1.0,
+            avg_tile_pixels *
+                static_cast<double>(max_task_channels) *
+                static_cast<double>(in_elemsize) *
+                (1.0 + scale_squared)
+        );
+        size_t submit_budget_cap = static_cast<size_t>(
+            (static_cast<double>(submit_memory_budget_mb) * 1024.0 * 1024.0) / bytes_per_tile
+        );
+        submit_budget_cap = std::clamp(submit_budget_cap, static_cast<size_t>(32), static_cast<size_t>(256));
+        submit_budget_cap = std::min(total_tiles, submit_budget_cap);
         if (const char* budget_env = std::getenv("CROSSSCALE_GPU_SUBMIT_BUDGET")) {
             try {
                 const size_t env_budget = static_cast<size_t>(std::stoul(budget_env));
@@ -1141,6 +1196,7 @@ public:
             }
         }
         submit_budget = std::min(submit_budget, submit_budget_cap);
+        submit_budget = std::max(submit_budget, static_cast<size_t>(16));
 
         int input_idx = -1;
         int output_idx = -1;
@@ -1151,7 +1207,6 @@ public:
             output_idx = net_->output_indexes()[0];
         }
 
-        const size_t in_elemsize = opt.use_fp16_storage ? 2u : 4u;
         using TileInputKey = std::tuple<int, int, int>;
         std::map<TileInputKey, std::vector<ncnn::VkMat>> tile_input_pool;
         auto acquire_tile_input = [&](int w, int h, int channels)
