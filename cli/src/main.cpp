@@ -241,7 +241,7 @@ int main(int argc, char* argv[]) {
                 int width = 0;
                 int height = 0;
                 int channels = 0;
-                std::vector<float> input_float;
+                crossscale::Image input_image;
             };
 
             auto prepare_task = [&](const std::string& in_path, const std::string& out_path) -> std::optional<PreparedTask> {
@@ -257,15 +257,7 @@ int main(int argc, char* argv[]) {
                 prepared.width = img_res->width();
                 prepared.height = img_res->height();
                 prepared.channels = img_res->channels();
-
-                const size_t pixel_count = static_cast<size_t>(prepared.width) * prepared.height * prepared.channels;
-                prepared.input_float.resize(pixel_count);
-
-                constexpr float kInv255 = 1.0f / 255.0f;
-                const uint8_t* src = img_res->data();
-                for (size_t i = 0; i < pixel_count; ++i) {
-                    prepared.input_float[i] = static_cast<float>(src[i]) * kInv255;
-                }
+                prepared.input_image = std::move(img_res.value());
 
                 return prepared;
             };
@@ -280,7 +272,7 @@ int main(int argc, char* argv[]) {
                 int out_width = 0;
                 int out_height = 0;
                 int channels = 0;
-                std::vector<float> output_float;
+                crossscale::Image output_image;
             };
 
             auto infer_prepared_task = [&](PreparedTask&& prepared, crossscale::Engine& eng) -> std::optional<ProcessedTask> {
@@ -314,13 +306,12 @@ int main(int argc, char* argv[]) {
                 
                 int out_width = prepared.width * eng.get_scale_factor();
                 int out_height = prepared.height * eng.get_scale_factor();
-                int out_size = out_width * out_height * prepared.channels;
-                std::vector<float> output_float(out_size, 0.0f);
+                crossscale::Image output_image(out_width, out_height, prepared.channels);
                 
                 crossscale::TileProcessor processor;
                 std::atomic<bool> cancel_flag{false};
-                auto result = processor.process_image(
-                    prepared.input_float.data(), output_float.data(),
+                auto result = processor.process_image_u8(
+                    prepared.input_image.data(), output_image.data(),
                     prepared.width, prepared.height, prepared.channels,
                     eng, tile_config,
                     [&](const crossscale::ProcessingProgress& prog) {
@@ -344,22 +335,15 @@ int main(int argc, char* argv[]) {
                 processed.out_width = out_width;
                 processed.out_height = out_height;
                 processed.channels = prepared.channels;
-                processed.output_float = std::move(output_float);
+                processed.output_image = std::move(output_image);
                 return processed;
             };
 
             auto save_processed_task = [&](ProcessedTask&& processed) -> bool {
-                crossscale::Image output_image(processed.out_width, processed.out_height, processed.channels);
-                for (size_t i = 0; i < processed.output_float.size(); ++i) {
-                    float val = processed.output_float[i] * 255.0f;
-                    val = std::clamp(val, 0.0f, 255.0f);
-                    output_image.data()[i] = static_cast<uint8_t>(val);
-                }
-
                 std::filesystem::path out_path_obj(processed.out_path);
                 std::filesystem::create_directories(out_path_obj.parent_path());
 
-                auto save_res = output_image.save(processed.out_path);
+                auto save_res = processed.output_image.save(processed.out_path);
                 if (!save_res.has_value()) {
                     LOG_ERROR("Task", "Failed to save output: " + save_res.error().message);
                     return false;
@@ -657,13 +641,6 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        // 将图像数据转换为 float (0-1 范围)
-        std::vector<float> input_float;
-        input_float.reserve(image.width() * image.height() * image.channels());
-        for (size_t i = 0; i < image.width() * image.height() * image.channels(); ++i) {
-            input_float.push_back(image.data()[i] / 255.0f);
-        }
-
         std::string param_path, bin_path;
 
         // Load model using ModelManager
@@ -772,10 +749,7 @@ int main(int argc, char* argv[]) {
 
         int out_width = image.width() * scale;
         int out_height = image.height() * scale;
-        int out_size = out_width * out_height * image.channels();
-
-        // 分配浮点输出缓冲区
-        std::vector<float> output_float(out_size, 0.0f);
+        crossscale::Image output_image(out_width, out_height, image.channels());
 
         LOG_INFO("Engine", "Processing image with tile_size=" + std::to_string(config.tile_size) +
                 " overlap=" + std::to_string(config.tile_overlap) +
@@ -787,8 +761,8 @@ int main(int argc, char* argv[]) {
             enable_progress_log_single = std::string(progress_env) == "1";
         }
 
-        auto process_result = processor.process_image(
-            input_float.data(), output_float.data(),
+        auto process_result = processor.process_image_u8(
+            image.data(), output_image.data(),
             image.width(), image.height(), image.channels(),
             *engine, tile_config,
             [&](const crossscale::ProcessingProgress& progress) {
@@ -808,14 +782,6 @@ int main(int argc, char* argv[]) {
         if (!process_result.has_value()) {
             LOG_ERROR("Engine", "Processing failed: " + process_result.error().message);
             return 1;
-        }
-
-        // 将浮点输出转换为 uint8 图像
-        crossscale::Image output_image(out_width, out_height, image.channels());
-        for (size_t i = 0; i < output_float.size(); ++i) {
-            float val = output_float[i] * 255.0f;
-            val = std::clamp(val, 0.0f, 255.0f);
-            output_image.data()[i] = static_cast<uint8_t>(val);
         }
 
         if (!process_result.has_value()) {

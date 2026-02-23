@@ -6,6 +6,8 @@
 #include <memory>
 #include <vector>
 #include <future>
+#include <cstdint>
+#include "core/tile_types.hpp"
 #include "utils/expected.hpp"
 
 namespace crossscale {
@@ -48,6 +50,23 @@ public:
         int channels,
         const std::atomic<bool>& cancel_flag = {}
     ) -> expected<void, EngineError> = 0;
+
+    virtual auto process_u8(
+        const uint8_t* input,
+        uint8_t* output,
+        int width,
+        int height,
+        int channels,
+        const std::atomic<bool>& cancel_flag = {}
+    ) -> expected<void, EngineError> {
+        (void)input;
+        (void)output;
+        (void)width;
+        (void)height;
+        (void)channels;
+        (void)cancel_flag;
+        return EngineError{102, "u8 process path not supported"};
+    }
 
     // Process a batch of tiles. All tiles must have same width, height, channels.
     // inputs: vector of input data pointers (each tile: interleaved HWC float)
@@ -108,6 +127,55 @@ public:
     // Get memory info: {total_mb, available_mb}
     virtual auto get_memory_info() const -> std::pair<size_t, size_t> {
         return {0, 0};
+    }
+
+    virtual bool supports_gpu_tile_pipeline() const { return false; }
+    virtual bool supports_gpu_tile_pipeline_u8() const { return false; }
+
+    virtual auto process_tiles_gpu(
+        const float* input_data,
+        float* output_data,
+        int input_width,
+        int input_height,
+        int channels,
+        const std::vector<TileRegion>& regions,
+        const TileConfig& config,
+        std::function<void(const ProcessingProgress&)> progress_callback,
+        const std::atomic<bool>& cancel_flag
+    ) -> expected<void, EngineError> {
+        (void)input_data;
+        (void)output_data;
+        (void)input_width;
+        (void)input_height;
+        (void)channels;
+        (void)regions;
+        (void)config;
+        (void)progress_callback;
+        (void)cancel_flag;
+        return EngineError{200, "GPU tile pipeline not supported"};
+    }
+
+    virtual auto process_tiles_gpu_u8(
+        const uint8_t* input_data,
+        uint8_t* output_data,
+        int input_width,
+        int input_height,
+        int channels,
+        const std::vector<TileRegion>& regions,
+        const TileConfig& config,
+        std::function<void(const ProcessingProgress&)> progress_callback,
+        const std::atomic<bool>& cancel_flag
+    ) -> expected<void, EngineError> {
+        (void)input_data;
+        (void)output_data;
+        (void)input_width;
+        (void)input_height;
+        (void)channels;
+        (void)regions;
+        (void)config;
+        (void)progress_callback;
+        (void)cancel_flag;
+        return EngineError{201, "GPU u8 tile pipeline not supported"};
     }
 };
 

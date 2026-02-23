@@ -53,6 +53,31 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
     ProcessingProgress progress;
     progress.total_tiles = static_cast<int>(regions.size());
     progress.completed_tiles = 0;
+
+    if (engine.supports_gpu_tile_pipeline()) {
+        TileConfig gpu_config = config;
+        if (gpu_config.batch_size < 1) {
+            gpu_config.batch_size = 1;
+        }
+        if (engine.current_device() == DeviceType::GPU_VULKAN && gpu_config.batch_size == 1) {
+            gpu_config.batch_size = 2;
+        }
+        auto result = engine.process_tiles_gpu(
+            input_data,
+            output_data,
+            input_width,
+            input_height,
+            channels,
+            regions,
+            gpu_config,
+            progress_callback,
+            cancel_flag
+        );
+        if (!result.has_value()) {
+            return TileProcessorError{1, "GPU tile processing failed: " + result.error().message};
+        }
+        return {};
+    }
     
     int output_width = input_width * scale_factor;
     int output_height = input_height * scale_factor;
@@ -208,6 +233,82 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
     }
     
     std::copy(output_buffer.begin(), output_buffer.end(), output_data);
+    return {};
+}
+
+auto TileProcessor::process_image_u8(
+    const uint8_t* input_data,
+    uint8_t* output_data,
+    int input_width,
+    int input_height,
+    int channels,
+    Engine& engine,
+    const TileConfig& config,
+    std::function<void(const ProcessingProgress&)> progress_callback,
+    const std::atomic<bool>& cancel_flag
+) -> expected<void, TileProcessorError> {
+    if (input_data == nullptr || output_data == nullptr) {
+        return TileProcessorError{3, "Null image buffer for u8 processing"};
+    }
+
+    auto regions = compute_tile_layout(input_width, input_height, config);
+    if (engine.supports_gpu_tile_pipeline_u8()) {
+        TileConfig gpu_config = config;
+        if (gpu_config.batch_size < 1) {
+            gpu_config.batch_size = 1;
+        }
+        if (engine.current_device() == DeviceType::GPU_VULKAN && gpu_config.batch_size == 1) {
+            gpu_config.batch_size = 2;
+        }
+
+        auto result = engine.process_tiles_gpu_u8(
+            input_data,
+            output_data,
+            input_width,
+            input_height,
+            channels,
+            regions,
+            gpu_config,
+            progress_callback,
+            cancel_flag
+        );
+        if (!result.has_value()) {
+            return TileProcessorError{1, "GPU u8 tile processing failed: " + result.error().message};
+        }
+        return {};
+    }
+
+    const size_t input_size = static_cast<size_t>(input_width) * input_height * channels;
+    std::vector<float> input_float(input_size);
+    constexpr float kInv255 = 1.0f / 255.0f;
+    for (size_t i = 0; i < input_size; ++i) {
+        input_float[i] = static_cast<float>(input_data[i]) * kInv255;
+    }
+
+    const int scale = engine.get_scale_factor();
+    const size_t output_size = static_cast<size_t>(input_width) * scale * input_height * scale * channels;
+    std::vector<float> output_float(output_size, 0.0f);
+
+    auto result = process_image(
+        input_float.data(),
+        output_float.data(),
+        input_width,
+        input_height,
+        channels,
+        engine,
+        config,
+        progress_callback,
+        cancel_flag
+    );
+    if (!result.has_value()) {
+        return result;
+    }
+
+    for (size_t i = 0; i < output_size; ++i) {
+        const float v = std::clamp(output_float[i] * 255.0f, 0.0f, 255.0f);
+        output_data[i] = static_cast<uint8_t>(v);
+    }
+
     return {};
 }
 
