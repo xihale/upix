@@ -368,7 +368,14 @@ void main()
 constexpr const char* kBlendTileComp = R"(
 #version 450
 
-layout (binding = 0) readonly buffer src_blob { float src_data[]; };
+#if NCNN_fp16_storage
+#extension GL_EXT_shader_16bit_storage: require
+#define sfp float16_t
+#else
+#define sfp float
+#endif
+
+layout (binding = 0) readonly buffer src_blob { sfp src_data[]; };
 layout (binding = 1) buffer dst_blob { float dst_data[]; };
 
 layout (push_constant) uniform parameter
@@ -385,6 +392,7 @@ layout (push_constant) uniform parameter
     int src_h;
     int src_offset_x;
     int src_offset_y;
+    int src_cstep;
 } p;
 
 float blend_weight(int pos, int size, int overlap)
@@ -422,9 +430,9 @@ void main()
     if (src_x < 0 || src_x >= p.src_w || src_y < 0 || src_y >= p.src_h)
         return;
 
-    const int src_idx = (src_y * p.src_w + src_x) * p.channels + gz;
+    const int src_idx = gz * p.src_cstep + src_y * p.src_w + src_x;
     const int dst_idx = (out_py * p.out_w + out_px) * p.channels + gz;
-    dst_data[dst_idx] += src_data[src_idx] * w;
+    dst_data[dst_idx] += float(src_data[src_idx]) * w;
 }
 )";
 
@@ -1078,8 +1086,7 @@ public:
             const int tile_out_inner_h = static_cast<int>(region.height) * scale_factor_;
             const int src_offset_x = pad_info.pad_left * scale_factor_;
             const int src_offset_y = pad_info.pad_top * scale_factor_;
-            const size_t tile_out_total = static_cast<size_t>(tile_out_full_w) * tile_out_full_h * channels;
-            if (tile_out_total == 0) {
+            if (tile_out_full_w <= 0 || tile_out_full_h <= 0) {
                 return EngineError{206, "Invalid tile dimensions"};
             }
 
@@ -1122,30 +1129,11 @@ public:
                 return EngineError{209, "Vulkan output shape mismatch"};
             }
 
-            ncnn::VkMat out_gpu_hwc_tile;
-            out_gpu_hwc_tile.create(static_cast<int>(tile_out_total), 4u, blob_vkallocator);
-
-            std::vector<ncnn::VkMat> post_bindings(2);
-            post_bindings[0] = out_gpu;
-            post_bindings[1] = out_gpu_hwc_tile;
-
-            std::vector<ncnn::vk_constant_type> post_constants(4);
-            post_constants[0].i = tile_out_full_w;
-            post_constants[1].i = tile_out_full_h;
-            post_constants[2].i = channels;
-            post_constants[3].i = static_cast<int>(out_gpu.cstep);
-
-            ncnn::VkMat post_dispatcher;
-            post_dispatcher.w = tile_out_full_w;
-            post_dispatcher.h = tile_out_full_h;
-            post_dispatcher.c = channels;
-            cmd.record_pipeline(postproc_chw_to_hwc_.get(), post_bindings, post_constants, post_dispatcher);
-
             std::vector<ncnn::VkMat> blend_bindings(2);
-            blend_bindings[0] = out_gpu_hwc_tile;
+            blend_bindings[0] = out_gpu;
             blend_bindings[1] = out_gpu_hwc;
 
-            std::vector<ncnn::vk_constant_type> blend_constants(12);
+            std::vector<ncnn::vk_constant_type> blend_constants(13);
             blend_constants[0].i = tile_out_inner_w;
             blend_constants[1].i = tile_out_inner_h;
             blend_constants[2].i = channels;
@@ -1158,6 +1146,7 @@ public:
             blend_constants[9].i = tile_out_full_h;
             blend_constants[10].i = src_offset_x;
             blend_constants[11].i = src_offset_y;
+            blend_constants[12].i = static_cast<int>(out_gpu.cstep);
 
             ncnn::VkMat blend_dispatcher;
             blend_dispatcher.w = tile_out_inner_w;
@@ -1544,8 +1533,7 @@ public:
             const int tile_out_inner_h = static_cast<int>(region.height) * scale_factor_;
             const int src_offset_x = pad_info.pad_left * scale_factor_;
             const int src_offset_y = pad_info.pad_top * scale_factor_;
-            const size_t tile_out_total = static_cast<size_t>(tile_out_full_w) * tile_out_full_h * channels;
-            if (tile_out_total == 0) {
+            if (tile_out_full_w <= 0 || tile_out_full_h <= 0) {
                 return EngineError{206, "Invalid tile dimensions"};
             }
 
@@ -1588,30 +1576,11 @@ public:
                 return EngineError{209, "Vulkan output shape mismatch"};
             }
 
-            ncnn::VkMat out_gpu_hwc_tile;
-            out_gpu_hwc_tile.create(static_cast<int>(tile_out_total), 4u, blob_vkallocator);
-
-            std::vector<ncnn::VkMat> post_bindings(2);
-            post_bindings[0] = out_gpu;
-            post_bindings[1] = out_gpu_hwc_tile;
-
-            std::vector<ncnn::vk_constant_type> post_constants(4);
-            post_constants[0].i = tile_out_full_w;
-            post_constants[1].i = tile_out_full_h;
-            post_constants[2].i = channels;
-            post_constants[3].i = static_cast<int>(out_gpu.cstep);
-
-            ncnn::VkMat post_dispatcher;
-            post_dispatcher.w = tile_out_full_w;
-            post_dispatcher.h = tile_out_full_h;
-            post_dispatcher.c = channels;
-            cmd.record_pipeline(postproc_chw_to_hwc_.get(), post_bindings, post_constants, post_dispatcher);
-
             std::vector<ncnn::VkMat> blend_bindings(2);
-            blend_bindings[0] = out_gpu_hwc_tile;
+            blend_bindings[0] = out_gpu;
             blend_bindings[1] = out_gpu_hwc;
 
-            std::vector<ncnn::vk_constant_type> blend_constants(12);
+            std::vector<ncnn::vk_constant_type> blend_constants(13);
             blend_constants[0].i = tile_out_inner_w;
             blend_constants[1].i = tile_out_inner_h;
             blend_constants[2].i = channels;
@@ -1624,6 +1593,7 @@ public:
             blend_constants[9].i = tile_out_full_h;
             blend_constants[10].i = src_offset_x;
             blend_constants[11].i = src_offset_y;
+            blend_constants[12].i = static_cast<int>(out_gpu.cstep);
 
             ncnn::VkMat blend_dispatcher;
             blend_dispatcher.w = tile_out_inner_w;
