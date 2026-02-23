@@ -451,6 +451,7 @@ int main(int argc, char* argv[]) {
                     std::mutex processed_mutex;
                     std::condition_variable prepared_cv;
                     std::condition_variable processed_cv;
+                    constexpr auto kCancelPoll = std::chrono::milliseconds(50);
                     bool prepare_done = false;
                     bool process_done = false;
                     std::atomic<size_t> save_success_count{0};
@@ -475,9 +476,9 @@ int main(int argc, char* argv[]) {
                                     continue;
                                 }
                                 std::unique_lock<std::mutex> lock(prepared_mutex);
-                                prepared_cv.wait(lock, [&]() {
-                                    return prepared_queue.size() < prepared_queue_limit || g_cancel_requested.load();
-                                });
+                                while (prepared_queue.size() >= prepared_queue_limit && !g_cancel_requested.load()) {
+                                    prepared_cv.wait_for(lock, kCancelPoll);
+                                }
                                 if (g_cancel_requested.load()) {
                                     break;
                                 }
@@ -509,12 +510,16 @@ int main(int argc, char* argv[]) {
 
                         auto enqueue_processed = [&](ProcessedTask&& processed) {
                             std::unique_lock<std::mutex> lock(processed_mutex);
-                            processed_cv.wait(lock, [&]() {
-                                return processed_queue.size() < processed_queue_limit;
-                            });
+                            while (processed_queue.size() >= processed_queue_limit && !g_cancel_requested.load()) {
+                                processed_cv.wait_for(lock, kCancelPoll);
+                            }
+                            if (g_cancel_requested.load()) {
+                                return false;
+                            }
                             processed_queue.emplace_back(std::move(processed));
                             lock.unlock();
                             processed_cv.notify_one();
+                            return true;
                         };
 
                         while (true) {
@@ -522,14 +527,15 @@ int main(int argc, char* argv[]) {
                                 std::lock_guard<std::mutex> lock(processed_mutex);
                                 process_done = true;
                                 processed_cv.notify_all();
+                                prepared_cv.notify_all();
                                 break;
                             }
                             std::vector<PreparedTask> prepared_batch;
                             {
                                 std::unique_lock<std::mutex> lock(prepared_mutex);
-                                prepared_cv.wait(lock, [&]() {
-                                    return !prepared_queue.empty() || prepare_done || g_cancel_requested.load();
-                                });
+                                while (prepared_queue.empty() && !prepare_done && !g_cancel_requested.load()) {
+                                    prepared_cv.wait_for(lock, kCancelPoll);
+                                }
                                 if ((prepared_queue.empty() && prepare_done) || g_cancel_requested.load()) {
                                     break;
                                 }
@@ -568,7 +574,12 @@ int main(int argc, char* argv[]) {
                                     if (!processed.has_value()) {
                                         continue;
                                     }
-                                    enqueue_processed(std::move(processed.value()));
+                                    if (!enqueue_processed(std::move(processed.value()))) {
+                                        break;
+                                    }
+                                }
+                                if (g_cancel_requested.load()) {
+                                    break;
                                 }
                                 continue;
                             }
@@ -637,13 +648,23 @@ int main(int argc, char* argv[]) {
                                     if (!processed.has_value()) {
                                         continue;
                                     }
-                                    enqueue_processed(std::move(processed.value()));
+                                    if (!enqueue_processed(std::move(processed.value()))) {
+                                        break;
+                                    }
+                                }
+                                if (g_cancel_requested.load()) {
+                                    break;
                                 }
                                 continue;
                             }
 
                             for (auto& item : queue_items) {
-                                enqueue_processed(std::move(item.processed));
+                                if (!enqueue_processed(std::move(item.processed))) {
+                                    break;
+                                }
+                            }
+                            if (g_cancel_requested.load()) {
+                                break;
                             }
                         }
                         {
@@ -661,9 +682,9 @@ int main(int argc, char* argv[]) {
                                 std::optional<ProcessedTask> processed;
                                 {
                                     std::unique_lock<std::mutex> lock(processed_mutex);
-                                    processed_cv.wait(lock, [&]() {
-                                        return !processed_queue.empty() || process_done || g_cancel_requested.load();
-                                    });
+                                    while (processed_queue.empty() && !process_done && !g_cancel_requested.load()) {
+                                        processed_cv.wait_for(lock, kCancelPoll);
+                                    }
                                     if ((processed_queue.empty() && process_done) || g_cancel_requested.load()) {
                                         break;
                                     }

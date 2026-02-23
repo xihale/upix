@@ -200,9 +200,11 @@ trap - EXIT
 
 duration_sec="$(awk "BEGIN {print ${end_ts} - ${start_ts}}")"
 
-stats="$(awk -F',' '
+stats="$(awk -F',' -v start_ts="${start_ts}" -v end_ts="${end_ts}" '
 NR>1 {
     if (NF < 5) next;
+    ts=$1+0;
+    if (start_ts > 0 && end_ts > 0 && (ts < start_ts || ts > end_ts)) next;
     util=$2+0;
     mem=$3+0;
     temp=$5+0;
