@@ -17,9 +17,9 @@
 #include <filesystem>
 #include <fstream>
 #include <limits>
-#include <map>
 #include <mutex>
 #include <optional>
+#include <unordered_map>
 
 // Platform-specific memory detection
 #if defined(__linux__)
@@ -1247,7 +1247,20 @@ public:
         }
 
         using TileInputKey = std::tuple<int, int, int>;
-        std::map<TileInputKey, std::vector<ncnn::VkMat>> tile_input_pool;
+        struct TileInputKeyHash {
+            auto operator()(const TileInputKey& key) const noexcept -> size_t {
+                size_t seed = 0;
+                auto mix = [&](int v) {
+                    seed ^= std::hash<int>{}(v) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+                };
+                mix(std::get<0>(key));
+                mix(std::get<1>(key));
+                mix(std::get<2>(key));
+                return seed;
+            }
+        };
+        std::unordered_map<TileInputKey, std::vector<ncnn::VkMat>, TileInputKeyHash> tile_input_pool;
+        tile_input_pool.reserve(32);
         auto acquire_tile_input = [&](int w, int h, int channels)
             -> std::pair<TileInputKey, ncnn::VkMat> {
             TileInputKey key{w, h, channels};
