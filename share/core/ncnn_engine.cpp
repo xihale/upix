@@ -149,7 +149,6 @@ void main()
     const int gx = int(gl_GlobalInvocationID.x);
     const int gy = int(gl_GlobalInvocationID.y);
     const int gz = int(gl_GlobalInvocationID.z);
-
     if (gx >= p.tile_w || gy >= p.tile_h || gz >= p.channels)
         return;
 
@@ -432,13 +431,14 @@ void main()
     if (src_x < 0 || src_x >= p.src_w || src_y < 0 || src_y >= p.src_h)
         return;
 
-    const int src_idx = gz * p.src_cstep + src_y * p.src_w + src_x;
-    const int dst_idx = (out_py * p.out_w + out_px) * p.channels + gz;
-    dst_data[dst_idx] += float(src_data[src_idx]) * w;
-    if (gz == 0) {
-        const int weight_idx = out_py * p.out_w + out_px;
-        weight_data[weight_idx] += w;
+    const int src_xy_idx = src_y * p.src_w + src_x;
+    const int dst_idx = (out_py * p.out_w + out_px) * p.channels;
+    for (int c = 0; c < p.channels; ++c) {
+        const int src_idx = c * p.src_cstep + src_xy_idx;
+        dst_data[dst_idx + c] += float(src_data[src_idx]) * w;
     }
+    const int weight_idx = out_py * p.out_w + out_px;
+    weight_data[weight_idx] += w;
 }
 )";
 
@@ -450,20 +450,28 @@ layout (binding = 1) readonly buffer weight_blob { float weight_data[]; };
 
 layout (push_constant) uniform parameter
 {
-    int total;
+    int total_pixels;
     int channels;
 } p;
 
 void main()
 {
     const int gx = int(gl_GlobalInvocationID.x);
-    if (gx >= p.total)
+    if (gx >= p.total_pixels)
         return;
 
-    const int pixel_idx = gx / p.channels;
-    const float w = weight_data[pixel_idx];
-    if (w > 1e-6) {
-        dst_data[gx] = dst_data[gx] / w;
+    const float w = weight_data[gx];
+    const int base = gx * p.channels;
+    if (w <= 1e-6) {
+        for (int c = 0; c < p.channels; ++c) {
+            dst_data[base + c] = 0.0;
+        }
+        return;
+    }
+
+    const float inv_w = 1.0 / w;
+    for (int c = 0; c < p.channels; ++c) {
+        dst_data[base + c] = dst_data[base + c] * inv_w;
     }
 }
 )";
@@ -485,30 +493,40 @@ layout (binding = 2) writeonly buffer dst_blob { float dst_data[]; };
 
 layout (push_constant) uniform parameter
 {
-    int total;
+    int total_pixels;
     int channels;
 } p;
 
 void main()
 {
     const int gx = int(gl_GlobalInvocationID.x);
-    if (gx >= p.total)
+    if (gx >= p.total_pixels)
         return;
 
-    const int pixel_idx = gx / p.channels;
-    const float w = weight_data[pixel_idx];
-    float normalized = 0.0;
-    if (w > 1e-6) {
-        normalized = src_data[gx] / w;
+    const float w = weight_data[gx];
+    const int base = gx * p.channels;
+    if (w <= 1e-6) {
+        for (int c = 0; c < p.channels; ++c) {
+#if NCNN_int8_storage
+            dst_data[base + c] = uint8_t(0u);
+#else
+            dst_data[base + c] = 0.0;
+#endif
+        }
+        return;
     }
 
-    const float v = clamp(normalized * 255.0, 0.0, 255.0);
+    const float inv_w = 1.0 / w;
+    for (int c = 0; c < p.channels; ++c) {
+        const float normalized = src_data[base + c] * inv_w;
+        const float v = clamp(normalized * 255.0, 0.0, 255.0);
 #if NCNN_int8_storage
-    const uint v32 = clamp(uint(floor(v + 0.5)), 0u, 255u);
-    dst_data[gx] = uint8_t(v32);
+        const uint v32 = clamp(uint(floor(v + 0.5)), 0u, 255u);
+        dst_data[base + c] = uint8_t(v32);
 #else
-    dst_data[gx] = v;
+        dst_data[base + c] = v;
 #endif
+    }
 }
 )";
 
@@ -1079,6 +1097,7 @@ public:
         std::vector<QueueTaskState> states;
         states.reserve(tasks.size());
         size_t submit_budget = 0;
+        size_t total_tiles = 0;
         for (const auto& task : tasks) {
             if (task.input_data == nullptr || task.output_data == nullptr || task.regions == nullptr) {
                 return EngineError{205, "GPU queue task has null buffers"};
@@ -1105,12 +1124,17 @@ public:
             states.emplace_back(std::move(state));
 
             submit_budget += static_cast<size_t>(std::max(1, task.config.batch_size));
+            total_tiles += task.regions->size();
         }
-        submit_budget = std::max(static_cast<size_t>(8), submit_budget * 4);
+        if (total_tiles == 0) {
+            return {};
+        }
+        submit_budget = std::max(static_cast<size_t>(16), submit_budget * 8);
+        submit_budget = std::min(submit_budget, std::min(total_tiles, static_cast<size_t>(96)));
 
         {
             ncnn::VkCompute cmd(vkdev_);
-            for (const auto& state : states) {
+            for (auto& state : states) {
                 std::vector<ncnn::vk_constant_type> clear_constants(1);
                 clear_constants[0].i = static_cast<int>(state.out_total);
 
@@ -1128,17 +1152,6 @@ public:
                 std::vector<ncnn::VkMat> clear_weight_bindings(1);
                 clear_weight_bindings[0] = state.out_gpu_weight;
                 cmd.record_pipeline(clear_output_pipeline_.get(), clear_weight_bindings, clear_constants, clear_dispatcher);
-            }
-
-            int submit_ret = cmd.submit_and_wait();
-            if (submit_ret != 0) {
-                return EngineError{204, "Vulkan clear failed (error " + std::to_string(submit_ret) + ")"};
-            }
-        }
-
-        {
-            ncnn::VkCompute cmd(vkdev_);
-            for (auto& state : states) {
                 const size_t in_total = static_cast<size_t>(state.task->input_width) *
                                         state.task->input_height * state.task->channels;
                 if (in_total > static_cast<size_t>(std::numeric_limits<int>::max())) {
@@ -1150,7 +1163,7 @@ public:
             }
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
-                return EngineError{206, "Vulkan input upload failed (error " + std::to_string(submit_ret) + ")"};
+                return EngineError{206, "Vulkan queue init failed (error " + std::to_string(submit_ret) + ")"};
             }
         }
 
@@ -1277,7 +1290,7 @@ public:
             ncnn::VkMat blend_dispatcher;
             blend_dispatcher.w = tile_out_inner_w;
             blend_dispatcher.h = tile_out_inner_h;
-            blend_dispatcher.c = channels;
+            blend_dispatcher.c = 1;
             cmd.record_pipeline(blend_tile_pipeline_.get(), blend_bindings, blend_constants, blend_dispatcher);
 
             batch_keepalive.emplace_back(in_gpu_chw);
@@ -1286,6 +1299,7 @@ public:
         };
 
         size_t rr_cursor = 0;
+        bool outputs_downloaded = false;
         while (true) {
             if (cancel_flag) {
                 return EngineError{3, "Processing cancelled"};
@@ -1361,8 +1375,51 @@ public:
                 break;
             }
 
+            bool all_tiles_scheduled = true;
+            for (const auto& state : states) {
+                if (state.region_cursor < state.task->regions->size()) {
+                    all_tiles_scheduled = false;
+                    break;
+                }
+            }
+
+            std::vector<ncnn::VkMat> keepalive_u8;
+            if (all_tiles_scheduled) {
+                keepalive_u8.reserve(states.size());
+                for (auto& state : states) {
+                    ncnn::VkMat out_gpu_u8;
+                    out_gpu_u8.create(static_cast<int>(state.out_total), 1u, blob_vkallocator);
+
+                    std::vector<ncnn::VkMat> normalize_quantize_bindings(3);
+                    normalize_quantize_bindings[0] = state.out_gpu_hwc;
+                    normalize_quantize_bindings[1] = state.out_gpu_weight;
+                    normalize_quantize_bindings[2] = out_gpu_u8;
+
+                    std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
+                    normalize_quantize_constants[0].i = static_cast<int>(state.out_total_pixels);
+                    normalize_quantize_constants[1].i = state.task->channels;
+
+                    ncnn::VkMat normalize_quantize_dispatcher;
+                    normalize_quantize_dispatcher.w = static_cast<int>(state.out_total_pixels);
+                    normalize_quantize_dispatcher.h = 1;
+                    normalize_quantize_dispatcher.c = 1;
+                    cmd.record_pipeline(normalize_quantize_output_pipeline_.get(),
+                                        normalize_quantize_bindings,
+                                        normalize_quantize_constants,
+                                        normalize_quantize_dispatcher);
+
+                    ncnn::Mat out_cpu(static_cast<int>(state.out_total), state.task->output_data, 1u);
+                    cmd.record_clone(out_gpu_u8, out_cpu, opt);
+                    keepalive_u8.emplace_back(out_gpu_u8);
+                }
+            }
+
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
+                if (all_tiles_scheduled) {
+                    return EngineError{214, "Vulkan queue normalize+quantize/download failed (error " +
+                                            std::to_string(submit_ret) + ")"};
+                }
                 return EngineError{210, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"};
             }
 
@@ -1381,9 +1438,14 @@ public:
                     state.task->progress_callback(state.progress);
                 }
             }
+
+            if (all_tiles_scheduled) {
+                outputs_downloaded = true;
+                break;
+            }
         }
 
-        {
+        if (!outputs_downloaded) {
             ncnn::VkCompute cmd(vkdev_);
             std::vector<ncnn::VkMat> keepalive_u8;
             keepalive_u8.reserve(states.size());
@@ -1398,11 +1460,11 @@ public:
                 normalize_quantize_bindings[2] = out_gpu_u8;
 
                 std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
-                normalize_quantize_constants[0].i = static_cast<int>(state.out_total);
+                normalize_quantize_constants[0].i = static_cast<int>(state.out_total_pixels);
                 normalize_quantize_constants[1].i = state.task->channels;
 
                 ncnn::VkMat normalize_quantize_dispatcher;
-                normalize_quantize_dispatcher.w = static_cast<int>(state.out_total);
+                normalize_quantize_dispatcher.w = static_cast<int>(state.out_total_pixels);
                 normalize_quantize_dispatcher.h = 1;
                 normalize_quantize_dispatcher.c = 1;
                 cmd.record_pipeline(normalize_quantize_output_pipeline_.get(),
@@ -1664,7 +1726,7 @@ public:
             ncnn::VkMat blend_dispatcher;
             blend_dispatcher.w = tile_out_inner_w;
             blend_dispatcher.h = tile_out_inner_h;
-            blend_dispatcher.c = channels;
+            blend_dispatcher.c = 1;
             cmd.record_pipeline(blend_tile_pipeline_.get(), blend_bindings, blend_constants, blend_dispatcher);
             batch_keepalive.emplace_back(in_gpu_chw);
             batch_keepalive.emplace_back(out_gpu);
@@ -1880,11 +1942,11 @@ public:
             normalize_bindings[1] = out_gpu_weight;
 
             std::vector<ncnn::vk_constant_type> normalize_constants(2);
-            normalize_constants[0].i = static_cast<int>(out_total);
+            normalize_constants[0].i = static_cast<int>(out_total_pixels);
             normalize_constants[1].i = channels;
 
             ncnn::VkMat normalize_dispatcher;
-            normalize_dispatcher.w = static_cast<int>(out_total);
+            normalize_dispatcher.w = static_cast<int>(out_total_pixels);
             normalize_dispatcher.h = 1;
             normalize_dispatcher.c = 1;
             cmd.record_pipeline(normalize_output_pipeline_.get(), normalize_bindings, normalize_constants,
@@ -2149,7 +2211,7 @@ public:
             ncnn::VkMat blend_dispatcher;
             blend_dispatcher.w = tile_out_inner_w;
             blend_dispatcher.h = tile_out_inner_h;
-            blend_dispatcher.c = channels;
+            blend_dispatcher.c = 1;
             cmd.record_pipeline(blend_tile_pipeline_.get(), blend_bindings, blend_constants, blend_dispatcher);
             batch_keepalive.emplace_back(in_gpu_chw);
             batch_keepalive.emplace_back(out_gpu);
@@ -2374,11 +2436,11 @@ public:
             normalize_quantize_bindings[2] = out_gpu_u8;
 
             std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
-            normalize_quantize_constants[0].i = static_cast<int>(out_total);
+            normalize_quantize_constants[0].i = static_cast<int>(out_total_pixels);
             normalize_quantize_constants[1].i = channels;
 
             ncnn::VkMat normalize_quantize_dispatcher;
-            normalize_quantize_dispatcher.w = static_cast<int>(out_total);
+            normalize_quantize_dispatcher.w = static_cast<int>(out_total_pixels);
             normalize_quantize_dispatcher.h = 1;
             normalize_quantize_dispatcher.c = 1;
             cmd.record_pipeline(normalize_quantize_output_pipeline_.get(), normalize_quantize_bindings,
