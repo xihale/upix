@@ -1132,41 +1132,6 @@ public:
         submit_budget = std::max(static_cast<size_t>(16), submit_budget * 8);
         submit_budget = std::min(submit_budget, std::min(total_tiles, static_cast<size_t>(96)));
 
-        {
-            ncnn::VkCompute cmd(vkdev_);
-            for (auto& state : states) {
-                std::vector<ncnn::vk_constant_type> clear_constants(1);
-                clear_constants[0].i = static_cast<int>(state.out_total);
-
-                ncnn::VkMat clear_dispatcher;
-                clear_dispatcher.w = static_cast<int>(state.out_total);
-                clear_dispatcher.h = 1;
-                clear_dispatcher.c = 1;
-
-                std::vector<ncnn::VkMat> clear_output_bindings(1);
-                clear_output_bindings[0] = state.out_gpu_hwc;
-                cmd.record_pipeline(clear_output_pipeline_.get(), clear_output_bindings, clear_constants, clear_dispatcher);
-
-                clear_constants[0].i = static_cast<int>(state.out_total_pixels);
-                clear_dispatcher.w = static_cast<int>(state.out_total_pixels);
-                std::vector<ncnn::VkMat> clear_weight_bindings(1);
-                clear_weight_bindings[0] = state.out_gpu_weight;
-                cmd.record_pipeline(clear_output_pipeline_.get(), clear_weight_bindings, clear_constants, clear_dispatcher);
-                const size_t in_total = static_cast<size_t>(state.task->input_width) *
-                                        state.task->input_height * state.task->channels;
-                if (in_total > static_cast<size_t>(std::numeric_limits<int>::max())) {
-                    return EngineError{205, "Input image too large for Vulkan tile pipeline"};
-                }
-                ncnn::Mat in_cpu_full(static_cast<int>(in_total),
-                                      const_cast<uint8_t*>(state.task->input_data), 1u);
-                cmd.record_clone(in_cpu_full, state.in_gpu_full, opt);
-            }
-            int submit_ret = cmd.submit_and_wait();
-            if (submit_ret != 0) {
-                return EngineError{206, "Vulkan queue init failed (error " + std::to_string(submit_ret) + ")"};
-            }
-        }
-
         int input_idx = -1;
         int output_idx = -1;
         if (!net_->input_indexes().empty()) {
@@ -1300,12 +1265,47 @@ public:
 
         size_t rr_cursor = 0;
         bool outputs_downloaded = false;
+        bool need_init_submit = true;
         while (true) {
             if (cancel_flag) {
                 return EngineError{3, "Processing cancelled"};
             }
 
             ncnn::VkCompute cmd(vkdev_);
+            bool has_init_work = false;
+            if (need_init_submit) {
+                has_init_work = true;
+                for (auto& state : states) {
+                    std::vector<ncnn::vk_constant_type> clear_constants(1);
+                    clear_constants[0].i = static_cast<int>(state.out_total);
+
+                    ncnn::VkMat clear_dispatcher;
+                    clear_dispatcher.w = static_cast<int>(state.out_total);
+                    clear_dispatcher.h = 1;
+                    clear_dispatcher.c = 1;
+
+                    std::vector<ncnn::VkMat> clear_output_bindings(1);
+                    clear_output_bindings[0] = state.out_gpu_hwc;
+                    cmd.record_pipeline(clear_output_pipeline_.get(), clear_output_bindings,
+                                        clear_constants, clear_dispatcher);
+
+                    clear_constants[0].i = static_cast<int>(state.out_total_pixels);
+                    clear_dispatcher.w = static_cast<int>(state.out_total_pixels);
+                    std::vector<ncnn::VkMat> clear_weight_bindings(1);
+                    clear_weight_bindings[0] = state.out_gpu_weight;
+                    cmd.record_pipeline(clear_output_pipeline_.get(), clear_weight_bindings,
+                                        clear_constants, clear_dispatcher);
+
+                    const size_t in_total = static_cast<size_t>(state.task->input_width) *
+                                            state.task->input_height * state.task->channels;
+                    if (in_total > static_cast<size_t>(std::numeric_limits<int>::max())) {
+                        return EngineError{205, "Input image too large for Vulkan tile pipeline"};
+                    }
+                    ncnn::Mat in_cpu_full(static_cast<int>(in_total),
+                                          const_cast<uint8_t*>(state.task->input_data), 1u);
+                    cmd.record_clone(in_cpu_full, state.in_gpu_full, opt);
+                }
+            }
             std::vector<ncnn::VkMat> batch_keepalive;
             batch_keepalive.reserve(submit_budget * 2);
             std::vector<int> submitted_tiles(states.size(), 0);
@@ -1371,7 +1371,7 @@ public:
                 idle_rounds = did_work ? 0 : (idle_rounds + 1);
             }
 
-            if (scheduled_tiles == 0) {
+            if (scheduled_tiles == 0 && !has_init_work) {
                 break;
             }
 
@@ -1420,8 +1420,12 @@ public:
                     return EngineError{214, "Vulkan queue normalize+quantize/download failed (error " +
                                             std::to_string(submit_ret) + ")"};
                 }
+                if (has_init_work) {
+                    return EngineError{206, "Vulkan queue init failed (error " + std::to_string(submit_ret) + ")"};
+                }
                 return EngineError{210, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"};
             }
+            need_init_submit = false;
 
             for (size_t i = 0; i < states.size(); ++i) {
                 const int completed = submitted_tiles[i];
