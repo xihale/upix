@@ -1131,7 +1131,16 @@ public:
             return {};
         }
         submit_budget = std::max(static_cast<size_t>(16), submit_budget * 8);
-        submit_budget = std::min(submit_budget, std::min(total_tiles, static_cast<size_t>(96)));
+        size_t submit_budget_cap = std::min(total_tiles, static_cast<size_t>(96));
+        if (const char* budget_env = std::getenv("CROSSSCALE_GPU_SUBMIT_BUDGET")) {
+            try {
+                const size_t env_budget = static_cast<size_t>(std::stoul(budget_env));
+                submit_budget_cap = std::min(total_tiles, std::clamp(env_budget, static_cast<size_t>(16), static_cast<size_t>(256)));
+            } catch (...) {
+                // Ignore malformed env input and keep default cap.
+            }
+        }
+        submit_budget = std::min(submit_budget, submit_budget_cap);
 
         int input_idx = -1;
         int output_idx = -1;
@@ -3156,8 +3165,27 @@ private:
 
     bool try_init_vulkan() {
 #if NCNN_VULKAN
-        constexpr int kMaxAttempts = 3;
-        for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
+        int max_attempts = 6;
+        if (const char* retries_env = std::getenv("CROSSSCALE_GPU_INIT_RETRIES")) {
+            try {
+                max_attempts = std::stoi(retries_env);
+            } catch (...) {
+                max_attempts = 6;
+            }
+        }
+        max_attempts = std::clamp(max_attempts, 1, 12);
+
+        int retry_delay_ms = 200;
+        if (const char* delay_env = std::getenv("CROSSSCALE_GPU_INIT_DELAY_MS")) {
+            try {
+                retry_delay_ms = std::stoi(delay_env);
+            } catch (...) {
+                retry_delay_ms = 200;
+            }
+        }
+        retry_delay_ms = std::clamp(retry_delay_ms, 50, 2000);
+
+        for (int attempt = 1; attempt <= max_attempts; ++attempt) {
             ncnn::create_gpu_instance();
             int gpu_count = ncnn::get_gpu_count();
             if (gpu_count > 0) {
@@ -3200,10 +3228,13 @@ private:
                 }
             }
 
-            LOG_WARNING("Engine", "Vulkan init attempt " + std::to_string(attempt) +
-                                  " failed, retrying");
             ncnn::destroy_gpu_instance();
-            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            if (attempt < max_attempts) {
+                LOG_WARNING("Engine", "Vulkan init attempt " + std::to_string(attempt) +
+                                      " failed, retrying in " + std::to_string(retry_delay_ms) + "ms");
+                std::this_thread::sleep_for(std::chrono::milliseconds(retry_delay_ms));
+                retry_delay_ms = std::min(retry_delay_ms * 2, 1500);
+            }
         }
 #endif
         return false;

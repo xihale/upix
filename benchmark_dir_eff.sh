@@ -7,7 +7,19 @@ set -euo pipefail
 #   - eff: avg_util * active_ratio / 100 (effective occupancy)
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CLI="${BASE_DIR}/build/linux/x86_64/release/crossscale-cli"
+CLI=""
+if [[ -n "${CROSSSCALE_CLI_BIN:-}" ]]; then
+    CLI="${CROSSSCALE_CLI_BIN}"
+else
+    for candidate in \
+        "${BASE_DIR}/cli/build/linux/x86_64/release/crossscale-cli" \
+        "${BASE_DIR}/build/linux/x86_64/release/crossscale-cli"; do
+        if [[ -x "${candidate}" ]]; then
+            CLI="${candidate}"
+            break
+        fi
+    done
+fi
 
 INPUT_DIR=""
 OUTPUT_DIR=""
@@ -23,6 +35,8 @@ TIMEOUT_SEC=0
 LOG_FILE="${BASE_DIR}/gpu_dir_monitor.csv"
 REPORT_FILE="${BASE_DIR}/gpu_dir_report.txt"
 RUN_LOG_FILE="${BASE_DIR}/gpu_dir_run.log"
+GPU_RETRIES=2
+RETRY_DELAY_SEC=2
 
 usage() {
     cat <<'EOF'
@@ -46,6 +60,8 @@ Options:
   -l, --log-file      Monitor CSV path (default: ./gpu_dir_monitor.csv)
   -r, --report-file   Report path (default: ./gpu_dir_report.txt)
   --run-log           CLI run log path (default: ./gpu_dir_run.log)
+  --gpu-retries       Retry count when Vulkan falls back to CPU (default: 2)
+  --retry-delay       Delay between retries in seconds (default: 2)
   -h, --help          Show help
 EOF
 }
@@ -66,6 +82,8 @@ while [[ $# -gt 0 ]]; do
         -l|--log-file) LOG_FILE="$2"; shift 2 ;;
         -r|--report-file) REPORT_FILE="$2"; shift 2 ;;
         --run-log) RUN_LOG_FILE="$2"; shift 2 ;;
+        --gpu-retries) GPU_RETRIES="$2"; shift 2 ;;
+        --retry-delay) RETRY_DELAY_SEC="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown argument: $1"; usage; exit 1 ;;
     esac
@@ -81,9 +99,9 @@ if (( TILE_SIZE > MAX_TILE )); then
     MAX_TILE="${TILE_SIZE}"
 fi
 
-if [[ ! -x "${CLI}" ]]; then
+if [[ -z "${CLI}" || ! -x "${CLI}" ]]; then
     echo "Error: CLI not found or not executable: ${CLI}"
-    echo "Build first: cd share && xmake"
+    echo "Build first: cd cli && xmake -y"
     exit 1
 fi
 
@@ -105,8 +123,6 @@ if [[ "${image_count}" == "0" ]]; then
     exit 1
 fi
 
-echo "timestamp,gpu_util(%),mem_used(MB),mem_total(MB),temp(C)" > "${LOG_FILE}"
-
 monitor_gpu() {
     while true; do
         nvidia-smi --query-gpu=utilization.gpu,memory.used,memory.total,temperature.gpu \
@@ -126,32 +142,60 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Starting GPU monitor -> ${LOG_FILE}"
-monitor_gpu &
-MON_PID=$!
-sleep 1
+echo "Using CLI binary: ${CLI}"
 
-echo "Running directory conversion..."
-start_ts="$(date +%s.%N)"
+attempt=1
+max_attempts=$((GPU_RETRIES + 1))
 cmd_status=0
-: > "${RUN_LOG_FILE}"
-if [[ "${TIMEOUT_SEC}" != "0" ]]; then
-    set +e
-    timeout "${TIMEOUT_SEC}"s "${CLI}" process -i "${INPUT_DIR}" -o "${OUTPUT_DIR}" -m "${MODEL}" \
-        --gpu --tile-size "${TILE_SIZE}" --tile-overlap "${TILE_OVERLAP}" --batch-size "${BATCH_SIZE}" \
-        --min-tile "${MIN_TILE}" --max-tile "${MAX_TILE}" --jobs "${JOBS}" 2>&1 | tee -a "${RUN_LOG_FILE}"
-    cmd_status=${PIPESTATUS[0]}
-    set -e
-else
-    set +e
-    "${CLI}" process -i "${INPUT_DIR}" -o "${OUTPUT_DIR}" -m "${MODEL}" \
-        --gpu --tile-size "${TILE_SIZE}" --tile-overlap "${TILE_OVERLAP}" --batch-size "${BATCH_SIZE}" \
-        --min-tile "${MIN_TILE}" --max-tile "${MAX_TILE}" --jobs "${JOBS}" 2>&1 | tee -a "${RUN_LOG_FILE}"
-    cmd_status=${PIPESTATUS[0]}
-    set -e
-fi
-end_ts="$(date +%s.%N)"
+start_ts=0
+end_ts=0
+gpu_mode="unknown"
+while true; do
+    echo "timestamp,gpu_util(%),mem_used(MB),mem_total(MB),temp(C)" > "${LOG_FILE}"
+    : > "${RUN_LOG_FILE}"
 
-cleanup
+    monitor_gpu &
+    MON_PID=$!
+    sleep 1
+
+    echo "Running directory conversion... (attempt ${attempt}/${max_attempts})"
+    start_ts="$(date +%s.%N)"
+    if [[ "${TIMEOUT_SEC}" != "0" ]]; then
+        set +e
+        timeout "${TIMEOUT_SEC}"s "${CLI}" process -i "${INPUT_DIR}" -o "${OUTPUT_DIR}" -m "${MODEL}" \
+            --gpu --tile-size "${TILE_SIZE}" --tile-overlap "${TILE_OVERLAP}" --batch-size "${BATCH_SIZE}" \
+            --min-tile "${MIN_TILE}" --max-tile "${MAX_TILE}" --jobs "${JOBS}" 2>&1 | tee -a "${RUN_LOG_FILE}"
+        cmd_status=${PIPESTATUS[0]}
+        set -e
+    else
+        set +e
+        "${CLI}" process -i "${INPUT_DIR}" -o "${OUTPUT_DIR}" -m "${MODEL}" \
+            --gpu --tile-size "${TILE_SIZE}" --tile-overlap "${TILE_OVERLAP}" --batch-size "${BATCH_SIZE}" \
+            --min-tile "${MIN_TILE}" --max-tile "${MAX_TILE}" --jobs "${JOBS}" 2>&1 | tee -a "${RUN_LOG_FILE}"
+        cmd_status=${PIPESTATUS[0]}
+        set -e
+    fi
+    end_ts="$(date +%s.%N)"
+
+    cleanup
+    MON_PID=""
+
+    gpu_mode="unknown"
+    if rg -q "Initialized with Vulkan GPU support" "${RUN_LOG_FILE}"; then
+        gpu_mode="vulkan"
+    elif rg -q "Initialized with CPU|Vulkan not available" "${RUN_LOG_FILE}"; then
+        gpu_mode="cpu_fallback"
+    fi
+
+    if [[ "${gpu_mode}" != "cpu_fallback" || "${attempt}" -ge "${max_attempts}" ]]; then
+        break
+    fi
+
+    echo "Attempt ${attempt} fell back to CPU, retrying in ${RETRY_DELAY_SEC}s..."
+    attempt=$((attempt + 1))
+    sleep "${RETRY_DELAY_SEC}"
+done
+
 trap - EXIT
 
 duration_sec="$(awk "BEGIN {print ${end_ts} - ${start_ts}}")"
@@ -206,13 +250,6 @@ if (( completed_images > image_count )); then
 fi
 throughput_completed="$(awk "BEGIN {if (${duration_sec} > 0) print ${completed_images} / ${duration_sec}; else print 0}")"
 
-gpu_mode="unknown"
-if rg -q "Initialized with Vulkan GPU support" "${RUN_LOG_FILE}"; then
-    gpu_mode="vulkan"
-elif rg -q "Initialized with CPU|Vulkan not available" "${RUN_LOG_FILE}"; then
-    gpu_mode="cpu_fallback"
-fi
-
 run_status="success"
 if [[ "${cmd_status}" == "124" ]]; then
     run_status="timeout"
@@ -225,6 +262,7 @@ cat > "${REPORT_FILE}" <<EOF
 Input Dir: ${INPUT_DIR}
 Output Dir: ${OUTPUT_DIR}
 Model: ${MODEL}
+CLI Binary: ${CLI}
 Images: ${image_count}
 Completed Images: ${completed_images}
 Tile Size: ${TILE_SIZE}
@@ -235,6 +273,9 @@ Min Tile: ${MIN_TILE}
 Max Tile: ${MAX_TILE}
 Sample Interval: ${INTERVAL}s
 Timeout: ${TIMEOUT_SEC}s
+Retry Count: ${GPU_RETRIES}
+Retry Delay: ${RETRY_DELAY_SEC}s
+Run Attempt: ${attempt}/${max_attempts}
 Duration: ${duration_sec}s
 Execution Mode: ${gpu_mode}
 Run Status: ${run_status}

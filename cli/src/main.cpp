@@ -275,6 +275,25 @@ int main(int argc, char* argv[]) {
                 }
             }
             gpu_submit_queue = std::clamp(gpu_submit_queue, static_cast<size_t>(1), static_cast<size_t>(8));
+            size_t gpu_min_submit_batch = 1;
+            if (const char* min_batch_env = std::getenv("CROSSSCALE_GPU_MIN_SUBMIT_BATCH")) {
+                try {
+                    gpu_min_submit_batch = static_cast<size_t>(std::stoul(min_batch_env));
+                } catch (...) {
+                    gpu_min_submit_batch = 1;
+                }
+            }
+            gpu_min_submit_batch = std::clamp(gpu_min_submit_batch, static_cast<size_t>(1), gpu_submit_queue);
+
+            int gpu_batch_wait_ms = 0;
+            if (const char* batch_wait_env = std::getenv("CROSSSCALE_GPU_BATCH_WAIT_MS")) {
+                try {
+                    gpu_batch_wait_ms = std::stoi(batch_wait_env);
+                } catch (...) {
+                    gpu_batch_wait_ms = 0;
+                }
+            }
+            gpu_batch_wait_ms = std::clamp(gpu_batch_wait_ms, 0, 10);
 
             struct ProcessedTask {
                 std::string out_path;
@@ -463,6 +482,10 @@ int main(int argc, char* argv[]) {
                             !(auto_tile || config.auto_tile_size);
                         if (use_gpu_submit_queue) {
                             LOG_INFO("Engine", "GPU submit queue enabled, depth=" + std::to_string(gpu_submit_queue));
+                            if (gpu_batch_wait_ms > 0 || gpu_min_submit_batch > 1) {
+                                LOG_INFO("Engine", "GPU submit batching min=" + std::to_string(gpu_min_submit_batch) +
+                                                       " wait_ms=" + std::to_string(gpu_batch_wait_ms));
+                            }
                         }
 
                         auto enqueue_processed = [&](ProcessedTask&& processed) {
@@ -485,6 +508,26 @@ int main(int argc, char* argv[]) {
                                 if (prepared_queue.empty() && prepare_done) {
                                     break;
                                 }
+
+                                // Give prepare threads a short window to fill a fuller GPU submit batch.
+                                if (use_gpu_submit_queue &&
+                                    gpu_batch_wait_ms > 0 &&
+                                    gpu_min_submit_batch > 1 &&
+                                    !prepare_done &&
+                                    prepared_queue.size() < gpu_min_submit_batch) {
+                                    const auto wait_deadline = std::chrono::steady_clock::now() +
+                                                               std::chrono::milliseconds(gpu_batch_wait_ms);
+                                    while (!prepare_done &&
+                                           prepared_queue.size() < gpu_min_submit_batch &&
+                                           std::chrono::steady_clock::now() < wait_deadline) {
+                                        if (prepared_cv.wait_until(lock, wait_deadline, [&]() {
+                                                return prepare_done || prepared_queue.size() >= gpu_min_submit_batch;
+                                            })) {
+                                            break;
+                                        }
+                                    }
+                                }
+
                                 prepared_batch.emplace_back(std::move(prepared_queue.front()));
                                 prepared_queue.pop_front();
                                 while (prepared_batch.size() < gpu_submit_queue && !prepared_queue.empty()) {
