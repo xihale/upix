@@ -38,9 +38,11 @@
 namespace fs = std::filesystem;
 
 static std::atomic<bool> g_running{true};
+static std::atomic<bool> g_cancel_requested{false};
 
 void signal_handler(int) {
     g_running = false;
+    g_cancel_requested = true;
 }
 
 void print_usage() {
@@ -85,6 +87,9 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    g_running = true;
+    g_cancel_requested = false;
+
     std::string command = argv[1];
 
     if (command == "--help" || command == "-h") {
@@ -93,6 +98,9 @@ int main(int argc, char* argv[]) {
     }
 
     if (command == "process") {
+        std::signal(SIGINT, signal_handler);
+        std::signal(SIGTERM, signal_handler);
+
         std::string input_path, output_path, model_name;
         std::string models_dir = "./models";
         std::string config_file;
@@ -245,6 +253,9 @@ int main(int argc, char* argv[]) {
             };
 
             auto prepare_task = [&](const std::string& in_path, const std::string& out_path) -> std::optional<PreparedTask> {
+                if (g_cancel_requested.load()) {
+                    return std::nullopt;
+                }
                 auto img_res = crossscale::Image::load(in_path);
                 if (!img_res.has_value()) {
                     LOG_ERROR("Task", "Failed to load image: " + in_path);
@@ -339,7 +350,6 @@ int main(int argc, char* argv[]) {
                 crossscale::Image output_image(out_width, out_height, prepared.channels);
                 
                 crossscale::TileProcessor processor;
-                std::atomic<bool> cancel_flag{false};
                 auto result = processor.process_image_u8(
                     prepared.input_image.data(), output_image.data(),
                     prepared.width, prepared.height, prepared.channels,
@@ -352,10 +362,13 @@ int main(int argc, char* argv[]) {
                             LOG_INFO("Engine", "Progress: " + std::to_string(prog.completed_tiles) + "/" + std::to_string(prog.total_tiles) + " tiles (" + std::to_string(pct) + "%)");
                         }
                     },
-                    cancel_flag
+                    g_cancel_requested
                 );
                 
                 if (!result.has_value()) {
+                    if (g_cancel_requested.load()) {
+                        LOG_WARNING("Task", "Processing cancelled by signal");
+                    }
                     LOG_ERROR("Task", "Processing failed: " + result.error().message);
                     return std::nullopt;
                 }
@@ -449,6 +462,9 @@ int main(int argc, char* argv[]) {
                     for (size_t i = 0; i < kPrepareWorkers; ++i) {
                         prepare_threads.emplace_back([&]() {
                             while (true) {
+                                if (g_cancel_requested.load()) {
+                                    break;
+                                }
                                 size_t idx = next_prepare.fetch_add(1);
                                 if (idx >= tasks.size()) {
                                     break;
@@ -460,8 +476,11 @@ int main(int argc, char* argv[]) {
                                 }
                                 std::unique_lock<std::mutex> lock(prepared_mutex);
                                 prepared_cv.wait(lock, [&]() {
-                                    return prepared_queue.size() < prepared_queue_limit;
+                                    return prepared_queue.size() < prepared_queue_limit || g_cancel_requested.load();
                                 });
+                                if (g_cancel_requested.load()) {
+                                    break;
+                                }
                                 prepared_queue.emplace_back(std::move(prepared.value()));
                                 lock.unlock();
                                 prepared_cv.notify_one();
@@ -499,13 +518,19 @@ int main(int argc, char* argv[]) {
                         };
 
                         while (true) {
+                            if (g_cancel_requested.load()) {
+                                std::lock_guard<std::mutex> lock(processed_mutex);
+                                process_done = true;
+                                processed_cv.notify_all();
+                                break;
+                            }
                             std::vector<PreparedTask> prepared_batch;
                             {
                                 std::unique_lock<std::mutex> lock(prepared_mutex);
                                 prepared_cv.wait(lock, [&]() {
-                                    return !prepared_queue.empty() || prepare_done;
+                                    return !prepared_queue.empty() || prepare_done || g_cancel_requested.load();
                                 });
-                                if (prepared_queue.empty() && prepare_done) {
+                                if ((prepared_queue.empty() && prepare_done) || g_cancel_requested.load()) {
                                     break;
                                 }
 
@@ -600,9 +625,11 @@ int main(int argc, char* argv[]) {
                                 });
                             }
 
-                            std::atomic<bool> cancel_flag{false};
-                            auto queue_result = engine->process_tiles_gpu_u8_queue(gpu_tasks, cancel_flag);
+                            auto queue_result = engine->process_tiles_gpu_u8_queue(gpu_tasks, g_cancel_requested);
                             if (!queue_result.has_value()) {
+                                if (g_cancel_requested.load()) {
+                                    break;
+                                }
                                 LOG_WARNING("Engine", "GPU submit queue failed, fallback to single image path: " +
                                                       queue_result.error().message);
                                 for (auto& item : queue_items) {
@@ -635,9 +662,9 @@ int main(int argc, char* argv[]) {
                                 {
                                     std::unique_lock<std::mutex> lock(processed_mutex);
                                     processed_cv.wait(lock, [&]() {
-                                        return !processed_queue.empty() || process_done;
+                                        return !processed_queue.empty() || process_done || g_cancel_requested.load();
                                     });
-                                    if (processed_queue.empty() && process_done) {
+                                    if ((processed_queue.empty() && process_done) || g_cancel_requested.load()) {
                                         break;
                                     }
                                     processed = std::move(processed_queue.front());
@@ -662,6 +689,9 @@ int main(int argc, char* argv[]) {
                     success_count = save_success_count.load();
                 } else {
                     for (const auto& task : tasks) {
+                        if (g_cancel_requested.load()) {
+                            break;
+                        }
                         if (process_one(task.first, task.second, *engine)) {
                             success_count++;
                         }

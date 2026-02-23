@@ -117,7 +117,7 @@ fi
 
 mkdir -p "${OUTPUT_DIR}"
 
-image_count="$(find "${INPUT_DIR}" -type f | rg -i '\.(png|jpe?g|webp|bmp|tiff?)$' | wc -l | tr -d ' ')"
+image_count="$({ find "${INPUT_DIR}" -type f | rg -i '\.(png|jpe?g|webp|bmp|tiff?)$' || true; } | wc -l | tr -d ' ')"
 if [[ "${image_count}" == "0" ]]; then
     echo "Error: no images found in ${INPUT_DIR}"
     exit 1
@@ -162,7 +162,7 @@ while true; do
     start_ts="$(date +%s.%N)"
     if [[ "${TIMEOUT_SEC}" != "0" ]]; then
         set +e
-        timeout "${TIMEOUT_SEC}"s "${CLI}" process -i "${INPUT_DIR}" -o "${OUTPUT_DIR}" -m "${MODEL}" \
+        timeout --signal=TERM --kill-after=2s "${TIMEOUT_SEC}"s "${CLI}" process -i "${INPUT_DIR}" -o "${OUTPUT_DIR}" -m "${MODEL}" \
             --gpu --tile-size "${TILE_SIZE}" --tile-overlap "${TILE_OVERLAP}" --batch-size "${BATCH_SIZE}" \
             --min-tile "${MIN_TILE}" --max-tile "${MAX_TILE}" --jobs "${JOBS}" 2>&1 | tee -a "${RUN_LOG_FILE}"
         cmd_status=${PIPESTATUS[0]}
@@ -243,7 +243,7 @@ if [[ -z "${completed_images}" ]]; then
     completed_images="$(rg -c "Completed:" "${RUN_LOG_FILE}" || true)"
 fi
 if [[ -z "${completed_images}" || "${completed_images}" == "0" ]]; then
-    completed_images="$(find "${OUTPUT_DIR}" -type f | rg -i '\.(png|jpe?g|webp|bmp|tiff?)$' | wc -l | tr -d ' ')"
+    completed_images="$({ find "${OUTPUT_DIR}" -type f | rg -i '\.(png|jpe?g|webp|bmp|tiff?)$' || true; } | wc -l | tr -d ' ')"
 fi
 if (( completed_images > image_count )); then
     completed_images="${image_count}"
