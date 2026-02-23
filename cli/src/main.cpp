@@ -277,24 +277,54 @@ int main(int argc, char* argv[]) {
             if (const char* progress_env = std::getenv("CROSSSCALE_PROGRESS")) {
                 enable_progress_log = std::string(progress_env) == "1";
             }
-            size_t gpu_submit_queue = 3;
+            size_t gpu_submit_queue_max = 3;
             if (const char* queue_env = std::getenv("CROSSSCALE_GPU_SUBMIT_QUEUE")) {
                 try {
-                    gpu_submit_queue = static_cast<size_t>(std::stoul(queue_env));
+                    gpu_submit_queue_max = static_cast<size_t>(std::stoul(queue_env));
                 } catch (...) {
-                    gpu_submit_queue = 3;
+                    gpu_submit_queue_max = 3;
                 }
             }
-            gpu_submit_queue = std::clamp(gpu_submit_queue, static_cast<size_t>(1), static_cast<size_t>(8));
-            size_t gpu_min_submit_batch = 1;
+            gpu_submit_queue_max = std::clamp(gpu_submit_queue_max, static_cast<size_t>(1), static_cast<size_t>(8));
+
+            size_t gpu_submit_queue_min = 1;
+            if (const char* queue_min_env = std::getenv("CROSSSCALE_GPU_SUBMIT_QUEUE_MIN")) {
+                try {
+                    gpu_submit_queue_min = static_cast<size_t>(std::stoul(queue_min_env));
+                } catch (...) {
+                    gpu_submit_queue_min = 1;
+                }
+            }
+            gpu_submit_queue_min = std::clamp(gpu_submit_queue_min, static_cast<size_t>(1), gpu_submit_queue_max);
+
+            bool gpu_dynamic_submit_queue = true;
+            if (const char* queue_dynamic_env = std::getenv("CROSSSCALE_GPU_SUBMIT_QUEUE_DYNAMIC")) {
+                gpu_dynamic_submit_queue = std::string(queue_dynamic_env) != "0";
+            }
+
+            size_t gpu_submit_queue_target_tiles = 64;
+            if (const char* queue_target_env = std::getenv("CROSSSCALE_GPU_SUBMIT_QUEUE_TARGET_TILES")) {
+                try {
+                    gpu_submit_queue_target_tiles = static_cast<size_t>(std::stoul(queue_target_env));
+                } catch (...) {
+                    gpu_submit_queue_target_tiles = 64;
+                }
+            }
+            gpu_submit_queue_target_tiles = std::clamp(
+                gpu_submit_queue_target_tiles,
+                static_cast<size_t>(16),
+                static_cast<size_t>(256)
+            );
+
+            size_t gpu_min_submit_batch = gpu_submit_queue_min;
             if (const char* min_batch_env = std::getenv("CROSSSCALE_GPU_MIN_SUBMIT_BATCH")) {
                 try {
                     gpu_min_submit_batch = static_cast<size_t>(std::stoul(min_batch_env));
                 } catch (...) {
-                    gpu_min_submit_batch = 1;
+                    gpu_min_submit_batch = gpu_submit_queue_min;
                 }
             }
-            gpu_min_submit_batch = std::clamp(gpu_min_submit_batch, static_cast<size_t>(1), gpu_submit_queue);
+            gpu_min_submit_batch = std::clamp(gpu_min_submit_batch, static_cast<size_t>(1), gpu_submit_queue_max);
 
             int gpu_batch_wait_ms = 0;
             if (const char* batch_wait_env = std::getenv("CROSSSCALE_GPU_BATCH_WAIT_MS")) {
@@ -497,11 +527,19 @@ int main(int argc, char* argv[]) {
                     std::thread process_thread([&]() {
                         crossscale::TileProcessor queue_processor;
                         const bool use_gpu_submit_queue =
-                            gpu_submit_queue > 1 &&
+                            gpu_submit_queue_max > 1 &&
                             engine->supports_gpu_tile_pipeline_u8_queue() &&
                             !(auto_tile || config.auto_tile_size);
+                        size_t runtime_queue_depth_cap = gpu_submit_queue_max;
+                        size_t last_avg_tiles_per_image = 0;
                         if (use_gpu_submit_queue) {
-                            LOG_INFO("Engine", "GPU submit queue enabled, depth=" + std::to_string(gpu_submit_queue));
+                            LOG_INFO("Engine", "GPU submit queue enabled, depth=" +
+                                               std::to_string(gpu_submit_queue_min) + "-" +
+                                               std::to_string(gpu_submit_queue_max));
+                            if (gpu_dynamic_submit_queue) {
+                                LOG_INFO("Engine", "GPU submit queue auto target_tiles=" +
+                                                   std::to_string(gpu_submit_queue_target_tiles));
+                            }
                             if (gpu_batch_wait_ms > 0 || gpu_min_submit_batch > 1) {
                                 LOG_INFO("Engine", "GPU submit batching min=" + std::to_string(gpu_min_submit_batch) +
                                                        " wait_ms=" + std::to_string(gpu_batch_wait_ms));
@@ -540,28 +578,63 @@ int main(int argc, char* argv[]) {
                                     break;
                                 }
 
+                                const size_t wait_target = use_gpu_submit_queue
+                                    ? std::clamp(
+                                        std::max(gpu_min_submit_batch, gpu_submit_queue_min),
+                                        static_cast<size_t>(1),
+                                        runtime_queue_depth_cap
+                                    )
+                                    : static_cast<size_t>(1);
+
                                 // Give prepare threads a short window to fill a fuller GPU submit batch.
                                 if (use_gpu_submit_queue &&
                                     gpu_batch_wait_ms > 0 &&
-                                    gpu_min_submit_batch > 1 &&
+                                    wait_target > 1 &&
                                     !prepare_done &&
-                                    prepared_queue.size() < gpu_min_submit_batch) {
+                                    prepared_queue.size() < wait_target) {
                                     const auto wait_deadline = std::chrono::steady_clock::now() +
                                                                std::chrono::milliseconds(gpu_batch_wait_ms);
                                     while (!prepare_done &&
-                                           prepared_queue.size() < gpu_min_submit_batch &&
+                                           prepared_queue.size() < wait_target &&
                                            std::chrono::steady_clock::now() < wait_deadline) {
                                         if (prepared_cv.wait_until(lock, wait_deadline, [&]() {
-                                                return prepare_done || prepared_queue.size() >= gpu_min_submit_batch;
+                                                return prepare_done || prepared_queue.size() >= wait_target;
                                             })) {
                                             break;
                                         }
                                     }
                                 }
 
+                                size_t batch_target = use_gpu_submit_queue ? runtime_queue_depth_cap : static_cast<size_t>(1);
+                                if (use_gpu_submit_queue && gpu_dynamic_submit_queue) {
+                                    const size_t queued_now = prepared_queue.size();
+                                    const size_t prep_fill = (!prepare_done && queued_now < runtime_queue_depth_cap)
+                                        ? std::min(runtime_queue_depth_cap - queued_now, kPrepareWorkers)
+                                        : 0;
+                                    const size_t anticipated_ready = queued_now + prep_fill;
+                                    batch_target = std::clamp(
+                                        anticipated_ready,
+                                        gpu_submit_queue_min,
+                                        runtime_queue_depth_cap
+                                    );
+                                    if (last_avg_tiles_per_image > 0) {
+                                        const size_t tiles_target_depth = std::clamp(
+                                            (gpu_submit_queue_target_tiles + last_avg_tiles_per_image - 1) /
+                                                last_avg_tiles_per_image,
+                                            gpu_submit_queue_min,
+                                            runtime_queue_depth_cap
+                                        );
+                                        batch_target = std::min(batch_target, tiles_target_depth);
+                                    }
+                                    if (!prepare_done) {
+                                        batch_target = std::max(batch_target, wait_target);
+                                    }
+                                }
+                                batch_target = std::max(static_cast<size_t>(1), batch_target);
+
                                 prepared_batch.emplace_back(std::move(prepared_queue.front()));
                                 prepared_queue.pop_front();
-                                while (prepared_batch.size() < gpu_submit_queue && !prepared_queue.empty()) {
+                                while (prepared_batch.size() < batch_target && !prepared_queue.empty()) {
                                     prepared_batch.emplace_back(std::move(prepared_queue.front()));
                                     prepared_queue.pop_front();
                                 }
@@ -592,6 +665,7 @@ int main(int argc, char* argv[]) {
                             };
                             std::vector<QueueBatchItem> queue_items;
                             queue_items.reserve(prepared_batch.size());
+                            size_t batch_tiles_total = 0;
 
                             for (auto& prepared : prepared_batch) {
                                 if (enable_progress_log) {
@@ -609,6 +683,7 @@ int main(int argc, char* argv[]) {
                                 item.regions = queue_processor.compute_tile_layout(
                                     item.prepared.width, item.prepared.height, tile_config
                                 );
+                                batch_tiles_total += item.regions.size();
                                 item.processed.out_path = item.prepared.out_path;
                                 item.processed.out_width = item.prepared.width * engine->get_scale_factor();
                                 item.processed.out_height = item.prepared.height * engine->get_scale_factor();
@@ -619,6 +694,12 @@ int main(int argc, char* argv[]) {
                                     item.processed.channels
                                 );
                                 queue_items.emplace_back(std::move(item));
+                            }
+                            if (!queue_items.empty()) {
+                                last_avg_tiles_per_image = std::max(
+                                    static_cast<size_t>(1),
+                                    (batch_tiles_total + queue_items.size() - 1) / queue_items.size()
+                                );
                             }
 
                             std::vector<crossscale::GPUTileTaskU8> gpu_tasks;
@@ -641,6 +722,11 @@ int main(int argc, char* argv[]) {
                                 if (g_cancel_requested.load()) {
                                     break;
                                 }
+                                if (prepared_batch.size() > 1 && runtime_queue_depth_cap > gpu_submit_queue_min) {
+                                    runtime_queue_depth_cap = std::max(gpu_submit_queue_min, runtime_queue_depth_cap - 1);
+                                    LOG_WARNING("Engine", "Reducing GPU submit queue depth cap to " +
+                                                          std::to_string(runtime_queue_depth_cap));
+                                }
                                 LOG_WARNING("Engine", "GPU submit queue failed, fallback to single image path: " +
                                                       queue_result.error().message);
                                 for (auto& item : queue_items) {
@@ -656,6 +742,10 @@ int main(int argc, char* argv[]) {
                                     break;
                                 }
                                 continue;
+                            }
+                            if (runtime_queue_depth_cap < gpu_submit_queue_max &&
+                                prepared_batch.size() >= runtime_queue_depth_cap) {
+                                runtime_queue_depth_cap++;
                             }
 
                             for (auto& item : queue_items) {
