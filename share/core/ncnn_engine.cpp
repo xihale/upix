@@ -435,13 +435,13 @@ void main()
         return;
 
     const int src_xy_idx = src_y * p.src_w + src_x;
-    const int dst_idx = (out_py * p.out_w + out_px) * p.channels;
-    for (int c = 0; c < p.channels; ++c) {
-        const int src_idx = c * p.src_cstep + src_xy_idx;
-        dst_data[dst_idx + c] += float(src_data[src_idx]) * w;
+    const int src_idx = gz * p.src_cstep + src_xy_idx;
+    const int dst_idx = (out_py * p.out_w + out_px) * p.channels + gz;
+    dst_data[dst_idx] += float(src_data[src_idx]) * w;
+    if (gz == 0) {
+        const int weight_idx = out_py * p.out_w + out_px;
+        weight_data[weight_idx] += w;
     }
-    const int weight_idx = out_py * p.out_w + out_px;
-    weight_data[weight_idx] += w;
 }
 )";
 
@@ -460,22 +460,19 @@ layout (push_constant) uniform parameter
 void main()
 {
     const int gx = int(gl_GlobalInvocationID.x);
-    if (gx >= p.total_pixels)
+    const int gz = int(gl_GlobalInvocationID.z);
+    if (gx >= p.total_pixels || gz >= p.channels)
         return;
 
     const float w = weight_data[gx];
-    const int base = gx * p.channels;
+    const int dst_idx = gx * p.channels + gz;
     if (w <= 1e-6) {
-        for (int c = 0; c < p.channels; ++c) {
-            dst_data[base + c] = 0.0;
-        }
+        dst_data[dst_idx] = 0.0;
         return;
     }
 
     const float inv_w = 1.0 / w;
-    for (int c = 0; c < p.channels; ++c) {
-        dst_data[base + c] = dst_data[base + c] * inv_w;
-    }
+    dst_data[dst_idx] = dst_data[dst_idx] * inv_w;
 }
 )";
 
@@ -503,33 +500,30 @@ layout (push_constant) uniform parameter
 void main()
 {
     const int gx = int(gl_GlobalInvocationID.x);
-    if (gx >= p.total_pixels)
+    const int gz = int(gl_GlobalInvocationID.z);
+    if (gx >= p.total_pixels || gz >= p.channels)
         return;
 
     const float w = weight_data[gx];
-    const int base = gx * p.channels;
+    const int dst_idx = gx * p.channels + gz;
     if (w <= 1e-6) {
-        for (int c = 0; c < p.channels; ++c) {
 #if NCNN_int8_storage
-            dst_data[base + c] = uint8_t(0u);
+        dst_data[dst_idx] = uint8_t(0u);
 #else
-            dst_data[base + c] = 0.0;
+        dst_data[dst_idx] = 0.0;
 #endif
-        }
         return;
     }
 
     const float inv_w = 1.0 / w;
-    for (int c = 0; c < p.channels; ++c) {
-        const float normalized = src_data[base + c] * inv_w;
-        const float v = clamp(normalized * 255.0, 0.0, 255.0);
+    const float normalized = src_data[dst_idx] * inv_w;
+    const float v = clamp(normalized * 255.0, 0.0, 255.0);
 #if NCNN_int8_storage
-        const uint v32 = clamp(uint(floor(v + 0.5)), 0u, 255u);
-        dst_data[base + c] = uint8_t(v32);
+    const uint v32 = clamp(uint(floor(v + 0.5)), 0u, 255u);
+    dst_data[dst_idx] = uint8_t(v32);
 #else
-        dst_data[base + c] = v;
+    dst_data[dst_idx] = v;
 #endif
-    }
 }
 )";
 
@@ -1364,10 +1358,10 @@ public:
             ncnn::VkMat blend_dispatcher;
             blend_dispatcher.w = tile_out_inner_w;
             blend_dispatcher.h = tile_out_inner_h;
-            blend_dispatcher.c = 1;
+            blend_dispatcher.c = channels;
             cmd.record_pipeline(blend_tile_pipeline_.get(), blend_bindings, blend_constants, blend_dispatcher);
 
-            batch_output_keepalive.emplace_back(out_gpu);
+            batch_output_keepalive.emplace_back(std::move(out_gpu));
             return {};
         };
 
@@ -1513,7 +1507,7 @@ public:
                     ncnn::VkMat normalize_quantize_dispatcher;
                     normalize_quantize_dispatcher.w = static_cast<int>(state.out_total_pixels);
                     normalize_quantize_dispatcher.h = 1;
-                    normalize_quantize_dispatcher.c = 1;
+                    normalize_quantize_dispatcher.c = state.task->channels;
                     cmd.record_pipeline(normalize_quantize_output_pipeline_.get(),
                                         normalize_quantize_bindings,
                                         normalize_quantize_constants,
@@ -1521,7 +1515,7 @@ public:
 
                     ncnn::Mat out_cpu(static_cast<int>(state.out_total), state.task->output_data, 1u);
                     cmd.record_clone(out_gpu_u8, out_cpu, opt);
-                    keepalive_u8.emplace_back(out_gpu_u8);
+                    keepalive_u8.emplace_back(std::move(out_gpu_u8));
                 }
             }
 
@@ -1582,7 +1576,7 @@ public:
                 ncnn::VkMat normalize_quantize_dispatcher;
                 normalize_quantize_dispatcher.w = static_cast<int>(state.out_total_pixels);
                 normalize_quantize_dispatcher.h = 1;
-                normalize_quantize_dispatcher.c = 1;
+                normalize_quantize_dispatcher.c = state.task->channels;
                 cmd.record_pipeline(normalize_quantize_output_pipeline_.get(),
                                     normalize_quantize_bindings,
                                     normalize_quantize_constants,
@@ -1590,7 +1584,7 @@ public:
 
                 ncnn::Mat out_cpu(static_cast<int>(state.out_total), state.task->output_data, 1u);
                 cmd.record_clone(out_gpu_u8, out_cpu, opt);
-                keepalive_u8.emplace_back(out_gpu_u8);
+                keepalive_u8.emplace_back(std::move(out_gpu_u8));
             }
 
             int submit_ret = cmd.submit_and_wait();
@@ -1845,10 +1839,10 @@ public:
             ncnn::VkMat blend_dispatcher;
             blend_dispatcher.w = tile_out_inner_w;
             blend_dispatcher.h = tile_out_inner_h;
-            blend_dispatcher.c = 1;
+            blend_dispatcher.c = channels;
             cmd.record_pipeline(blend_tile_pipeline_.get(), blend_bindings, blend_constants, blend_dispatcher);
             batch_keepalive.emplace_back(in_gpu_chw);
-            batch_keepalive.emplace_back(out_gpu);
+            batch_keepalive.emplace_back(std::move(out_gpu));
 
             return {};
         };
@@ -2067,7 +2061,7 @@ public:
             ncnn::VkMat normalize_dispatcher;
             normalize_dispatcher.w = static_cast<int>(out_total_pixels);
             normalize_dispatcher.h = 1;
-            normalize_dispatcher.c = 1;
+            normalize_dispatcher.c = channels;
             cmd.record_pipeline(normalize_output_pipeline_.get(), normalize_bindings, normalize_constants,
                                 normalize_dispatcher);
 
@@ -2330,10 +2324,10 @@ public:
             ncnn::VkMat blend_dispatcher;
             blend_dispatcher.w = tile_out_inner_w;
             blend_dispatcher.h = tile_out_inner_h;
-            blend_dispatcher.c = 1;
+            blend_dispatcher.c = channels;
             cmd.record_pipeline(blend_tile_pipeline_.get(), blend_bindings, blend_constants, blend_dispatcher);
             batch_keepalive.emplace_back(in_gpu_chw);
-            batch_keepalive.emplace_back(out_gpu);
+            batch_keepalive.emplace_back(std::move(out_gpu));
 
             return {};
         };
@@ -2351,7 +2345,7 @@ public:
             ncnn::VkMat normalize_quantize_dispatcher;
             normalize_quantize_dispatcher.w = static_cast<int>(out_total_pixels);
             normalize_quantize_dispatcher.h = 1;
-            normalize_quantize_dispatcher.c = 1;
+            normalize_quantize_dispatcher.c = channels;
             cmd.record_pipeline(normalize_quantize_output_pipeline_.get(), normalize_quantize_bindings,
                                 normalize_quantize_constants, normalize_quantize_dispatcher);
 
