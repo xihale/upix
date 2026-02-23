@@ -1084,6 +1084,7 @@ public:
             size_t out_total_pixels = 0;
             ncnn::VkMat out_gpu_hwc;
             ncnn::VkMat out_gpu_weight;
+            ncnn::VkMat out_gpu_u8;
             ncnn::VkMat in_gpu_full;
             size_t region_cursor = 0;
             ProcessingProgress progress;
@@ -1151,6 +1152,7 @@ public:
 
             state.out_gpu_hwc.create(static_cast<int>(state.out_total), 4u, blob_vkallocator);
             state.out_gpu_weight.create(static_cast<int>(state.out_total_pixels), 4u, blob_vkallocator);
+            state.out_gpu_u8.create(static_cast<int>(state.out_total), 1u, blob_vkallocator);
             state.progress.total_tiles = static_cast<int>(task.regions->size());
             state.progress.completed_tiles = 0;
             states.emplace_back(std::move(state));
@@ -1371,6 +1373,12 @@ public:
         std::vector<int> submitted_tiles(states.size(), 0);
         std::vector<ncnn::VkMat> pre_bindings(2);
         std::vector<ncnn::vk_constant_type> pre_constants(8);
+        std::vector<ncnn::VkMat> batch_output_keepalive;
+        batch_output_keepalive.reserve(submit_budget);
+        std::vector<std::pair<TileInputKey, ncnn::VkMat>> inflight_tile_inputs;
+        inflight_tile_inputs.reserve(submit_budget);
+        std::vector<ncnn::VkMat> normalize_quantize_bindings(3);
+        std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
         while (true) {
             if (cancel_flag) {
                 return EngineError{3, "Processing cancelled"};
@@ -1411,10 +1419,8 @@ public:
                     cmd.record_clone(in_cpu_full, state.in_gpu_full, opt);
                 }
             }
-            std::vector<ncnn::VkMat> batch_output_keepalive;
-            batch_output_keepalive.reserve(submit_budget);
-            std::vector<std::pair<TileInputKey, ncnn::VkMat>> inflight_tile_inputs;
-            inflight_tile_inputs.reserve(submit_budget);
+            batch_output_keepalive.clear();
+            inflight_tile_inputs.clear();
             std::fill(submitted_tiles.begin(), submitted_tiles.end(), 0);
             size_t scheduled_tiles = 0;
             size_t idle_rounds = 0;
@@ -1489,18 +1495,11 @@ public:
                 }
             }
 
-            std::vector<ncnn::VkMat> keepalive_u8;
             if (all_tiles_scheduled) {
-                keepalive_u8.reserve(states.size());
-                std::vector<ncnn::VkMat> normalize_quantize_bindings(3);
-                std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
                 for (auto& state : states) {
-                    ncnn::VkMat out_gpu_u8;
-                    out_gpu_u8.create(static_cast<int>(state.out_total), 1u, blob_vkallocator);
-
                     normalize_quantize_bindings[0] = state.out_gpu_hwc;
                     normalize_quantize_bindings[1] = state.out_gpu_weight;
-                    normalize_quantize_bindings[2] = out_gpu_u8;
+                    normalize_quantize_bindings[2] = state.out_gpu_u8;
 
                     normalize_quantize_constants[0].i = static_cast<int>(state.out_total_pixels);
                     normalize_quantize_constants[1].i = state.task->channels;
@@ -1515,8 +1514,7 @@ public:
                                         normalize_quantize_dispatcher);
 
                     ncnn::Mat out_cpu(static_cast<int>(state.out_total), state.task->output_data, 1u);
-                    cmd.record_clone(out_gpu_u8, out_cpu, opt);
-                    keepalive_u8.emplace_back(std::move(out_gpu_u8));
+                    cmd.record_clone(state.out_gpu_u8, out_cpu, opt);
                 }
             }
 
@@ -1558,18 +1556,10 @@ public:
 
         if (!outputs_downloaded) {
             ncnn::VkCompute cmd(vkdev_);
-            std::vector<ncnn::VkMat> keepalive_u8;
-            keepalive_u8.reserve(states.size());
-            std::vector<ncnn::VkMat> normalize_quantize_bindings(3);
-            std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
-
             for (auto& state : states) {
-                ncnn::VkMat out_gpu_u8;
-                out_gpu_u8.create(static_cast<int>(state.out_total), 1u, blob_vkallocator);
-
                 normalize_quantize_bindings[0] = state.out_gpu_hwc;
                 normalize_quantize_bindings[1] = state.out_gpu_weight;
-                normalize_quantize_bindings[2] = out_gpu_u8;
+                normalize_quantize_bindings[2] = state.out_gpu_u8;
 
                 normalize_quantize_constants[0].i = static_cast<int>(state.out_total_pixels);
                 normalize_quantize_constants[1].i = state.task->channels;
@@ -1584,8 +1574,7 @@ public:
                                     normalize_quantize_dispatcher);
 
                 ncnn::Mat out_cpu(static_cast<int>(state.out_total), state.task->output_data, 1u);
-                cmd.record_clone(out_gpu_u8, out_cpu, opt);
-                keepalive_u8.emplace_back(std::move(out_gpu_u8));
+                cmd.record_clone(state.out_gpu_u8, out_cpu, opt);
             }
 
             int submit_ret = cmd.submit_and_wait();
