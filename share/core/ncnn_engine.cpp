@@ -395,14 +395,14 @@ layout (push_constant) uniform parameter
     int src_cstep;
 } p;
 
-float blend_weight(int pos, int size, int overlap)
+float blend_weight(int pos, int size, int overlap, int tile_start, int full_size)
 {
     if (overlap <= 0)
         return 1.0;
     float w = 1.0;
-    if (pos < overlap)
+    if (tile_start > 0 && pos < overlap)
         w = float(pos + 1) / float(overlap);
-    else if (pos >= size - overlap)
+    else if (tile_start + size < full_size && pos >= size - overlap)
         w = float(size - pos) / float(overlap);
     return w * w;
 }
@@ -421,8 +421,8 @@ void main()
     if (out_px < 0 || out_px >= p.out_w || out_py < 0 || out_py >= p.out_h)
         return;
 
-    const float wx = blend_weight(gx, p.tile_w, p.overlap);
-    const float wy = blend_weight(gy, p.tile_h, p.overlap);
+    const float wx = blend_weight(gx, p.tile_w, p.overlap, p.out_x, p.out_w);
+    const float wy = blend_weight(gy, p.tile_h, p.overlap, p.out_y, p.out_h);
     const float w = wx * wy;
 
     const int src_x = p.src_offset_x + gx;

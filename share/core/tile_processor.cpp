@@ -340,6 +340,10 @@ auto TileProcessor::blend_tile(const float* tile_data, float* output_data,
     uint32_t out_w = region.width * scale_factor;
     uint32_t out_h = region.height * scale_factor;
     int scaled_overlap = overlap * scale_factor;
+    const bool has_left_neighbor = out_x > 0;
+    const bool has_top_neighbor = out_y > 0;
+    const bool has_right_neighbor = (out_x + out_w) < static_cast<uint32_t>(output_width);
+    const bool has_bottom_neighbor = (out_y + out_h) < static_cast<uint32_t>(output_height);
 
     if (scaled_overlap <= 0) {
         for (uint32_t y = 0; y < out_h; ++y) {
@@ -355,11 +359,29 @@ auto TileProcessor::blend_tile(const float* tile_data, float* output_data,
 
     std::vector<float> x_weight(out_w);
     std::vector<float> y_weight(out_h);
+    const uint32_t overlap_x = std::min<uint32_t>(static_cast<uint32_t>(std::max(0, scaled_overlap)), out_w);
+    const uint32_t overlap_y = std::min<uint32_t>(static_cast<uint32_t>(std::max(0, scaled_overlap)), out_h);
     for (uint32_t x = 0; x < out_w; ++x) {
-        x_weight[x] = compute_blend_weight(static_cast<int>(x), static_cast<int>(out_w), scaled_overlap);
+        float w = 1.0f;
+        if (overlap_x > 0) {
+            if (has_left_neighbor && x < overlap_x) {
+                w = static_cast<float>(x + 1) / static_cast<float>(overlap_x);
+            } else if (has_right_neighbor && x >= out_w - overlap_x) {
+                w = static_cast<float>(out_w - x) / static_cast<float>(overlap_x);
+            }
+        }
+        x_weight[x] = w * w;
     }
     for (uint32_t y = 0; y < out_h; ++y) {
-        y_weight[y] = compute_blend_weight(static_cast<int>(y), static_cast<int>(out_h), scaled_overlap);
+        float w = 1.0f;
+        if (overlap_y > 0) {
+            if (has_top_neighbor && y < overlap_y) {
+                w = static_cast<float>(y + 1) / static_cast<float>(overlap_y);
+            } else if (has_bottom_neighbor && y >= out_h - overlap_y) {
+                w = static_cast<float>(out_h - y) / static_cast<float>(overlap_y);
+            }
+        }
+        y_weight[y] = w * w;
     }
     
     for (uint32_t y = 0; y < out_h; ++y) {
