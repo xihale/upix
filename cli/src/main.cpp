@@ -641,7 +641,7 @@ int main(int argc, char* argv[]) {
                             }
                             prepared_cv.notify_all();
 
-                            if (!use_gpu_submit_queue || prepared_batch.size() == 1) {
+                            if (!use_gpu_submit_queue) {
                                 for (auto& prepared : prepared_batch) {
                                     auto processed = infer_prepared_task(std::move(prepared), *engine);
                                     if (!processed.has_value()) {

@@ -1047,9 +1047,6 @@ public:
         if (!supports_gpu_tile_pipeline_u8_queue()) {
             return Engine::process_tiles_gpu_u8_queue(tasks, cancel_flag);
         }
-        if (tasks.size() == 1) {
-            return Engine::process_tiles_gpu_u8_queue(tasks, cancel_flag);
-        }
         if (cancel_flag) {
             return EngineError{3, "Processing cancelled"};
         }
@@ -1676,6 +1673,9 @@ public:
         const size_t in_total_full = static_cast<size_t>(input_width) * input_height * channels;
         if (in_total_full > static_cast<size_t>(std::numeric_limits<int>::max())) {
             return EngineError{205, "Input image too large for Vulkan tile pipeline"};
+        }
+        if (normalize_quantize_output_pipeline_ == nullptr) {
+            return EngineError{212, "Vulkan normalize+quantize pipeline not available"};
         }
 
         struct TilePadInfo {
@@ -2317,6 +2317,29 @@ public:
             return {};
         };
 
+        auto record_normalize_quantize_download = [&](ncnn::VkCompute& cmd, ncnn::VkMat& out_gpu_u8) {
+            std::vector<ncnn::VkMat> normalize_quantize_bindings(3);
+            normalize_quantize_bindings[0] = out_gpu_hwc;
+            normalize_quantize_bindings[1] = out_gpu_weight;
+            normalize_quantize_bindings[2] = out_gpu_u8;
+
+            std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
+            normalize_quantize_constants[0].i = static_cast<int>(out_total_pixels);
+            normalize_quantize_constants[1].i = channels;
+
+            ncnn::VkMat normalize_quantize_dispatcher;
+            normalize_quantize_dispatcher.w = static_cast<int>(out_total_pixels);
+            normalize_quantize_dispatcher.h = 1;
+            normalize_quantize_dispatcher.c = 1;
+            cmd.record_pipeline(normalize_quantize_output_pipeline_.get(), normalize_quantize_bindings,
+                                normalize_quantize_constants, normalize_quantize_dispatcher);
+
+            ncnn::Mat out_cpu(static_cast<int>(out_total), output_data, 1u);
+            cmd.record_clone(out_gpu_u8, out_cpu, opt);
+        };
+
+        bool output_downloaded = false;
+
         if (use_gpu_crop && preproc_hwc_crop_u8_to_chw_ == nullptr) {
             use_gpu_crop = false;
         }
@@ -2372,9 +2395,23 @@ public:
                     }
                 }
 
+                ncnn::VkMat out_gpu_u8;
+                const bool is_last_batch = (batch_end == regions.size());
+                if (is_last_batch) {
+                    out_gpu_u8.create(static_cast<int>(out_total), 1u, blob_vkallocator);
+                    record_normalize_quantize_download(cmd, out_gpu_u8);
+                }
+
                 int submit_ret = cmd.submit_and_wait();
                 if (submit_ret != 0) {
+                    if (is_last_batch) {
+                        return EngineError{214, "Vulkan normalize+quantize/download failed (error " +
+                                                std::to_string(submit_ret) + ")"};
+                    }
                     return EngineError{210, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"};
+                }
+                if (is_last_batch) {
+                    output_downloaded = true;
                 }
 
                 for (size_t i = region_idx; i < batch_end; ++i) {
@@ -2496,9 +2533,23 @@ public:
                     batch_keepalive.emplace_back(in_gpu_hwc);
                 }
 
+                ncnn::VkMat out_gpu_u8;
+                const bool is_last_batch = (current_batch->end == regions.size());
+                if (is_last_batch) {
+                    out_gpu_u8.create(static_cast<int>(out_total), 1u, blob_vkallocator);
+                    record_normalize_quantize_download(cmd, out_gpu_u8);
+                }
+
                 int submit_ret = cmd.submit_and_wait();
                 if (submit_ret != 0) {
+                    if (is_last_batch) {
+                        return EngineError{214, "Vulkan normalize+quantize/download failed (error " +
+                                                std::to_string(submit_ret) + ")"};
+                    }
                     return EngineError{210, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"};
+                }
+                if (is_last_batch) {
+                    output_downloaded = true;
                 }
 
                 for (size_t i = current_batch->begin; i < current_batch->end; ++i) {
@@ -2519,33 +2570,11 @@ public:
             }
         }
 
-        if (normalize_quantize_output_pipeline_ == nullptr) {
-            return EngineError{212, "Vulkan normalize+quantize pipeline not available"};
-        }
-
-        {
+        if (!output_downloaded) {
             ncnn::VkCompute cmd(vkdev_);
             ncnn::VkMat out_gpu_u8;
             out_gpu_u8.create(static_cast<int>(out_total), 1u, blob_vkallocator);
-
-            std::vector<ncnn::VkMat> normalize_quantize_bindings(3);
-            normalize_quantize_bindings[0] = out_gpu_hwc;
-            normalize_quantize_bindings[1] = out_gpu_weight;
-            normalize_quantize_bindings[2] = out_gpu_u8;
-
-            std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
-            normalize_quantize_constants[0].i = static_cast<int>(out_total_pixels);
-            normalize_quantize_constants[1].i = channels;
-
-            ncnn::VkMat normalize_quantize_dispatcher;
-            normalize_quantize_dispatcher.w = static_cast<int>(out_total_pixels);
-            normalize_quantize_dispatcher.h = 1;
-            normalize_quantize_dispatcher.c = 1;
-            cmd.record_pipeline(normalize_quantize_output_pipeline_.get(), normalize_quantize_bindings,
-                                normalize_quantize_constants, normalize_quantize_dispatcher);
-
-            ncnn::Mat out_cpu(static_cast<int>(out_total), output_data, 1u);
-            cmd.record_clone(out_gpu_u8, out_cpu, opt);
+            record_normalize_quantize_download(cmd, out_gpu_u8);
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
                 return EngineError{214, "Vulkan normalize+quantize/download failed (error " + std::to_string(submit_ret) + ")"};
