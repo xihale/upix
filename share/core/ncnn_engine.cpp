@@ -1368,6 +1368,9 @@ public:
         size_t rr_cursor = 0;
         bool outputs_downloaded = false;
         bool need_init_submit = true;
+        std::vector<int> submitted_tiles(states.size(), 0);
+        std::vector<ncnn::VkMat> pre_bindings(2);
+        std::vector<ncnn::vk_constant_type> pre_constants(8);
         while (true) {
             if (cancel_flag) {
                 return EngineError{3, "Processing cancelled"};
@@ -1412,11 +1415,9 @@ public:
             batch_output_keepalive.reserve(submit_budget);
             std::vector<std::pair<TileInputKey, ncnn::VkMat>> inflight_tile_inputs;
             inflight_tile_inputs.reserve(submit_budget);
-            std::vector<int> submitted_tiles(states.size(), 0);
+            std::fill(submitted_tiles.begin(), submitted_tiles.end(), 0);
             size_t scheduled_tiles = 0;
             size_t idle_rounds = 0;
-            std::vector<ncnn::VkMat> pre_bindings(2);
-            std::vector<ncnn::vk_constant_type> pre_constants(8);
 
             while (scheduled_tiles < submit_budget && idle_rounds < states.size()) {
                 QueueTaskState& state = states[rr_cursor];
