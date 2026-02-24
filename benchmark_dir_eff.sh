@@ -37,6 +37,7 @@ REPORT_FILE="${BASE_DIR}/gpu_dir_report.txt"
 RUN_LOG_FILE="${BASE_DIR}/gpu_dir_run.log"
 GPU_RETRIES=2
 RETRY_DELAY_SEC=2
+LOOP_UNTIL_TIMEOUT=1
 
 usage() {
     cat <<'EOF'
@@ -62,6 +63,7 @@ Options:
   --run-log           CLI run log path (default: ./gpu_dir_run.log)
   --gpu-retries       Retry count when Vulkan falls back to CPU (default: 2)
   --retry-delay       Delay between retries in seconds (default: 2)
+  --single-pass       Run conversion only once even when --timeout is set
   -h, --help          Show help
 EOF
 }
@@ -84,6 +86,7 @@ while [[ $# -gt 0 ]]; do
         --run-log) RUN_LOG_FILE="$2"; shift 2 ;;
         --gpu-retries) GPU_RETRIES="$2"; shift 2 ;;
         --retry-delay) RETRY_DELAY_SEC="$2"; shift 2 ;;
+        --single-pass) LOOP_UNTIL_TIMEOUT=0; shift 1 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown argument: $1"; usage; exit 1 ;;
     esac
@@ -160,21 +163,70 @@ while true; do
 
     echo "Running directory conversion... (attempt ${attempt}/${max_attempts})"
     start_ts="$(date +%s.%N)"
+    deadline_ts="0"
     if [[ "${TIMEOUT_SEC}" != "0" ]]; then
-        set +e
-        timeout --signal=TERM --kill-after=2s "${TIMEOUT_SEC}"s "${CLI}" process -i "${INPUT_DIR}" -o "${OUTPUT_DIR}" -m "${MODEL}" \
-            --gpu --tile-size "${TILE_SIZE}" --tile-overlap "${TILE_OVERLAP}" --batch-size "${BATCH_SIZE}" \
-            --min-tile "${MIN_TILE}" --max-tile "${MAX_TILE}" --jobs "${JOBS}" 2>&1 | tee -a "${RUN_LOG_FILE}"
-        cmd_status=${PIPESTATUS[0]}
-        set -e
-    else
-        set +e
-        "${CLI}" process -i "${INPUT_DIR}" -o "${OUTPUT_DIR}" -m "${MODEL}" \
-            --gpu --tile-size "${TILE_SIZE}" --tile-overlap "${TILE_OVERLAP}" --batch-size "${BATCH_SIZE}" \
-            --min-tile "${MIN_TILE}" --max-tile "${MAX_TILE}" --jobs "${JOBS}" 2>&1 | tee -a "${RUN_LOG_FILE}"
-        cmd_status=${PIPESTATUS[0]}
-        set -e
+        deadline_ts="$(awk "BEGIN {printf \"%.9f\", ${start_ts} + ${TIMEOUT_SEC}}")"
     fi
+
+    pass_count=0
+    scheduled_images=0
+    total_completed=0
+    cmd_status=0
+    while true; do
+        pass_count=$((pass_count + 1))
+        scheduled_images=$((scheduled_images + image_count))
+
+        run_timeout="${TIMEOUT_SEC}"
+        if [[ "${TIMEOUT_SEC}" != "0" && "${LOOP_UNTIL_TIMEOUT}" == "1" ]]; then
+            now_ts="$(date +%s.%N)"
+            run_timeout="$(awk "BEGIN {remaining=${deadline_ts}-${now_ts}; if (remaining < 0) remaining = 0; printf \"%.3f\", remaining}")"
+            should_stop="$(awk "BEGIN {print (${run_timeout} <= 0.05) ? 1 : 0}")"
+            if [[ "${should_stop}" == "1" ]]; then
+                cmd_status=124
+                break
+            fi
+        fi
+
+        pass_output_dir="${OUTPUT_DIR}"
+        if [[ "${TIMEOUT_SEC}" != "0" && "${LOOP_UNTIL_TIMEOUT}" == "1" ]]; then
+            pass_output_dir="${OUTPUT_DIR}/pass_${pass_count}"
+            mkdir -p "${pass_output_dir}"
+        fi
+
+        pass_log="$(mktemp)"
+        set +e
+        if [[ "${TIMEOUT_SEC}" != "0" ]]; then
+            timeout --signal=TERM --kill-after=2s "${run_timeout}"s "${CLI}" process -i "${INPUT_DIR}" -o "${pass_output_dir}" -m "${MODEL}" \
+                --gpu --tile-size "${TILE_SIZE}" --tile-overlap "${TILE_OVERLAP}" --batch-size "${BATCH_SIZE}" \
+                --min-tile "${MIN_TILE}" --max-tile "${MAX_TILE}" --jobs "${JOBS}" 2>&1 | tee "${pass_log}"
+            cmd_status=${PIPESTATUS[0]}
+        else
+            "${CLI}" process -i "${INPUT_DIR}" -o "${pass_output_dir}" -m "${MODEL}" \
+                --gpu --tile-size "${TILE_SIZE}" --tile-overlap "${TILE_OVERLAP}" --batch-size "${BATCH_SIZE}" \
+                --min-tile "${MIN_TILE}" --max-tile "${MAX_TILE}" --jobs "${JOBS}" 2>&1 | tee "${pass_log}"
+            cmd_status=${PIPESTATUS[0]}
+        fi
+        set -e
+        cat "${pass_log}" >> "${RUN_LOG_FILE}"
+
+        pass_completed="$(rg -o 'Processing summary: [0-9]+/' "${pass_log}" | tail -n 1 | rg -o '[0-9]+' | head -n 1 || true)"
+        if [[ -z "${pass_completed}" ]]; then
+            pass_completed="$(rg -c "Completed:" "${pass_log}" || true)"
+        fi
+        if [[ -z "${pass_completed}" ]]; then
+            pass_completed=0
+        fi
+        total_completed=$((total_completed + pass_completed))
+        rm -f "${pass_log}"
+
+        if [[ "${cmd_status}" == "124" || "${cmd_status}" != "0" ]]; then
+            break
+        fi
+        if [[ "${TIMEOUT_SEC}" == "0" || "${LOOP_UNTIL_TIMEOUT}" != "1" ]]; then
+            break
+        fi
+    done
+
     end_ts="$(date +%s.%N)"
 
     cleanup
@@ -232,7 +284,7 @@ END {
 
 read -r avg_util peak_util avg_mem peak_mem avg_temp peak_temp active_ratio eff <<< "${stats}"
 
-throughput="$(awk "BEGIN {if (${duration_sec} > 0) print ${image_count} / ${duration_sec}; else print 0}")"
+throughput="$(awk "BEGIN {if (${duration_sec} > 0) print ${scheduled_images} / ${duration_sec}; else print 0}")"
 
 # In some environments the tee output file appears with slight delay after timeout returns.
 for _ in $(seq 1 20); do
@@ -240,21 +292,22 @@ for _ in $(seq 1 20); do
     sleep 0.05
 done
 
-completed_images="$(rg -o 'Processing summary: [0-9]+/' "${RUN_LOG_FILE}" | tail -n 1 | rg -o '[0-9]+' | head -n 1 || true)"
-if [[ -z "${completed_images}" ]]; then
-    completed_images="$(rg -c "Completed:" "${RUN_LOG_FILE}" || true)"
-fi
+completed_images="${total_completed}"
 if [[ -z "${completed_images}" || "${completed_images}" == "0" ]]; then
-    completed_images="$({ find "${OUTPUT_DIR}" -type f | rg -i '\.(png|jpe?g|webp|bmp|tiff?)$' || true; } | wc -l | tr -d ' ')"
+    completed_images="$(rg -c "Completed:" "${RUN_LOG_FILE}" || echo 0)"
 fi
-if (( completed_images > image_count )); then
-    completed_images="${image_count}"
+if [[ -z "${completed_images}" ]]; then
+    completed_images=0
 fi
 throughput_completed="$(awk "BEGIN {if (${duration_sec} > 0) print ${completed_images} / ${duration_sec}; else print 0}")"
 
 run_status="success"
 if [[ "${cmd_status}" == "124" ]]; then
     run_status="timeout"
+    if [[ "${TIMEOUT_SEC}" != "0" && "${LOOP_UNTIL_TIMEOUT}" == "1" ]]; then
+        run_status="timeout_reached"
+        cmd_status=0
+    fi
 elif [[ "${cmd_status}" != "0" ]]; then
     run_status="failed(${cmd_status})"
 fi
@@ -277,6 +330,8 @@ Sample Interval: ${INTERVAL}s
 Timeout: ${TIMEOUT_SEC}s
 Retry Count: ${GPU_RETRIES}
 Retry Delay: ${RETRY_DELAY_SEC}s
+Loop Until Timeout: ${LOOP_UNTIL_TIMEOUT}
+Passes: ${pass_count}
 Run Attempt: ${attempt}/${max_attempts}
 Duration: ${duration_sec}s
 Execution Mode: ${gpu_mode}
