@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -36,7 +35,6 @@ import com.crossscale.ui.navigation.AppScreen
 import com.crossscale.ui.navigation.CrossScaleNavigation
 import com.crossscale.viewmodel.DeviceViewModel
 import com.crossscale.viewmodel.MainViewModel
-import com.crossscale.viewmodel.ProcessingQueueItemStatus
 import com.crossscale.viewmodel.ProcessingViewModel
 import java.io.File
 
@@ -163,62 +161,6 @@ fun CrossScaleApp(container: AppContainer) {
         }
     }
 
-    var debugAutoRunStarted by rememberSaveable { mutableStateOf(false) }
-    var debugAutoRunOpened by rememberSaveable { mutableStateOf(false) }
-    var debugAutoRunQueueId by rememberSaveable { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(
-        mainUiState.selectedModel?.name,
-        mainUiState.selectedInputSources,
-        processingUiState.isProcessing,
-        debugAutoRunStarted
-    ) {
-        if (!BuildConfig.DEBUG || debugAutoRunStarted || processingUiState.isProcessing) {
-            return@LaunchedEffect
-        }
-
-        val selectedModel = mainUiState.selectedModel ?: return@LaunchedEffect
-        val debugInputSource = resolveDebugInputSource(
-            context = context,
-            selectedInputSources = mainUiState.selectedInputSources,
-            logRepository = logRepository
-        ) ?: return@LaunchedEffect
-
-        mainViewModel.selectImage(debugInputSource)
-        val queueId = processingViewModel.enqueueBatch(
-            imagePath = debugInputSource,
-            modelName = selectedModel.name,
-            distributedMode = mainUiState.isDistributedMode,
-            outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
-            overwriteOriginal = mainUiState.overwriteOriginalImage,
-            backupOriginal = mainUiState.backupOriginalImage
-        )
-        if (queueId != null) {
-            debugAutoRunQueueId = queueId
-            debugAutoRunStarted = true
-            logRepository.info("CrossScaleApp", "Debug auto-run started for source=$debugInputSource")
-            startQueueWithWritePermissionCheck(queueId)
-        } else {
-            logRepository.warning("CrossScaleApp", "Debug auto-run enqueue failed for source=$debugInputSource")
-        }
-    }
-
-    LaunchedEffect(processingUiState.queueItems, debugAutoRunQueueId, debugAutoRunOpened) {
-        if (!BuildConfig.DEBUG || debugAutoRunOpened) {
-            return@LaunchedEffect
-        }
-        val queueId = debugAutoRunQueueId ?: return@LaunchedEffect
-        val queuedItem = processingUiState.queueItems.firstOrNull { item -> item.id == queueId } ?: return@LaunchedEffect
-        if (queuedItem.status != ProcessingQueueItemStatus.COMPLETED || queuedItem.lastOutputUri.isNullOrBlank()) {
-            return@LaunchedEffect
-        }
-        val opened = openImageOutput(context = context, rawOutput = queuedItem.lastOutputUri, logRepository = logRepository)
-        if (opened) {
-            debugAutoRunOpened = true
-            logRepository.info("CrossScaleApp", "Debug auto-run output opened: ${queuedItem.lastOutputUri}")
-        }
-    }
-
     Scaffold(
         topBar = {
             TopAppBar(
@@ -324,112 +266,6 @@ fun CrossScaleApp(container: AppContainer) {
 }
 
 private const val MODEL_RELEASE_URL = "https://github.com/xihale/crossscale/releases"
-private const val DEBUG_AUTORUN_SHARED_INPUT = "/sdcard/Pictures/crossscale_debug_input.jpg"
-private const val DEBUG_AUTORUN_GENERATED_INPUT_NAME = "crossscale_debug_input.jpg"
-
-private fun resolveDebugInputSource(
-    context: Context,
-    selectedInputSources: List<String>,
-    logRepository: LogRepository
-): String? {
-    val generatedFallbackPath = File(context.filesDir, DEBUG_AUTORUN_GENERATED_INPUT_NAME).absolutePath
-    val candidates = buildList {
-        addAll(selectedInputSources)
-        add(BuildConfig.DEBUG_AUTORUN_INPUT)
-        add(DEBUG_AUTORUN_SHARED_INPUT)
-        add(generatedFallbackPath)
-    }.map { candidate ->
-        candidate.trim()
-    }.filter { candidate ->
-        candidate.isNotBlank()
-    }.distinct()
-
-    val readableCandidate = candidates.firstOrNull { candidate ->
-        debugInputReadable(context = context, source = candidate)
-    }
-    if (readableCandidate != null) {
-        return readableCandidate
-    }
-
-    val generatedPath = ensureGeneratedDebugInput(context = context, logRepository = logRepository)
-    if (!generatedPath.isNullOrBlank() && debugInputReadable(context = context, source = generatedPath)) {
-        return generatedPath
-    }
-    logRepository.warning("CrossScaleApp", "No readable debug input source found")
-    return null
-}
-
-private fun debugInputReadable(context: Context, source: String): Boolean {
-    val raw = source.trim()
-    if (raw.isBlank()) {
-        return false
-    }
-    if (raw.startsWith("/")) {
-        return isReadableFilePath(raw)
-    }
-
-    return runCatching {
-        val parsed = Uri.parse(raw)
-        when (parsed.scheme?.lowercase()) {
-            null -> isReadableFilePath(raw)
-            "file" -> isReadableFilePath(parsed.path.orEmpty())
-            else -> context.contentResolver.openInputStream(parsed)?.use { true } ?: false
-        }
-    }.getOrDefault(false)
-}
-
-private fun isReadableFilePath(path: String): Boolean {
-    if (path.isBlank()) {
-        return false
-    }
-    val file = File(path)
-    if (!file.exists() || !file.isFile) {
-        return false
-    }
-    return runCatching {
-        file.inputStream().use { true }
-    }.getOrDefault(false)
-}
-
-private fun ensureGeneratedDebugInput(
-    context: Context,
-    logRepository: LogRepository
-): String? {
-    val file = File(context.filesDir, DEBUG_AUTORUN_GENERATED_INPUT_NAME)
-    if (isReadableFilePath(file.absolutePath)) {
-        return file.absolutePath
-    }
-
-    return runCatching {
-        val width = 640
-        val height = 640
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val pixels = IntArray(width * height)
-        for (y in 0 until height) {
-            for (x in 0 until width) {
-                val r = x * 255 / (width - 1)
-                val g = y * 255 / (height - 1)
-                val checker = if (((x / 32) + (y / 32)) % 2 == 0) 48 else 0
-                val b = ((255 - r) / 2 + checker).coerceIn(0, 255)
-                val color = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-                pixels[y * width + x] = color
-            }
-        }
-        bitmap.setPixels(pixels, 0, width, 0, 0, width, height)
-        file.parentFile?.mkdirs()
-        file.outputStream().use { outputStream ->
-            val encoded = bitmap.compress(Bitmap.CompressFormat.JPEG, 96, outputStream)
-            require(encoded) { "Failed to encode generated debug input" }
-        }
-        bitmap.recycle()
-        file.absolutePath
-    }.onFailure { throwable ->
-        logRepository.warning(
-            "CrossScaleApp",
-            "Failed to create fallback debug image: ${throwable.message}"
-        )
-    }.getOrNull()
-}
 
 private fun openImageOutput(
     context: Context,
