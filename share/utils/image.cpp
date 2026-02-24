@@ -2,7 +2,10 @@
 #include "logger.hpp"
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
+#include <fstream>
 
 extern "C" {
 #include <png.h>
@@ -14,6 +17,18 @@ extern "C" {
 namespace crossscale {
 
 namespace {
+    auto normalize_image_format(std::string format) -> std::string {
+        std::string normalized;
+        normalized.reserve(format.size());
+        for (char ch : format) {
+            if (ch == '.' || std::isspace(static_cast<unsigned char>(ch))) {
+                continue;
+            }
+            normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        }
+        return normalized;
+    }
+
     auto read_file(const std::filesystem::path& path) -> expected<std::vector<uint8_t>, ImageError> {
         std::ifstream file(path, std::ios::binary | std::ios::ate);
         if (!file.is_open()) {
@@ -247,6 +262,140 @@ auto Image::save(const std::filesystem::path& path, int quality) const
         }
     } catch (const std::exception& e) {
         return ImageError{11, "Exception during save: " + std::string(e.what())};
+    }
+}
+
+auto Image::save_to_memory(const std::string& format, int quality) const
+    -> expected<std::vector<uint8_t>, ImageError> {
+    const std::string normalized_format = normalize_image_format(format);
+    const std::string output_format = normalized_format.empty() ? "png" : normalized_format;
+    const int clamped_quality = std::clamp(quality, 1, 100);
+
+    try {
+        if (output_format == "png") {
+            std::vector<uint8_t> encoded;
+
+            png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+            if (!png) return ImageError{20, "Failed to create PNG write struct"};
+
+            png_infop info = png_create_info_struct(png);
+            if (!info) {
+                png_destroy_write_struct(&png, nullptr);
+                return ImageError{20, "Failed to create PNG info struct"};
+            }
+
+            if (setjmp(png_jmpbuf(png))) {
+                png_destroy_write_struct(&png, &info);
+                return ImageError{20, "Error during PNG memory writing"};
+            }
+
+            png_set_write_fn(
+                png,
+                &encoded,
+                [](png_structp png_ptr, png_bytep data, png_size_t length) {
+                    auto* out = static_cast<std::vector<uint8_t>*>(png_get_io_ptr(png_ptr));
+                    out->insert(out->end(), data, data + length);
+                },
+                nullptr
+            );
+
+            png_byte color_type;
+            if (channels_ == 1) color_type = PNG_COLOR_TYPE_GRAY;
+            else if (channels_ == 2) color_type = PNG_COLOR_TYPE_GRAY_ALPHA;
+            else if (channels_ == 3) color_type = PNG_COLOR_TYPE_RGB;
+            else if (channels_ == 4) color_type = PNG_COLOR_TYPE_RGBA;
+            else {
+                png_destroy_write_struct(&png, &info);
+                return ImageError{14, "Unsupported channel count for PNG: " + std::to_string(channels_)};
+            }
+
+            png_set_compression_level(png, png_compression_level_from_quality(clamped_quality));
+            png_set_compression_strategy(png, PNG_Z_DEFAULT_STRATEGY);
+            png_set_IHDR(
+                png, info, width_, height_, 8, color_type, PNG_INTERLACE_NONE,
+                PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT
+            );
+
+            png_write_info(png, info);
+            for (int y = 0; y < height_; ++y) {
+                png_bytep row = const_cast<png_bytep>(&data_[static_cast<size_t>(y) * width_ * channels_]);
+                png_write_row(png, row);
+            }
+            png_write_end(png, nullptr);
+            png_destroy_write_struct(&png, &info);
+            return encoded;
+        }
+
+        if (output_format == "jpg" || output_format == "jpeg") {
+            if (channels_ != 1 && channels_ != 3) {
+                return ImageError{15, "JPEG only supports 1 or 3 channels"};
+            }
+
+            jpeg_compress_struct cinfo;
+            jpeg_error_mgr jerr;
+            unsigned char* out_buffer = nullptr;
+            size_t out_size = 0;
+
+            cinfo.err = jpeg_std_error(&jerr);
+            jpeg_create_compress(&cinfo);
+            jpeg_mem_dest(&cinfo, &out_buffer, &out_size);
+
+            cinfo.image_width = width_;
+            cinfo.image_height = height_;
+            cinfo.input_components = channels_;
+            cinfo.in_color_space = channels_ == 1 ? JCS_GRAYSCALE : JCS_RGB;
+
+            jpeg_set_defaults(&cinfo);
+            jpeg_set_quality(&cinfo, clamped_quality, TRUE);
+            jpeg_start_compress(&cinfo, TRUE);
+
+            JSAMPROW row_pointer[1];
+            const size_t row_stride = static_cast<size_t>(width_) * channels_;
+            while (cinfo.next_scanline < cinfo.image_height) {
+                row_pointer[0] = const_cast<JSAMPLE*>(&data_[static_cast<size_t>(cinfo.next_scanline) * row_stride]);
+                jpeg_write_scanlines(&cinfo, row_pointer, 1);
+            }
+
+            jpeg_finish_compress(&cinfo);
+            jpeg_destroy_compress(&cinfo);
+
+            if (!out_buffer || out_size == 0) {
+                std::free(out_buffer);
+                return ImageError{21, "JPEG memory encode failed"};
+            }
+
+            std::vector<uint8_t> encoded(out_buffer, out_buffer + out_size);
+            std::free(out_buffer);
+            return encoded;
+        }
+
+        if (output_format == "webp") {
+            if (channels_ != 3 && channels_ != 4) {
+                return ImageError{18, "WebP save requires 3 or 4 channels"};
+            }
+
+            uint8_t* out_buffer = nullptr;
+            const int stride = width_ * channels_;
+            size_t out_size = 0;
+
+            if (channels_ == 3) {
+                out_size = WebPEncodeRGB(data(), width_, height_, stride, static_cast<float>(clamped_quality), &out_buffer);
+            } else {
+                out_size = WebPEncodeRGBA(data(), width_, height_, stride, static_cast<float>(clamped_quality), &out_buffer);
+            }
+
+            if (out_size == 0 || out_buffer == nullptr) {
+                return ImageError{19, "WebP encode failed"};
+            }
+
+            std::vector<uint8_t> encoded(out_buffer, out_buffer + out_size);
+            WebPFree(out_buffer);
+            return encoded;
+        }
+
+        return ImageError{22, "Unsupported save format: " + output_format};
+    } catch (const std::exception& e) {
+        return ImageError{23, "Exception during memory save: " + std::string(e.what())};
     }
 }
 

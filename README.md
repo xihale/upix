@@ -35,6 +35,7 @@ The binary will be located at `build/linux/x86_64/release/crossscale-cli` (path 
 ```bash
 ./crossscale-cli process -i input.png -o output.png -m Real-ESRGANv3-anime-x2
 ```
+Use `--output-quality <1-100>` to trade file size for fidelity and `--output-format <png|jpg|jpeg|webp>` to override the saved container.
 
 Optional parameters:
 
@@ -138,6 +139,7 @@ You can save frequently used settings in a JSON file:
   "output_format": ""
 }
 ```
+`output_quality` and `output_format` from the config (or via `--output-quality`/`--output-format`) determine the compression level and file container used for each processed image.
 
 Load with `--config FILE`. CLI flags override the loaded configuration.
 

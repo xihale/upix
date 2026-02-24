@@ -48,7 +48,7 @@ void signal_handler(int) {
 void print_usage() {
     std::cout << "CrossScale - Distributed Image Super-Resolution System\n\n"
               << "Usage:\n"
-              << "  crossscale process -i <input> -o <output> -m <model>\n"
+              << "  crossscale process -i <input> -o <output> -m <model> [--output-quality <1-100>] [--output-format <png|jpg|jpeg|webp>]\n"
               << "  crossscale server start -p <port> [-k <key>]\n"
               << "  crossscale server info\n"
               << "  crossscale worker connect <host>:<port> -k <key>\n"
@@ -104,6 +104,8 @@ int main(int argc, char* argv[]) {
         std::string input_path, output_path, model_name;
         std::string models_dir = "./models";
         std::string config_file;
+        int cli_output_quality = -1;
+        std::string cli_output_format;
 
         // 瓦片配置参数
         int tile_size = 256;
@@ -130,6 +132,8 @@ int main(int argc, char* argv[]) {
             else if (arg == "--jobs" && i + 1 < argc) jobs = std::stoi(argv[++i]);
             else if (arg == "-j" && i + 1 < argc) jobs = std::stoi(argv[++i]);
             else if (arg == "--gpu") use_gpu = true;
+            else if (arg == "--output-quality" && i + 1 < argc) cli_output_quality = std::stoi(argv[++i]);
+            else if (arg == "--output-format" && i + 1 < argc) cli_output_format = argv[++i];
             else if (arg == "--config" && i + 1 < argc) config_file = argv[++i];
         }
 
@@ -230,6 +234,12 @@ int main(int argc, char* argv[]) {
             config.auto_tile_size = auto_tile;
             config.min_tile_size = min_tile;
             config.max_tile_size = max_tile;
+            if (cli_output_quality >= 0) {
+                config.output_quality = cli_output_quality;
+            }
+            if (!cli_output_format.empty()) {
+                config.output_format = crossscale::normalize_output_format(cli_output_format);
+            }
             
             // Validate configuration
             auto errors = config.validate();
@@ -414,16 +424,19 @@ int main(int argc, char* argv[]) {
 
             auto save_processed_task = [&](ProcessedTask&& processed) -> bool {
                 std::filesystem::path out_path_obj(processed.out_path);
-                std::filesystem::create_directories(out_path_obj.parent_path());
+                const std::filesystem::path final_out_path = crossscale::resolve_output_path(out_path_obj, config);
+                if (!final_out_path.parent_path().empty()) {
+                    std::filesystem::create_directories(final_out_path.parent_path());
+                }
 
-                auto save_res = processed.output_image.save(processed.out_path);
+                auto save_res = processed.output_image.save(final_out_path, config.output_quality);
                 if (!save_res.has_value()) {
-                    LOG_ERROR("Task", "Failed to save output: " + save_res.error().message);
+                    LOG_ERROR("Task", "Failed to save output: " + save_res.error().message + " -> " + final_out_path.string());
                     return false;
                 }
 
                 if (enable_progress_log) {
-                    LOG_INFO("Task", "Completed: " + processed.out_path);
+                    LOG_INFO("Task", "Completed: " + final_out_path.string());
                 }
                 return true;
             };
@@ -996,6 +1009,12 @@ int main(int argc, char* argv[]) {
         config.auto_tile_size = auto_tile;
         config.min_tile_size = min_tile;
         config.max_tile_size = max_tile;
+        if (cli_output_quality >= 0) {
+            config.output_quality = cli_output_quality;
+        }
+        if (!cli_output_format.empty()) {
+            config.output_format = crossscale::normalize_output_format(cli_output_format);
+        }
 
         // 如果启用自动调优，运行基准测试选择最优 tile size
         if (auto_tile || config.auto_tile_size) {
@@ -1078,13 +1097,14 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        auto save_result = output_image.save(output_path);
+        const auto final_output_path = crossscale::resolve_output_path(output_path, config);
+        auto save_result = output_image.save(final_output_path, config.output_quality);
         if (!save_result.has_value()) {
             LOG_ERROR("Engine", "Failed to save output: " + save_result.error().message);
             return 1;
         }
 
-        LOG_INFO("Engine", "Output saved: " + output_path);
+        LOG_INFO("Engine", "Output saved: " + final_output_path.string());
         LOG_INFO("Engine", "Processing complete: " + std::to_string(out_width) + "x" + std::to_string(out_height));
         return 0;
     }

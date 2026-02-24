@@ -153,7 +153,7 @@ class BatchOutputRepository(
             val createdUri = DocumentsContract.createDocument(
                 contentResolver,
                 parsedDirectoryUri,
-                PNG_MIME_TYPE,
+                mimeTypeForOutputName(outputName),
                 outputName
             ) ?: throw IOException("Failed to create output document: $outputName")
 
@@ -192,7 +192,26 @@ class BatchOutputRepository(
             .take(64)
             .ifBlank { "image" }
         val uniqueSuffix = shortHash(input.uri.toString())
-        return "${baseName}_${uniqueSuffix}.png"
+        val extension = normalizedOutputExtension(input.displayName)
+        return "${baseName}_${uniqueSuffix}.$extension"
+    }
+
+    private fun normalizedOutputExtension(displayName: String): String {
+        return when (displayName.substringAfterLast('.', "").lowercase()) {
+            "jpg" -> "jpg"
+            "jpeg" -> "jpeg"
+            "webp" -> "webp"
+            "png" -> "png"
+            else -> "png"
+        }
+    }
+
+    private fun mimeTypeForOutputName(outputName: String): String {
+        return when (outputName.substringAfterLast('.', "").lowercase()) {
+            "jpg", "jpeg" -> JPEG_MIME_TYPE
+            "webp" -> WEBP_MIME_TYPE
+            else -> PNG_MIME_TYPE
+        }
     }
 
     private fun ensureSubDirectory(
@@ -268,6 +287,8 @@ class BatchOutputRepository(
         private const val OUTPUT_ROOT_DIR = "outputs"
         private const val TEMP_OUTPUT_ROOT_DIR = "outputs_temp"
         private const val PNG_MIME_TYPE = "image/png"
+        private const val JPEG_MIME_TYPE = "image/jpeg"
+        private const val WEBP_MIME_TYPE = "image/webp"
         private const val CONTENT_SCHEME_PREFIX = "content://"
     }
 }

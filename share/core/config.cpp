@@ -7,6 +7,59 @@
 
 namespace crossscale {
 
+namespace {
+
+auto normalize_output_extension(const std::string& format) -> std::string {
+    if (format == "jpeg") {
+        return "jpg";
+    }
+    return format;
+}
+
+} // namespace
+
+auto normalize_output_format(std::string format) -> std::string {
+    std::string normalized;
+    normalized.reserve(format.size());
+    for (char ch : format) {
+        if (ch == '.' || std::isspace(static_cast<unsigned char>(ch))) {
+            continue;
+        }
+        normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    }
+    return normalized;
+}
+
+bool is_supported_output_format(const std::string& format) {
+    static constexpr const char* kSupportedFormats[] = {
+        "png",
+        "jpg",
+        "jpeg",
+        "webp"
+    };
+    for (const char* candidate : kSupportedFormats) {
+        if (format == candidate) {
+            return true;
+        }
+    }
+    return false;
+}
+
+auto resolve_output_path(
+    const std::filesystem::path& requested_path,
+    const ProcessingConfig& config
+) -> std::filesystem::path {
+    const std::string normalized_format = normalize_output_format(config.output_format);
+    if (normalized_format.empty()) {
+        return requested_path;
+    }
+
+    std::filesystem::path resolved = requested_path;
+    const std::string extension = normalize_output_extension(normalized_format);
+    resolved.replace_extension("." + extension);
+    return resolved;
+}
+
 // 简单的 JSON 解析辅助函数
 static std::string extract_json_string(const std::string& json, const std::string& key) {
     std::string search = "\"" + key + "\"";
@@ -81,7 +134,7 @@ auto ProcessingConfig::load(const std::filesystem::path& path)
     config.use_gpu = extract_json_bool(json, "use_gpu", true);
     config.model_name = extract_json_string(json, "model_name");
     config.output_quality = extract_json_int(json, "output_quality", 90);
-    config.output_format = extract_json_string(json, "output_format");
+    config.output_format = normalize_output_format(extract_json_string(json, "output_format"));
 
     return config;
 }
@@ -93,6 +146,8 @@ auto ProcessingConfig::save(const std::filesystem::path& path) const
     if (!file.is_open()) {
         return "Cannot create config file: " + path.string();
     }
+
+    const std::string format_to_save = normalize_output_format(output_format);
 
     file << "{\n"
          << "  \"tile_size\": " << tile_size << ",\n"
@@ -106,7 +161,7 @@ auto ProcessingConfig::save(const std::filesystem::path& path) const
          << "  \"use_gpu\": " << (use_gpu ? "true" : "false") << ",\n"
          << "  \"model_name\": \"" << model_name << "\",\n"
          << "  \"output_quality\": " << output_quality << ",\n"
-         << "  \"output_format\": \"" << output_format << "\"\n"
+         << "  \"output_format\": \"" << format_to_save << "\"\n"
          << "}\n";
 
     return {};
@@ -137,6 +192,10 @@ auto ProcessingConfig::validate() const -> std::vector<std::string> {
 
     if (output_quality < 1 || output_quality > 100) {
         errors.push_back("output_quality must be between 1 and 100");
+    }
+    const std::string normalized_format = normalize_output_format(output_format);
+    if (!normalized_format.empty() && !is_supported_output_format(normalized_format)) {
+        errors.push_back("output_format must be one of: png, jpg, jpeg, webp");
     }
 
     return errors;

@@ -51,6 +51,14 @@ struct ProcessingConfig {
     auto validate() const -> std::vector<std::string>;
 };
 
+// Output format helpers shared by CLI / Android.
+auto normalize_output_format(std::string format) -> std::string;
+auto is_supported_output_format(const std::string& format) -> bool;
+auto resolve_output_path(
+    const std::filesystem::path& requested_path,
+    const ProcessingConfig& config
+) -> std::filesystem::path;
+
 // 设备性能档案
 struct DevicePerformanceProfile {
     DeviceType device_type = DeviceType::CPU;

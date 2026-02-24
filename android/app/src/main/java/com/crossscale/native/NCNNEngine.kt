@@ -12,7 +12,9 @@ object NCNNEngine {
         inputImage: ByteArray,
         width: Int,
         height: Int,
-        channels: Int
+        channels: Int,
+        outputFormat: String,
+        outputQuality: Int
     ): ByteArray?
     external fun nativeBenchmark(enginePtr: Long): Float
     external fun nativeGetScaleFactor(enginePtr: Long): Int

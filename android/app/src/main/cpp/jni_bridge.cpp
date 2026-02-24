@@ -1,10 +1,13 @@
 #include <jni.h>
 #include <string>
 #include <android/log.h>
+#include <algorithm>
 #include <memory>
 #include <vector>
 
+#include "core/config.hpp"
 #include "core/engine.hpp"
+#include "utils/image.hpp"
 
 #define LOG_TAG "CrossScale"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -105,12 +108,32 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImage(
     jbyteArray input_image,
     jint width,
     jint height,
-    jint channels
+    jint channels,
+    jstring output_format,
+    jint output_quality
 ) {
     (void)thiz;
     if (engine_ptr == 0 || input_image == nullptr) return nullptr;
     
     auto* engine = reinterpret_cast<Engine*>(engine_ptr);
+
+    ProcessingConfig output_config;
+    output_config.output_quality = std::clamp(static_cast<int>(output_quality), 1, 100);
+    output_config.output_format = "png";
+    if (output_format != nullptr) {
+        const char* format_chars = env->GetStringUTFChars(output_format, nullptr);
+        if (format_chars != nullptr) {
+            output_config.output_format = normalize_output_format(format_chars);
+            env->ReleaseStringUTFChars(output_format, format_chars);
+        }
+    }
+    if (output_config.output_format.empty()) {
+        output_config.output_format = "png";
+    }
+    if (!is_supported_output_format(output_config.output_format)) {
+        LOGE("Unsupported output format: %s", output_config.output_format.c_str());
+        return nullptr;
+    }
     
     jsize input_size = env->GetArrayLength(input_image);
     jbyte* input_data = env->GetByteArrayElements(input_image, nullptr);
@@ -142,15 +165,33 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImage(
         return nullptr;
     }
     
-    jbyteArray output = env->NewByteArray(output_size);
-    std::vector<jbyte> output_bytes(output_size);
+    Image output_image(output_width, output_height, channels);
     for (jsize i = 0; i < output_size; ++i) {
         float val = output_float[i] * 255.0f;
-        output_bytes[i] = static_cast<jbyte>(std::max(0.0f, std::min(255.0f, val)));
+        output_image.data()[i] = static_cast<uint8_t>(std::clamp(val, 0.0f, 255.0f));
     }
-    
-    env->SetByteArrayRegion(output, 0, output_size, output_bytes.data());
-    
+
+    auto encoded_result = output_image.save_to_memory(
+        output_config.output_format,
+        output_config.output_quality
+    );
+    if (!encoded_result.has_value()) {
+        LOGE("Failed to encode output image: %s", encoded_result.error().message.c_str());
+        return nullptr;
+    }
+
+    const auto& encoded = encoded_result.value();
+    jbyteArray output = env->NewByteArray(static_cast<jsize>(encoded.size()));
+    if (output == nullptr) {
+        LOGE("Failed to allocate output byte array");
+        return nullptr;
+    }
+    env->SetByteArrayRegion(
+        output,
+        0,
+        static_cast<jsize>(encoded.size()),
+        reinterpret_cast<const jbyte*>(encoded.data())
+    );
     return output;
 }
 

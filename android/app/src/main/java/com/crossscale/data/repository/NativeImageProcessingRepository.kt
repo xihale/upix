@@ -6,8 +6,6 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import com.crossscale.native.NCNNEngine
 import java.io.File
-import java.io.IOException
-import kotlin.math.sqrt
 
 data class NativeProcessResult(
     val outputFile: File,
@@ -107,34 +105,28 @@ class NativeImageProcessingRepository(
                     decoded.rgbBytes,
                     decoded.width,
                     decoded.height,
-                    RGB_CHANNELS
+                    RGB_CHANNELS,
+                    outputFormatFor(outputFile),
+                    DEFAULT_OUTPUT_QUALITY
                 )
                 requireNotNull(outputBytes) {
                     "Native engine returned empty result: ${input.displayName}"
                 }
 
-                val dimensions = resolveOutputDimensions(
-                    inputWidth = decoded.width,
-                    inputHeight = decoded.height,
-                    outputByteCount = outputBytes.size
-                )
-                requireNotNull(dimensions) {
-                    "Invalid native output size ${outputBytes.size} bytes for ${input.displayName}"
-                }
-
-                writeOutputPng(
+                writeOutputBytes(
                     file = outputFile,
-                    rgbBytes = outputBytes,
-                    width = dimensions.first,
-                    height = dimensions.second
+                    encodedBytes = outputBytes
                 )
+
+                val outputWidth = decoded.width * scaleFactor
+                val outputHeight = decoded.height * scaleFactor
 
                 NativeProcessResult(
                     outputFile = outputFile,
                     inputWidth = decoded.width,
                     inputHeight = decoded.height,
-                    outputWidth = dimensions.first,
-                    outputHeight = dimensions.second
+                    outputWidth = outputWidth,
+                    outputHeight = outputHeight
                 )
             }
         }
@@ -208,68 +200,25 @@ class NativeImageProcessingRepository(
             )
         }
 
-        private fun resolveOutputDimensions(
-            inputWidth: Int,
-            inputHeight: Int,
-            outputByteCount: Int
-        ): Pair<Int, Int>? {
-            if (outputByteCount <= 0 || outputByteCount % RGB_CHANNELS != 0) {
-                return null
-            }
-
-            val outputPixels = outputByteCount / RGB_CHANNELS
-            val expectedWidth = inputWidth * scaleFactor
-            val expectedHeight = inputHeight * scaleFactor
-            if (expectedWidth > 0 && expectedHeight > 0 && expectedWidth * expectedHeight == outputPixels) {
-                return expectedWidth to expectedHeight
-            }
-
-            if (expectedWidth > 0 && outputPixels % expectedWidth == 0) {
-                val inferredHeight = outputPixels / expectedWidth
-                if (inferredHeight > 0) {
-                    return expectedWidth to inferredHeight
-                }
-            }
-
-            val sideLength = sqrt(outputPixels.toDouble()).toInt()
-            return if (sideLength * sideLength == outputPixels) {
-                sideLength to sideLength
-            } else {
-                null
+        private fun writeOutputBytes(
+            file: File,
+            encodedBytes: ByteArray
+        ) {
+            require(encodedBytes.isNotEmpty()) { "Output image buffer is empty" }
+            file.parentFile?.mkdirs()
+            file.outputStream().use { output ->
+                output.write(encodedBytes)
             }
         }
 
-        private fun writeOutputPng(
-            file: File,
-            rgbBytes: ByteArray,
-            width: Int,
-            height: Int
-        ) {
-            val expectedSize = width * height * RGB_CHANNELS
-            require(rgbBytes.size == expectedSize) {
-                "Output pixel buffer size mismatch: expected=$expectedSize actual=${rgbBytes.size}"
-            }
-
-            val pixels = IntArray(width * height)
-            var readIndex = 0
-            for (pixelIndex in pixels.indices) {
-                val r = rgbBytes[readIndex++].toInt() and 0xFF
-                val g = rgbBytes[readIndex++].toInt() and 0xFF
-                val b = rgbBytes[readIndex++].toInt() and 0xFF
-                pixels[pixelIndex] = (0xFF shl 24) or (r shl 16) or (g shl 8) or b
-            }
-
-            val bitmap = Bitmap.createBitmap(pixels, width, height, Bitmap.Config.ARGB_8888)
-            try {
-                file.parentFile?.mkdirs()
-                val writeSucceeded = file.outputStream().use { output ->
-                    bitmap.compress(Bitmap.CompressFormat.PNG, PNG_COMPRESSION_QUALITY, output)
-                }
-                if (!writeSucceeded) {
-                    throw IOException("Bitmap compress returned false")
-                }
-            } finally {
-                bitmap.recycle()
+        private fun outputFormatFor(file: File): String {
+            val extension = file.extension.trim().lowercase()
+            return when (extension) {
+                "png" -> "png"
+                "jpg" -> "jpg"
+                "jpeg" -> "jpeg"
+                "webp" -> "webp"
+                else -> DEFAULT_OUTPUT_FORMAT
             }
         }
 
@@ -285,6 +234,7 @@ class NativeImageProcessingRepository(
         private const val DEVICE_TYPE_GPU = 1
         private const val RGB_CHANNELS = 3
         private const val DEFAULT_SCALE_FACTOR = 2
-        private const val PNG_COMPRESSION_QUALITY = 100
+        private const val DEFAULT_OUTPUT_FORMAT = "png"
+        private const val DEFAULT_OUTPUT_QUALITY = 90
     }
 }
