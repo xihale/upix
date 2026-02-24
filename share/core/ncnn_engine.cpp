@@ -1197,6 +1197,24 @@ public:
         submit_budget = std::max(submit_budget, static_cast<size_t>(32));
 
         size_t submit_memory_budget_mb = 768;
+        if (vkdev_ != nullptr) {
+            const bool is_discrete_gpu = vkdev_->info.type() == 0;
+            const size_t heap_budget_mb = static_cast<size_t>(vkdev_->get_heap_budget());
+            if (heap_budget_mb > 0) {
+                // Keep submit memory bounded to a fraction of the live heap budget so
+                // high-end dGPUs can keep deeper in-flight work without starving small GPUs.
+                const size_t budget_divisor = is_discrete_gpu ? 8 : 14;
+                const size_t min_budget_mb = is_discrete_gpu ? 768 : 256;
+                const size_t max_budget_mb = is_discrete_gpu ? 1536 : 640;
+                submit_memory_budget_mb = std::clamp(
+                    heap_budget_mb / budget_divisor,
+                    min_budget_mb,
+                    max_budget_mb
+                );
+            } else {
+                submit_memory_budget_mb = is_discrete_gpu ? 1024 : 384;
+            }
+        }
         if (const char* mem_env = std::getenv("CROSSSCALE_GPU_SUBMIT_MB")) {
             try {
                 submit_memory_budget_mb = std::clamp(
