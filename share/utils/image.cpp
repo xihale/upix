@@ -39,6 +39,12 @@ namespace {
         return {};
     }
 
+    auto png_compression_level_from_quality(int quality) -> int {
+        const int clamped = std::clamp(quality, 1, 100);
+        int level = ((100 - clamped) * 9 + 50) / 100;
+        return std::clamp(level, 0, 9);
+    }
+
     auto load_png(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError> {
         struct PngReadContext {
             const uint8_t* data;
@@ -231,7 +237,7 @@ auto Image::save(const std::filesystem::path& path, int quality) const
     
     try {
         if (ext == ".png") {
-            return save_png(path);
+            return save_png(path, quality);
         } else if (ext == ".jpg" || ext == ".jpeg") {
             return save_jpeg(path, quality);
         } else if (ext == ".webp") {
@@ -244,7 +250,7 @@ auto Image::save(const std::filesystem::path& path, int quality) const
     }
 }
 
-auto Image::save_png(const std::filesystem::path& path) const
+auto Image::save_png(const std::filesystem::path& path, int quality) const
     -> expected<void, ImageError> {
     std::vector<uint8_t> buffer;
     png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
@@ -268,6 +274,8 @@ auto Image::save_png(const std::filesystem::path& path) const
     }
     
     png_init_io(png, fp);
+    png_set_compression_level(png, png_compression_level_from_quality(quality));
+    png_set_compression_strategy(png, PNG_Z_DEFAULT_STRATEGY);
     
     png_byte color_type;
     if (channels_ == 1) color_type = PNG_COLOR_TYPE_GRAY;
