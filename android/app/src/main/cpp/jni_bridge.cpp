@@ -5,7 +5,9 @@
 #include <exception>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
+#include <sstream>
 #include <vector>
 
 #include "core/config.hpp"
@@ -20,6 +22,23 @@
 using namespace crossscale;
 
 namespace {
+
+std::mutex g_jni_error_mutex;
+std::string g_jni_last_error;
+
+void set_jni_last_error(const std::string& error_message) {
+    std::lock_guard<std::mutex> lock(g_jni_error_mutex);
+    g_jni_last_error = error_message;
+}
+
+void clear_jni_last_error() {
+    set_jni_last_error("");
+}
+
+auto get_jni_last_error() -> std::string {
+    std::lock_guard<std::mutex> lock(g_jni_error_mutex);
+    return g_jni_last_error;
+}
 
 class StubWorker {
 public:
@@ -53,6 +72,7 @@ Java_com_crossscale_native_NCNNEngine_nativeInit(
     (void)thiz;
     auto engine = create_ncnn_engine();
     if (!engine) {
+        set_jni_last_error("Failed to create engine");
         LOGE("Failed to create engine");
         return 0;
     }
@@ -61,15 +81,18 @@ Java_com_crossscale_native_NCNNEngine_nativeInit(
     auto result = engine->initialize(preferred);
 
     if (!result.has_value()) {
+        set_jni_last_error("Failed to initialize engine: " + result.error().message);
         LOGE("Failed to initialize engine: %s", result.error().message.c_str());
         return 0;
     }
 
     if (preferred == DeviceType::GPU_VULKAN && engine->current_device() != DeviceType::GPU_VULKAN) {
+        set_jni_last_error("GPU initialization downgraded to CPU internally; aborting because CPU fallback is disabled");
         LOGE("GPU initialization downgraded to CPU internally; aborting because CPU fallback is disabled");
         return 0;
     }
 
+    clear_jni_last_error();
     LOGI("Engine initialized with device type: %d", device_type);
     return reinterpret_cast<jlong>(engine.release());
 }
@@ -82,10 +105,17 @@ Java_com_crossscale_native_NCNNEngine_nativeLoadModel(
     jstring model_path
 ) {
     (void)thiz;
-    if (engine_ptr == 0) return JNI_FALSE;
+    if (engine_ptr == 0) {
+        set_jni_last_error("nativeLoadModel called with null engine pointer");
+        return JNI_FALSE;
+    }
     
     auto* engine = reinterpret_cast<Engine*>(engine_ptr);
     const char* path = env->GetStringUTFChars(model_path, nullptr);
+    if (path == nullptr) {
+        set_jni_last_error("Failed to read model path string from Java");
+        return JNI_FALSE;
+    }
     
     std::string param_path = std::string(path) + ".param";
     std::string bin_path = std::string(path) + ".bin";
@@ -95,8 +125,30 @@ Java_com_crossscale_native_NCNNEngine_nativeLoadModel(
     auto result = engine->load_model(param_path, bin_path);
     
     env->ReleaseStringUTFChars(model_path, path);
+
+    if (!result.has_value()) {
+        std::ostringstream stream;
+        stream << "nativeLoadModel failed code=" << result.error().code
+               << " message=" << result.error().message;
+        const std::string error_message = stream.str();
+        set_jni_last_error(error_message);
+        LOGE("%s", error_message.c_str());
+        return JNI_FALSE;
+    }
+
+    clear_jni_last_error();
     
-    return result.has_value() ? JNI_TRUE : JNI_FALSE;
+    return JNI_TRUE;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_crossscale_native_NCNNEngine_nativeGetLastError(
+    JNIEnv* env,
+    jobject thiz
+) {
+    (void)thiz;
+    const std::string last_error = get_jni_last_error();
+    return env->NewStringUTF(last_error.c_str());
 }
 
 JNIEXPORT jbyteArray JNICALL

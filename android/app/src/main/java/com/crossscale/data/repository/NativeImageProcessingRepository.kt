@@ -6,6 +6,13 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import com.crossscale.native.NCNNEngine
 import java.io.File
+import java.io.FileOutputStream
+import java.io.IOException
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.sqrt
 
 data class NativeProcessResult(
     val outputFile: File,
@@ -21,6 +28,7 @@ class NativeImageProcessingRepository(
 ) : ImageProcessingStore {
     private val appContext = context.applicationContext
 
+    @Synchronized
     override fun openSession(
         modelName: String,
         modelBasePath: String,
@@ -65,8 +73,7 @@ class NativeImageProcessingRepository(
             context = appContext,
             logRepository = logRepository,
             enginePtr = selectedHandle.enginePtr,
-            scaleFactor = selectedHandle.scaleFactor,
-            activeDeviceType = selectedHandle.deviceType
+            scaleFactor = selectedHandle.scaleFactor
         )
     }
 
@@ -114,13 +121,20 @@ class NativeImageProcessingRepository(
             false
         }
         if (!loadSuccess) {
+            val nativeError = runCatching {
+                NCNNEngine.nativeGetLastError().orEmpty()
+            }.getOrDefault("")
             releaseEngine(
                 enginePtr = enginePtr,
                 errorPrefix = "Failed to release engine after load failure"
             )
             logRepository.error(
                 "NativeImageProcessingRepository",
-                "Native model load failed for $modelName ($modelBasePath, mode=${deviceLabel(deviceType)})"
+                if (nativeError.isBlank()) {
+                    "Native model load failed for $modelName ($modelBasePath, mode=${deviceLabel(deviceType)})"
+                } else {
+                    "Native model load failed for $modelName ($modelBasePath, mode=${deviceLabel(deviceType)}): $nativeError"
+                }
             )
             return null
         }
@@ -154,7 +168,7 @@ class NativeImageProcessingRepository(
         gpuHandle: NativeEngineHandle
     ): GpuValidationResult {
         val probeInput = buildValidationInput()
-        val probeOutputGpu = processValidationInput(
+        val firstProbeOutput = processValidationInput(
             enginePtr = gpuHandle.enginePtr,
             inputBytes = probeInput,
             width = GPU_VALIDATION_INPUT_SIZE,
@@ -164,19 +178,49 @@ class NativeImageProcessingRepository(
             reason = "GPU probe returned empty output"
         )
 
-        val gpuBitmap = decodeValidationBitmap(probeOutputGpu)
+        val secondProbeOutput = processValidationInput(
+            enginePtr = gpuHandle.enginePtr,
+            inputBytes = probeInput,
+            width = GPU_VALIDATION_INPUT_SIZE,
+            height = GPU_VALIDATION_INPUT_SIZE
+        ) ?: return GpuValidationResult(
+            isStable = false,
+            reason = "GPU probe second pass returned empty output"
+        )
+
+        val firstProbeBitmap = decodeValidationBitmap(firstProbeOutput)
             ?: return GpuValidationResult(
                 isStable = false,
-                reason = "GPU probe decode failed"
+                reason = "GPU probe first decode failed"
+            )
+        val secondProbeBitmap = decodeValidationBitmap(secondProbeOutput)
+            ?: return GpuValidationResult(
+                isStable = false,
+                reason = "GPU probe second decode failed"
             )
 
         return try {
             val expectedWidth = GPU_VALIDATION_INPUT_SIZE * gpuHandle.scaleFactor
             val expectedHeight = GPU_VALIDATION_INPUT_SIZE * gpuHandle.scaleFactor
-            if (gpuBitmap.width != expectedWidth || gpuBitmap.height != expectedHeight) {
+            if (
+                firstProbeBitmap.width != expectedWidth ||
+                firstProbeBitmap.height != expectedHeight ||
+                secondProbeBitmap.width != expectedWidth ||
+                secondProbeBitmap.height != expectedHeight
+            ) {
                 GpuValidationResult(
                     isStable = false,
-                    reason = "Unexpected GPU output size ${gpuBitmap.width}x${gpuBitmap.height} (expected ${expectedWidth}x${expectedHeight})"
+                    reason = "Unexpected GPU output size first=${firstProbeBitmap.width}x${firstProbeBitmap.height}, second=${secondProbeBitmap.width}x${secondProbeBitmap.height}, expected=${expectedWidth}x${expectedHeight}"
+                )
+            } else if (!hasVisualSignal(firstProbeBitmap)) {
+                GpuValidationResult(
+                    isStable = false,
+                    reason = "GPU probe output appears visually invalid (insufficient dynamic range)"
+                )
+            } else if (!hasVisualSignal(secondProbeBitmap)) {
+                GpuValidationResult(
+                    isStable = false,
+                    reason = "GPU probe second output appears visually invalid (insufficient dynamic range)"
                 )
             } else {
                 GpuValidationResult(
@@ -185,8 +229,49 @@ class NativeImageProcessingRepository(
                 )
             }
         } finally {
-            gpuBitmap.recycle()
+            firstProbeBitmap.recycle()
+            secondProbeBitmap.recycle()
         }
+    }
+
+    private fun hasVisualSignal(bitmap: Bitmap): Boolean {
+        val width = bitmap.width
+        val height = bitmap.height
+        if (width <= 0 || height <= 0) {
+            return false
+        }
+
+        val pixelCount = width * height
+        val pixels = IntArray(pixelCount)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+
+        var minLuma = 255
+        var maxLuma = 0
+        var sum = 0.0
+        for (pixel in pixels) {
+            val r = (pixel shr 16) and 0xFF
+            val g = (pixel shr 8) and 0xFF
+            val b = pixel and 0xFF
+            val luma = (r * 299 + g * 587 + b * 114) / 1000
+            minLuma = minOf(minLuma, luma)
+            maxLuma = maxOf(maxLuma, luma)
+            sum += luma.toDouble()
+        }
+
+        val mean = sum / pixelCount.toDouble()
+        var varianceSum = 0.0
+        for (pixel in pixels) {
+            val r = (pixel shr 16) and 0xFF
+            val g = (pixel shr 8) and 0xFF
+            val b = pixel and 0xFF
+            val luma = (r * 299 + g * 587 + b * 114) / 1000
+            val delta = luma - mean
+            varianceSum += delta * delta
+        }
+
+        val stdDev = sqrt(varianceSum / pixelCount.toDouble())
+        val dynamicRange = maxLuma - minLuma
+        return dynamicRange >= GPU_VALIDATION_MIN_DYNAMIC_RANGE && stdDev >= GPU_VALIDATION_MIN_STD_DEV
     }
 
     private fun processValidationInput(
@@ -215,7 +300,15 @@ class NativeImageProcessingRepository(
 
     private fun decodeValidationBitmap(encodedBytes: ByteArray): Bitmap? {
         return runCatching {
-            BitmapFactory.decodeByteArray(encodedBytes, 0, encodedBytes.size)
+            val decoded = BitmapFactory.decodeByteArray(encodedBytes, 0, encodedBytes.size)
+                ?: return@runCatching null
+            if (decoded.config == Bitmap.Config.ARGB_8888) {
+                decoded
+            } else {
+                val converted = decoded.copy(Bitmap.Config.ARGB_8888, false)
+                decoded.recycle()
+                converted
+            }
         }.getOrNull()
     }
 
@@ -246,10 +339,8 @@ class NativeImageProcessingRepository(
         private val context: Context,
         private val logRepository: LogRepository,
         private var enginePtr: Long,
-        private var scaleFactor: Int,
-        private var activeDeviceType: Int
+        private var scaleFactor: Int
     ) : ImageProcessingSession {
-
         override fun process(
             input: ResolvedImageInput,
             outputFile: File
@@ -474,10 +565,110 @@ class NativeImageProcessingRepository(
             encodedBytes: ByteArray
         ) {
             require(encodedBytes.isNotEmpty()) { "Output image buffer is empty" }
-            file.parentFile?.mkdirs()
-            file.outputStream().use { output ->
-                output.write(encodedBytes)
+            val outputPath = file.absolutePath
+            val pathLock = FILE_WRITE_LOCKS.computeIfAbsent(outputPath) { Any() }
+            synchronized(pathLock) {
+                val parent = file.parentFile
+                if (parent != null) {
+                    if (parent.exists() && !parent.isDirectory) {
+                        throw IOException("Output parent is not a directory: ${parent.absolutePath}")
+                    }
+                    if (!parent.exists() && !parent.mkdirs()) {
+                        throw IOException("Failed to create output directory: ${parent.absolutePath}")
+                    }
+                }
+
+                if (file.exists() && file.isDirectory) {
+                    logRepository.warning(
+                        "NativeImageProcessingRepository",
+                        "Output target is a directory, removing stale directory: $outputPath"
+                    )
+                    if (!file.deleteRecursively()) {
+                        throw IOException("Output target is a directory and cannot be removed: $outputPath")
+                    }
+                }
+
+                logOutputPathState(file = file, stage = "before_write")
+
+                val tempFile = File(
+                    parent,
+                    "${file.name}.tmp-${System.nanoTime()}-${Thread.currentThread().threadId()}"
+                )
+
+                try {
+                    FileOutputStream(tempFile).use { output ->
+                        output.write(encodedBytes)
+                        output.fd.sync()
+                    }
+
+                    moveTempFileAtomically(tempFile = tempFile, outputFile = file)
+                } catch (throwable: Throwable) {
+                    val isExistsConflict = throwable is IOException &&
+                        (throwable.message?.contains("EEXIST", ignoreCase = true) == true ||
+                            throwable.message?.contains("File exists", ignoreCase = true) == true)
+
+                    if (!isExistsConflict) {
+                        throw throwable
+                    }
+
+                    logRepository.warning(
+                        "NativeImageProcessingRepository",
+                        "Output write conflict detected for $outputPath, attempting cleanup and retry: ${throwable.message}"
+                    )
+                    logOutputPathState(file = file, stage = "conflict_retry_before_cleanup")
+
+                    if (file.exists()) {
+                        if (!file.delete()) {
+                            file.deleteRecursively()
+                        }
+                    }
+
+                    moveTempFileAtomically(tempFile = tempFile, outputFile = file)
+                } finally {
+                    if (tempFile.exists()) {
+                        tempFile.delete()
+                    }
+                    logOutputPathState(file = file, stage = "after_write")
+                }
             }
+        }
+
+        private fun moveTempFileAtomically(
+            tempFile: File,
+            outputFile: File
+        ) {
+            val sourcePath = tempFile.toPath()
+            val destinationPath = outputFile.toPath()
+            try {
+                Files.move(
+                    sourcePath,
+                    destinationPath,
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(
+                    sourcePath,
+                    destinationPath,
+                    StandardCopyOption.REPLACE_EXISTING
+                )
+            }
+        }
+
+        private fun logOutputPathState(
+            file: File,
+            stage: String
+        ) {
+            val parent = file.parentFile
+            val parentState = if (parent == null) {
+                "parent=<none>"
+            } else {
+                "parent=${parent.absolutePath}, exists=${parent.exists()}, isDir=${parent.isDirectory}, canWrite=${parent.canWrite()}"
+            }
+            logRepository.info(
+                "NativeImageProcessingRepository",
+                "Output state[$stage]: path=${file.absolutePath}, exists=${file.exists()}, isFile=${file.isFile}, isDir=${file.isDirectory}, canWrite=${file.canWrite()}, $parentState"
+            )
         }
 
         private fun outputFormatFor(file: File): String {
@@ -508,5 +699,8 @@ class NativeImageProcessingRepository(
         private const val DEFAULT_OUTPUT_QUALITY = 90
         private const val MAX_RGB_BUFFER_HEAP_RATIO = 0.85
         private const val GPU_VALIDATION_INPUT_SIZE = 96
+        private const val GPU_VALIDATION_MIN_DYNAMIC_RANGE = 24
+        private const val GPU_VALIDATION_MIN_STD_DEV = 8.0
+        private val FILE_WRITE_LOCKS = ConcurrentHashMap<String, Any>()
     }
 }

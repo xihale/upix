@@ -1,11 +1,17 @@
 package com.crossscale.data.repository
 
 import android.content.Context
+import android.content.ContentValues
+import android.media.MediaScannerConnection
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
+import android.provider.MediaStore
 import android.provider.DocumentsContract
 import java.io.File
+import java.io.FileOutputStream
 import java.io.IOException
+import java.io.OutputStream
 import java.security.MessageDigest
 
 data class BatchOutputDirectory(
@@ -117,18 +123,11 @@ class BatchOutputRepository(
         input: ResolvedImageInput
     ): File {
         val outputName = outputNameFor(input)
-        return if (outputDirectory.outputDirectoryUri.isNullOrBlank()) {
-            val outputDir = requireNotNull(outputDirectory.internalDirectory) {
-                "Internal output directory is missing for ${outputDirectory.batchId}"
-            }
-            File(outputDir, outputName)
-        } else {
-            val tempDir = File(tempOutputRootDir, outputDirectory.batchId)
-            if (!tempDir.exists()) {
-                tempDir.mkdirs()
-            }
-            File(tempDir, outputName)
+        val tempDir = File(tempOutputRootDir, outputDirectory.batchId)
+        if (!tempDir.exists()) {
+            tempDir.mkdirs()
         }
+        return File(tempDir, outputName)
     }
 
     override fun isOutputReady(
@@ -194,37 +193,159 @@ class BatchOutputRepository(
         val outputName = outputNameFor(input)
         val outputDirectoryUri = outputDirectory.outputDirectoryUri.orEmpty()
         if (outputDirectoryUri.isBlank()) {
-            return Result.success(outputFile.absolutePath)
+            return commitToFilesystem(
+                outputDirectory = outputDirectory,
+                outputName = outputName,
+                outputFile = outputFile
+            )
         }
         val parsedDirectoryUri = parseUri(outputDirectoryUri)
             ?: return Result.failure(IllegalArgumentException("Invalid output URI: $outputDirectoryUri"))
         return runCatching {
-            val existingUri = findChildDocumentUri(
+            val outputDocumentUri = findOrCreateChildDocumentUri(
                 parentDocumentUri = parsedDirectoryUri,
                 displayName = outputName,
+                mimeType = mimeTypeForOutputName(outputName),
                 expectDirectory = false
             )
-            if (existingUri != null) {
-                runCatching {
-                    DocumentsContract.deleteDocument(contentResolver, existingUri)
-                }
-            }
 
-            val createdUri = DocumentsContract.createDocument(
-                contentResolver,
-                parsedDirectoryUri,
-                mimeTypeForOutputName(outputName),
-                outputName
-            ) ?: throw IOException("Failed to create output document: $outputName")
-
-            contentResolver.openOutputStream(createdUri, "w")?.use { outputStream ->
+            openDocumentOutputStream(outputDocumentUri).use { outputStream ->
                 outputFile.inputStream().use { inputStream ->
                     inputStream.copyTo(outputStream)
                 }
-            } ?: throw IOException("Unable to open output stream: $createdUri")
+            }
 
             outputFile.delete()
-            createdUri.toString()
+            outputDocumentUri.toString()
+        }
+    }
+
+    private fun commitToFilesystem(
+        outputDirectory: BatchOutputDirectory,
+        outputName: String,
+        outputFile: File
+    ): Result<String> {
+        return runCatching {
+            val targetDirectory = requireNotNull(outputDirectory.internalDirectory) {
+                "Internal output directory is missing for ${outputDirectory.batchId}"
+            }
+
+            if (targetDirectory.exists() && !targetDirectory.isDirectory) {
+                throw IOException("Output parent is not directory: ${targetDirectory.absolutePath}")
+            }
+            if (!targetDirectory.exists() && !targetDirectory.mkdirs()) {
+                throw IOException("Failed to create output directory: ${targetDirectory.absolutePath}")
+            }
+
+            val targetFile = File(targetDirectory, outputName)
+            if (targetFile.exists() && targetFile.isDirectory) {
+                if (!targetFile.deleteRecursively()) {
+                    throw IOException("Output target is directory and cannot be removed: ${targetFile.absolutePath}")
+                }
+            }
+
+            val useMediaStore = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                targetDirectory.absolutePath.startsWith(publicRootOutputDir.absolutePath)
+            if (useMediaStore) {
+                val mediaStoreUri = commitToMediaStore(
+                    batchId = outputDirectory.batchId,
+                    outputName = outputName,
+                    outputFile = outputFile
+                )
+                outputFile.delete()
+                mediaStoreUri.toString()
+            } else {
+                writeTempToTarget(outputFile = outputFile, targetFile = targetFile)
+                outputFile.delete()
+                notifyMediaScanner(targetFile)
+                targetFile.absolutePath
+            }
+        }
+    }
+
+    private fun commitToMediaStore(
+        batchId: String,
+        outputName: String,
+        outputFile: File
+    ): Uri {
+        val relativePath = "${Environment.DIRECTORY_PICTURES}/$OUTPUT_ROOT_DIR/$batchId/"
+        var lastError: Throwable? = null
+        for (attempt in 0..MAX_CREATE_DOCUMENT_RETRIES) {
+            val candidateName = if (attempt == 0) outputName else outputNameWithRetrySuffix(outputName, attempt)
+            val insertedUri = runCatching {
+                val values = ContentValues().apply {
+                    put(MediaStore.Images.Media.DISPLAY_NAME, candidateName)
+                    put(MediaStore.Images.Media.MIME_TYPE, mimeTypeForOutputName(candidateName))
+                    put(MediaStore.Images.Media.RELATIVE_PATH, relativePath)
+                    put(MediaStore.Images.Media.IS_PENDING, 1)
+                }
+                contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+            }.onFailure { throwable ->
+                lastError = throwable
+            }.getOrNull() ?: continue
+
+            try {
+                contentResolver.openOutputStream(insertedUri, "w")?.use { outputStream ->
+                    outputFile.inputStream().use { inputStream ->
+                        inputStream.copyTo(outputStream)
+                    }
+                } ?: throw IOException("Unable to open MediaStore output stream: $insertedUri")
+
+                val publishValues = ContentValues().apply {
+                    put(MediaStore.Images.Media.IS_PENDING, 0)
+                }
+                contentResolver.update(insertedUri, publishValues, null, null)
+                return insertedUri
+            } catch (throwable: Throwable) {
+                lastError = throwable
+                runCatching {
+                    contentResolver.delete(insertedUri, null, null)
+                }
+            }
+        }
+        throw IOException("Failed to commit output via MediaStore: $outputName", lastError)
+    }
+
+    private fun notifyMediaScanner(file: File) {
+        runCatching {
+            MediaScannerConnection.scanFile(
+                appContext,
+                arrayOf(file.absolutePath),
+                null,
+                null
+            )
+        }
+    }
+
+    private fun writeTempToTarget(
+        outputFile: File,
+        targetFile: File
+    ) {
+        try {
+            outputFile.inputStream().use { inputStream ->
+                FileOutputStream(targetFile).use { outputStream ->
+                    inputStream.copyTo(outputStream)
+                    outputStream.fd.sync()
+                }
+            }
+        } catch (throwable: Throwable) {
+            val isExistsConflict = throwable is IOException &&
+                (throwable.message?.contains("EEXIST", ignoreCase = true) == true ||
+                    throwable.message?.contains("File exists", ignoreCase = true) == true)
+            if (!isExistsConflict) {
+                throw throwable
+            }
+
+            if (targetFile.exists() && !targetFile.delete()) {
+                targetFile.deleteRecursively()
+            }
+
+            outputFile.inputStream().use { inputStream ->
+                FileOutputStream(targetFile).use { outputStream ->
+                    inputStream.copyTo(outputStream)
+                    outputStream.fd.sync()
+                }
+            }
         }
     }
 
@@ -334,17 +455,114 @@ class BatchOutputRepository(
         return runCatching {
             val rootDocumentId = DocumentsContract.getTreeDocumentId(rootTreeUri)
             val rootDocumentUri = DocumentsContract.buildDocumentUriUsingTree(rootTreeUri, rootDocumentId)
-            findChildDocumentUri(
+            findOrCreateChildDocumentUri(
                 parentDocumentUri = rootDocumentUri,
                 displayName = directoryName,
-                expectDirectory = true
-            ) ?: DocumentsContract.createDocument(
-                contentResolver,
-                rootDocumentUri,
-                DocumentsContract.Document.MIME_TYPE_DIR,
-                directoryName
+                mimeType = DocumentsContract.Document.MIME_TYPE_DIR,
+                expectDirectory = true,
+                allowAlternateNameOnConflict = false
             )
         }.getOrNull()
+    }
+
+    private fun findOrCreateChildDocumentUri(
+        parentDocumentUri: Uri,
+        displayName: String,
+        mimeType: String,
+        expectDirectory: Boolean,
+        allowAlternateNameOnConflict: Boolean = true
+    ): Uri {
+        findChildDocumentUri(
+            parentDocumentUri = parentDocumentUri,
+            displayName = displayName,
+            expectDirectory = expectDirectory
+        )?.let { existingUri ->
+            return existingUri
+        }
+
+        var createFailure: Throwable? = null
+        val createdUri = runCatching {
+            DocumentsContract.createDocument(
+                contentResolver,
+                parentDocumentUri,
+                mimeType,
+                displayName
+            )
+        }.onFailure { throwable ->
+            createFailure = throwable
+        }.getOrNull()
+
+        if (createdUri != null) {
+            return createdUri
+        }
+
+        findChildDocumentUri(
+            parentDocumentUri = parentDocumentUri,
+            displayName = displayName,
+            expectDirectory = expectDirectory
+        )?.let { existingUri ->
+            return existingUri
+        }
+
+        val conflictByName = createFailure?.message?.let { message ->
+            message.contains("EEXIST", ignoreCase = true) ||
+                message.contains("exists", ignoreCase = true)
+        } == true
+        if (allowAlternateNameOnConflict && !expectDirectory && conflictByName) {
+            for (attempt in 1..MAX_CREATE_DOCUMENT_RETRIES) {
+                val candidateName = outputNameWithRetrySuffix(displayName, attempt)
+                findChildDocumentUri(
+                    parentDocumentUri = parentDocumentUri,
+                    displayName = candidateName,
+                    expectDirectory = false
+                )?.let { existingUri ->
+                    return existingUri
+                }
+                val candidateUri = runCatching {
+                    DocumentsContract.createDocument(
+                        contentResolver,
+                        parentDocumentUri,
+                        mimeType,
+                        candidateName
+                    )
+                }.getOrNull()
+                if (candidateUri != null) {
+                    return candidateUri
+                }
+            }
+        }
+
+        val messageSuffix = createFailure?.message?.let { message -> ": $message" }.orEmpty()
+        throw IOException("Failed to create output document: $displayName$messageSuffix", createFailure)
+    }
+
+    private fun outputNameWithRetrySuffix(
+        outputName: String,
+        attempt: Int
+    ): String {
+        val dotIndex = outputName.lastIndexOf('.')
+        if (dotIndex <= 0 || dotIndex == outputName.lastIndex) {
+            return "${outputName}_$attempt"
+        }
+        val base = outputName.substring(0, dotIndex)
+        val extension = outputName.substring(dotIndex)
+        return "${base}_$attempt$extension"
+    }
+
+    private fun openDocumentOutputStream(documentUri: Uri): OutputStream {
+        val modes = arrayOf("rwt", "wt", "w")
+        var lastError: Throwable? = null
+        for (mode in modes) {
+            val stream = runCatching {
+                contentResolver.openOutputStream(documentUri, mode)
+            }.onFailure { throwable ->
+                lastError = throwable
+            }.getOrNull()
+            if (stream != null) {
+                return stream
+            }
+        }
+        throw IOException("Unable to open output stream: $documentUri", lastError)
     }
 
     private fun findChildDocumentUri(
@@ -422,5 +640,6 @@ class BatchOutputRepository(
         private const val JPEG_MIME_TYPE = "image/jpeg"
         private const val WEBP_MIME_TYPE = "image/webp"
         private const val CONTENT_SCHEME_PREFIX = "content://"
+        private const val MAX_CREATE_DOCUMENT_RETRIES = 3
     }
 }

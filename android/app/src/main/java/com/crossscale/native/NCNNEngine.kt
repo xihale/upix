@@ -7,6 +7,7 @@ object NCNNEngine {
     
     external fun nativeInit(deviceType: Int): Long
     external fun nativeLoadModel(enginePtr: Long, modelPath: String): Boolean
+    external fun nativeGetLastError(): String?
     external fun nativeProcessImage(
         enginePtr: Long,
         inputImage: ByteArray,

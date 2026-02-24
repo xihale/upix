@@ -38,6 +38,7 @@ namespace crossscale {
 namespace {
 
 std::mutex g_vulkan_init_mutex;
+std::mutex g_vulkan_model_load_mutex;
 
 constexpr const char* kHwcToChwComp = R"(
 #version 450
@@ -599,7 +600,10 @@ public:
             const char* env_value = std::getenv("CROSSSCALE_GPU_FAST_MATH");
             return env_value != nullptr && std::string(env_value) == "1";
         }();
+        std::unique_lock<std::mutex> gpu_model_load_lock;
         if (current_device_ == DeviceType::GPU_VULKAN && vkdev_ != nullptr) {
+            gpu_model_load_lock = std::unique_lock<std::mutex>(g_vulkan_model_load_mutex);
+            LOG_INFO("Engine", "Serializing Vulkan model load to avoid concurrent queue submits");
             net_->set_vulkan_device(vkdev_);
             net_->opt.use_vulkan_compute = true;
             const auto& gpu_info = vkdev_->info;
@@ -645,6 +649,15 @@ public:
         // Load model weights
         ret = net_->load_model(bin_path.c_str());
         if (ret != 0) {
+            if (current_device_ == DeviceType::GPU_VULKAN && ret == -4) {
+                const std::string detail = format_vulkan_runtime_snapshot("load_model_device_lost");
+                LOG_ERROR("Engine", "Vulkan device lost during net_->load_model: " + detail);
+                return EngineError{
+                    4,
+                    "Failed to load model weights (VK_ERROR_DEVICE_LOST): " + bin_path +
+                        " (error " + std::to_string(ret) + "); " + detail
+                };
+            }
             return EngineError{4, "Failed to load model weights: " + bin_path + " (error " + std::to_string(ret) + ")"};
         }
 
@@ -861,21 +874,115 @@ public:
                 return EngineError{23, "GPU u8 pipeline is not ready; " + detail};
             }
 
-            if (gpu_layout_u8_pipeline_ready_) {
-                auto vk_result = process_vulkan_with_gpu_layout_u8(input, output, width, height, channels, cancel_flag);
-                if (!vk_result.has_value()) {
-                    return EngineError{24, "Vulkan u8 layout pipeline failed: " + vk_result.error().message};
-                }
-                return {};
-            }
-
             if (!gpu_layout_pipeline_ready_) {
                 const std::string detail = format_vulkan_runtime_snapshot("process_u8_pipeline_not_ready", width, height, channels);
                 LOG_ERROR("Engine", "Rejecting GPU u8 processing because both u8 and float layout pipelines are unavailable: " + detail);
                 return EngineError{23, "GPU u8 and float layout pipelines are not ready; " + detail};
             }
 
-            LOG_WARNING("Engine", "GPU u8 shader pipeline unavailable, switching to GPU float layout compatibility path");
+            if (gpu_tile_pipeline_ready_) {
+                LOG_INFO("Engine", "Processing u8 input through Vulkan float tile pipeline");
+
+                const size_t in_total = static_cast<size_t>(width) * height * channels;
+                const int out_width = width * scale_factor_;
+                const int out_height = height * scale_factor_;
+                const size_t out_total = static_cast<size_t>(out_width) * out_height * channels;
+
+                std::vector<float> input_float(in_total);
+                constexpr float kInv255 = 1.0f / 255.0f;
+                for (size_t i = 0; i < in_total; ++i) {
+                    input_float[i] = static_cast<float>(input[i]) * kInv255;
+                }
+
+                std::vector<float> output_float(out_total, 0.0f);
+
+                TileConfig tile_config;
+                tile_config.tile_size = 256;
+                tile_config.overlap = 16;
+                tile_config.batch_size = 2;
+                if (const char* tile_size_env = std::getenv("CROSSSCALE_GPU_TILE_SIZE")) {
+                    try {
+                        tile_config.tile_size = std::clamp(std::stoi(tile_size_env), 64, 1024);
+                    } catch (...) {
+                    }
+                }
+                if (const char* tile_overlap_env = std::getenv("CROSSSCALE_GPU_TILE_OVERLAP")) {
+                    try {
+                        const int max_overlap = std::max(1, tile_config.tile_size / 2);
+                        tile_config.overlap = std::clamp(std::stoi(tile_overlap_env), 0, max_overlap);
+                    } catch (...) {
+                    }
+                }
+                if (const char* tile_batch_env = std::getenv("CROSSSCALE_GPU_TILE_BATCH")) {
+                    try {
+                        tile_config.batch_size = std::clamp(std::stoi(tile_batch_env), 1, 8);
+                    } catch (...) {
+                    }
+                }
+
+                std::vector<TileRegion> regions;
+                const int effective_tile_size = std::max(1, tile_config.tile_size);
+                const int effective_overlap = std::clamp(tile_config.overlap, 0, effective_tile_size - 1);
+                const int step = std::max(1, effective_tile_size - effective_overlap);
+                for (int y = 0; y < height; y += step) {
+                    int tile_y = y;
+                    if (tile_y + effective_tile_size >= height) {
+                        tile_y = std::max(0, height - effective_tile_size);
+                    }
+                    bool reached_bottom = false;
+                    for (int x = 0; x < width; x += step) {
+                        int tile_x = x;
+                        if (tile_x + effective_tile_size >= width) {
+                            tile_x = std::max(0, width - effective_tile_size);
+                        }
+                        TileRegion region;
+                        region.x = static_cast<uint32_t>(tile_x);
+                        region.y = static_cast<uint32_t>(tile_y);
+                        region.width = static_cast<uint32_t>(std::min(effective_tile_size, width - tile_x));
+                        region.height = static_cast<uint32_t>(std::min(effective_tile_size, height - tile_y));
+                        region.overlap = static_cast<uint32_t>(effective_overlap);
+                        regions.push_back(region);
+
+                        if (tile_x + effective_tile_size >= width) {
+                            break;
+                        }
+                    }
+                    if (tile_y + effective_tile_size >= height) {
+                        reached_bottom = true;
+                    }
+                    if (reached_bottom) {
+                        break;
+                    }
+                }
+
+                auto tile_result = process_tiles_gpu(
+                    input_float.data(),
+                    output_float.data(),
+                    width,
+                    height,
+                    channels,
+                    regions,
+                    tile_config,
+                    {},
+                    cancel_flag
+                );
+                if (!tile_result.has_value()) {
+                    return EngineError{24, "Vulkan float tile pipeline failed: " + tile_result.error().message};
+                }
+
+                for (size_t i = 0; i < out_total; ++i) {
+                    const float value = output_float[i];
+                    if (!std::isfinite(value)) {
+                        return EngineError{20, "Non-finite output value detected"};
+                    }
+                    const float v = std::clamp(value * 255.0f, 0.0f, 255.0f);
+                    output[i] = static_cast<uint8_t>(std::lround(v));
+                }
+
+                return {};
+            }
+
+            LOG_WARNING("Engine", "Vulkan tile pipeline unavailable, switching to non-tile Vulkan float compatibility path");
 
             const size_t in_total = static_cast<size_t>(width) * height * channels;
             const int out_width = width * scale_factor_;
