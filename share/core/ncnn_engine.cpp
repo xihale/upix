@@ -1397,6 +1397,8 @@ public:
         inflight_tile_inputs.reserve(submit_budget);
         std::vector<ncnn::VkMat> normalize_quantize_bindings(3);
         std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
+        std::vector<ncnn::VkMat> clear_bindings(1);
+        std::vector<ncnn::vk_constant_type> clear_constants(1);
         while (true) {
             if (cancel_flag) {
                 return EngineError{3, "Processing cancelled"};
@@ -1407,7 +1409,6 @@ public:
             if (need_init_submit) {
                 has_init_work = true;
                 for (auto& state : states) {
-                    std::vector<ncnn::vk_constant_type> clear_constants(1);
                     clear_constants[0].i = static_cast<int>(state.out_total);
 
                     ncnn::VkMat clear_dispatcher;
@@ -1415,16 +1416,14 @@ public:
                     clear_dispatcher.h = 1;
                     clear_dispatcher.c = 1;
 
-                    std::vector<ncnn::VkMat> clear_output_bindings(1);
-                    clear_output_bindings[0] = state.out_gpu_hwc;
-                    cmd.record_pipeline(clear_output_pipeline_.get(), clear_output_bindings,
+                    clear_bindings[0] = state.out_gpu_hwc;
+                    cmd.record_pipeline(clear_output_pipeline_.get(), clear_bindings,
                                         clear_constants, clear_dispatcher);
 
                     clear_constants[0].i = static_cast<int>(state.out_total_pixels);
                     clear_dispatcher.w = static_cast<int>(state.out_total_pixels);
-                    std::vector<ncnn::VkMat> clear_weight_bindings(1);
-                    clear_weight_bindings[0] = state.out_gpu_weight;
-                    cmd.record_pipeline(clear_output_pipeline_.get(), clear_weight_bindings,
+                    clear_bindings[0] = state.out_gpu_weight;
+                    cmd.record_pipeline(clear_output_pipeline_.get(), clear_bindings,
                                         clear_constants, clear_dispatcher);
 
                     const size_t in_total = static_cast<size_t>(state.task->input_width) *
