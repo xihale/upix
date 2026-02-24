@@ -52,3 +52,12 @@ test_output/
 tmp/
 temp/
 *.tmp
+
+# Benchmark artifacts
+gpu_*.csv
+gpu_*.txt
+gpu_*.log
+
+# Local Android build caches
+android/.gradle-home/
+android/app/.cxx/
