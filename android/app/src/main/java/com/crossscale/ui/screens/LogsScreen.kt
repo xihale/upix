@@ -9,7 +9,6 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -33,7 +32,6 @@ fun LogsScreen(
 ) {
     var selectedLevel by remember { mutableStateOf<LogLevel?>(null) }
     var query by remember { mutableStateOf("") }
-    var filterHelpExpanded by remember { mutableStateOf(false) }
     val minLevel = selectedLevel
 
     val filteredLogs = logs
@@ -62,8 +60,9 @@ fun LogsScreen(
             title = "筛选与维护",
             summary = "当前结果：${filteredLogs.size} 条",
             guide = null,
-            expanded = filterHelpExpanded,
-            onToggleExpanded = { filterHelpExpanded = !filterHelpExpanded },
+            expanded = false,
+            onToggleExpanded = {},
+            showDetailsToggle = false,
             actions = {
                 OutlinedTextField(
                     value = query,
@@ -98,11 +97,6 @@ fun LogsScreen(
                 }
             },
             details = {}
-        )
-
-        Text(
-            text = "共 ${filteredLogs.size} 条",
-            style = MaterialTheme.typography.bodySmall
         )
         LogViewer(logs = filteredLogs)
     }

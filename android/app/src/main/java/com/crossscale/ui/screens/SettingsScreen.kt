@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -40,10 +41,14 @@ fun SettingsScreen(
                     OutlinedButton(onClick = onOpenLogs, modifier = Modifier.fillMaxWidth()) {
                         Text("日志")
                     }
+                    Text(
+                        text = "模型目录：$modelDirectoryPath",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             },
             details = {}
         )
-        Text(text = "模型目录：$modelDirectoryPath")
     }
 }

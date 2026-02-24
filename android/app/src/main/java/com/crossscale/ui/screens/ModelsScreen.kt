@@ -12,10 +12,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.crossscale.data.model.ModelInfo
@@ -32,8 +28,6 @@ fun ModelsScreen(
     modelDirectoryPath: String,
     onOpenModelRelease: () -> Unit
 ) {
-    var detailsExpanded by remember { mutableStateOf(false) }
-
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -44,8 +38,9 @@ fun ModelsScreen(
             title = "模型",
             summary = "已发现 ${models.size} 个模型；当前：${selectedModel?.name ?: "未选择"}",
             guide = null,
-            expanded = detailsExpanded,
-            onToggleExpanded = { detailsExpanded = !detailsExpanded },
+            expanded = false,
+            onToggleExpanded = {},
+            showDetailsToggle = false,
             actions = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
@@ -60,12 +55,10 @@ fun ModelsScreen(
                     ) {
                         Text("下载模型（占位）")
                     }
+                    Text(text = "模型目录：$modelDirectoryPath", style = MaterialTheme.typography.bodySmall)
                 }
             },
-            details = {
-                Text(text = "模型目录：$modelDirectoryPath", style = MaterialTheme.typography.bodySmall)
-                Text(text = "下载功能后续接入，目前默认跳转项目 GitHub Release。", style = MaterialTheme.typography.bodySmall)
-            }
+            details = {}
         )
 
         if (models.isEmpty()) {

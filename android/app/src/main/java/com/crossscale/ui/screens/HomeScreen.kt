@@ -7,10 +7,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -78,7 +80,7 @@ fun HomeScreen(
     val selectedInputs = state.selectedInputSources
     val selectedInputLabel = if (selectedInputs.isEmpty()) "未选择" else "${selectedInputs.size} 项"
     val selectedModel = state.selectedModel?.name ?: "未选择"
-    val selectedOutput = state.selectedOutputDirectoryUri ?: "Picture/CrossScale（默认）"
+    val selectedOutput = state.selectedOutputDirectoryUri ?: "Picture/CrossScale"
     val queueItems = processingUiState.queueItems
     val pendingQueueCount = queueItems.count { item -> item.status == ProcessingQueueItemStatus.PENDING }
     val failedQueueCount = queueItems.count { item -> item.status == ProcessingQueueItemStatus.FAILED }
@@ -178,7 +180,7 @@ fun HomeScreen(
                 }
             },
             details = {
-                Text("开始超分会先加入队列，再自动启动队列。", style = MaterialTheme.typography.bodySmall)
+                Text("默认输出至 Picture/CrossScale。", style = MaterialTheme.typography.bodySmall)
             }
         )
 
@@ -210,27 +212,47 @@ fun HomeScreen(
             onToggleExpanded = { queueExpanded = !queueExpanded },
             actions = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = { queueViewMode = QueueViewMode.SIMPLE }) {
-                            Text("简单视图")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (queueViewMode == QueueViewMode.SIMPLE) {
+                            Button(onClick = { queueViewMode = QueueViewMode.SIMPLE }, modifier = Modifier.weight(1f)) {
+                                Text("简单视图")
+                            }
+                        } else {
+                            OutlinedButton(onClick = { queueViewMode = QueueViewMode.SIMPLE }, modifier = Modifier.weight(1f)) {
+                                Text("简单视图")
+                            }
                         }
-                        OutlinedButton(onClick = { queueViewMode = QueueViewMode.DETAILED }) {
-                            Text("详细视图")
+                        if (queueViewMode == QueueViewMode.DETAILED) {
+                            Button(onClick = { queueViewMode = QueueViewMode.DETAILED }, modifier = Modifier.weight(1f)) {
+                                Text("详细视图")
+                            }
+                        } else {
+                            OutlinedButton(onClick = { queueViewMode = QueueViewMode.DETAILED }, modifier = Modifier.weight(1f)) {
+                                Text("详细视图")
+                            }
                         }
                     }
-                    OutlinedButton(
-                        onClick = onStartBatchQueue,
-                        enabled = !processingUiState.isProcessing && pendingQueueCount > 0,
-                        modifier = Modifier.fillMaxWidth()
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
-                        Text("启动队列")
-                    }
-                    OutlinedButton(
-                        onClick = onPauseBatchQueue,
-                        enabled = processingUiState.isQueueRunning,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("暂停队列")
+                        OutlinedButton(
+                            onClick = onStartBatchQueue,
+                            enabled = !processingUiState.isProcessing && pendingQueueCount > 0,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("启动队列")
+                        }
+                        OutlinedButton(
+                            onClick = onPauseBatchQueue,
+                            enabled = processingUiState.isQueueRunning,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("暂停队列")
+                        }
                     }
                     OutlinedButton(
                         onClick = onClearBatchQueue,
@@ -267,12 +289,20 @@ fun HomeScreen(
                 expanded = checkpointExpanded,
                 onToggleExpanded = { checkpointExpanded = !checkpointExpanded },
                 actions = {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = onResumeProcessing) { Text("继续任务") }
-                        OutlinedButton(onClick = onRetryFailedItems, enabled = processingUiState.canRetryFailedOnly) {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = onResumeProcessing, modifier = Modifier.fillMaxWidth()) {
+                            Text("继续任务")
+                        }
+                        OutlinedButton(
+                            onClick = onRetryFailedItems,
+                            enabled = processingUiState.canRetryFailedOnly,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
                             Text("重试失败")
                         }
-                        OutlinedButton(onClick = onDiscardCheckpoint) { Text("丢弃") }
+                        OutlinedButton(onClick = onDiscardCheckpoint, modifier = Modifier.fillMaxWidth()) {
+                            Text("丢弃")
+                        }
                     }
                 },
                 details = {
@@ -391,11 +421,21 @@ private fun QueueItemRow(
                 }
             }
         }
-        OutlinedButton(
-            onClick = { onRemoveQueuedBatch(queueItem.id) },
-            enabled = queueItem.status != ProcessingQueueItemStatus.RUNNING
-        ) {
-            Text("移除")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(
+                onClick = { onRemoveQueuedBatch(queueItem.id) },
+                enabled = queueItem.status != ProcessingQueueItemStatus.RUNNING
+            ) {
+                Text("移除")
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                text = queueItem.source,
+                style = MaterialTheme.typography.bodySmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f)
+            )
         }
     }
 }

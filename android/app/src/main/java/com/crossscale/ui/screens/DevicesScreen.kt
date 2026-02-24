@@ -10,13 +10,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.crossscale.ui.components.ConnectionDialog
@@ -36,17 +33,15 @@ fun DevicesScreen(
     onManualConnect: (String, String, String) -> Unit,
     onConnectByQr: (String) -> Unit
 ) {
-    var qrPayload by remember { mutableStateOf("") }
-    var showQrScanner by remember { mutableStateOf(false) }
-    var actionDetailsExpanded by remember { mutableStateOf(false) }
+    val showQrScanner = remember { mutableStateOf(false) }
 
-    if (showQrScanner) {
+    if (showQrScanner.value) {
         QRScannerScreen(
             onPayloadScanned = { payload ->
                 onConnectByQr(payload)
-                showQrScanner = false
+                showQrScanner.value = false
             },
-            onClose = { showQrScanner = false }
+            onClose = { showQrScanner.value = false }
         )
     } else {
         Column(
@@ -59,8 +54,9 @@ fun DevicesScreen(
                 title = "连接控制",
                 summary = if (state.isDiscovering) "当前正在发现设备" else "当前未发现设备",
                 guide = null,
-                expanded = actionDetailsExpanded,
-                onToggleExpanded = { actionDetailsExpanded = !actionDetailsExpanded },
+                expanded = false,
+                onToggleExpanded = {},
+                showDetailsToggle = false,
                 actions = {
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = onStartDiscovery, modifier = Modifier.fillMaxWidth()) {
@@ -70,7 +66,7 @@ fun DevicesScreen(
                             Text("停止发现")
                         }
                         OutlinedButton(
-                            onClick = { showQrScanner = true },
+                            onClick = { showQrScanner.value = true },
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text("扫码连接")
@@ -83,21 +79,7 @@ fun DevicesScreen(
                         }
                     }
                 },
-                details = {
-                    OutlinedTextField(
-                        value = qrPayload,
-                        onValueChange = { qrPayload = it },
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("连接串 / 二维码内容") },
-                        singleLine = true
-                    )
-                    OutlinedButton(
-                        onClick = { onConnectByQr(qrPayload) },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("解析并连接")
-                    }
-                }
+                details = {}
             )
 
             Text(
