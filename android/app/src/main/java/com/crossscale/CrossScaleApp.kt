@@ -6,6 +6,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -18,7 +19,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.compose.currentBackStackEntryAsState
 import com.crossscale.ui.components.BottomNavigationBar
+import com.crossscale.ui.navigation.AppScreen
 import com.crossscale.ui.navigation.CrossScaleNavigation
 import com.crossscale.viewmodel.DeviceViewModel
 import com.crossscale.viewmodel.MainViewModel
@@ -38,6 +41,11 @@ fun CrossScaleApp(container: AppContainer) {
     val processingUiState by processingViewModel.uiState.collectAsState()
     val logs by container.logRepository.logs.collectAsState()
     val logRepository = container.logRepository
+    val navBackStackEntry by navController.currentBackStackEntryAsState()
+    val currentRoute = navBackStackEntry?.destination?.route
+    val currentScreen = AppScreen.bottomNavigationItems.firstOrNull { screen ->
+        screen.route == currentRoute
+    } ?: AppScreen.Home
 
     LaunchedEffect(mainUiState.selectedImagePath) {
         processingViewModel.refreshExpectedTotal(mainUiState.selectedImagePath)
@@ -96,7 +104,15 @@ fun CrossScaleApp(container: AppContainer) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("CrossScale") }
+                title = {
+                    Column {
+                        Text(currentScreen.title)
+                        Text(
+                            text = currentScreen.guide,
+                            style = androidx.compose.material3.MaterialTheme.typography.bodySmall
+                        )
+                    }
+                }
             )
         },
         bottomBar = { BottomNavigationBar(navController = navController) }
