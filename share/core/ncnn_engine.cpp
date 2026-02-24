@@ -19,6 +19,7 @@
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <unordered_map>
 
 // Platform-specific memory detection
@@ -663,6 +664,7 @@ public:
                 } else {
                     LOG_INFO("Engine", "GPU u8 pre/post layout pipeline disabled by stability profile");
                 }
+                LOG_WARNING("Engine", "GPU u8 pipeline readiness details: " + format_vulkan_runtime_snapshot("load_model_gpu_u8_not_ready"));
             }
             gpu_crop_pipeline_ready_ = init_gpu_crop_pipeline();
             if (!gpu_crop_pipeline_ready_) {
@@ -681,6 +683,7 @@ public:
             if (!gpu_tile_pipeline_ready_) {
                 LOG_WARNING("Engine", "GPU tile blend pipeline disabled, fallback to CPU tile blending");
             }
+            LOG_INFO("Engine", "GPU pipeline readiness snapshot: " + format_vulkan_runtime_snapshot("load_model_after_pipeline_init"));
         } else {
             gpu_layout_pipeline_ready_ = false;
             gpu_layout_u8_pipeline_ready_ = false;
@@ -852,14 +855,61 @@ public:
 
 #if NCNN_VULKAN
         if (current_device_ == DeviceType::GPU_VULKAN) {
-            if (vkdev_ == nullptr || !gpu_layout_u8_pipeline_ready_) {
-                return EngineError{23, "GPU u8 pipeline is not ready"};
+            if (vkdev_ == nullptr) {
+                const std::string detail = format_vulkan_runtime_snapshot("process_u8_pipeline_not_ready", width, height, channels);
+                LOG_ERROR("Engine", "Rejecting GPU u8 processing because pipeline is not ready: " + detail);
+                return EngineError{23, "GPU u8 pipeline is not ready; " + detail};
             }
 
-            auto vk_result = process_vulkan_with_gpu_layout_u8(input, output, width, height, channels, cancel_flag);
-            if (!vk_result.has_value()) {
-                return EngineError{24, "Vulkan u8 layout pipeline failed: " + vk_result.error().message};
+            if (gpu_layout_u8_pipeline_ready_) {
+                auto vk_result = process_vulkan_with_gpu_layout_u8(input, output, width, height, channels, cancel_flag);
+                if (!vk_result.has_value()) {
+                    return EngineError{24, "Vulkan u8 layout pipeline failed: " + vk_result.error().message};
+                }
+                return {};
             }
+
+            if (!gpu_layout_pipeline_ready_) {
+                const std::string detail = format_vulkan_runtime_snapshot("process_u8_pipeline_not_ready", width, height, channels);
+                LOG_ERROR("Engine", "Rejecting GPU u8 processing because both u8 and float layout pipelines are unavailable: " + detail);
+                return EngineError{23, "GPU u8 and float layout pipelines are not ready; " + detail};
+            }
+
+            LOG_WARNING("Engine", "GPU u8 shader pipeline unavailable, switching to GPU float layout compatibility path");
+
+            const size_t in_total = static_cast<size_t>(width) * height * channels;
+            const int out_width = width * scale_factor_;
+            const int out_height = height * scale_factor_;
+            const size_t out_total = static_cast<size_t>(out_width) * out_height * channels;
+
+            std::vector<float> input_float(in_total);
+            constexpr float kInv255 = 1.0f / 255.0f;
+            for (size_t i = 0; i < in_total; ++i) {
+                input_float[i] = static_cast<float>(input[i]) * kInv255;
+            }
+
+            std::vector<float> output_float(out_total);
+            auto vk_result = process_vulkan_with_gpu_layout(
+                input_float.data(),
+                output_float.data(),
+                width,
+                height,
+                channels,
+                cancel_flag
+            );
+            if (!vk_result.has_value()) {
+                return EngineError{24, "Vulkan float compatibility path failed: " + vk_result.error().message};
+            }
+
+            for (size_t i = 0; i < out_total; ++i) {
+                const float value = output_float[i];
+                if (!std::isfinite(value)) {
+                    return EngineError{20, "Non-finite output value detected"};
+                }
+                const float v = std::clamp(value * 255.0f, 0.0f, 255.0f);
+                output[i] = static_cast<uint8_t>(std::lround(v));
+            }
+
             return {};
         }
 #endif
@@ -1308,6 +1358,16 @@ public:
         }
         submit_budget = std::min(submit_budget, submit_budget_cap);
         submit_budget = std::max(submit_budget, static_cast<size_t>(16));
+        LOG_INFO("Engine", "GPU queue submit tuning: " + format_vulkan_runtime_snapshot(
+            "queue_budget",
+            -1,
+            -1,
+            static_cast<int>(max_task_channels),
+            submit_budget,
+            submit_budget_cap,
+            submit_memory_budget_mb,
+            avg_tile_pixels
+        ));
 
         int input_idx = -1;
         int output_idx = -1;
@@ -2755,6 +2815,60 @@ public:
 
 private:
 #if NCNN_VULKAN
+    auto format_vulkan_runtime_snapshot(
+        std::string_view stage,
+        int width = -1,
+        int height = -1,
+        int channels = -1,
+        size_t submit_budget = 0,
+        size_t submit_budget_cap = 0,
+        size_t submit_memory_budget_mb = 0,
+        double avg_tile_pixels = -1.0
+    ) const -> std::string {
+        std::ostringstream stream;
+        stream << "stage=" << stage
+               << ", initialized=" << (initialized_ ? 1 : 0)
+               << ", model_loaded=" << (model_loaded_ ? 1 : 0)
+               << ", gpu_layout_ready=" << (gpu_layout_pipeline_ready_ ? 1 : 0)
+               << ", gpu_u8_ready=" << (gpu_layout_u8_pipeline_ready_ ? 1 : 0)
+               << ", gpu_crop_ready=" << (gpu_crop_pipeline_ready_ ? 1 : 0)
+               << ", gpu_crop_u8_ready=" << (gpu_crop_u8_pipeline_ready_ ? 1 : 0)
+               << ", gpu_tile_ready=" << (gpu_tile_pipeline_ready_ ? 1 : 0)
+               << ", pre_u8=" << (preproc_hwc_u8_to_chw_ != nullptr ? 1 : 0)
+               << ", post_u8=" << (postproc_chw_to_hwc_u8_ != nullptr ? 1 : 0)
+               << ", quant_u8=" << (quantize_hwc_to_u8_ != nullptr ? 1 : 0)
+               << ", fp16_packed=" << (net_->opt.use_fp16_packed ? 1 : 0)
+               << ", fp16_storage=" << (net_->opt.use_fp16_storage ? 1 : 0)
+               << ", fp16_arith=" << (net_->opt.use_fp16_arithmetic ? 1 : 0)
+               << ", int8_storage=" << (net_->opt.use_int8_storage ? 1 : 0);
+
+        if (vkdev_ != nullptr) {
+            stream << ", heap_budget_mb=" << vkdev_->get_heap_budget();
+        } else {
+            stream << ", heap_budget_mb=-1";
+        }
+
+        if (width > 0 && height > 0 && channels > 0) {
+            stream << ", input=" << width << "x" << height << "x" << channels
+                   << ", scale=" << scale_factor_
+                   << ", output=" << (width * scale_factor_) << "x" << (height * scale_factor_);
+        }
+        if (submit_budget > 0) {
+            stream << ", submit_budget=" << submit_budget;
+        }
+        if (submit_budget_cap > 0) {
+            stream << ", submit_budget_cap=" << submit_budget_cap;
+        }
+        if (submit_memory_budget_mb > 0) {
+            stream << ", submit_mem_budget_mb=" << submit_memory_budget_mb;
+        }
+        if (avg_tile_pixels >= 0.0) {
+            stream << ", avg_tile_pixels=" << avg_tile_pixels;
+        }
+
+        return stream.str();
+    }
+
     bool init_gpu_layout_pipelines() {
         if (vkdev_ == nullptr) {
             return false;
@@ -3166,7 +3280,9 @@ private:
         const std::atomic<bool>& cancel_flag
     ) -> expected<void, EngineError> {
         if (vkdev_ == nullptr || preproc_hwc_u8_to_chw_ == nullptr || postproc_chw_to_hwc_u8_ == nullptr) {
-            return EngineError{19, "Vulkan u8 layout pipeline not initialized"};
+            const std::string detail = format_vulkan_runtime_snapshot("u8_layout_not_initialized", width, height, channels);
+            LOG_ERROR("Engine", "Vulkan u8 layout pipeline not initialized: " + detail);
+            return EngineError{19, "Vulkan u8 layout pipeline not initialized; " + detail};
         }
         if (channels <= 0 || width <= 0 || height <= 0) {
             return EngineError{11, "Invalid input dimensions"};
@@ -3186,6 +3302,7 @@ private:
             out_total > static_cast<size_t>(std::numeric_limits<int>::max())) {
             return EngineError{13, "Image too large for Vulkan layout path"};
         }
+        LOG_INFO("Engine", "Starting Vulkan u8 layout path: " + format_vulkan_runtime_snapshot("u8_layout_begin", width, height, channels));
 
         ncnn::VkAllocator* blob_vkallocator = vkdev_->acquire_blob_allocator();
         ncnn::VkAllocator* staging_vkallocator = vkdev_->acquire_staging_allocator();
@@ -3215,6 +3332,11 @@ private:
         const size_t in_elemsize = opt.use_fp16_storage ? 2u : 4u;
         ncnn::VkMat in_gpu_chw;
         in_gpu_chw.create(width, height, channels, in_elemsize, 1, blob_vkallocator);
+        if (in_gpu_chw.empty()) {
+            const std::string detail = format_vulkan_runtime_snapshot("u8_in_gpu_chw_alloc_failed", width, height, channels);
+            LOG_ERROR("Engine", "Failed to allocate Vulkan input CHW buffer: " + detail);
+            return EngineError{210, "Failed to allocate Vulkan input CHW buffer; " + detail};
+        }
 
         std::vector<ncnn::VkMat> pre_bindings(2);
         pre_bindings[0] = in_gpu_hwc;
@@ -3294,6 +3416,11 @@ private:
 
         ncnn::VkMat out_gpu_hwc_u8;
         out_gpu_hwc_u8.create(static_cast<int>(out_total), 1u, blob_vkallocator);
+        if (out_gpu_hwc_u8.empty()) {
+            const std::string detail = format_vulkan_runtime_snapshot("u8_out_gpu_hwc_alloc_failed", width, height, channels);
+            LOG_ERROR("Engine", "Failed to allocate Vulkan output u8 buffer: " + detail);
+            return EngineError{211, "Failed to allocate Vulkan output u8 buffer; " + detail};
+        }
 
         std::vector<ncnn::VkMat> post_bindings(2);
         post_bindings[0] = out_gpu;
@@ -3320,8 +3447,12 @@ private:
 
         ret = cmd.submit_and_wait();
         if (ret != 0) {
-            return EngineError{17, "Vulkan submit failed (error " + std::to_string(ret) + ")"};
+            const std::string detail = format_vulkan_runtime_snapshot("u8_submit_failed", width, height, channels);
+            LOG_ERROR("Engine", "Vulkan u8 submit failed error=" + std::to_string(ret) + ", " + detail);
+            return EngineError{17, "Vulkan submit failed (error " + std::to_string(ret) + "); " + detail};
         }
+
+        LOG_INFO("Engine", "Finished Vulkan u8 layout path: " + format_vulkan_runtime_snapshot("u8_layout_done", width, height, channels));
 
         return {};
     }

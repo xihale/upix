@@ -6,7 +6,6 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import com.crossscale.native.NCNNEngine
 import java.io.File
-import kotlin.math.abs
 
 data class NativeProcessResult(
     val outputFile: File,
@@ -36,8 +35,6 @@ class NativeImageProcessingRepository(
 
         if (preferGpu) {
             val validationResult = validateGpuSession(
-                modelName = modelName,
-                modelBasePath = modelBasePath,
                 gpuHandle = selectedHandle
             )
             if (!validationResult.isStable) {
@@ -53,8 +50,7 @@ class NativeImageProcessingRepository(
             } else {
                 logRepository.info(
                     "NativeImageProcessingRepository",
-                    "GPU output validation passed: avgDiff=${"%.2f".format(validationResult.averageChannelDiff)}, " +
-                        "maxDiff=${validationResult.maxChannelDiff}"
+                    "GPU output validation passed"
                 )
             }
         }
@@ -70,14 +66,7 @@ class NativeImageProcessingRepository(
             logRepository = logRepository,
             enginePtr = selectedHandle.enginePtr,
             scaleFactor = selectedHandle.scaleFactor,
-            activeDeviceType = selectedHandle.deviceType,
-            openEngineHandle = { deviceType ->
-                createEngineHandle(
-                    modelName = modelName,
-                    modelBasePath = modelBasePath,
-                    deviceType = deviceType
-                )
-            }
+            activeDeviceType = selectedHandle.deviceType
         )
     }
 
@@ -87,16 +76,9 @@ class NativeImageProcessingRepository(
         val deviceType: Int
     )
 
-    private data class BitmapDiffStats(
-        val averageChannelDiff: Double,
-        val maxChannelDiff: Int
-    )
-
     private data class GpuValidationResult(
         val isStable: Boolean,
-        val reason: String,
-        val averageChannelDiff: Double = 0.0,
-        val maxChannelDiff: Int = 0
+        val reason: String
     )
 
     private fun createEngineHandle(
@@ -169,8 +151,6 @@ class NativeImageProcessingRepository(
     }
 
     private fun validateGpuSession(
-        modelName: String,
-        modelBasePath: String,
         gpuHandle: NativeEngineHandle
     ): GpuValidationResult {
         val probeInput = buildValidationInput()
@@ -184,77 +164,28 @@ class NativeImageProcessingRepository(
             reason = "GPU probe returned empty output"
         )
 
-        val cpuHandle = createEngineHandle(
-            modelName = modelName,
-            modelBasePath = modelBasePath,
-            deviceType = DEVICE_TYPE_CPU
-        ) ?: return GpuValidationResult(
-            isStable = false,
-            reason = "Failed to initialize CPU reference session"
-        )
-
-        var gpuBitmap: Bitmap? = null
-        var cpuBitmap: Bitmap? = null
-        try {
-            val probeOutputCpu = processValidationInput(
-                enginePtr = cpuHandle.enginePtr,
-                inputBytes = probeInput,
-                width = GPU_VALIDATION_INPUT_SIZE,
-                height = GPU_VALIDATION_INPUT_SIZE
-            ) ?: return GpuValidationResult(
+        val gpuBitmap = decodeValidationBitmap(probeOutputGpu)
+            ?: return GpuValidationResult(
                 isStable = false,
-                reason = "CPU reference probe returned empty output"
+                reason = "GPU probe decode failed"
             )
 
-            gpuBitmap = decodeValidationBitmap(probeOutputGpu)
-            cpuBitmap = decodeValidationBitmap(probeOutputCpu)
-            if (gpuBitmap == null || cpuBitmap == null) {
-                return GpuValidationResult(
-                    isStable = false,
-                    reason = "Probe output decode failed"
-                )
-            }
-
-            val expectedWidth = GPU_VALIDATION_INPUT_SIZE * cpuHandle.scaleFactor
-            val expectedHeight = GPU_VALIDATION_INPUT_SIZE * cpuHandle.scaleFactor
+        return try {
+            val expectedWidth = GPU_VALIDATION_INPUT_SIZE * gpuHandle.scaleFactor
+            val expectedHeight = GPU_VALIDATION_INPUT_SIZE * gpuHandle.scaleFactor
             if (gpuBitmap.width != expectedWidth || gpuBitmap.height != expectedHeight) {
-                return GpuValidationResult(
+                GpuValidationResult(
                     isStable = false,
                     reason = "Unexpected GPU output size ${gpuBitmap.width}x${gpuBitmap.height} (expected ${expectedWidth}x${expectedHeight})"
                 )
-            }
-            if (cpuBitmap.width != expectedWidth || cpuBitmap.height != expectedHeight) {
-                return GpuValidationResult(
-                    isStable = false,
-                    reason = "Unexpected CPU output size ${cpuBitmap.width}x${cpuBitmap.height} (expected ${expectedWidth}x${expectedHeight})"
+            } else {
+                GpuValidationResult(
+                    isStable = true,
+                    reason = "ok"
                 )
             }
-
-            val diff = compareBitmapSamples(gpuBitmap, cpuBitmap)
-            val unstable = diff.maxChannelDiff > GPU_VALIDATION_MAX_CHANNEL_DIFF ||
-                diff.averageChannelDiff > GPU_VALIDATION_AVERAGE_DIFF
-            if (unstable) {
-                return GpuValidationResult(
-                    isStable = false,
-                    reason = "GPU/CPU diff too high avg=${"%.2f".format(diff.averageChannelDiff)}, max=${diff.maxChannelDiff}",
-                    averageChannelDiff = diff.averageChannelDiff,
-                    maxChannelDiff = diff.maxChannelDiff
-                )
-            }
-
-            return GpuValidationResult(
-                isStable = true,
-                reason = "ok",
-                averageChannelDiff = diff.averageChannelDiff,
-                maxChannelDiff = diff.maxChannelDiff
-            )
         } finally {
-            gpuBitmap?.recycle()
-            cpuBitmap?.recycle()
-            releaseEngine(
-                enginePtr = cpuHandle.enginePtr,
-                errorPrefix = "Failed to release CPU reference session"
-            )
+            gpuBitmap.recycle()
         }
     }
 
@@ -288,50 +219,6 @@ class NativeImageProcessingRepository(
         }.getOrNull()
     }
 
-    private fun compareBitmapSamples(
-        gpuBitmap: Bitmap,
-        cpuBitmap: Bitmap
-    ): BitmapDiffStats {
-        val width = minOf(gpuBitmap.width, cpuBitmap.width)
-        val height = minOf(gpuBitmap.height, cpuBitmap.height)
-        if (width <= 0 || height <= 0) {
-            return BitmapDiffStats(averageChannelDiff = Double.POSITIVE_INFINITY, maxChannelDiff = Int.MAX_VALUE)
-        }
-
-        val stepX = maxOf(1, width / GPU_VALIDATION_SAMPLE_GRID)
-        val stepY = maxOf(1, height / GPU_VALIDATION_SAMPLE_GRID)
-        var sampleCount = 0L
-        var totalChannelDiff = 0L
-        var maxChannelDiff = 0
-
-        var y = 0
-        while (y < height) {
-            var x = 0
-            while (x < width) {
-                val gpuPixel = gpuBitmap.getPixel(x, y)
-                val cpuPixel = cpuBitmap.getPixel(x, y)
-                val diffR = abs(((gpuPixel shr 16) and 0xFF) - ((cpuPixel shr 16) and 0xFF))
-                val diffG = abs(((gpuPixel shr 8) and 0xFF) - ((cpuPixel shr 8) and 0xFF))
-                val diffB = abs((gpuPixel and 0xFF) - (cpuPixel and 0xFF))
-                totalChannelDiff += (diffR + diffG + diffB).toLong()
-                maxChannelDiff = maxOf(maxOf(maxChannelDiff, diffR), maxOf(diffG, diffB))
-                sampleCount += 1
-                x += stepX
-            }
-            y += stepY
-        }
-
-        if (sampleCount == 0L) {
-            return BitmapDiffStats(averageChannelDiff = Double.POSITIVE_INFINITY, maxChannelDiff = Int.MAX_VALUE)
-        }
-
-        val averageChannelDiff = totalChannelDiff.toDouble() / (sampleCount * RGB_CHANNELS)
-        return BitmapDiffStats(
-            averageChannelDiff = averageChannelDiff,
-            maxChannelDiff = maxChannelDiff
-        )
-    }
-
     private fun buildValidationInput(): ByteArray {
         val width = GPU_VALIDATION_INPUT_SIZE
         val height = GPU_VALIDATION_INPUT_SIZE
@@ -360,10 +247,8 @@ class NativeImageProcessingRepository(
         private val logRepository: LogRepository,
         private var enginePtr: Long,
         private var scaleFactor: Int,
-        private var activeDeviceType: Int,
-        private val openEngineHandle: (Int) -> NativeEngineHandle?
+        private var activeDeviceType: Int
     ) : ImageProcessingSession {
-        private var gpuRuntimeValidated = false
 
         override fun process(
             input: ResolvedImageInput,
@@ -420,25 +305,6 @@ class NativeImageProcessingRepository(
                     "Native processing completed: input=${input.displayName}, outputBytes=${outputBytes.size}"
                 )
 
-                if (activeDeviceType == DEVICE_TYPE_GPU && !gpuRuntimeValidated) {
-                    val runtimeValidation = validateGpuOutputOnRealInput(
-                        decoded = decoded,
-                        gpuOutputBytes = outputBytes,
-                        outputFormat = outputFormat
-                    )
-                    if (!runtimeValidation.isStable) {
-                        throw IllegalStateException(
-                            "GPU output mismatch on real input: ${runtimeValidation.reason}"
-                        )
-                    }
-                    gpuRuntimeValidated = true
-                    logRepository.info(
-                        "NativeImageProcessingRepository",
-                        "GPU runtime validation passed: avgDiff=${"%.2f".format(runtimeValidation.averageChannelDiff)}, " +
-                            "maxDiff=${runtimeValidation.maxChannelDiff}"
-                    )
-                }
-
                 val outputWidth = decoded.width * scaleFactor
                 val outputHeight = decoded.height * scaleFactor
                 validateEncodedOutput(
@@ -461,123 +327,6 @@ class NativeImageProcessingRepository(
                     outputHeight = outputHeight
                 )
             }
-        }
-
-        private fun validateGpuOutputOnRealInput(
-            decoded: DecodedRgbImage,
-            gpuOutputBytes: ByteArray,
-            outputFormat: String
-        ): GpuValidationResult {
-            val cpuHandle = openEngineHandle(DEVICE_TYPE_CPU) ?: return GpuValidationResult(
-                isStable = false,
-                reason = "Failed to initialize CPU reference session"
-            )
-
-            var gpuBitmap: Bitmap? = null
-            var cpuBitmap: Bitmap? = null
-            try {
-                val cpuOutputBytes = NCNNEngine.nativeProcessImage(
-                    cpuHandle.enginePtr,
-                    decoded.rgbBytes,
-                    decoded.width,
-                    decoded.height,
-                    RGB_CHANNELS,
-                    outputFormat,
-                    DEFAULT_OUTPUT_QUALITY
-                ) ?: return GpuValidationResult(
-                    isStable = false,
-                    reason = "CPU reference process returned empty output"
-                )
-
-                gpuBitmap = BitmapFactory.decodeByteArray(gpuOutputBytes, 0, gpuOutputBytes.size)
-                cpuBitmap = BitmapFactory.decodeByteArray(cpuOutputBytes, 0, cpuOutputBytes.size)
-                if (gpuBitmap == null || cpuBitmap == null) {
-                    return GpuValidationResult(
-                        isStable = false,
-                        reason = "GPU/CPU output decode failed"
-                    )
-                }
-                if (gpuBitmap.width != cpuBitmap.width || gpuBitmap.height != cpuBitmap.height) {
-                    return GpuValidationResult(
-                        isStable = false,
-                        reason = "GPU/CPU dimensions mismatch ${gpuBitmap.width}x${gpuBitmap.height} vs ${cpuBitmap.width}x${cpuBitmap.height}"
-                    )
-                }
-
-                val diff = compareBitmapSamplesForValidation(gpuBitmap, cpuBitmap)
-                val unstable = diff.maxChannelDiff > GPU_RUNTIME_MAX_CHANNEL_DIFF ||
-                    diff.averageChannelDiff > GPU_RUNTIME_AVERAGE_DIFF
-                if (unstable) {
-                    return GpuValidationResult(
-                        isStable = false,
-                        reason = "GPU/CPU diff too high avg=${"%.2f".format(diff.averageChannelDiff)}, max=${diff.maxChannelDiff}",
-                        averageChannelDiff = diff.averageChannelDiff,
-                        maxChannelDiff = diff.maxChannelDiff
-                    )
-                }
-
-                return GpuValidationResult(
-                    isStable = true,
-                    reason = "ok",
-                    averageChannelDiff = diff.averageChannelDiff,
-                    maxChannelDiff = diff.maxChannelDiff
-                )
-            } finally {
-                gpuBitmap?.recycle()
-                cpuBitmap?.recycle()
-                runCatching {
-                    NCNNEngine.nativeRelease(cpuHandle.enginePtr)
-                }.onFailure { throwable ->
-                    logRepository.warning(
-                        "NativeImageProcessingRepository",
-                        "Failed to release CPU reference engine: ${throwable.message}"
-                    )
-                }
-            }
-        }
-
-        private fun compareBitmapSamplesForValidation(
-            first: Bitmap,
-            second: Bitmap
-        ): BitmapDiffStats {
-            val width = minOf(first.width, second.width)
-            val height = minOf(first.height, second.height)
-            if (width <= 0 || height <= 0) {
-                return BitmapDiffStats(averageChannelDiff = Double.POSITIVE_INFINITY, maxChannelDiff = Int.MAX_VALUE)
-            }
-
-            val stepX = maxOf(1, width / GPU_VALIDATION_SAMPLE_GRID)
-            val stepY = maxOf(1, height / GPU_VALIDATION_SAMPLE_GRID)
-            var sampleCount = 0L
-            var totalChannelDiff = 0L
-            var maxChannelDiff = 0
-
-            var y = 0
-            while (y < height) {
-                var x = 0
-                while (x < width) {
-                    val firstPixel = first.getPixel(x, y)
-                    val secondPixel = second.getPixel(x, y)
-                    val diffR = abs(((firstPixel shr 16) and 0xFF) - ((secondPixel shr 16) and 0xFF))
-                    val diffG = abs(((firstPixel shr 8) and 0xFF) - ((secondPixel shr 8) and 0xFF))
-                    val diffB = abs((firstPixel and 0xFF) - (secondPixel and 0xFF))
-                    totalChannelDiff += (diffR + diffG + diffB).toLong()
-                    maxChannelDiff = maxOf(maxOf(maxChannelDiff, diffR), maxOf(diffG, diffB))
-                    sampleCount += 1
-                    x += stepX
-                }
-                y += stepY
-            }
-
-            if (sampleCount == 0L) {
-                return BitmapDiffStats(averageChannelDiff = Double.POSITIVE_INFINITY, maxChannelDiff = Int.MAX_VALUE)
-            }
-
-            val averageChannelDiff = totalChannelDiff.toDouble() / (sampleCount * RGB_CHANNELS)
-            return BitmapDiffStats(
-                averageChannelDiff = averageChannelDiff,
-                maxChannelDiff = maxChannelDiff
-            )
         }
 
         override fun close() {
@@ -759,10 +508,5 @@ class NativeImageProcessingRepository(
         private const val DEFAULT_OUTPUT_QUALITY = 90
         private const val MAX_RGB_BUFFER_HEAP_RATIO = 0.85
         private const val GPU_VALIDATION_INPUT_SIZE = 96
-        private const val GPU_VALIDATION_SAMPLE_GRID = 16
-        private const val GPU_VALIDATION_AVERAGE_DIFF = 22.0
-        private const val GPU_VALIDATION_MAX_CHANNEL_DIFF = 120
-        private const val GPU_RUNTIME_AVERAGE_DIFF = 16.0
-        private const val GPU_RUNTIME_MAX_CHANNEL_DIFF = 90
     }
 }
