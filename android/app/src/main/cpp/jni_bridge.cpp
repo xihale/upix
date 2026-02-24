@@ -59,19 +59,15 @@ Java_com_crossscale_native_NCNNEngine_nativeInit(
 
     DeviceType preferred = (device_type == 1) ? DeviceType::GPU_VULKAN : DeviceType::CPU;
     auto result = engine->initialize(preferred);
-    
+
     if (!result.has_value()) {
         LOGE("Failed to initialize engine: %s", result.error().message.c_str());
-        if (preferred == DeviceType::GPU_VULKAN) {
-            LOGI("Falling back to CPU");
-            result = engine->initialize(DeviceType::CPU);
-            if (!result.has_value()) {
-                LOGE("Failed to initialize CPU engine: %s", result.error().message.c_str());
-                return 0;
-            }
-        } else {
-            return 0;
-        }
+        return 0;
+    }
+
+    if (preferred == DeviceType::GPU_VULKAN && engine->current_device() != DeviceType::GPU_VULKAN) {
+        LOGE("GPU initialization downgraded to CPU internally; aborting because CPU fallback is disabled");
+        return 0;
     }
 
     LOGI("Engine initialized with device type: %d", device_type);

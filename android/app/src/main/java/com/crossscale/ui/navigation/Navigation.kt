@@ -2,6 +2,7 @@ package com.crossscale.ui.navigation
 
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.camera.core.ExperimentalGetImage
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -17,6 +18,7 @@ import com.crossscale.viewmodel.DeviceUiState
 import com.crossscale.viewmodel.MainUiState
 import com.crossscale.viewmodel.ProcessingUiState
 
+@ExperimentalGetImage
 @Composable
 fun CrossScaleNavigation(
     navController: NavHostController,
@@ -60,6 +62,7 @@ fun CrossScaleNavigation(
     onConnectByQr: (String) -> Unit,
     onClearLogs: () -> Unit,
     onOpenModelRelease: () -> Unit,
+    onOpenHelp: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     NavHost(
@@ -71,6 +74,7 @@ fun CrossScaleNavigation(
             HomeScreen(
                 state = mainUiState,
                 processingUiState = processingUiState,
+                onSelectModel = onSelectModel,
                 onSelectMultipleImages = onSelectMultipleImages,
                 onSelectImageFolder = onSelectImageFolder,
                 onClearInputSources = onClearInputSources,
@@ -118,7 +122,8 @@ fun CrossScaleNavigation(
                 },
                 onOpenLogs = {
                     navController.navigate(AppScreen.SettingsLogs.route)
-                }
+                },
+                onOpenHelp = onOpenHelp
             )
         }
         composable(AppScreen.SettingsModels.route) {

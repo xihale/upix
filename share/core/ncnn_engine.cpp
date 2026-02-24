@@ -716,20 +716,16 @@ public:
         }
 
 #if NCNN_VULKAN
-        static const bool allow_gpu_layout_path = []() {
-            const char* env_value = std::getenv("CROSSSCALE_ENABLE_GPU_LAYOUT_PATH");
-            return env_value != nullptr && std::string(env_value) == "1";
-        }();
-        if (allow_gpu_layout_path &&
-            current_device_ == DeviceType::GPU_VULKAN &&
-            vkdev_ != nullptr &&
-            gpu_layout_pipeline_ready_) {
-            auto vk_result = process_vulkan_with_gpu_layout(input, output, width, height, channels, cancel_flag);
-            if (vk_result.has_value()) {
-                return {};
+        if (current_device_ == DeviceType::GPU_VULKAN) {
+            if (vkdev_ == nullptr || !gpu_layout_pipeline_ready_) {
+                return EngineError{21, "GPU layout pipeline is not ready"};
             }
 
-            LOG_WARNING("Engine", "Vulkan layout pipeline failed, fallback to CPU layout path: " + vk_result.error().message);
+            auto vk_result = process_vulkan_with_gpu_layout(input, output, width, height, channels, cancel_flag);
+            if (!vk_result.has_value()) {
+                return EngineError{22, "Vulkan layout pipeline failed: " + vk_result.error().message};
+            }
+            return {};
         }
 #endif
         
@@ -855,21 +851,16 @@ public:
         }
 
 #if NCNN_VULKAN
-        static const bool allow_gpu_u8_path = []() {
-            const char* env_value = std::getenv("CROSSSCALE_ENABLE_GPU_U8_PATH");
-            return env_value != nullptr && std::string(env_value) == "1";
-        }();
-        if (allow_gpu_u8_path &&
-            current_device_ == DeviceType::GPU_VULKAN &&
-            vkdev_ != nullptr &&
-            gpu_layout_u8_pipeline_ready_) {
-            auto vk_result = process_vulkan_with_gpu_layout_u8(input, output, width, height, channels, cancel_flag);
-            if (vk_result.has_value()) {
-                return {};
+        if (current_device_ == DeviceType::GPU_VULKAN) {
+            if (vkdev_ == nullptr || !gpu_layout_u8_pipeline_ready_) {
+                return EngineError{23, "GPU u8 pipeline is not ready"};
             }
 
-            LOG_WARNING("Engine", "Vulkan u8 layout pipeline failed, fallback to CPU u8 conversion path: " +
-                                      vk_result.error().message);
+            auto vk_result = process_vulkan_with_gpu_layout_u8(input, output, width, height, channels, cancel_flag);
+            if (!vk_result.has_value()) {
+                return EngineError{24, "Vulkan u8 layout pipeline failed: " + vk_result.error().message};
+            }
+            return {};
         }
 #endif
 
@@ -1819,8 +1810,7 @@ public:
             cmd.record_clone(in_cpu_full, in_gpu_full, opt);
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
-                LOG_WARNING("Engine", "Vulkan input upload failed, fallback to CPU tile extraction");
-                use_gpu_crop = false;
+                return EngineError{210, "Vulkan input upload failed (error " + std::to_string(submit_ret) + ")"};
             }
         }
 
@@ -1921,7 +1911,7 @@ public:
             return {};
         };
         if (use_gpu_crop && preproc_hwc_crop_to_chw_ == nullptr) {
-            use_gpu_crop = false;
+            return EngineError{211, "GPU crop pipeline unavailable"};
         }
 
         if (use_gpu_crop) {
@@ -2304,8 +2294,7 @@ public:
             cmd.record_clone(in_cpu_full, in_gpu_full, opt);
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
-                LOG_WARNING("Engine", "Vulkan u8 input upload failed, fallback to CPU tile extraction");
-                use_gpu_crop = false;
+                return EngineError{212, "Vulkan u8 input upload failed (error " + std::to_string(submit_ret) + ")"};
             }
         }
 
@@ -2430,7 +2419,7 @@ public:
         bool output_downloaded = false;
 
         if (use_gpu_crop && preproc_hwc_crop_u8_to_chw_ == nullptr) {
-            use_gpu_crop = false;
+            return EngineError{213, "GPU u8 crop pipeline unavailable"};
         }
 
         if (use_gpu_crop) {

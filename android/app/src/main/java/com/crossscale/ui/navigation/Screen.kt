@@ -42,7 +42,7 @@ sealed class AppScreen(
     )
 
     companion object {
-        val bottomNavigationItems = listOf(Home, Devices, Settings, Help)
+        val bottomNavigationItems = listOf(Home, Devices, Settings)
         val allScreens = listOf(Home, Devices, Settings, Help, SettingsModels, SettingsLogs)
     }
 }

@@ -6,7 +6,10 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,37 +20,56 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.repository.InputSourceSpec
-import com.crossscale.ui.components.LayeredSectionCard
 import com.crossscale.ui.components.ProcessingProgress
+import com.crossscale.ui.theme.BorderlessTokens
 import com.crossscale.viewmodel.MainUiState
-import com.crossscale.viewmodel.ProcessingCheckpointSummary
 import com.crossscale.viewmodel.ProcessingQueueItemStatus
 import com.crossscale.viewmodel.ProcessingQueueItemSummary
 import com.crossscale.viewmodel.ProcessingUiState
@@ -55,10 +77,12 @@ import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
     state: MainUiState,
     processingUiState: ProcessingUiState,
+    onSelectModel: (ModelInfo) -> Unit,
     onSelectMultipleImages: () -> Unit,
     onSelectImageFolder: () -> Unit,
     onClearInputSources: () -> Unit,
@@ -85,277 +109,823 @@ fun HomeScreen(
     onCancelProcessing: () -> Unit
 ) {
     val selectedInputs = state.selectedInputSources
-    val selectedInputLabel = if (selectedInputs.isEmpty()) "未选择" else "${selectedInputs.size} 项"
     val selectedModel = state.selectedModel?.name ?: "未选择"
-    val selectedOutput = state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/CrossScale"
+    val selectedOutput = abbreviatePath(state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/CrossScale")
     val queueItems = processingUiState.queueItems
     val pendingQueueCount = queueItems.count { item -> item.status == ProcessingQueueItemStatus.PENDING }
     val failedQueueCount = queueItems.count { item -> item.status == ProcessingQueueItemStatus.FAILED }
-    val queueRunningLabel = if (processingUiState.isQueueRunning) "运行中" else "已暂停"
-    val checkpointSummary = processingUiState.checkpointSummary
 
-    var inputExpanded by rememberSaveable { mutableStateOf(false) }
-    var outputExpanded by rememberSaveable { mutableStateOf(false) }
-    var checkpointExpanded by rememberSaveable { mutableStateOf(false) }
+    var showModelSheet by rememberSaveable { mutableStateOf(false) }
+    var showQueueSheet by rememberSaveable { mutableStateOf(false) }
+    var previewSource by rememberSaveable { mutableStateOf<String?>(null) }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        LayeredSectionCard(
-            title = "输入图片",
-            summary = "当前：$selectedInputLabel",
-            expanded = inputExpanded,
-            onToggleExpanded = { inputExpanded = !inputExpanded },
-            actions = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onSelectMultipleImages, modifier = Modifier.fillMaxWidth()) {
-                        Text("添加图片")
-                    }
-                    OutlinedButton(onClick = onSelectImageFolder, modifier = Modifier.fillMaxWidth()) {
-                        Text("添加文件夹")
-                    }
-                    OutlinedButton(
-                        onClick = onClearInputSources,
-                        enabled = selectedInputs.isNotEmpty(),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("清空")
-                    }
-                }
-            },
-            details = {
-                if (selectedInputs.isEmpty()) {
-                    Text("尚未添加输入。", style = MaterialTheme.typography.bodySmall)
-                } else {
-                    selectedInputs.forEachIndexed { index, source ->
-                        InputSourceItem(
-                            index = index,
-                            source = source,
-                            isFirst = index == 0,
-                            isLast = index == selectedInputs.lastIndex,
-                            onMoveUp = { onMoveInputSourceUp(source) },
-                            onMoveDown = { onMoveInputSourceDown(source) },
-                            onRemove = { onRemoveInputSource(source) }
-                        )
-                    }
-                }
-            }
-        )
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = BorderlessTokens.ScreenPaddingHorizontal)
+                .padding(bottom = 180.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp)
+        ) {
+            Spacer(modifier = Modifier.height(6.dp))
 
-        LayeredSectionCard(
-            title = "模型与输出",
-            summary = "模型：$selectedModel；输出：$selectedOutput",
-            expanded = outputExpanded,
-            onToggleExpanded = { outputExpanded = !outputExpanded },
-            actions = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = onSelectOutputFolder, modifier = Modifier.fillMaxWidth()) {
-                        Text("选择输出文件夹")
-                    }
-                    OutlinedButton(onClick = onUseDefaultOutputFolder, modifier = Modifier.fillMaxWidth()) {
-                        Text("使用默认输出目录")
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("覆盖原图片")
-                        Switch(
-                            checked = state.overwriteOriginalImage,
-                            onCheckedChange = onToggleOverwriteOriginal
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("备份原图片（默认）")
-                        Switch(
-                            checked = state.backupOriginalImage,
-                            onCheckedChange = onToggleBackupOriginal,
-                            enabled = state.overwriteOriginalImage
-                        )
-                    }
-                }
-            },
-            details = {
-                Text("默认输出至 /sdcard/Pictures/CrossScale。", style = MaterialTheme.typography.bodySmall)
-            }
-        )
-
-        LayeredSectionCard(
-            title = "执行",
-            summary = if (processingUiState.isProcessing) "正在处理" else "待执行",
-            expanded = false,
-            onToggleExpanded = {},
-            showDetailsToggle = false,
-            actions = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = onStartProcessing, modifier = Modifier.fillMaxWidth()) {
-                        Text("开始超分")
-                    }
-                    if (processingUiState.isProcessing) {
-                        OutlinedButton(onClick = onCancelProcessing, modifier = Modifier.fillMaxWidth()) {
-                            Text("取消当前任务")
-                        }
-                    }
-                }
-            },
-            details = {}
-        )
-
-        LayeredSectionCard(
-            title = "队列",
-            summary = "状态：$queueRunningLabel；未开始 $pendingQueueCount；失败 $failedQueueCount",
-            expanded = true,
-            onToggleExpanded = {},
-            showDetailsToggle = false,
-            actions = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = onStartBatchQueue,
-                            enabled = !processingUiState.isProcessing && pendingQueueCount > 0,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("启动队列")
-                        }
-                        OutlinedButton(
-                            onClick = onPauseBatchQueue,
-                            enabled = processingUiState.isQueueRunning,
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("暂停队列")
-                        }
-                    }
-                    OutlinedButton(
-                        onClick = onClearBatchQueue,
-                        enabled = queueItems.isNotEmpty(),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("清空队列")
-                    }
-                }
-            },
-            details = {
-                if (queueItems.isEmpty()) {
-                    Text("队列为空。", style = MaterialTheme.typography.bodySmall)
-                } else {
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 260.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        itemsIndexed(items = queueItems, key = { _, item -> item.id }) { index, queueItem ->
-                            QueueItemRow(
-                                index = index,
-                                queueItem = queueItem,
-                                isProcessing = processingUiState.isProcessing,
-                                onRetryQueuedBatch = onRetryQueuedBatch,
-                                onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
-                                onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,
-                                onRemoveQueuedBatch = onRemoveQueuedBatch
-                            )
-                        }
-                    }
-                }
-            }
-        )
-
-        if (!processingUiState.isProcessing && checkpointSummary != null) {
-            LayeredSectionCard(
-                title = "断点续传",
-                summary = "${checkpointSummary.statusLabel}；待处理 ${checkpointSummary.pendingItems}；失败 ${checkpointSummary.failedItems}",
-                expanded = checkpointExpanded,
-                onToggleExpanded = { checkpointExpanded = !checkpointExpanded },
-                actions = {
-                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = onResumeProcessing, modifier = Modifier.fillMaxWidth()) {
-                            Text("继续任务")
-                        }
-                        OutlinedButton(
-                            onClick = onRetryFailedItems,
-                            enabled = processingUiState.canRetryFailedOnly,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text("重试失败")
-                        }
-                        OutlinedButton(onClick = onDiscardCheckpoint, modifier = Modifier.fillMaxWidth()) {
-                            Text("丢弃")
-                        }
-                    }
-                },
-                details = {
-                    checkpointSummary.pendingItemDetails.take(12).forEach { item ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = item.displayName,
-                                modifier = Modifier.weight(1f),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.bodySmall
-                            )
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                OutlinedButton(onClick = { onResumePendingItem(item.uri) }) {
-                                    Text("继续")
-                                }
-                                if (item.isFailed) {
-                                    OutlinedButton(onClick = { onRetryFailedItem(item.uri) }) {
-                                        Text("重试")
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            HeroArea(
+                selectedInputs = selectedInputs,
+                onAddImage = onSelectMultipleImages,
+                onAddFolder = onSelectImageFolder,
+                onClearInput = onClearInputSources,
+                onRemoveInput = onRemoveInputSource,
+                onPreviewInput = { source -> previewSource = source }
             )
+
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    text = "参数",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = BorderlessTokens.SectionTitleWeight
+                )
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerStrongAlpha)
+                )
+
+                SettingsRow(
+                    title = "超分模型",
+                    value = selectedModel,
+                    onClick = { showModelSheet = true }
+                )
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha)
+                )
+
+                SettingsRow(
+                    title = "输出路径",
+                    value = selectedOutput,
+                    onClick = onSelectOutputFolder,
+                    trailing = {
+                        TextButton(onClick = onUseDefaultOutputFolder) {
+                            Text("默认")
+                        }
+                    }
+                )
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha)
+                )
+
+                SwitchRow(
+                    title = "覆盖原图",
+                    checked = state.overwriteOriginalImage,
+                    onCheckedChange = onToggleOverwriteOriginal
+                )
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha)
+                )
+
+                SwitchRow(
+                    title = "备份原图",
+                    checked = state.backupOriginalImage,
+                    enabled = state.overwriteOriginalImage,
+                    onCheckedChange = onToggleBackupOriginal
+                )
+            }
+
+            if (!processingUiState.isProcessing && processingUiState.checkpointSummary != null) {
+                CheckpointSection(
+                    processingUiState = processingUiState,
+                    onResumeProcessing = onResumeProcessing,
+                    onRetryFailedItems = onRetryFailedItems,
+                    onResumePendingItem = onResumePendingItem,
+                    onRetryFailedItem = onRetryFailedItem,
+                    onDiscardCheckpoint = onDiscardCheckpoint
+                )
+            }
+
+            ProcessingProgress(uiState = processingUiState)
         }
 
-        ProcessingProgress(uiState = processingUiState)
+        BottomActionBar(
+            modifier = Modifier.align(Alignment.BottomCenter),
+            isProcessing = processingUiState.isProcessing,
+            pendingQueueCount = pendingQueueCount,
+            failedQueueCount = failedQueueCount,
+            onShowQueue = { showQueueSheet = true },
+            onStart = onStartProcessing,
+            onCancel = onCancelProcessing
+        )
+    }
+
+    if (showModelSheet) {
+        ModalBottomSheet(onDismissRequest = { showModelSheet = false }) {
+            Text(
+                text = "选择模型",
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+            )
+            state.models.forEach { model ->
+                SheetActionItem(
+                    label = model.name,
+                    subtitle = "x${model.scaleFactor} · tile ${model.tileSize}"
+                ) {
+                    showModelSheet = false
+                    onSelectModel(model)
+                }
+            }
+            Spacer(modifier = Modifier.height(20.dp))
+        }
+    }
+
+    if (showQueueSheet) {
+        ModalBottomSheet(onDismissRequest = { showQueueSheet = false }) {
+            QueueBottomSheetContent(
+                processingUiState = processingUiState,
+                onStartBatchQueue = onStartBatchQueue,
+                onPauseBatchQueue = onPauseBatchQueue,
+                onRetryQueuedBatch = onRetryQueuedBatch,
+                onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
+                onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,
+                onRemoveQueuedBatch = onRemoveQueuedBatch,
+                onClearBatchQueue = onClearBatchQueue
+            )
+        }
+    }
+
+    previewSource?.let { source ->
+        PreviewBottomSheet(
+            source = source,
+            onDismiss = { previewSource = null }
+        )
     }
 }
 
 @Composable
-private fun InputSourceItem(
-    index: Int,
-    source: String,
-    isFirst: Boolean,
-    isLast: Boolean,
-    onMoveUp: () -> Unit,
-    onMoveDown: () -> Unit,
-    onRemove: () -> Unit
+private fun HeroArea(
+    selectedInputs: List<String>,
+    onAddImage: () -> Unit,
+    onAddFolder: () -> Unit,
+    onClearInput: () -> Unit,
+    onRemoveInput: (String) -> Unit,
+    onPreviewInput: (String) -> Unit
 ) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(280.dp)
+            .clip(RoundedCornerShape(26.dp))
+            .combinedClickable(
+                onClick = onAddImage,
+                onLongClick = onAddFolder
+            ),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.26f)
+    ) {
+        if (selectedInputs.isEmpty()) {
+            EmptyHero()
+        } else {
+            SelectedHero(
+                selectedInputs = selectedInputs,
+                onAddImage = onAddImage,
+                onAddFolder = onAddFolder,
+                onClearInput = onClearInput,
+                onRemoveInput = onRemoveInput,
+                onPreviewInput = onPreviewInput
+            )
+        }
+    }
+}
+
+@Composable
+private fun EmptyHero() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(18.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Box(
+            modifier = Modifier
+                .size(84.dp)
+                .clip(CircleShape)
+                .background(
+                    brush = Brush.linearGradient(
+                        colors = listOf(
+                            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.95f),
+                            MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.85f)
+                        )
+                    )
+                ),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                painter = painterResource(id = android.R.drawable.ic_input_add),
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(36.dp)
+            )
+        }
+        Spacer(modifier = Modifier.height(14.dp))
+        Text(
+            text = "添加图片或文件夹",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+@Composable
+private fun SelectedHero(
+    selectedInputs: List<String>,
+    onAddImage: () -> Unit,
+    onAddFolder: () -> Unit,
+    onClearInput: () -> Unit,
+    onRemoveInput: (String) -> Unit,
+    onPreviewInput: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val firstSource = selectedInputs.firstOrNull()
+    val bgBitmap by produceState<ImageBitmap?>(initialValue = null, firstSource) {
+        value = withContext(Dispatchers.IO) {
+            firstSource?.let { source -> decodeQueueThumbnail(context = context, source = source) }
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (bgBitmap != null) {
+            Image(
+                bitmap = bgBitmap!!,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .blur(22.dp)
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.62f))
+            )
+        }
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "已选择 ${selectedInputs.size} 项",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = BorderlessTokens.SectionTitleWeight
+                )
+                Text(
+                    text = "继续添加",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.combinedClickable(onClick = onAddImage, onLongClick = onAddFolder)
+                )
+            }
+
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(items = selectedInputs, key = { item -> item }) { source ->
+                    HeroThumbnail(
+                        source = source,
+                        onDelete = { onRemoveInput(source) },
+                        onPreview = { onPreviewInput(source) }
+                    )
+                }
+            }
+        }
+
+        Surface(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(12.dp)
+                .size(34.dp)
+                .clickable(onClick = onClearInput),
+            shape = CircleShape,
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    painter = painterResource(id = android.R.drawable.ic_menu_close_clear_cancel),
+                    contentDescription = null,
+                    modifier = Modifier.size(16.dp),
+                    tint = MaterialTheme.colorScheme.onSurface
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HeroThumbnail(
+    source: String,
+    onDelete: () -> Unit,
+    onPreview: () -> Unit
+) {
+    val context = LocalContext.current
+    val bitmapState by produceState<ImageBitmap?>(initialValue = null, source) {
+        value = withContext(Dispatchers.IO) {
+            decodeQueueThumbnail(context = context, source = source)
+        }
+    }
+
+    Box(
+        modifier = Modifier
+            .size(width = 96.dp, height = 116.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .combinedClickable(onClick = onDelete, onLongClick = onPreview),
+        contentAlignment = Alignment.Center
+    ) {
+        val imageBitmap = bitmapState
+        if (imageBitmap != null) {
+            Image(
+                bitmap = imageBitmap,
+                contentDescription = null,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Text(text = "预览", style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+@OptIn(ExperimentalMaterial3Api::class)
+private fun PreviewBottomSheet(
+    source: String,
+    onDismiss: () -> Unit
+) {
+    val context = LocalContext.current
+    val previewBitmap by produceState<ImageBitmap?>(initialValue = null, source) {
+        value = withContext(Dispatchers.IO) {
+            decodeQueueThumbnail(context = context, source = source)
+        }
+    }
+    val previewTitle = remember(source) {
+        source.substringAfterLast('/').ifBlank {
+            source.takeLast(28).ifBlank { "预览" }
+        }
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = BorderlessTokens.ScreenPaddingHorizontal),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Text(
+                text = "预览 · $previewTitle",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = BorderlessTokens.SectionTitleWeight
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 220.dp, max = 520.dp)
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                contentAlignment = Alignment.Center
+            ) {
+                val bitmap = previewBitmap
+                if (bitmap == null) {
+                    Text(
+                        text = "暂无可预览图像",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                } else {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+            }
+            Text(
+                text = "长按缩略图可预览，单击缩略图可删除",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.height(14.dp))
+        }
+    }
+}
+
+@Composable
+private fun SettingsRow(
+    title: String,
+    value: String,
+    onClick: () -> Unit,
+    trailing: (@Composable () -> Unit)? = null
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .heightIn(min = BorderlessTokens.InteractiveRowMinHeight)
+            .padding(vertical = BorderlessTokens.RowVerticalPadding),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = title, style = MaterialTheme.typography.bodyLarge)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                text = value,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.width(158.dp)
+            )
+            trailing?.invoke()
+        }
+    }
+}
+
+@Composable
+private fun SwitchRow(
+    title: String,
+    checked: Boolean,
+    enabled: Boolean = true,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = BorderlessTokens.InteractiveRowMinHeight)
+            .padding(vertical = BorderlessTokens.ListItemVerticalPadding),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(text = title, style = MaterialTheme.typography.bodyLarge)
+        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+    }
+}
+
+@Composable
+private fun BottomActionBar(
+    modifier: Modifier = Modifier,
+    isProcessing: Boolean,
+    pendingQueueCount: Int,
+    failedQueueCount: Int,
+    onShowQueue: () -> Unit,
+    onStart: () -> Unit,
+    onCancel: () -> Unit
+) {
+    val queueOpenThresholdPx = with(LocalDensity.current) { 24.dp.toPx() }
+
+    Surface(modifier = modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.background) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            QueueDockEntry(
+                pendingQueueCount = pendingQueueCount,
+                failedQueueCount = failedQueueCount,
+                queueOpenThresholdPx = queueOpenThresholdPx,
+                onShowQueue = onShowQueue
+            )
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Button(
+                    onClick = onStart,
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(52.dp),
+                    shape = CircleShape,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primaryContainer,
+                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                    )
+                ) {
+                    Text(
+                        if (isProcessing) "继续队列" else "开始超分",
+                        fontWeight = BorderlessTokens.SectionTitleWeight
+                    )
+                }
+
+                if (isProcessing) {
+                    OutlinedButton(
+                        onClick = onCancel,
+                        modifier = Modifier
+                            .weight(0.68f)
+                            .height(52.dp),
+                        shape = CircleShape
+                    ) {
+                        Text("停止")
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+        }
+    }
+}
+
+@Composable
+private fun QueueDockEntry(
+    pendingQueueCount: Int,
+    failedQueueCount: Int,
+    queueOpenThresholdPx: Float,
+    onShowQueue: () -> Unit
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(18.dp))
+            .pointerInput(onShowQueue) {
+                var upwardDragDistance = 0f
+                detectVerticalDragGestures(
+                    onDragEnd = { upwardDragDistance = 0f },
+                    onDragCancel = { upwardDragDistance = 0f },
+                    onVerticalDrag = { _, dragAmount ->
+                        if (dragAmount < 0f) {
+                            upwardDragDistance += -dragAmount
+                            if (upwardDragDistance >= queueOpenThresholdPx) {
+                                upwardDragDistance = 0f
+                                onShowQueue()
+                            }
+                        } else {
+                            upwardDragDistance = 0f
+                        }
+                    }
+                )
+            }
+            .clickable(onClick = onShowQueue),
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(28.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.85f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    painter = painterResource(id = android.R.drawable.ic_menu_sort_by_size),
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(15.dp)
+                )
+            }
+
+            Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    text = "队列",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = BorderlessTokens.SectionTitleWeight
+                )
+                Text(
+                    text = "待处理 $pendingQueueCount · 失败 $failedQueueCount",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            QueueStatusBadge(pendingQueueCount = pendingQueueCount, failedQueueCount = failedQueueCount)
+
+            Icon(
+                painter = painterResource(id = android.R.drawable.arrow_up_float),
+                contentDescription = "打开队列",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+    }
+}
+
+@Composable
+private fun QueueStatusBadge(
+    pendingQueueCount: Int,
+    failedQueueCount: Int
+) {
+    val label = when {
+        failedQueueCount > 0 -> "${failedQueueCount} 失败"
+        pendingQueueCount > 0 -> "${pendingQueueCount} 待处理"
+        else -> "空"
+    }
+    val backgroundColor = when {
+        failedQueueCount > 0 -> MaterialTheme.colorScheme.errorContainer
+        pendingQueueCount > 0 -> MaterialTheme.colorScheme.secondaryContainer
+        else -> MaterialTheme.colorScheme.surface
+    }
+    val contentColor = when {
+        failedQueueCount > 0 -> MaterialTheme.colorScheme.onErrorContainer
+        pendingQueueCount > 0 -> MaterialTheme.colorScheme.onSecondaryContainer
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+
+    Surface(shape = CircleShape, color = backgroundColor) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = contentColor,
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+        )
+    }
+}
+
+@Composable
+private fun QueueBottomSheetContent(
+    processingUiState: ProcessingUiState,
+    onStartBatchQueue: () -> Unit,
+    onPauseBatchQueue: () -> Unit,
+    onRetryQueuedBatch: (String) -> Unit,
+    onRetryQueuedBatchFailedOnly: (String) -> Unit,
+    onOpenQueuedBatchOutput: (String) -> Unit,
+    onRemoveQueuedBatch: (String) -> Unit,
+    onClearBatchQueue: () -> Unit
+) {
+    val queueItems = processingUiState.queueItems
+    val pendingQueueCount = queueItems.count { item -> item.status == ProcessingQueueItemStatus.PENDING }
+    val failedQueueCount = queueItems.count { item -> item.status == ProcessingQueueItemStatus.FAILED }
+    val queueRunningLabel = if (processingUiState.isQueueRunning) "运行中" else "已暂停"
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+            .heightIn(min = 300.dp, max = 640.dp)
+            .padding(horizontal = BorderlessTokens.ScreenPaddingHorizontal),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        Text(text = "${index + 1}. ${inputSourceLabel(source)}", style = MaterialTheme.typography.bodyMedium)
         Text(
-            text = source,
+            text = "队列详情",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = BorderlessTokens.SectionTitleWeight
+        )
+        Text(
+            text = "状态：$queueRunningLabel · 待处理 $pendingQueueCount · 失败 $failedQueueCount",
             style = MaterialTheme.typography.bodySmall,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(
+                onClick = onStartBatchQueue,
+                enabled = !processingUiState.isProcessing && pendingQueueCount > 0,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("启动")
+            }
+            OutlinedButton(
+                onClick = onPauseBatchQueue,
+                enabled = processingUiState.isQueueRunning,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("暂停")
+            }
+            OutlinedButton(
+                onClick = onClearBatchQueue,
+                enabled = queueItems.isNotEmpty(),
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("清空")
+            }
+        }
+
+        if (queueItems.isEmpty()) {
+            Text(
+                text = "队列为空",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(vertical = 16.dp)
+            )
+        } else {
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                itemsIndexed(items = queueItems, key = { _, item -> item.id }) { index, queueItem ->
+                    QueueItemRow(
+                        index = index,
+                        queueItem = queueItem,
+                        isProcessing = processingUiState.isProcessing,
+                        onRetryQueuedBatch = onRetryQueuedBatch,
+                        onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
+                        onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,
+                        onRemoveQueuedBatch = onRemoveQueuedBatch
+                    )
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha)
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+    }
+}
+
+@Composable
+private fun CheckpointSection(
+    processingUiState: ProcessingUiState,
+    onResumeProcessing: () -> Unit,
+    onRetryFailedItems: () -> Unit,
+    onResumePendingItem: (String) -> Unit,
+    onRetryFailedItem: (String) -> Unit,
+    onDiscardCheckpoint: () -> Unit
+) {
+    val checkpointSummary = processingUiState.checkpointSummary ?: return
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            text = "断点续传",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = BorderlessTokens.SectionTitleWeight
+        )
+        Text(
+            text = "${checkpointSummary.statusLabel} · 待处理 ${checkpointSummary.pendingItems} · 失败 ${checkpointSummary.failedItems}",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(onClick = onMoveUp, enabled = !isFirst) { Text("上移") }
-            OutlinedButton(onClick = onMoveDown, enabled = !isLast) { Text("下移") }
-            OutlinedButton(onClick = onRemove) { Text("移除") }
+            OutlinedButton(onClick = onResumeProcessing, modifier = Modifier.weight(1f)) {
+                Text("继续")
+            }
+            OutlinedButton(
+                onClick = onRetryFailedItems,
+                enabled = processingUiState.canRetryFailedOnly,
+                modifier = Modifier.weight(1f)
+            ) {
+                Text("重试失败")
+            }
+            OutlinedButton(onClick = onDiscardCheckpoint, modifier = Modifier.weight(1f)) {
+                Text("丢弃")
+            }
+        }
+
+        checkpointSummary.pendingItemDetails.take(10).forEach { item ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = item.displayName,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodySmall
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    TextButton(onClick = { onResumePendingItem(item.uri) }) {
+                        Text("继续")
+                    }
+                    if (item.isFailed) {
+                        TextButton(onClick = { onRetryFailedItem(item.uri) }) {
+                            Text("重试")
+                        }
+                    }
+                }
+            }
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerSubtleAlpha)
+            )
+        }
+    }
+}
+
+@Composable
+private fun SheetActionItem(label: String, subtitle: String? = null, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(
+                horizontal = BorderlessTokens.ScreenPaddingHorizontal,
+                vertical = BorderlessTokens.RowVerticalPadding
+            )
+    ) {
+        Text(text = label, style = MaterialTheme.typography.bodyLarge)
+        subtitle?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
     }
 }
@@ -378,13 +948,12 @@ private fun QueueItemRow(
     }
     val canOpenOutput = queueItem.status == ProcessingQueueItemStatus.COMPLETED &&
         !queueItem.lastOutputUri.isNullOrBlank()
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = canOpenOutput) {
-                onOpenQueuedBatchOutput(queueItem.id)
-            }
-            .padding(vertical = 8.dp),
+            .clickable(enabled = canOpenOutput) { onOpenQueuedBatchOutput(queueItem.id) }
+            .padding(vertical = 6.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -648,4 +1217,12 @@ private fun inputSourceLabel(source: String): String {
     }
     val fallback = source.substringAfterLast('/', source)
     return if (fallback.isBlank()) source else fallback
+}
+
+private fun abbreviatePath(path: String): String {
+    val normalized = path.trim()
+    if (normalized.length <= 22) {
+        return normalized
+    }
+    return "${normalized.take(12)}...${normalized.takeLast(7)}"
 }

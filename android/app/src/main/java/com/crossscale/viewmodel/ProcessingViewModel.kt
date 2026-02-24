@@ -202,14 +202,56 @@ class ProcessingViewModel(
         }
 
         val normalizedOutputDirectoryUri = outputDirectoryUri?.trim()?.ifBlank { null }
+        val reusablePendingOrRunningBatchId = _uiState.value.queueItems.firstOrNull { item ->
+            (item.status == ProcessingQueueItemStatus.PENDING || item.status == ProcessingQueueItemStatus.RUNNING) &&
+                item.matchesBatchConfiguration(
+                    source = normalizedImagePath,
+                    modelName = normalizedModelName,
+                    distributedMode = distributedMode,
+                    outputDirectoryUri = normalizedOutputDirectoryUri,
+                    overwriteOriginal = overwriteOriginal,
+                    backupOriginal = backupOriginal
+                )
+        }?.id
+
+        if (reusablePendingOrRunningBatchId != null) {
+            _uiState.update { state ->
+                state.copy(
+                    queueItems = state.queueItems.map { item ->
+                        if (
+                            item.id == reusablePendingOrRunningBatchId &&
+                            item.status == ProcessingQueueItemStatus.PENDING &&
+                            item.retryFailedOnly
+                        ) {
+                            item.copy(
+                                retryFailedOnly = false,
+                                lastErrorMessage = null,
+                                lastOutputUri = null
+                            )
+                        } else {
+                            item
+                        }
+                    }
+                )
+            }
+            logRepository.info(
+                "ProcessingViewModel",
+                "Skipped duplicate enqueue for active batch ${reusablePendingOrRunningBatchId.take(8)} source=$normalizedImagePath"
+            )
+            estimateQueuedBatchExpectedItems(reusablePendingOrRunningBatchId, normalizedImagePath)
+            return reusablePendingOrRunningBatchId
+        }
+
         val reusableFailedBatchId = _uiState.value.queueItems.firstOrNull { item ->
             item.status == ProcessingQueueItemStatus.FAILED &&
-                item.source == normalizedImagePath &&
-                item.modelName == normalizedModelName &&
-                item.distributedMode == distributedMode &&
-                item.outputDirectoryUri == normalizedOutputDirectoryUri &&
-                item.overwriteOriginal == overwriteOriginal &&
-                item.backupOriginal == backupOriginal
+                item.matchesBatchConfiguration(
+                    source = normalizedImagePath,
+                    modelName = normalizedModelName,
+                    distributedMode = distributedMode,
+                    outputDirectoryUri = normalizedOutputDirectoryUri,
+                    overwriteOriginal = overwriteOriginal,
+                    backupOriginal = backupOriginal
+                )
         }?.id
 
         if (reusableFailedBatchId != null) {
@@ -257,6 +299,22 @@ class ProcessingViewModel(
 
         estimateQueuedBatchExpectedItems(queueItem.id, normalizedImagePath)
         return queueItem.id
+    }
+
+    private fun ProcessingQueueItemSummary.matchesBatchConfiguration(
+        source: String,
+        modelName: String,
+        distributedMode: Boolean,
+        outputDirectoryUri: String?,
+        overwriteOriginal: Boolean,
+        backupOriginal: Boolean
+    ): Boolean {
+        return this.source == source &&
+            this.modelName == modelName &&
+            this.distributedMode == distributedMode &&
+            this.outputDirectoryUri == outputDirectoryUri &&
+            this.overwriteOriginal == overwriteOriginal &&
+            this.backupOriginal == backupOriginal
     }
 
     private fun estimateQueuedBatchExpectedItems(
@@ -407,6 +465,59 @@ class ProcessingViewModel(
         if (_uiState.value.queueItems.size != beforeSize) {
             logRepository.info("ProcessingViewModel", "Removed queued batch: $normalizedBatchId")
         }
+    }
+
+    fun sourceForQueuedBatch(batchId: String): String? {
+        val normalizedBatchId = batchId.trim()
+        if (normalizedBatchId.isBlank()) {
+            return null
+        }
+        return _uiState.value.queueItems.firstOrNull { item ->
+            item.id == normalizedBatchId
+        }?.source
+    }
+
+    fun hasQueuedBatchForSource(source: String): Boolean {
+        val normalizedSource = source.trim()
+        if (normalizedSource.isBlank()) {
+            return false
+        }
+        return _uiState.value.queueItems.any { item ->
+            item.source == normalizedSource
+        }
+    }
+
+    fun queuedSources(): Set<String> {
+        return _uiState.value.queueItems
+            .map { item -> item.source }
+            .toSet()
+    }
+
+    fun removeQueuedBatchesBySource(source: String): Int {
+        val normalizedSource = source.trim()
+        if (normalizedSource.isBlank()) {
+            return 0
+        }
+        val removedBatchIds = mutableListOf<String>()
+        _uiState.value.queueItems
+            .filter { item ->
+                item.source == normalizedSource &&
+                    !(item.id == activeQueueItemId && processingJob?.isActive == true)
+            }
+            .forEach { item ->
+                val beforeSize = _uiState.value.queueItems.size
+                removeQueuedBatch(item.id)
+                if (_uiState.value.queueItems.size < beforeSize) {
+                    removedBatchIds += item.id
+                }
+            }
+        if (removedBatchIds.isNotEmpty()) {
+            logRepository.info(
+                "ProcessingViewModel",
+                "Removed ${removedBatchIds.size} queued batch(es) for source=$normalizedSource"
+            )
+        }
+        return removedBatchIds.size
     }
 
     fun clearBatchQueue() {

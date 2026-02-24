@@ -6,15 +6,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Card
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import com.crossscale.ui.theme.BorderlessTokens
 
 @Composable
 fun LayeredSectionCard(
@@ -28,56 +27,52 @@ fun LayeredSectionCard(
     actions: @Composable () -> Unit,
     details: @Composable () -> Unit = {}
 ) {
-    Card(
-        modifier = modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = BorderlessTokens.SectionCompactSpacing),
+        verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionSpacing)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing / 2)
             ) {
-                Column(
-                    modifier = Modifier.weight(1f),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(text = title, style = MaterialTheme.typography.titleMedium)
+                Text(text = title, style = MaterialTheme.typography.titleMedium)
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+
+            if (showDetailsToggle) {
+                TextButton(onClick = onToggleExpanded) {
+                    Text(if (expanded) "收起" else "详情")
+                }
+            }
+        }
+
+        actions()
+
+        val detailsVisible = if (showDetailsToggle) expanded else true
+        AnimatedVisibility(visible = detailsVisible) {
+            Column(verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing)) {
+                guide?.takeIf { text -> text.isNotBlank() }?.let { text ->
                     Text(
-                        text = summary,
+                        text = text,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
-
-                if (showDetailsToggle) {
-                    TextButton(onClick = onToggleExpanded) {
-                        Text(if (expanded) "收起" else "详情")
-                    }
-                }
-            }
-
-            actions()
-
-            val detailsVisible = if (showDetailsToggle) expanded else true
-            AnimatedVisibility(visible = detailsVisible) {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    guide?.takeIf { text -> text.isNotBlank() }?.let { text ->
-                        Text(
-                            text = text,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    details()
-                }
+                details()
             }
         }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha))
     }
 }

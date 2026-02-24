@@ -41,19 +41,15 @@ class NativeImageProcessingRepository(
                 gpuHandle = selectedHandle
             )
             if (!validationResult.isStable) {
-                logRepository.warning(
+                logRepository.error(
                     "NativeImageProcessingRepository",
-                    "GPU output validation failed (${validationResult.reason}), fallback to CPU"
+                    "GPU output validation failed (${validationResult.reason}), aborting GPU session without CPU fallback"
                 )
                 releaseEngine(
                     enginePtr = selectedHandle.enginePtr,
                     errorPrefix = "Failed to release unstable GPU engine"
                 )
-                selectedHandle = createEngineHandle(
-                    modelName = modelName,
-                    modelBasePath = modelBasePath,
-                    deviceType = DEVICE_TYPE_CPU
-                ) ?: return null
+                return null
             } else {
                 logRepository.info(
                     "NativeImageProcessingRepository",
@@ -72,7 +68,6 @@ class NativeImageProcessingRepository(
         return NativeImageProcessingSession(
             context = appContext,
             logRepository = logRepository,
-            modelName = modelName,
             enginePtr = selectedHandle.enginePtr,
             scaleFactor = selectedHandle.scaleFactor,
             activeDeviceType = selectedHandle.deviceType,
@@ -363,7 +358,6 @@ class NativeImageProcessingRepository(
     private class NativeImageProcessingSession(
         private val context: Context,
         private val logRepository: LogRepository,
-        private val modelName: String,
         private var enginePtr: Long,
         private var scaleFactor: Int,
         private var activeDeviceType: Int,
@@ -375,29 +369,6 @@ class NativeImageProcessingRepository(
             input: ResolvedImageInput,
             outputFile: File
         ): Result<NativeProcessResult> {
-            val primaryResult = processInternal(
-                input = input,
-                outputFile = outputFile
-            )
-            if (primaryResult.isSuccess || activeDeviceType != DEVICE_TYPE_GPU) {
-                return primaryResult
-            }
-
-            val failureMessage = primaryResult.exceptionOrNull()?.message ?: "Unknown native processing failure"
-            val switched = switchToCpuForStability(
-                reason = "GPU processing failed for ${input.displayName}: $failureMessage"
-            )
-            if (!switched) {
-                return primaryResult
-            }
-
-            if (outputFile.exists()) {
-                outputFile.delete()
-            }
-            logRepository.warning(
-                "NativeImageProcessingRepository",
-                "Retry ${input.displayName} on CPU after GPU failure"
-            )
             return processInternal(
                 input = input,
                 outputFile = outputFile
@@ -607,32 +578,6 @@ class NativeImageProcessingRepository(
                 averageChannelDiff = averageChannelDiff,
                 maxChannelDiff = maxChannelDiff
             )
-        }
-
-        private fun switchToCpuForStability(reason: String): Boolean {
-            logRepository.warning("NativeImageProcessingRepository", "$reason; switching session to CPU")
-            val cpuHandle = openEngineHandle(DEVICE_TYPE_CPU)
-            if (cpuHandle == null) {
-                logRepository.error(
-                    "NativeImageProcessingRepository",
-                    "Unable to initialize CPU fallback session for model=$modelName"
-                )
-                return false
-            }
-
-            val previousEnginePtr = enginePtr
-            enginePtr = cpuHandle.enginePtr
-            scaleFactor = cpuHandle.scaleFactor
-            activeDeviceType = cpuHandle.deviceType
-            runCatching {
-                NCNNEngine.nativeRelease(previousEnginePtr)
-            }.onFailure { throwable ->
-                logRepository.warning(
-                    "NativeImageProcessingRepository",
-                    "Failed to release previous GPU engine: ${throwable.message}"
-                )
-            }
-            return true
         }
 
         override fun close() {

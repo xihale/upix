@@ -2,7 +2,6 @@ package com.crossscale.network
 
 import java.net.URI
 import java.net.URLDecoder
-import java.nio.charset.StandardCharsets
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -135,7 +134,7 @@ object JoinInviteParser {
                     return@mapNotNull null
                 }
                 val value = pair.substring(eq + 1)
-                val decoded = URLDecoder.decode(value, StandardCharsets.UTF_8)
+                val decoded = URLDecoder.decode(value, "UTF-8")
                 key to decoded
             }
             .toMap()

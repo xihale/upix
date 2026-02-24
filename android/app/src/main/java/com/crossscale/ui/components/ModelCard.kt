@@ -6,15 +6,14 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import com.crossscale.data.model.ModelInfo
+import com.crossscale.ui.theme.BorderlessTokens
 
 @Composable
 fun ModelCard(
@@ -23,36 +22,42 @@ fun ModelCard(
     onSelect: (ModelInfo) -> Unit,
     onDelete: (ModelInfo) -> Unit
 ) {
-    val cardColors = if (isSelected) {
-        CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
-    } else {
-        CardDefaults.cardColors()
-    }
-
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
-        colors = cardColors
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = BorderlessTokens.ListItemVerticalPadding),
+        verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Text(text = model.name, style = MaterialTheme.typography.titleMedium)
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(
-                text = "放大倍率: ${model.scaleFactor}x  大小: ${model.totalSize / 1024 / 1024}MB",
-                style = MaterialTheme.typography.bodyMedium
+                text = model.name,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = BorderlessTokens.SectionTitleWeight
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = { onSelect(model) }) {
-                    Text(if (isSelected) "已选择" else "选择")
-                }
-                OutlinedButton(onClick = { onDelete(model) }) {
-                    Text("删除")
-                }
+            if (isSelected) {
+                Text(
+                    text = "当前",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary
+                )
             }
         }
+
+        Text(
+            text = "放大倍率: ${model.scaleFactor}x · 大小: ${model.totalSize / 1024 / 1024}MB",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+
+        Row(horizontalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing)) {
+            Button(onClick = { onSelect(model) }) {
+                Text(if (isSelected) "已选择" else "选择")
+            }
+            OutlinedButton(onClick = { onDelete(model) }) {
+                Text("删除")
+            }
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha))
     }
 }

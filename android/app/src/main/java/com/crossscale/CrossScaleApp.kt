@@ -8,12 +8,10 @@ import android.net.Uri
 import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.ExperimentalGetImage
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -23,10 +21,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.rememberNavController
-import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.crossscale.data.repository.LogRepository
@@ -39,6 +35,7 @@ import com.crossscale.viewmodel.ProcessingViewModel
 import java.io.File
 
 @OptIn(ExperimentalMaterial3Api::class)
+@ExperimentalGetImage
 @Composable
 fun CrossScaleApp(container: AppContainer) {
     val context = LocalContext.current
@@ -52,11 +49,6 @@ fun CrossScaleApp(container: AppContainer) {
     val processingUiState by processingViewModel.uiState.collectAsState()
     val logs by container.logRepository.logs.collectAsState()
     val logRepository = container.logRepository
-    val navBackStackEntry by navController.currentBackStackEntryAsState()
-    val currentRoute = navBackStackEntry?.destination?.route
-    val currentScreen = AppScreen.allScreens.firstOrNull { screen ->
-        screen.route == currentRoute
-    } ?: AppScreen.Home
 
     LaunchedEffect(mainUiState.selectedImagePath) {
         processingViewModel.refreshExpectedTotal(mainUiState.selectedImagePath)
@@ -162,18 +154,6 @@ fun CrossScaleApp(container: AppContainer) {
     }
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(
-                        text = currentScreen.title,
-                        style = MaterialTheme.typography.titleMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
-            )
-        },
         bottomBar = { BottomNavigationBar(navController = navController) }
     ) { innerPadding ->
         CrossScaleNavigation(
@@ -189,8 +169,14 @@ fun CrossScaleApp(container: AppContainer) {
             onSelectImageFolder = {
                 pickImageFolderLauncher.launch(null)
             },
-            onClearInputSources = mainViewModel::clearSelectedImage,
-            onRemoveInputSource = mainViewModel::removeInputSource,
+            onClearInputSources = {
+                mainViewModel.clearSelectedImage()
+                processingViewModel.clearBatchQueue()
+            },
+            onRemoveInputSource = { source ->
+                mainViewModel.removeInputSource(source)
+                processingViewModel.removeQueuedBatchesBySource(source)
+            },
             onMoveInputSourceUp = mainViewModel::moveInputSourceUp,
             onMoveInputSourceDown = mainViewModel::moveInputSourceDown,
             onSelectOutputFolder = {
@@ -234,8 +220,22 @@ fun CrossScaleApp(container: AppContainer) {
                     openImageOutput(context = context, rawOutput = outputUri, logRepository = logRepository)
                 }
             },
-            onRemoveQueuedBatch = processingViewModel::removeQueuedBatch,
-            onClearBatchQueue = processingViewModel::clearBatchQueue,
+            onRemoveQueuedBatch = { batchId ->
+                val removedSource = processingViewModel.sourceForQueuedBatch(batchId)
+                processingViewModel.removeQueuedBatch(batchId)
+                if (removedSource != null && !processingViewModel.hasQueuedBatchForSource(removedSource)) {
+                    mainViewModel.removeInputSource(removedSource)
+                }
+            },
+            onClearBatchQueue = {
+                processingViewModel.clearBatchQueue()
+                val remainingSources = processingViewModel.queuedSources()
+                mainUiState.selectedInputSources
+                    .filter { source -> source !in remainingSources }
+                    .forEach { source ->
+                        mainViewModel.removeInputSource(source)
+                    }
+            },
             onResumeProcessing = processingViewModel::resumeLastProcessing,
             onRetryFailedItems = processingViewModel::retryFailedItems,
             onResumePendingItem = processingViewModel::resumePendingItem,
@@ -259,6 +259,9 @@ fun CrossScaleApp(container: AppContainer) {
                         Intent(Intent.ACTION_VIEW, releaseUri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                     )
                 }
+            },
+            onOpenHelp = {
+                navController.navigate(AppScreen.Help.route)
             },
             modifier = Modifier.padding(innerPadding)
         )

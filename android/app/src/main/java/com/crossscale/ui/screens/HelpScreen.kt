@@ -5,44 +5,49 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
-import com.crossscale.ui.components.LayeredSectionCard
+import com.crossscale.ui.theme.BorderlessTokens
 
 @Composable
 fun HelpScreen() {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+            .padding(
+                horizontal = BorderlessTokens.ScreenPaddingHorizontal,
+                vertical = BorderlessTokens.ScreenPaddingVertical
+            ),
+        verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionSpacing)
     ) {
-        Text(text = "使用帮助", style = MaterialTheme.typography.titleMedium)
-        LayeredSectionCard(
-            title = "快速开始",
-            summary = "4 步完成一次超分任务",
-            guide = null,
-            expanded = false,
-            onToggleExpanded = {},
-            showDetailsToggle = false,
-            modifier = Modifier.fillMaxWidth(),
-            actions = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(text = "1. 在主页添加图片或文件夹。", style = MaterialTheme.typography.bodyMedium)
-                    Text(text = "2. 在设置 → 模型管理中选择模型。", style = MaterialTheme.typography.bodyMedium)
-                    Text(text = "3. 输出默认是 /sdcard/Pictures/CrossScale。", style = MaterialTheme.typography.bodyMedium)
-                    Text(text = "4. 点击开始超分后会自动入队并启动。", style = MaterialTheme.typography.bodyMedium)
-                }
-            },
-            details = {}
-        )
         Text(
-            text = "提示：覆盖原图时建议保留备份（默认开启）。",
+            text = "使用帮助",
+            style = MaterialTheme.typography.headlineSmall,
+            fontWeight = BorderlessTokens.SectionTitleWeight
+        )
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerStrongAlpha))
+        HelpLine("1. 在主页顶部点击“添加图片或文件夹”。")
+        HelpLine("2. 选择超分模型与输出路径。")
+        HelpLine("3. 根据需要开启“覆盖原图 / 备份原图”。")
+        HelpLine("4. 点击底部“开始超分”，并可上拉队列查看进度与失败原因。")
+
+        Text(
+            text = "提示：若开启覆盖原图，建议同时开启备份原图。",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.fillMaxWidth()
         )
     }
+}
+
+@Composable
+private fun HelpLine(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.bodyLarge,
+        modifier = Modifier.fillMaxWidth()
+    )
 }

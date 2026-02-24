@@ -337,6 +337,62 @@ class ProcessingViewModelTest {
     }
 
     @Test
+    fun enqueueBatchDeduplicatesPendingBatchWithSameConfiguration() = runTest(mainDispatcherRule.testDispatcher) {
+        val source = "content://source/dedup"
+        val inputUri = "content://images/dedup.jpg"
+        val inputSourceResolver = FakeInputSourceResolver().apply {
+            register(source, listOf(inputUri))
+        }
+
+        val viewModel = ProcessingViewModel(
+            logRepository = LogRepository(),
+            modelRepository = FakeModelProvider(
+                ModelInfo(
+                    name = "Real-ESRGANv3-anime-x2",
+                    scaleFactor = 2,
+                    inputChannels = 3,
+                    tileSize = 0,
+                    totalSize = 1024L,
+                    hash = "hash",
+                    paramPath = "/models/Real-ESRGANv3-anime-x2.param",
+                    binPath = "/models/Real-ESRGANv3-anime-x2.bin"
+                )
+            ),
+            inputSourceRepository = inputSourceResolver,
+            batchOutputRepository = FakeBatchOutputStore(),
+            checkpointRepository = FakeCheckpointStore(null),
+            queueRepository = FakeQueueStore(),
+            nativeImageProcessingRepository = FakeImageProcessingStore(),
+            ioDispatcher = mainDispatcherRule.testDispatcher,
+            defaultDispatcher = mainDispatcherRule.testDispatcher
+        )
+
+        advanceUntilIdle()
+        val firstBatchId = viewModel.enqueueBatch(
+            imagePath = source,
+            modelName = "Real-ESRGANv3-anime-x2",
+            distributedMode = false,
+            outputDirectoryUri = null
+        )
+        val secondBatchId = viewModel.enqueueBatch(
+            imagePath = source,
+            modelName = "Real-ESRGANv3-anime-x2",
+            distributedMode = false,
+            outputDirectoryUri = null
+        )
+        advanceUntilIdle()
+
+        assertNotNull(firstBatchId)
+        assertEquals(firstBatchId, secondBatchId)
+
+        val queueItems = viewModel.uiState.value.queueItems
+        assertEquals(1, queueItems.size)
+        assertEquals(firstBatchId, queueItems.first().id)
+        assertEquals(ProcessingQueueItemStatus.PENDING, queueItems.first().status)
+        assertEquals(1, queueItems.first().expectedItems)
+    }
+
+    @Test
     fun batchQueueProcessesPendingBatchesSequentially() = runTest(mainDispatcherRule.testDispatcher) {
         val sourceA = "content://source/a"
         val sourceB = "content://source/b"
