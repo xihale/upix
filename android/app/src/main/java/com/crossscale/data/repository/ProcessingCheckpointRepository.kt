@@ -55,7 +55,7 @@ class ProcessingCheckpointRepository(
     private val logRepository: LogRepository
 ) : ProcessingCheckpointStore {
     private val checkpointFile = File(context.filesDir, CHECKPOINT_FILE_NAME)
-    private val _checkpoint = MutableStateFlow(loadCheckpointFromDisk())
+    private val _checkpoint = MutableStateFlow<ProcessingCheckpoint?>(null)
     override val checkpoint: StateFlow<ProcessingCheckpoint?> = _checkpoint.asStateFlow()
     private val _hasCheckpoint = MutableStateFlow(_checkpoint.value != null)
     val hasCheckpoint: StateFlow<Boolean> = _hasCheckpoint.asStateFlow()

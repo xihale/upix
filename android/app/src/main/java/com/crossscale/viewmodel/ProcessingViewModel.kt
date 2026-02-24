@@ -135,7 +135,8 @@ class ProcessingViewModel(
     private var activeQueueItemId: String? = null
 
     init {
-        restorePersistedQueue()
+        restorePersistedQueueAsync()
+        restorePersistedCheckpointAsync()
 
         viewModelScope.launch {
             checkpointRepository.checkpoint.collectLatest { checkpoint ->
@@ -541,23 +542,35 @@ class ProcessingViewModel(
         logRepository.info("ProcessingViewModel", "Cleared queued batches")
     }
 
-    private fun restorePersistedQueue() {
-        val restoredSnapshot = queueRepository.loadQueue()
-        if (restoredSnapshot.items.isEmpty() && !restoredSnapshot.isQueueRunning) {
-            return
-        }
-        _uiState.update { state ->
-            state.copy(
-                queueItems = restoredSnapshot.items.map { item ->
-                    item.toUiQueueItem()
-                },
-                isQueueRunning = restoredSnapshot.isQueueRunning
+    private fun restorePersistedQueueAsync() {
+        viewModelScope.launch {
+            val restoredSnapshot = withContext(ioDispatcher) {
+                queueRepository.loadQueue()
+            }
+            if (restoredSnapshot.items.isEmpty() && !restoredSnapshot.isQueueRunning) {
+                return@launch
+            }
+            _uiState.update { state ->
+                state.copy(
+                    queueItems = restoredSnapshot.items.map { item ->
+                        item.toUiQueueItem()
+                    },
+                    isQueueRunning = restoredSnapshot.isQueueRunning
+                )
+            }
+            logRepository.info(
+                "ProcessingViewModel",
+                "Restored ${restoredSnapshot.items.size} queued batch(es)"
             )
         }
-        logRepository.info(
-            "ProcessingViewModel",
-            "Restored ${restoredSnapshot.items.size} queued batch(es)"
-        )
+    }
+
+    private fun restorePersistedCheckpointAsync() {
+        viewModelScope.launch {
+            withContext(ioDispatcher) {
+                checkpointRepository.loadCheckpoint()
+            }
+        }
     }
 
     fun refreshExpectedTotal(imagePath: String?) {

@@ -7,9 +7,9 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +42,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -57,10 +58,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -116,8 +115,9 @@ fun HomeScreen(
     val failedQueueCount = queueItems.count { item -> item.status == ProcessingQueueItemStatus.FAILED }
 
     var showModelSheet by rememberSaveable { mutableStateOf(false) }
-    var showQueueSheet by rememberSaveable { mutableStateOf(false) }
+    var queueSheetVisible by rememberSaveable { mutableStateOf(false) }
     var previewSource by rememberSaveable { mutableStateOf<String?>(null) }
+    val queueSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -208,7 +208,9 @@ fun HomeScreen(
             isProcessing = processingUiState.isProcessing,
             pendingQueueCount = pendingQueueCount,
             failedQueueCount = failedQueueCount,
-            onShowQueue = { showQueueSheet = true },
+            onShowQueue = {
+                queueSheetVisible = true
+            },
             onStart = onStartProcessing,
             onCancel = onCancelProcessing
         )
@@ -234,8 +236,14 @@ fun HomeScreen(
         }
     }
 
-    if (showQueueSheet) {
-        ModalBottomSheet(onDismissRequest = { showQueueSheet = false }) {
+    if (queueSheetVisible) {
+        ModalBottomSheet(
+            sheetState = queueSheetState,
+            scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.18f),
+            onDismissRequest = {
+                queueSheetVisible = false
+            }
+        ) {
             QueueBottomSheetContent(
                 processingUiState = processingUiState,
                 onStartBatchQueue = onStartBatchQueue,
@@ -581,8 +589,6 @@ private fun BottomActionBar(
     onStart: () -> Unit,
     onCancel: () -> Unit
 ) {
-    val queueOpenThresholdPx = with(LocalDensity.current) { 24.dp.toPx() }
-
     Surface(modifier = modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.background) {
         Column(
             modifier = Modifier
@@ -593,7 +599,6 @@ private fun BottomActionBar(
             QueueDockEntry(
                 pendingQueueCount = pendingQueueCount,
                 failedQueueCount = failedQueueCount,
-                queueOpenThresholdPx = queueOpenThresholdPx,
                 onShowQueue = onShowQueue
             )
 
@@ -641,32 +646,19 @@ private fun BottomActionBar(
 private fun QueueDockEntry(
     pendingQueueCount: Int,
     failedQueueCount: Int,
-    queueOpenThresholdPx: Float,
     onShowQueue: () -> Unit
 ) {
+    val interactionSource = remember { MutableInteractionSource() }
+
     Surface(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(18.dp))
-            .pointerInput(onShowQueue) {
-                var upwardDragDistance = 0f
-                detectVerticalDragGestures(
-                    onDragEnd = { upwardDragDistance = 0f },
-                    onDragCancel = { upwardDragDistance = 0f },
-                    onVerticalDrag = { _, dragAmount ->
-                        if (dragAmount < 0f) {
-                            upwardDragDistance += -dragAmount
-                            if (upwardDragDistance >= queueOpenThresholdPx) {
-                                upwardDragDistance = 0f
-                                onShowQueue()
-                            }
-                        } else {
-                            upwardDragDistance = 0f
-                        }
-                    }
-                )
-            }
-            .clickable(onClick = onShowQueue),
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = onShowQueue
+            ),
         shape = RoundedCornerShape(18.dp),
         color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)
     ) {

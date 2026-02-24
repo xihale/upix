@@ -53,7 +53,7 @@ class ProcessingQueueRepository(
     private val logRepository: LogRepository
 ) : ProcessingQueueStore {
     private val queueFile = File(context.filesDir, QUEUE_FILE_NAME)
-    private val _queue = MutableStateFlow(loadQueueFromDisk())
+    private val _queue = MutableStateFlow(ProcessingQueueSnapshot())
     override val queue: StateFlow<ProcessingQueueSnapshot> = _queue.asStateFlow()
 
     override fun saveQueue(snapshot: ProcessingQueueSnapshot) {

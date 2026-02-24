@@ -13,7 +13,6 @@ class CrossScaleApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        System.loadLibrary("crossscale-native")
         container = AppContainer(this)
         Log.i(TAG, "CrossScale Application started")
     }
