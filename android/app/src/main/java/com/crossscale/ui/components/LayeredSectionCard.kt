@@ -17,9 +17,10 @@ import androidx.compose.ui.unit.dp
 fun LayeredSectionCard(
     title: String,
     summary: String,
-    guide: String,
+    guide: String? = null,
     expanded: Boolean,
     onToggleExpanded: () -> Unit,
+    showDetailsToggle: Boolean = true,
     modifier: Modifier = Modifier,
     actions: @Composable () -> Unit,
     details: @Composable () -> Unit = {}
@@ -35,13 +36,17 @@ fun LayeredSectionCard(
             Text(text = summary, style = MaterialTheme.typography.bodyMedium)
             actions()
 
-            TextButton(onClick = onToggleExpanded) {
-                Text(if (expanded) "收起详细说明" else "展开详细说明")
+            if (showDetailsToggle) {
+                TextButton(onClick = onToggleExpanded) {
+                    Text(if (expanded) "收起详情" else "展开详情")
+                }
             }
 
-            AnimatedVisibility(visible = expanded) {
+            AnimatedVisibility(visible = expanded && showDetailsToggle) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(text = guide, style = MaterialTheme.typography.bodySmall)
+                    guide?.takeIf { text -> text.isNotBlank() }?.let { text ->
+                        Text(text = text, style = MaterialTheme.typography.bodySmall)
+                    }
                     details()
                 }
             }

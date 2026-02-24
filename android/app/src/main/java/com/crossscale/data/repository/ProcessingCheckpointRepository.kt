@@ -41,6 +41,8 @@ data class ProcessingCheckpoint(
     val completedItems: Int,
     val outputDirectory: String,
     val outputDirectoryUri: String? = null,
+    val overwriteOriginal: Boolean = false,
+    val backupOriginal: Boolean = true,
     val createdAtEpochMs: Long,
     val updatedAtEpochMs: Long,
     val lastErrorMessage: String? = null,
@@ -128,6 +130,8 @@ class ProcessingCheckpointRepository(
             put("completedItems", completedItems)
             put("outputDirectory", outputDirectory)
             outputDirectoryUri?.let { put("outputDirectoryUri", it) }
+            put("overwriteOriginal", overwriteOriginal)
+            put("backupOriginal", backupOriginal)
             put("createdAtEpochMs", createdAtEpochMs)
             put("updatedAtEpochMs", updatedAtEpochMs)
             lastErrorMessage?.let { put("lastErrorMessage", it) }
@@ -204,6 +208,8 @@ class ProcessingCheckpointRepository(
             completedItems = this["completedItems"]?.jsonPrimitive?.intOrNull ?: 0,
             outputDirectory = this["outputDirectory"]?.jsonPrimitive?.content ?: "",
             outputDirectoryUri = this["outputDirectoryUri"]?.jsonPrimitive?.contentOrNull,
+            overwriteOriginal = this["overwriteOriginal"]?.jsonPrimitive?.booleanOrNull ?: false,
+            backupOriginal = this["backupOriginal"]?.jsonPrimitive?.booleanOrNull ?: true,
             createdAtEpochMs = this["createdAtEpochMs"]?.jsonPrimitive?.longOrNull ?: 0L,
             updatedAtEpochMs = this["updatedAtEpochMs"]?.jsonPrimitive?.longOrNull ?: 0L,
             lastErrorMessage = this["lastErrorMessage"]?.jsonPrimitive?.contentOrNull,

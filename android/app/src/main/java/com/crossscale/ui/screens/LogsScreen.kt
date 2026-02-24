@@ -58,19 +58,10 @@ fun LogsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
-        Text(
-            text = "系统日志",
-            style = MaterialTheme.typography.headlineSmall
-        )
-        Text(
-            text = "先用级别和关键字快速筛选，必要时再展开查看使用说明。",
-            style = MaterialTheme.typography.bodyMedium
-        )
-
         LayeredSectionCard(
             title = "筛选与维护",
             summary = "当前结果：${filteredLogs.size} 条",
-            guide = "建议先筛选 WARNING/ERROR 定位问题，再结合关键字缩小范围。",
+            guide = null,
             expanded = filterHelpExpanded,
             onToggleExpanded = { filterHelpExpanded = !filterHelpExpanded },
             actions = {
@@ -106,12 +97,7 @@ fun LogsScreen(
                     Text("清空日志")
                 }
             },
-            details = {
-                Text(
-                    text = "日志按时间倒序显示。筛选级别后会保留“同级及以上”日志，便于快速定位异常链路。",
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+            details = {}
         )
 
         Text(

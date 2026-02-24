@@ -25,6 +25,9 @@ data class MainUiState(
     val selectedInputSources: List<String> = emptyList(),
     val selectedImagePath: String? = null,
     val selectedOutputDirectoryUri: String? = null,
+    val overwriteOriginalImage: Boolean = false,
+    val backupOriginalImage: Boolean = true,
+    val modelDirectoryPath: String = "",
     val connectedDevices: List<DeviceProfile> = emptyList(),
     val isDistributedMode: Boolean = false
 )
@@ -37,8 +40,10 @@ class MainViewModel(
     private val _selectedModelName = MutableStateFlow<String?>(null)
     private val _selectedInputSources = MutableStateFlow<List<String>>(emptyList())
     private val _selectedOutputDirectoryUri = MutableStateFlow<String?>(null)
+    private val _overwriteOriginalImage = MutableStateFlow(false)
+    private val _backupOriginalImage = MutableStateFlow(true)
 
-    val uiState: StateFlow<MainUiState> = combine(
+    private val baseUiState = combine(
         modelRepository.models,
         _selectedModelName,
         _selectedInputSources,
@@ -55,8 +60,20 @@ class MainViewModel(
             selectedInputSources = selectedInputSources,
             selectedImagePath = encodedInputSource,
             selectedOutputDirectoryUri = selectedOutputDirectoryUri,
+            modelDirectoryPath = modelRepository.modelDirectoryPath(),
             connectedDevices = connectedDevices,
             isDistributedMode = connectedDevices.size > 1
+        )
+    }
+
+    val uiState: StateFlow<MainUiState> = combine(
+        baseUiState,
+        _overwriteOriginalImage,
+        _backupOriginalImage
+    ) { state, overwriteOriginalImage, backupOriginalImage ->
+        state.copy(
+            overwriteOriginalImage = overwriteOriginalImage,
+            backupOriginalImage = backupOriginalImage
         )
     }.stateIn(
         scope = viewModelScope,
@@ -196,6 +213,19 @@ class MainViewModel(
         _selectedOutputDirectoryUri.value = outputDirectoryUri?.ifBlank { null }
         val outputLabel = _selectedOutputDirectoryUri.value ?: "App internal directory"
         logRepository.info("MainViewModel", "Selected output directory: $outputLabel")
+    }
+
+    fun useDefaultOutputDirectory() {
+        _selectedOutputDirectoryUri.value = null
+        logRepository.info("MainViewModel", "Using default output directory")
+    }
+
+    fun setOverwriteOriginalImage(enabled: Boolean) {
+        _overwriteOriginalImage.value = enabled
+    }
+
+    fun setBackupOriginalImage(enabled: Boolean) {
+        _backupOriginalImage.value = enabled
     }
 
     fun refreshModels() {

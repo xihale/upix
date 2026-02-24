@@ -2,6 +2,7 @@ package com.crossscale.data.repository
 
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import android.provider.DocumentsContract
 import java.io.File
 import java.io.IOException
@@ -11,7 +12,9 @@ data class BatchOutputDirectory(
     val batchId: String,
     val displayPath: String,
     val outputDirectoryUri: String? = null,
-    val internalDirectory: File? = null
+    val internalDirectory: File? = null,
+    val overwriteOriginal: Boolean = false,
+    val backupOriginal: Boolean = true
 )
 
 class BatchOutputRepository(
@@ -19,17 +22,26 @@ class BatchOutputRepository(
 ) : BatchOutputStore {
     private val appContext = context.applicationContext
     private val contentResolver = appContext.contentResolver
-    private val rootOutputDir = File(appContext.filesDir, OUTPUT_ROOT_DIR)
+    private val rootOutputDir = appContext.getExternalFilesDir(Environment.DIRECTORY_PICTURES)
+        ?.let { directory -> File(directory, OUTPUT_ROOT_DIR) }
+        ?: File(appContext.filesDir, OUTPUT_ROOT_DIR)
+    private val backupOutputRootDir = File(rootOutputDir, BACKUP_ROOT_DIR)
     private val tempOutputRootDir = File(appContext.cacheDir, TEMP_OUTPUT_ROOT_DIR)
 
     override fun prepareOutputDirectory(
         source: String,
         modelName: String,
         preferredTreeUri: String?,
+        overwriteOriginal: Boolean,
+        backupOriginal: Boolean,
         resumeOutputDirectory: String?,
-        resumeOutputDirectoryUri: String?
+        resumeOutputDirectoryUri: String?,
+        resumeOverwriteOriginal: Boolean?,
+        resumeBackupOriginal: Boolean?
     ): BatchOutputDirectory {
         val batchId = batchIdFor(source = source, modelName = modelName)
+        val resolvedOverwrite = resumeOverwriteOriginal ?: overwriteOriginal
+        val resolvedBackup = if (resolvedOverwrite) (resumeBackupOriginal ?: backupOriginal) else false
         val normalizedResumeUri = resumeOutputDirectoryUri.orEmpty().trim()
         if (normalizedResumeUri.isNotBlank()) {
             val parsedResumeUri = parseUri(normalizedResumeUri)
@@ -39,7 +51,9 @@ class BatchOutputRepository(
                     batchId = batchId,
                     displayPath = displayPath,
                     outputDirectoryUri = parsedResumeUri.toString(),
-                    internalDirectory = null
+                    internalDirectory = null,
+                    overwriteOriginal = resolvedOverwrite,
+                    backupOriginal = resolvedBackup
                 )
             }
         }
@@ -52,7 +66,9 @@ class BatchOutputRepository(
                     batchId = batchId,
                     displayPath = normalizedResumeDirectory,
                     outputDirectoryUri = parsedResumeDirectoryUri.toString(),
-                    internalDirectory = null
+                    internalDirectory = null,
+                    overwriteOriginal = resolvedOverwrite,
+                    backupOriginal = resolvedBackup
                 )
             }
         }
@@ -69,7 +85,9 @@ class BatchOutputRepository(
                     batchId = batchId,
                     displayPath = outputDirectoryUri.toString(),
                     outputDirectoryUri = outputDirectoryUri.toString(),
-                    internalDirectory = null
+                    internalDirectory = null,
+                    overwriteOriginal = resolvedOverwrite,
+                    backupOriginal = resolvedBackup
                 )
             }
         }
@@ -85,7 +103,9 @@ class BatchOutputRepository(
             batchId = batchId,
             displayPath = internalDirectory.absolutePath,
             outputDirectoryUri = null,
-            internalDirectory = internalDirectory
+            internalDirectory = internalDirectory,
+            overwriteOriginal = resolvedOverwrite,
+            backupOriginal = resolvedBackup
         )
     }
 
@@ -131,6 +151,9 @@ class BatchOutputRepository(
         input: ResolvedImageInput,
         outputFile: File
     ): Result<String> {
+        if (outputDirectory.overwriteOriginal) {
+            return commitOverwriteOriginal(outputDirectory = outputDirectory, input = input, outputFile = outputFile)
+        }
         val outputName = outputNameFor(input)
         val outputDirectoryUri = outputDirectory.outputDirectoryUri.orEmpty()
         if (outputDirectoryUri.isBlank()) {
@@ -214,6 +237,58 @@ class BatchOutputRepository(
         }
     }
 
+    private fun commitOverwriteOriginal(
+        outputDirectory: BatchOutputDirectory,
+        input: ResolvedImageInput,
+        outputFile: File
+    ): Result<String> {
+        val inputUri = input.uri
+        return runCatching {
+            if (outputDirectory.backupOriginal) {
+                backupOriginalInput(outputDirectory = outputDirectory, input = input)
+            }
+            if (inputUri.scheme.equals("file", ignoreCase = true)) {
+                val targetFile = File(requireNotNull(inputUri.path) { "Invalid file uri: $inputUri" })
+                outputFile.copyTo(targetFile, overwrite = true)
+                outputFile.delete()
+                targetFile.absolutePath
+            } else {
+                contentResolver.openOutputStream(inputUri, "w")?.use { outputStream ->
+                    outputFile.inputStream().use { inputStream ->
+                        inputStream.copyTo(outputStream)
+                    }
+                } ?: throw IOException("Unable to overwrite input URI: $inputUri")
+                outputFile.delete()
+                inputUri.toString()
+            }
+        }
+    }
+
+    private fun backupOriginalInput(
+        outputDirectory: BatchOutputDirectory,
+        input: ResolvedImageInput
+    ) {
+        val backupDir = File(backupOutputRootDir, outputDirectory.batchId)
+        if (!backupDir.exists()) {
+            backupDir.mkdirs()
+        }
+        val backupFile = File(backupDir, input.displayName)
+        if (backupFile.exists()) {
+            return
+        }
+
+        if (input.uri.scheme.equals("file", ignoreCase = true)) {
+            val sourceFile = File(requireNotNull(input.uri.path) { "Invalid file uri: ${input.uri}" })
+            sourceFile.copyTo(backupFile, overwrite = false)
+        } else {
+            contentResolver.openInputStream(input.uri)?.use { source ->
+                backupFile.outputStream().use { sink ->
+                    source.copyTo(sink)
+                }
+            }
+        }
+    }
+
     private fun ensureSubDirectory(
         rootTreeUri: Uri,
         directoryName: String
@@ -284,7 +359,8 @@ class BatchOutputRepository(
     }
 
     companion object {
-        private const val OUTPUT_ROOT_DIR = "outputs"
+        private const val OUTPUT_ROOT_DIR = "CrossScale"
+        private const val BACKUP_ROOT_DIR = "original_backups"
         private const val TEMP_OUTPUT_ROOT_DIR = "outputs_temp"
         private const val PNG_MIME_TYPE = "image/png"
         private const val JPEG_MIME_TYPE = "image/jpeg"

@@ -55,19 +55,10 @@ fun DevicesScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Text(
-                text = "设备协作",
-                style = MaterialTheme.typography.headlineSmall
-            )
-            Text(
-                text = "先自动发现，再用扫码/手动补充连接。保持列表简洁，详细连接说明在展开层。",
-                style = MaterialTheme.typography.bodyMedium
-            )
-
             LayeredSectionCard(
                 title = "连接控制",
                 summary = if (state.isDiscovering) "当前正在发现设备" else "当前未发现设备",
-                guide = "推荐顺序：1) 开始发现 2) 选择设备连接 3) 若未发现则使用扫码或手动连接。",
+                guide = null,
                 expanded = actionDetailsExpanded,
                 onToggleExpanded = { actionDetailsExpanded = !actionDetailsExpanded },
                 actions = {

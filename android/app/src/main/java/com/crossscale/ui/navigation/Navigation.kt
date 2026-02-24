@@ -8,9 +8,11 @@ import androidx.navigation.compose.composable
 import com.crossscale.data.model.LogEntry
 import com.crossscale.data.model.ModelInfo
 import com.crossscale.ui.screens.DevicesScreen
+import com.crossscale.ui.screens.HelpScreen
 import com.crossscale.ui.screens.HomeScreen
 import com.crossscale.ui.screens.LogsScreen
 import com.crossscale.ui.screens.ModelsScreen
+import com.crossscale.ui.screens.SettingsScreen
 import com.crossscale.viewmodel.DeviceUiState
 import com.crossscale.viewmodel.MainUiState
 import com.crossscale.viewmodel.ProcessingUiState
@@ -23,7 +25,6 @@ fun CrossScaleNavigation(
     processingUiState: ProcessingUiState,
     logs: List<LogEntry>,
     onSelectModel: (ModelInfo) -> Unit,
-    onSelectSingleImage: () -> Unit,
     onSelectMultipleImages: () -> Unit,
     onSelectImageFolder: () -> Unit,
     onClearInputSources: () -> Unit,
@@ -31,9 +32,10 @@ fun CrossScaleNavigation(
     onMoveInputSourceUp: (String) -> Unit,
     onMoveInputSourceDown: (String) -> Unit,
     onSelectOutputFolder: () -> Unit,
-    onUseInternalOutputFolder: () -> Unit,
+    onUseDefaultOutputFolder: () -> Unit,
+    onToggleOverwriteOriginal: (Boolean) -> Unit,
+    onToggleBackupOriginal: (Boolean) -> Unit,
     onStartProcessing: () -> Unit,
-    onEnqueueBatch: () -> Unit,
     onStartBatchQueue: () -> Unit,
     onPauseBatchQueue: () -> Unit,
     onRetryQueuedBatch: (String) -> Unit,
@@ -56,6 +58,7 @@ fun CrossScaleNavigation(
     onManualConnect: (String, String, String) -> Unit,
     onConnectByQr: (String) -> Unit,
     onClearLogs: () -> Unit,
+    onOpenModelRelease: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     NavHost(
@@ -67,7 +70,6 @@ fun CrossScaleNavigation(
             HomeScreen(
                 state = mainUiState,
                 processingUiState = processingUiState,
-                onSelectSingleImage = onSelectSingleImage,
                 onSelectMultipleImages = onSelectMultipleImages,
                 onSelectImageFolder = onSelectImageFolder,
                 onClearInputSources = onClearInputSources,
@@ -75,9 +77,10 @@ fun CrossScaleNavigation(
                 onMoveInputSourceUp = onMoveInputSourceUp,
                 onMoveInputSourceDown = onMoveInputSourceDown,
                 onSelectOutputFolder = onSelectOutputFolder,
-                onUseInternalOutputFolder = onUseInternalOutputFolder,
+                onUseDefaultOutputFolder = onUseDefaultOutputFolder,
+                onToggleOverwriteOriginal = onToggleOverwriteOriginal,
+                onToggleBackupOriginal = onToggleBackupOriginal,
                 onStartProcessing = onStartProcessing,
-                onEnqueueBatch = onEnqueueBatch,
                 onStartBatchQueue = onStartBatchQueue,
                 onPauseBatchQueue = onPauseBatchQueue,
                 onRetryQueuedBatch = onRetryQueuedBatch,
@@ -104,20 +107,37 @@ fun CrossScaleNavigation(
                 onConnectByQr = onConnectByQr
             )
         }
-        composable(AppScreen.Models.route) {
+        composable(AppScreen.Settings.route) {
+            SettingsScreen(
+                modelDirectoryPath = mainUiState.modelDirectoryPath,
+                selectedModelName = mainUiState.selectedModel?.name,
+                onOpenModels = {
+                    navController.navigate(AppScreen.SettingsModels.route)
+                },
+                onOpenLogs = {
+                    navController.navigate(AppScreen.SettingsLogs.route)
+                }
+            )
+        }
+        composable(AppScreen.SettingsModels.route) {
             ModelsScreen(
                 models = mainUiState.models,
                 selectedModel = mainUiState.selectedModel,
                 onSelectModel = onSelectModel,
                 onRefreshModels = onRefreshModels,
-                onDeleteModel = onDeleteModel
+                onDeleteModel = onDeleteModel,
+                modelDirectoryPath = mainUiState.modelDirectoryPath,
+                onOpenModelRelease = onOpenModelRelease
             )
         }
-        composable(AppScreen.Logs.route) {
+        composable(AppScreen.SettingsLogs.route) {
             LogsScreen(
                 logs = logs,
                 onClearLogs = onClearLogs
             )
+        }
+        composable(AppScreen.Help.route) {
+            HelpScreen()
         }
     }
 }

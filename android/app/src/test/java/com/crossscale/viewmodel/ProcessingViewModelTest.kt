@@ -819,8 +819,12 @@ class ProcessingViewModelTest {
             source: String,
             modelName: String,
             preferredTreeUri: String?,
+            overwriteOriginal: Boolean,
+            backupOriginal: Boolean,
             resumeOutputDirectory: String?,
-            resumeOutputDirectoryUri: String?
+            resumeOutputDirectoryUri: String?,
+            resumeOverwriteOriginal: Boolean?,
+            resumeBackupOriginal: Boolean?
         ): BatchOutputDirectory {
             val outputDir = File(outputRoot, "batch").also { dir ->
                 if (!dir.exists()) {

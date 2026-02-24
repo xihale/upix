@@ -32,6 +32,8 @@ data class PersistedQueueItem(
     val distributedMode: Boolean,
     val retryFailedOnly: Boolean = false,
     val outputDirectoryUri: String? = null,
+    val overwriteOriginal: Boolean = false,
+    val backupOriginal: Boolean = true,
     val createdAtEpochMs: Long,
     val expectedItems: Int? = null,
     val status: PersistedQueueItemStatus = PersistedQueueItemStatus.PENDING,
@@ -146,6 +148,8 @@ class ProcessingQueueRepository(
                     distributedMode = item.distributedMode,
                     retryFailedOnly = item.retryFailedOnly,
                     outputDirectoryUri = item.outputDirectoryUri?.trim()?.ifBlank { null },
+                    overwriteOriginal = item.overwriteOriginal,
+                    backupOriginal = item.backupOriginal,
                     createdAtEpochMs = item.createdAtEpochMs,
                     expectedItems = item.expectedItems?.coerceAtLeast(0),
                     status = item.status,
@@ -199,6 +203,8 @@ class ProcessingQueueRepository(
                                 item.outputDirectoryUri?.let { uri ->
                                     put("outputDirectoryUri", uri)
                                 }
+                                put("overwriteOriginal", item.overwriteOriginal)
+                                put("backupOriginal", item.backupOriginal)
                                 put("createdAtEpochMs", item.createdAtEpochMs)
                                 item.expectedItems?.let { expectedItems ->
                                     put("expectedItems", expectedItems)
@@ -238,6 +244,8 @@ class ProcessingQueueRepository(
                     distributedMode = item["distributedMode"]?.jsonPrimitive?.booleanOrNull ?: false,
                     retryFailedOnly = item["retryFailedOnly"]?.jsonPrimitive?.booleanOrNull ?: false,
                     outputDirectoryUri = item["outputDirectoryUri"]?.jsonPrimitive?.contentOrNull,
+                    overwriteOriginal = item["overwriteOriginal"]?.jsonPrimitive?.booleanOrNull ?: false,
+                    backupOriginal = item["backupOriginal"]?.jsonPrimitive?.booleanOrNull ?: true,
                     createdAtEpochMs = item["createdAtEpochMs"]?.jsonPrimitive?.longOrNull ?: 0L,
                     expectedItems = item["expectedItems"]?.jsonPrimitive?.intOrNull,
                     status = parsedStatus,

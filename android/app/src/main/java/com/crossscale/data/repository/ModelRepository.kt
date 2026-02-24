@@ -1,6 +1,7 @@
 package com.crossscale.data.repository
 
 import android.content.Context
+import android.os.Environment
 import com.crossscale.data.model.ModelInfo
 import java.io.File
 import java.security.MessageDigest
@@ -14,7 +15,9 @@ class ModelRepository(
     private val context: Context,
     private val logRepository: LogRepository
 ) : ModelProvider {
-    private val modelsDirectory = File(context.filesDir, "models")
+    private val modelsDirectory = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
+        ?.let { directory -> File(directory, "models") }
+        ?: File(context.filesDir, "models")
 
     private val _models = MutableStateFlow<List<ModelInfo>>(emptyList())
     val models: StateFlow<List<ModelInfo>> = _models.asStateFlow()
@@ -52,6 +55,10 @@ class ModelRepository(
         return _models.value.firstOrNull { model ->
             model.name == name
         }
+    }
+
+    fun modelDirectoryPath(): String {
+        return modelsDirectory.absolutePath
     }
 
     private fun ensureModelDirectory() {

@@ -68,6 +68,8 @@ data class ProcessingQueueItemSummary(
     val distributedMode: Boolean,
     val retryFailedOnly: Boolean = false,
     val outputDirectoryUri: String? = null,
+    val overwriteOriginal: Boolean = false,
+    val backupOriginal: Boolean = true,
     val createdAtEpochMs: Long,
     val expectedItems: Int? = null,
     val status: ProcessingQueueItemStatus = ProcessingQueueItemStatus.PENDING,
@@ -158,7 +160,9 @@ class ProcessingViewModel(
         imagePath: String,
         modelName: String,
         distributedMode: Boolean,
-        outputDirectoryUri: String? = null
+        outputDirectoryUri: String? = null,
+        overwriteOriginal: Boolean = false,
+        backupOriginal: Boolean = true
     ) {
         pauseBatchQueueForManualRun()
         startProcessingInternal(
@@ -166,6 +170,8 @@ class ProcessingViewModel(
             modelName = modelName,
             distributedMode = distributedMode,
             outputDirectoryUri = outputDirectoryUri,
+            overwriteOriginal = overwriteOriginal,
+            backupOriginal = backupOriginal,
             resumeCheckpoint = null,
             retryFailedOnly = false,
             resumePendingUris = null,
@@ -177,7 +183,9 @@ class ProcessingViewModel(
         imagePath: String,
         modelName: String,
         distributedMode: Boolean,
-        outputDirectoryUri: String?
+        outputDirectoryUri: String?,
+        overwriteOriginal: Boolean = false,
+        backupOriginal: Boolean = true
     ) {
         val normalizedImagePath = imagePath.trim()
         val normalizedModelName = modelName.trim()
@@ -196,6 +204,8 @@ class ProcessingViewModel(
             modelName = normalizedModelName,
             distributedMode = distributedMode,
             outputDirectoryUri = outputDirectoryUri?.ifBlank { null },
+            overwriteOriginal = overwriteOriginal,
+            backupOriginal = backupOriginal,
             createdAtEpochMs = System.currentTimeMillis()
         )
         _uiState.update { state ->
@@ -440,6 +450,8 @@ class ProcessingViewModel(
             modelName = checkpoint.modelName,
             distributedMode = checkpoint.distributedMode,
             outputDirectoryUri = checkpoint.outputDirectoryUri,
+            overwriteOriginal = checkpoint.overwriteOriginal,
+            backupOriginal = checkpoint.backupOriginal,
             resumeCheckpoint = checkpoint,
             retryFailedOnly = false,
             resumePendingUris = null,
@@ -463,6 +475,8 @@ class ProcessingViewModel(
                 modelName = checkpoint.modelName,
                 distributedMode = checkpoint.distributedMode,
                 outputDirectoryUri = checkpoint.outputDirectoryUri,
+                overwriteOriginal = checkpoint.overwriteOriginal,
+                backupOriginal = checkpoint.backupOriginal,
                 resumeCheckpoint = checkpoint,
                 retryFailedOnly = true,
                 resumePendingUris = null,
@@ -479,7 +493,9 @@ class ProcessingViewModel(
             imagePath = task.imagePath,
             modelName = task.modelName,
             distributedMode = task.distributedMode,
-            outputDirectoryUri = task.outputDirectoryUri
+            outputDirectoryUri = task.outputDirectoryUri,
+            overwriteOriginal = task.overwriteOriginal,
+            backupOriginal = task.backupOriginal
         )
     }
 
@@ -502,6 +518,8 @@ class ProcessingViewModel(
             modelName = checkpoint.modelName,
             distributedMode = checkpoint.distributedMode,
             outputDirectoryUri = checkpoint.outputDirectoryUri,
+            overwriteOriginal = checkpoint.overwriteOriginal,
+            backupOriginal = checkpoint.backupOriginal,
             resumeCheckpoint = checkpoint,
             retryFailedOnly = false,
             resumePendingUris = setOf(normalizedUri),
@@ -528,6 +546,8 @@ class ProcessingViewModel(
             modelName = checkpoint.modelName,
             distributedMode = checkpoint.distributedMode,
             outputDirectoryUri = checkpoint.outputDirectoryUri,
+            overwriteOriginal = checkpoint.overwriteOriginal,
+            backupOriginal = checkpoint.backupOriginal,
             resumeCheckpoint = checkpoint,
             retryFailedOnly = true,
             resumePendingUris = setOf(normalizedUri),
@@ -553,6 +573,8 @@ class ProcessingViewModel(
         modelName: String,
         distributedMode: Boolean,
         outputDirectoryUri: String?,
+        overwriteOriginal: Boolean,
+        backupOriginal: Boolean,
         resumeCheckpoint: ProcessingCheckpoint?,
         retryFailedOnly: Boolean,
         resumePendingUris: Set<String>?,
@@ -591,6 +613,8 @@ class ProcessingViewModel(
                         imagePath = imagePath,
                         modelName = modelName,
                         distributedMode = distributedMode,
+                        overwriteOriginal = overwriteOriginal,
+                        backupOriginal = backupOriginal,
                         pendingItems = 0,
                         progress = 0.0f,
                         status = ProcessingStatus.FAILED,
@@ -606,6 +630,8 @@ class ProcessingViewModel(
             imagePath = imagePath,
             modelName = modelName,
             requestedOutputDirectoryUri = outputDirectoryUri,
+            overwriteOriginal = overwriteOriginal,
+            backupOriginal = backupOriginal,
             resumeCheckpoint = resumeCheckpoint,
             retryFailedOnly = retryFailedOnly,
             resumePendingUris = resumePendingUris
@@ -644,6 +670,8 @@ class ProcessingViewModel(
                         distributedMode = distributedMode,
                         outputDirectory = outputDirectory.displayPath,
                         outputDirectoryUri = outputDirectory.outputDirectoryUri,
+                        overwriteOriginal = outputDirectory.overwriteOriginal,
+                        backupOriginal = outputDirectory.backupOriginal,
                         completedItems = totalItems,
                         pendingItems = 0,
                         totalItems = totalItems,
@@ -669,6 +697,8 @@ class ProcessingViewModel(
             completedItems = completedCount,
             outputDirectory = outputDirectory.displayPath,
             outputDirectoryUri = outputDirectory.outputDirectoryUri,
+            overwriteOriginal = outputDirectory.overwriteOriginal,
+            backupOriginal = outputDirectory.backupOriginal,
             createdAtEpochMs = createdAt,
             pendingImages = pendingImages,
             failureDetails = initialFailures,
@@ -677,14 +707,16 @@ class ProcessingViewModel(
 
         _uiState.update { state ->
             state.copy(
-                task = ProcessingTask(
-                    id = taskId,
-                    imagePath = imagePath,
-                    modelName = modelName,
-                    distributedMode = distributedMode,
-                    outputDirectory = outputDirectory.displayPath,
-                    outputDirectoryUri = outputDirectory.outputDirectoryUri,
-                    currentItemName = runImages.firstOrNull()?.displayName,
+                    task = ProcessingTask(
+                        id = taskId,
+                        imagePath = imagePath,
+                        modelName = modelName,
+                        distributedMode = distributedMode,
+                        outputDirectory = outputDirectory.displayPath,
+                        outputDirectoryUri = outputDirectory.outputDirectoryUri,
+                        overwriteOriginal = outputDirectory.overwriteOriginal,
+                        backupOriginal = outputDirectory.backupOriginal,
+                        currentItemName = runImages.firstOrNull()?.displayName,
                     completedItems = completedCount,
                     pendingItems = pendingImages.size,
                     failedItems = initialFailures.size,
@@ -735,6 +767,8 @@ class ProcessingViewModel(
                         completedItems = successfulCount,
                         outputDirectory = outputDirectory.displayPath,
                         outputDirectoryUri = outputDirectory.outputDirectoryUri,
+                        overwriteOriginal = outputDirectory.overwriteOriginal,
+                        backupOriginal = outputDirectory.backupOriginal,
                         createdAtEpochMs = createdAt,
                         pendingImages = pendingByUri.values.toList(),
                         failureDetails = failureDetailsByUri,
@@ -845,6 +879,8 @@ class ProcessingViewModel(
                         completedItems = successfulCount,
                         outputDirectory = outputDirectory.displayPath,
                         outputDirectoryUri = outputDirectory.outputDirectoryUri,
+                        overwriteOriginal = outputDirectory.overwriteOriginal,
+                        backupOriginal = outputDirectory.backupOriginal,
                         createdAtEpochMs = createdAt,
                         pendingImages = pendingByUri.values.toList(),
                         failureDetails = failureDetailsByUri,
@@ -939,6 +975,8 @@ class ProcessingViewModel(
                     completedItems = successfulCount,
                     outputDirectory = outputDirectory.displayPath,
                     outputDirectoryUri = outputDirectory.outputDirectoryUri,
+                    overwriteOriginal = outputDirectory.overwriteOriginal,
+                    backupOriginal = outputDirectory.backupOriginal,
                     createdAtEpochMs = createdAt,
                     pendingImages = pendingByUri.values.toList(),
                     failureDetails = failureDetailsByUri,
@@ -958,6 +996,8 @@ class ProcessingViewModel(
                     completedItems = successfulCount,
                     outputDirectory = outputDirectory.displayPath,
                     outputDirectoryUri = outputDirectory.outputDirectoryUri,
+                    overwriteOriginal = outputDirectory.overwriteOriginal,
+                    backupOriginal = outputDirectory.backupOriginal,
                     createdAtEpochMs = createdAt,
                     pendingImages = pendingByUri.values.toList(),
                     failureDetails = failureDetailsByUri,
@@ -1109,6 +1149,8 @@ class ProcessingViewModel(
             modelName = nextBatch.modelName,
             distributedMode = nextBatch.distributedMode,
             outputDirectoryUri = nextBatch.outputDirectoryUri,
+            overwriteOriginal = nextBatch.overwriteOriginal,
+            backupOriginal = nextBatch.backupOriginal,
             resumeCheckpoint = resumeCheckpoint,
             retryFailedOnly = nextBatch.retryFailedOnly,
             resumePendingUris = null,
@@ -1202,9 +1244,11 @@ class ProcessingViewModel(
         val sameSource = checkpoint.source.trim() == queueItem.source.trim()
         val sameModel = checkpoint.modelName.trim() == queueItem.modelName.trim()
         val sameMode = checkpoint.distributedMode == queueItem.distributedMode
+        val sameOverwrite = checkpoint.overwriteOriginal == queueItem.overwriteOriginal
+        val sameBackup = checkpoint.backupOriginal == queueItem.backupOriginal
         val sameOutputUri = checkpoint.outputDirectoryUri?.trim().orEmpty() ==
             queueItem.outputDirectoryUri?.trim().orEmpty()
-        if (!sameSource || !sameModel || !sameMode || !sameOutputUri) {
+        if (!sameSource || !sameModel || !sameMode || !sameOverwrite || !sameBackup || !sameOutputUri) {
             return null
         }
         return checkpoint
@@ -1214,6 +1258,8 @@ class ProcessingViewModel(
         imagePath: String,
         modelName: String,
         requestedOutputDirectoryUri: String?,
+        overwriteOriginal: Boolean,
+        backupOriginal: Boolean,
         resumeCheckpoint: ProcessingCheckpoint?,
         retryFailedOnly: Boolean,
         resumePendingUris: Set<String>?
@@ -1222,8 +1268,12 @@ class ProcessingViewModel(
             source = imagePath,
             modelName = modelName,
             preferredTreeUri = requestedOutputDirectoryUri,
+            overwriteOriginal = overwriteOriginal,
+            backupOriginal = backupOriginal,
             resumeOutputDirectory = resumeCheckpoint?.outputDirectory,
-            resumeOutputDirectoryUri = resumeCheckpoint?.outputDirectoryUri
+            resumeOutputDirectoryUri = resumeCheckpoint?.outputDirectoryUri,
+            resumeOverwriteOriginal = resumeCheckpoint?.overwriteOriginal,
+            resumeBackupOriginal = resumeCheckpoint?.backupOriginal
         )
         if (!requestedOutputDirectoryUri.isNullOrBlank() && outputDirectory.outputDirectoryUri.isNullOrBlank()) {
             logRepository.warning(
@@ -1378,6 +1428,8 @@ class ProcessingViewModel(
         completedItems: Int,
         outputDirectory: String,
         outputDirectoryUri: String?,
+        overwriteOriginal: Boolean,
+        backupOriginal: Boolean,
         createdAtEpochMs: Long,
         pendingImages: List<ResolvedImageInput>,
         failureDetails: Map<String, ProcessingFailureDetail>,
@@ -1404,6 +1456,8 @@ class ProcessingViewModel(
                 completedItems = completedItems,
                 outputDirectory = outputDirectory,
                 outputDirectoryUri = outputDirectoryUri,
+                overwriteOriginal = overwriteOriginal,
+                backupOriginal = backupOriginal,
                 createdAtEpochMs = createdAtEpochMs,
                 updatedAtEpochMs = System.currentTimeMillis(),
                 lastErrorMessage = lastErrorMessage,
@@ -1466,6 +1520,8 @@ class ProcessingViewModel(
             distributedMode = distributedMode,
             retryFailedOnly = retryFailedOnly,
             outputDirectoryUri = outputDirectoryUri,
+            overwriteOriginal = overwriteOriginal,
+            backupOriginal = backupOriginal,
             createdAtEpochMs = createdAtEpochMs,
             expectedItems = expectedItems,
             status = status.toPersistedStatus(),
@@ -1482,6 +1538,8 @@ class ProcessingViewModel(
             distributedMode = distributedMode,
             retryFailedOnly = retryFailedOnly,
             outputDirectoryUri = outputDirectoryUri,
+            overwriteOriginal = overwriteOriginal,
+            backupOriginal = backupOriginal,
             createdAtEpochMs = createdAtEpochMs,
             expectedItems = expectedItems,
             status = status.toUiStatus(),

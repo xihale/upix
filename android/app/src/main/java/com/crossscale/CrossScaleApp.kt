@@ -6,8 +6,8 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.Column
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -17,6 +17,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.compose.currentBackStackEntryAsState
@@ -43,24 +44,12 @@ fun CrossScaleApp(container: AppContainer) {
     val logRepository = container.logRepository
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentRoute = navBackStackEntry?.destination?.route
-    val currentScreen = AppScreen.bottomNavigationItems.firstOrNull { screen ->
+    val currentScreen = AppScreen.allScreens.firstOrNull { screen ->
         screen.route == currentRoute
     } ?: AppScreen.Home
 
     LaunchedEffect(mainUiState.selectedImagePath) {
         processingViewModel.refreshExpectedTotal(mainUiState.selectedImagePath)
-    }
-
-    val pickSingleImageLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenDocument()
-    ) { uri ->
-        if (uri == null) {
-            logRepository.warning("CrossScaleApp", "Image picker canceled")
-            return@rememberLauncherForActivityResult
-        }
-        persistUriPermission(context = context, uri = uri, read = true, write = false)
-        mainViewModel.selectImage(uri.toString())
-        logRepository.info("CrossScaleApp", "Added input image: $uri")
     }
 
     val pickMultipleImagesLauncher = rememberLauncherForActivityResult(
@@ -105,13 +94,12 @@ fun CrossScaleApp(container: AppContainer) {
         topBar = {
             TopAppBar(
                 title = {
-                    Column {
-                        Text(currentScreen.title)
-                        Text(
-                            text = currentScreen.guide,
-                            style = androidx.compose.material3.MaterialTheme.typography.bodySmall
-                        )
-                    }
+                    Text(
+                        text = currentScreen.title,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
                 }
             )
         },
@@ -124,9 +112,6 @@ fun CrossScaleApp(container: AppContainer) {
             processingUiState = processingUiState,
             logs = logs,
             onSelectModel = mainViewModel::selectModel,
-            onSelectSingleImage = {
-                pickSingleImageLauncher.launch(arrayOf("image/*"))
-            },
             onSelectMultipleImages = {
                 pickMultipleImagesLauncher.launch(arrayOf("image/*"))
             },
@@ -140,35 +125,24 @@ fun CrossScaleApp(container: AppContainer) {
             onSelectOutputFolder = {
                 pickOutputFolderLauncher.launch(null)
             },
-            onUseInternalOutputFolder = {
-                mainViewModel.selectOutputDirectory(null)
-            },
+            onUseDefaultOutputFolder = mainViewModel::useDefaultOutputDirectory,
+            onToggleOverwriteOriginal = mainViewModel::setOverwriteOriginalImage,
+            onToggleBackupOriginal = mainViewModel::setBackupOriginalImage,
             onStartProcessing = {
                 val selectedModelName = mainUiState.selectedModel?.name
                 val imagePath = mainUiState.selectedImagePath
                 if (selectedModelName == null || imagePath == null) {
                     logRepository.warning("CrossScaleApp", "Select image and model before processing")
                 } else {
-                    processingViewModel.startProcessing(
-                        imagePath = imagePath,
-                        modelName = selectedModelName,
-                        distributedMode = mainUiState.isDistributedMode,
-                        outputDirectoryUri = mainUiState.selectedOutputDirectoryUri
-                    )
-                }
-            },
-            onEnqueueBatch = {
-                val selectedModelName = mainUiState.selectedModel?.name
-                val imagePath = mainUiState.selectedImagePath
-                if (selectedModelName == null || imagePath == null) {
-                    logRepository.warning("CrossScaleApp", "Select image and model before queueing")
-                } else {
                     processingViewModel.enqueueBatch(
                         imagePath = imagePath,
                         modelName = selectedModelName,
                         distributedMode = mainUiState.isDistributedMode,
-                        outputDirectoryUri = mainUiState.selectedOutputDirectoryUri
+                        outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
+                        overwriteOriginal = mainUiState.overwriteOriginalImage,
+                        backupOriginal = mainUiState.backupOriginalImage
                     )
+                    processingViewModel.startBatchQueue()
                 }
             },
             onStartBatchQueue = processingViewModel::startBatchQueue,
@@ -193,10 +167,20 @@ fun CrossScaleApp(container: AppContainer) {
             onManualConnect = deviceViewModel::connectManual,
             onConnectByQr = deviceViewModel::connectByQrPayload,
             onClearLogs = logRepository::clear,
+            onOpenModelRelease = {
+                val releaseUri = Uri.parse(MODEL_RELEASE_URL)
+                runCatching {
+                    context.startActivity(
+                        Intent(Intent.ACTION_VIEW, releaseUri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+            },
             modifier = Modifier.padding(innerPadding)
         )
     }
 }
+
+private const val MODEL_RELEASE_URL = "https://github.com/xihale/crossscale/releases"
 
 private fun persistUriPermission(
     context: Context,

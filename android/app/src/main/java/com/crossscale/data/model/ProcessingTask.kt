@@ -17,6 +17,8 @@ data class ProcessingTask(
     val distributedMode: Boolean,
     val outputDirectory: String? = null,
     val outputDirectoryUri: String? = null,
+    val overwriteOriginal: Boolean = false,
+    val backupOriginal: Boolean = true,
     val currentItemName: String? = null,
     val completedItems: Int = 0,
     val pendingItems: Int = 0,

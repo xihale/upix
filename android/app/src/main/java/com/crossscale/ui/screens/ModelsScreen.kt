@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -27,9 +28,11 @@ fun ModelsScreen(
     selectedModel: ModelInfo?,
     onSelectModel: (ModelInfo) -> Unit,
     onRefreshModels: () -> Unit,
-    onDeleteModel: (ModelInfo) -> Unit
+    onDeleteModel: (ModelInfo) -> Unit,
+    modelDirectoryPath: String,
+    onOpenModelRelease: () -> Unit
 ) {
-    var helpExpanded by remember { mutableStateOf(false) }
+    var detailsExpanded by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -37,40 +40,37 @@ fun ModelsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Text(
-            text = "模型管理",
-            style = MaterialTheme.typography.headlineSmall
-        )
-        Text(
-            text = "先选一个默认模型即可开始；更详细的模型说明可展开查看。",
-            style = MaterialTheme.typography.bodyMedium
-        )
-
         LayeredSectionCard(
-            title = "模型操作",
+            title = "模型",
             summary = "已发现 ${models.size} 个模型；当前：${selectedModel?.name ?: "未选择"}",
-            guide = "如果列表为空，请确认 .param/.bin 已放入 app 内部 models 目录。",
-            expanded = helpExpanded,
-            onToggleExpanded = { helpExpanded = !helpExpanded },
+            guide = null,
+            expanded = detailsExpanded,
+            onToggleExpanded = { detailsExpanded = !detailsExpanded },
             actions = {
-                Button(
-                    onClick = onRefreshModels,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("刷新模型列表")
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = onRefreshModels,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("刷新模型列表")
+                    }
+                    OutlinedButton(
+                        onClick = onOpenModelRelease,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("下载模型（占位）")
+                    }
                 }
             },
             details = {
-                Text(
-                    text = "选择后会作为主页默认模型。删除模型前请确认当前任务未在运行。",
-                    style = MaterialTheme.typography.bodySmall
-                )
+                Text(text = "模型目录：$modelDirectoryPath", style = MaterialTheme.typography.bodySmall)
+                Text(text = "下载功能后续接入，目前默认跳转项目 GitHub Release。", style = MaterialTheme.typography.bodySmall)
             }
         )
 
         if (models.isEmpty()) {
             Text(
-                text = "未发现模型，请将 .param/.bin 放入 app 内部 models 目录",
+                text = "未发现模型，请将 .param/.bin 放入模型目录",
                 style = MaterialTheme.typography.bodyMedium
             )
         } else {
