@@ -2,7 +2,10 @@
 #include <string>
 #include <android/log.h>
 #include <algorithm>
+#include <exception>
+#include <limits>
 #include <memory>
+#include <new>
 #include <vector>
 
 #include "core/config.hpp"
@@ -114,6 +117,10 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImage(
 ) {
     (void)thiz;
     if (engine_ptr == 0 || input_image == nullptr) return nullptr;
+    if (width <= 0 || height <= 0 || channels <= 0) {
+        LOGE("Invalid input shape: width=%d, height=%d, channels=%d", width, height, channels);
+        return nullptr;
+    }
     
     auto* engine = reinterpret_cast<Engine*>(engine_ptr);
 
@@ -135,64 +142,115 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImage(
         return nullptr;
     }
     
-    jsize input_size = env->GetArrayLength(input_image);
+    const jsize input_size = env->GetArrayLength(input_image);
+    const int64_t expected_input_size =
+        static_cast<int64_t>(width) * static_cast<int64_t>(height) * static_cast<int64_t>(channels);
+    if (expected_input_size <= 0 || expected_input_size > std::numeric_limits<jsize>::max()) {
+        LOGE("Input dimensions overflow: width=%d, height=%d, channels=%d", width, height, channels);
+        return nullptr;
+    }
+    if (input_size != static_cast<jsize>(expected_input_size)) {
+        LOGE(
+            "Input byte array size mismatch: actual=%d expected=%lld",
+            input_size,
+            static_cast<long long>(expected_input_size)
+        );
+        return nullptr;
+    }
+
     jbyte* input_data = env->GetByteArrayElements(input_image, nullptr);
-    
-    int scale_factor = engine->get_scale_factor();
-    int output_width = width * scale_factor;
-    int output_height = height * scale_factor;
-    jsize output_size = output_width * output_height * channels;
-    
-    std::vector<float> input_float(input_size);
-    for (jsize i = 0; i < input_size; ++i) {
-        input_float[i] = static_cast<unsigned char>(input_data[i]) / 255.0f;
-    }
-    
-    std::vector<float> output_float(output_size);
-    
-    auto result = engine->process(
-        input_float.data(),
-        output_float.data(),
-        width,
-        height,
-        channels
-    );
-    
-    env->ReleaseByteArrayElements(input_image, input_data, JNI_ABORT);
-    
-    if (!result.has_value()) {
-        LOGE("Engine processing failed: %s", result.error().message.c_str());
-        return nullptr;
-    }
-    
-    Image output_image(output_width, output_height, channels);
-    for (jsize i = 0; i < output_size; ++i) {
-        float val = output_float[i] * 255.0f;
-        output_image.data()[i] = static_cast<uint8_t>(std::clamp(val, 0.0f, 255.0f));
-    }
-
-    auto encoded_result = output_image.save_to_memory(
-        output_config.output_format,
-        output_config.output_quality
-    );
-    if (!encoded_result.has_value()) {
-        LOGE("Failed to encode output image: %s", encoded_result.error().message.c_str());
+    if (input_data == nullptr) {
+        LOGE("Failed to access input byte array elements");
         return nullptr;
     }
 
-    const auto& encoded = encoded_result.value();
-    jbyteArray output = env->NewByteArray(static_cast<jsize>(encoded.size()));
-    if (output == nullptr) {
-        LOGE("Failed to allocate output byte array");
+    const int scale_factor = std::max(engine->get_scale_factor(), 1);
+    const int64_t output_width64 = static_cast<int64_t>(width) * static_cast<int64_t>(scale_factor);
+    const int64_t output_height64 = static_cast<int64_t>(height) * static_cast<int64_t>(scale_factor);
+    const int64_t output_size64 = output_width64 * output_height64 * static_cast<int64_t>(channels);
+    if (output_width64 <= 0 || output_height64 <= 0 || output_size64 <= 0 ||
+        output_width64 > std::numeric_limits<int>::max() ||
+        output_height64 > std::numeric_limits<int>::max() ||
+        output_size64 > std::numeric_limits<jsize>::max()) {
+        LOGE(
+            "Output dimensions overflow: output_width=%lld output_height=%lld channels=%d",
+            static_cast<long long>(output_width64),
+            static_cast<long long>(output_height64),
+            channels
+        );
+        env->ReleaseByteArrayElements(input_image, input_data, JNI_ABORT);
         return nullptr;
     }
-    env->SetByteArrayRegion(
-        output,
-        0,
-        static_cast<jsize>(encoded.size()),
-        reinterpret_cast<const jbyte*>(encoded.data())
-    );
-    return output;
+
+    const int output_width = static_cast<int>(output_width64);
+    const int output_height = static_cast<int>(output_height64);
+    const jsize output_size = static_cast<jsize>(output_size64);
+
+    try {
+        std::vector<uint8_t> output_u8(static_cast<size_t>(output_size));
+
+        auto result = engine->process_u8(
+            reinterpret_cast<const uint8_t*>(input_data),
+            output_u8.data(),
+            width,
+            height,
+            channels
+        );
+
+        env->ReleaseByteArrayElements(input_image, input_data, JNI_ABORT);
+        input_data = nullptr;
+
+        if (!result.has_value()) {
+            LOGE("Engine processing failed: %s", result.error().message.c_str());
+            return nullptr;
+        }
+
+        Image output_image(output_width, output_height, channels);
+        std::copy(output_u8.begin(), output_u8.end(), output_image.data());
+
+        auto encoded_result = output_image.save_to_memory(
+            output_config.output_format,
+            output_config.output_quality
+        );
+        if (!encoded_result.has_value()) {
+            LOGE("Failed to encode output image: %s", encoded_result.error().message.c_str());
+            return nullptr;
+        }
+
+        const auto& encoded = encoded_result.value();
+        jbyteArray output = env->NewByteArray(static_cast<jsize>(encoded.size()));
+        if (output == nullptr) {
+            LOGE("Failed to allocate output byte array");
+            return nullptr;
+        }
+        env->SetByteArrayRegion(
+            output,
+            0,
+            static_cast<jsize>(encoded.size()),
+            reinterpret_cast<const jbyte*>(encoded.data())
+        );
+        return output;
+    } catch (const std::bad_alloc&) {
+        if (input_data != nullptr) {
+            env->ReleaseByteArrayElements(input_image, input_data, JNI_ABORT);
+        }
+        LOGE(
+            "Out of memory during native processing buffers: input=%dx%dx%d output=%dx%dx%d",
+            width,
+            height,
+            channels,
+            output_width,
+            output_height,
+            channels
+        );
+        return nullptr;
+    } catch (const std::exception& exception) {
+        if (input_data != nullptr) {
+            env->ReleaseByteArrayElements(input_image, input_data, JNI_ABORT);
+        }
+        LOGE("Unexpected native processing exception: %s", exception.what());
+        return nullptr;
+    }
 }
 
 JNIEXPORT jfloat JNICALL

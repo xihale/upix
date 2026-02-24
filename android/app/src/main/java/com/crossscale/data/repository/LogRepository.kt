@@ -1,5 +1,6 @@
 package com.crossscale.data.repository
 
+import android.util.Log
 import com.crossscale.data.model.LogEntry
 import com.crossscale.data.model.LogLevel
 import java.time.Instant
@@ -32,6 +33,7 @@ class LogRepository {
                 next.takeLast(maxLogCount)
             }
         }
+        emitPlatformLog(level = level, tag = tag, message = message)
     }
 
     fun debug(tag: String, message: String) {
@@ -56,5 +58,20 @@ class LogRepository {
 
     fun clear() {
         _logs.value = emptyList()
+    }
+
+    private fun emitPlatformLog(level: LogLevel, tag: String, message: String) {
+        val payload = "[$tag] $message"
+        when (level) {
+            LogLevel.DEBUG -> Log.d(ANDROID_LOG_TAG, payload)
+            LogLevel.INFO -> Log.i(ANDROID_LOG_TAG, payload)
+            LogLevel.WARNING -> Log.w(ANDROID_LOG_TAG, payload)
+            LogLevel.ERROR -> Log.e(ANDROID_LOG_TAG, payload)
+            LogLevel.CRITICAL -> Log.wtf(ANDROID_LOG_TAG, payload)
+        }
+    }
+
+    companion object {
+        private const val ANDROID_LOG_TAG = "CrossScale"
     }
 }

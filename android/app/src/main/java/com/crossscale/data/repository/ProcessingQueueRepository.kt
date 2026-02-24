@@ -22,7 +22,8 @@ import kotlinx.serialization.json.put
 enum class PersistedQueueItemStatus {
     PENDING,
     RUNNING,
-    FAILED
+    FAILED,
+    COMPLETED
 }
 
 data class PersistedQueueItem(
@@ -38,7 +39,8 @@ data class PersistedQueueItem(
     val expectedItems: Int? = null,
     val status: PersistedQueueItemStatus = PersistedQueueItemStatus.PENDING,
     val attempts: Int = 0,
-    val lastErrorMessage: String? = null
+    val lastErrorMessage: String? = null,
+    val lastOutputUri: String? = null
 )
 
 data class ProcessingQueueSnapshot(
@@ -154,7 +156,8 @@ class ProcessingQueueRepository(
                     expectedItems = item.expectedItems?.coerceAtLeast(0),
                     status = item.status,
                     attempts = item.attempts.coerceAtLeast(0),
-                    lastErrorMessage = item.lastErrorMessage?.trim()?.ifBlank { null }
+                    lastErrorMessage = item.lastErrorMessage?.trim()?.ifBlank { null },
+                    lastOutputUri = item.lastOutputUri?.trim()?.ifBlank { null }
                 )
             }
         }
@@ -214,6 +217,9 @@ class ProcessingQueueRepository(
                                 item.lastErrorMessage?.let { message ->
                                     put("lastErrorMessage", message)
                                 }
+                                item.lastOutputUri?.let { outputUri ->
+                                    put("lastOutputUri", outputUri)
+                                }
                             }
                         )
                     }
@@ -250,7 +256,8 @@ class ProcessingQueueRepository(
                     expectedItems = item["expectedItems"]?.jsonPrimitive?.intOrNull,
                     status = parsedStatus,
                     attempts = item["attempts"]?.jsonPrimitive?.intOrNull ?: 0,
-                    lastErrorMessage = item["lastErrorMessage"]?.jsonPrimitive?.contentOrNull
+                    lastErrorMessage = item["lastErrorMessage"]?.jsonPrimitive?.contentOrNull,
+                    lastOutputUri = item["lastOutputUri"]?.jsonPrimitive?.contentOrNull
                 )
             } ?: emptyList()
 

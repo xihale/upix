@@ -389,9 +389,14 @@ class ProcessingViewModelTest {
         advanceUntilIdle()
 
         assertEquals(listOf(uriA, uriB), imageProcessingStore.processedUris)
-        assertTrue(viewModel.uiState.value.queueItems.isEmpty())
-        assertFalse(viewModel.uiState.value.isQueueRunning)
-        assertEquals(ProcessingStatus.COMPLETED, viewModel.uiState.value.task?.status)
+        val finalState = viewModel.uiState.value
+        assertEquals(2, finalState.queueItems.size)
+        assertEquals(
+            listOf(ProcessingQueueItemStatus.COMPLETED, ProcessingQueueItemStatus.COMPLETED),
+            finalState.queueItems.map { item -> item.status }
+        )
+        assertFalse(finalState.isQueueRunning)
+        assertEquals(ProcessingStatus.COMPLETED, finalState.task?.status)
     }
 
     @Test
@@ -450,23 +455,24 @@ class ProcessingViewModelTest {
 
         val stateAfterFailure = viewModel.uiState.value
         assertFalse(stateAfterFailure.isQueueRunning)
-        assertEquals(2, stateAfterFailure.queueItems.size)
-        assertEquals(ProcessingQueueItemStatus.FAILED, stateAfterFailure.queueItems.first().status)
-        assertEquals(ProcessingQueueItemStatus.PENDING, stateAfterFailure.queueItems[1].status)
+        assertEquals(1, stateAfterFailure.queueItems.size)
+        assertEquals(ProcessingQueueItemStatus.PENDING, stateAfterFailure.queueItems.first().status)
+        assertEquals(sourceB, stateAfterFailure.queueItems.first().source)
         assertEquals(ProcessingStatus.FAILED, stateAfterFailure.task?.status)
 
         imageProcessingStore.failingUris.clear()
-        viewModel.retryQueuedBatch(stateAfterFailure.queueItems.first().id)
         viewModel.startBatchQueue()
         advanceUntilIdle()
 
         assertEquals(
-            listOf(failedUri, failedUri, secondUri),
+            listOf(failedUri, secondUri),
             imageProcessingStore.processedUris
         )
-        assertTrue(viewModel.uiState.value.queueItems.isEmpty())
-        assertFalse(viewModel.uiState.value.isQueueRunning)
-        assertEquals(ProcessingStatus.COMPLETED, viewModel.uiState.value.task?.status)
+        val stateAfterRetry = viewModel.uiState.value
+        assertEquals(1, stateAfterRetry.queueItems.size)
+        assertEquals(ProcessingQueueItemStatus.COMPLETED, stateAfterRetry.queueItems.first().status)
+        assertFalse(stateAfterRetry.isQueueRunning)
+        assertEquals(ProcessingStatus.COMPLETED, stateAfterRetry.task?.status)
     }
 
     @Test
@@ -552,9 +558,7 @@ class ProcessingViewModelTest {
         assertEquals(0, inputSourceResolver.resolveCallCount)
 
         val finalState = viewModel.uiState.value
-        assertEquals(1, finalState.queueItems.size)
-        assertEquals(ProcessingQueueItemStatus.FAILED, finalState.queueItems.first().status)
-        assertFalse(finalState.queueItems.first().retryFailedOnly)
+        assertTrue(finalState.queueItems.isEmpty())
         assertEquals(ProcessingStatus.IDLE, finalState.task?.status)
         assertFalse(finalState.isQueueRunning)
 
@@ -630,8 +634,10 @@ class ProcessingViewModelTest {
 
         assertEquals(listOf(pendingUriA, pendingUriB), imageProcessingStore.processedUris)
         assertEquals(0, inputSourceResolver.resolveCallCount)
-        assertTrue(viewModel.uiState.value.queueItems.isEmpty())
-        assertEquals(ProcessingStatus.COMPLETED, viewModel.uiState.value.task?.status)
+        val finalState = viewModel.uiState.value
+        assertEquals(1, finalState.queueItems.size)
+        assertEquals(ProcessingQueueItemStatus.COMPLETED, finalState.queueItems.first().status)
+        assertEquals(ProcessingStatus.COMPLETED, finalState.task?.status)
     }
 
     @Test
@@ -853,6 +859,13 @@ class ProcessingViewModelTest {
             input: ResolvedImageInput
         ): Boolean {
             return false
+        }
+
+        override fun firstReadyOutputUri(
+            outputDirectory: BatchOutputDirectory,
+            inputs: List<ResolvedImageInput>
+        ): String? {
+            return null
         }
 
         override fun commitOutput(

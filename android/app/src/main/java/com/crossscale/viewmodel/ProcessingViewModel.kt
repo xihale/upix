@@ -58,7 +58,8 @@ data class ProcessingUiState(
 enum class ProcessingQueueItemStatus {
     PENDING,
     RUNNING,
-    FAILED
+    FAILED,
+    COMPLETED
 }
 
 data class ProcessingQueueItemSummary(
@@ -74,7 +75,8 @@ data class ProcessingQueueItemSummary(
     val expectedItems: Int? = null,
     val status: ProcessingQueueItemStatus = ProcessingQueueItemStatus.PENDING,
     val attempts: Int = 0,
-    val lastErrorMessage: String? = null
+    val lastErrorMessage: String? = null,
+    val lastOutputUri: String? = null
 )
 
 data class ProcessingCheckpointSummary(
@@ -104,6 +106,7 @@ data class ProcessingCheckpointItemSummary(
 )
 
 private data class ProcessingRunSetup(
+    val allImages: List<ResolvedImageInput>,
     val runImages: List<ResolvedImageInput>,
     val pendingImages: List<ResolvedImageInput>,
     val completedItems: Int,
@@ -186,16 +189,52 @@ class ProcessingViewModel(
         outputDirectoryUri: String?,
         overwriteOriginal: Boolean = false,
         backupOriginal: Boolean = true
-    ) {
+    ): String? {
         val normalizedImagePath = imagePath.trim()
         val normalizedModelName = modelName.trim()
         if (normalizedImagePath.isBlank()) {
             logRepository.warning("ProcessingViewModel", "Cannot enqueue batch: no input source")
-            return
+            return null
         }
         if (normalizedModelName.isBlank()) {
             logRepository.warning("ProcessingViewModel", "Cannot enqueue batch: no model selected")
-            return
+            return null
+        }
+
+        val normalizedOutputDirectoryUri = outputDirectoryUri?.trim()?.ifBlank { null }
+        val reusableFailedBatchId = _uiState.value.queueItems.firstOrNull { item ->
+            item.status == ProcessingQueueItemStatus.FAILED &&
+                item.source == normalizedImagePath &&
+                item.modelName == normalizedModelName &&
+                item.distributedMode == distributedMode &&
+                item.outputDirectoryUri == normalizedOutputDirectoryUri &&
+                item.overwriteOriginal == overwriteOriginal &&
+                item.backupOriginal == backupOriginal
+        }?.id
+
+        if (reusableFailedBatchId != null) {
+            _uiState.update { state ->
+                state.copy(
+                    queueItems = state.queueItems.map { item ->
+                        if (item.id == reusableFailedBatchId) {
+                            item.copy(
+                                status = ProcessingQueueItemStatus.PENDING,
+                                retryFailedOnly = false,
+                                lastErrorMessage = null,
+                                lastOutputUri = null
+                            )
+                        } else {
+                            item
+                        }
+                    }
+                )
+            }
+            logRepository.info(
+                "ProcessingViewModel",
+                "Reused failed queued batch ${reusableFailedBatchId.take(8)} for source=$normalizedImagePath"
+            )
+            estimateQueuedBatchExpectedItems(reusableFailedBatchId, normalizedImagePath)
+            return reusableFailedBatchId
         }
 
         val queueItem = ProcessingQueueItemSummary(
@@ -203,7 +242,7 @@ class ProcessingViewModel(
             source = normalizedImagePath,
             modelName = normalizedModelName,
             distributedMode = distributedMode,
-            outputDirectoryUri = outputDirectoryUri?.ifBlank { null },
+            outputDirectoryUri = normalizedOutputDirectoryUri,
             overwriteOriginal = overwriteOriginal,
             backupOriginal = backupOriginal,
             createdAtEpochMs = System.currentTimeMillis()
@@ -216,14 +255,22 @@ class ProcessingViewModel(
             "Enqueued batch ${queueItem.id.take(8)} source=$normalizedImagePath model=$normalizedModelName"
         )
 
+        estimateQueuedBatchExpectedItems(queueItem.id, normalizedImagePath)
+        return queueItem.id
+    }
+
+    private fun estimateQueuedBatchExpectedItems(
+        queueItemId: String,
+        source: String
+    ) {
         viewModelScope.launch {
             val expectedItems = withContext(ioDispatcher) {
-                inputSourceRepository.resolveImageInputs(source = normalizedImagePath).size
+                inputSourceRepository.resolveImageInputs(source = source).size
             }
             _uiState.update { state ->
                 state.copy(
                     queueItems = state.queueItems.map { item ->
-                        if (item.id == queueItem.id) {
+                        if (item.id == queueItemId) {
                             item.copy(expectedItems = expectedItems)
                         } else {
                             item
@@ -234,7 +281,8 @@ class ProcessingViewModel(
         }
     }
 
-    fun startBatchQueue() {
+    fun startBatchQueue(preferredBatchId: String? = null) {
+        val normalizedPreferredBatchId = preferredBatchId?.trim()?.ifBlank { null }
         val hasPending = _uiState.value.queueItems.any { item ->
             item.status == ProcessingQueueItemStatus.PENDING
         }
@@ -245,7 +293,7 @@ class ProcessingViewModel(
         _uiState.update { state ->
             state.copy(isQueueRunning = true)
         }
-        runNextQueuedBatchIfNeeded()
+        runNextQueuedBatchIfNeeded(preferredBatchId = normalizedPreferredBatchId)
     }
 
     fun pauseBatchQueue() {
@@ -272,7 +320,8 @@ class ProcessingViewModel(
                         item.copy(
                             status = ProcessingQueueItemStatus.PENDING,
                             retryFailedOnly = false,
-                            lastErrorMessage = null
+                            lastErrorMessage = null,
+                            lastOutputUri = null
                         )
                     } else {
                         item
@@ -318,7 +367,8 @@ class ProcessingViewModel(
                         item.copy(
                             status = ProcessingQueueItemStatus.PENDING,
                             retryFailedOnly = true,
-                            lastErrorMessage = null
+                            lastErrorMessage = null,
+                            lastOutputUri = null
                         )
                     } else {
                         item
@@ -645,6 +695,7 @@ class ProcessingViewModel(
         val createdAt = resumeCheckpoint?.createdAtEpochMs ?: System.currentTimeMillis()
         val outputDirectory = setup.outputDirectory
         val runImages = setup.runImages
+        val allImages = setup.allImages
         val pendingImages = setup.pendingImages
         val totalItems = setup.totalItems
         val completedCount = setup.completedItems
@@ -661,6 +712,25 @@ class ProcessingViewModel(
 
         if (pendingImages.isEmpty()) {
             checkpointRepository.clearCheckpoint()
+            if (!queueItemId.isNullOrBlank()) {
+                val existingOutputUri = batchOutputRepository.firstReadyOutputUri(
+                    outputDirectory = outputDirectory,
+                    inputs = allImages
+                )
+                if (!existingOutputUri.isNullOrBlank()) {
+                    _uiState.update { state ->
+                        state.copy(
+                            queueItems = state.queueItems.map { item ->
+                                if (item.id == queueItemId) {
+                                    item.copy(lastOutputUri = existingOutputUri)
+                                } else {
+                                    item
+                                }
+                            }
+                        )
+                    }
+                }
+            }
             _uiState.update { state ->
                 state.copy(
                     task = ProcessingTask(
@@ -839,6 +909,19 @@ class ProcessingViewModel(
                                 "ProcessingViewModel",
                                 "Processed ${item.displayName} -> $destination (${elapsedMs}ms, done=$successfulCount/$totalItems, pending=${pendingByUri.size})"
                             )
+                            if (!queueItemId.isNullOrBlank()) {
+                                _uiState.update { state ->
+                                    state.copy(
+                                        queueItems = state.queueItems.map { queueItem ->
+                                            if (queueItem.id == queueItemId) {
+                                                queueItem.copy(lastOutputUri = destination)
+                                            } else {
+                                                queueItem
+                                            }
+                                        }
+                                    )
+                                }
+                            }
                         } else {
                             lastError = commitResult.exceptionOrNull()?.message ?: "Failed to save output file"
                             val previousAttempts = failureDetailsByUri[itemUri]?.attempts ?: 0
@@ -1080,6 +1163,16 @@ class ProcessingViewModel(
         }
     }
 
+    fun outputUriForQueuedBatch(batchId: String): String? {
+        val normalizedBatchId = batchId.trim()
+        if (normalizedBatchId.isBlank()) {
+            return null
+        }
+        return _uiState.value.queueItems.firstOrNull { item ->
+            item.id == normalizedBatchId && item.status == ProcessingQueueItemStatus.COMPLETED
+        }?.lastOutputUri
+    }
+
     private fun pauseBatchQueueForManualRun() {
         if (!_uiState.value.isQueueRunning) {
             return
@@ -1090,7 +1183,7 @@ class ProcessingViewModel(
         logRepository.info("ProcessingViewModel", "Paused batch queue for manual run")
     }
 
-    private fun runNextQueuedBatchIfNeeded() {
+    private fun runNextQueuedBatchIfNeeded(preferredBatchId: String? = null) {
         if (!_uiState.value.isQueueRunning) {
             return
         }
@@ -1098,8 +1191,17 @@ class ProcessingViewModel(
             return
         }
 
-        val nextBatch = _uiState.value.queueItems.firstOrNull { item ->
-            item.status == ProcessingQueueItemStatus.PENDING
+        val normalizedPreferredBatchId = preferredBatchId?.trim()?.ifBlank { null }
+        val nextBatch = if (normalizedPreferredBatchId == null) {
+            _uiState.value.queueItems.firstOrNull { item ->
+                item.status == ProcessingQueueItemStatus.PENDING
+            }
+        } else {
+            _uiState.value.queueItems.firstOrNull { item ->
+                item.id == normalizedPreferredBatchId && item.status == ProcessingQueueItemStatus.PENDING
+            } ?: _uiState.value.queueItems.firstOrNull { item ->
+                item.status == ProcessingQueueItemStatus.PENDING
+            }
         }
         if (nextBatch == null) {
             _uiState.update { state ->
@@ -1125,7 +1227,8 @@ class ProcessingViewModel(
                 item.copy(
                     status = ProcessingQueueItemStatus.RUNNING,
                     attempts = item.attempts + 1,
-                    lastErrorMessage = null
+                    lastErrorMessage = null,
+                    lastOutputUri = null
                 )
             } else {
                 item
@@ -1183,8 +1286,16 @@ class ProcessingViewModel(
             ProcessingStatus.COMPLETED -> {
                 _uiState.update { state ->
                     state.copy(
-                        queueItems = state.queueItems.filterNot { item ->
-                            item.id == queueItemId
+                        queueItems = state.queueItems.map { item ->
+                            if (item.id == queueItemId) {
+                                item.copy(
+                                    status = ProcessingQueueItemStatus.COMPLETED,
+                                    retryFailedOnly = false,
+                                    lastErrorMessage = null
+                                )
+                            } else {
+                                item
+                            }
                         }
                     )
                 }
@@ -1207,23 +1318,15 @@ class ProcessingViewModel(
                 }
                 _uiState.update { state ->
                     state.copy(
-                        queueItems = state.queueItems.map { item ->
-                            if (item.id == queueItemId) {
-                                item.copy(
-                                    status = ProcessingQueueItemStatus.FAILED,
-                                    retryFailedOnly = false,
-                                    lastErrorMessage = failureMessage
-                                )
-                            } else {
-                                item
-                            }
+                        queueItems = state.queueItems.filterNot { item ->
+                            item.id == queueItemId
                         },
                         isQueueRunning = false
                     )
                 }
                 logRepository.warning(
                     "ProcessingViewModel",
-                    "Queued batch stopped: ${queueItemId.take(8)} status=$normalizedStatus message=$failureMessage"
+                    "Queued batch stopped and removed: ${queueItemId.take(8)} status=$normalizedStatus message=$failureMessage"
                 )
             }
 
@@ -1372,6 +1475,7 @@ class ProcessingViewModel(
 
                 if (pendingImages.isEmpty()) {
                     return ProcessingRunSetup(
+                        allImages = pendingImagesFromCheckpoint,
                         runImages = emptyList(),
                         pendingImages = emptyList(),
                         completedItems = totalItems,
@@ -1382,6 +1486,7 @@ class ProcessingViewModel(
                 }
 
                 return ProcessingRunSetup(
+                    allImages = pendingImagesFromCheckpoint,
                     runImages = runImages,
                     pendingImages = pendingImages,
                     completedItems = completedItems.coerceAtMost(totalItems),
@@ -1410,6 +1515,7 @@ class ProcessingViewModel(
             ?: mutableMapOf()
 
         return ProcessingRunSetup(
+            allImages = inputImages,
             runImages = pendingImages,
             pendingImages = pendingImages,
             completedItems = completedItems,
@@ -1526,7 +1632,8 @@ class ProcessingViewModel(
             expectedItems = expectedItems,
             status = status.toPersistedStatus(),
             attempts = attempts,
-            lastErrorMessage = lastErrorMessage
+            lastErrorMessage = lastErrorMessage,
+            lastOutputUri = lastOutputUri
         )
     }
 
@@ -1544,7 +1651,8 @@ class ProcessingViewModel(
             expectedItems = expectedItems,
             status = status.toUiStatus(),
             attempts = attempts,
-            lastErrorMessage = lastErrorMessage
+            lastErrorMessage = lastErrorMessage,
+            lastOutputUri = lastOutputUri
         )
     }
 
@@ -1553,6 +1661,7 @@ class ProcessingViewModel(
             ProcessingQueueItemStatus.PENDING -> PersistedQueueItemStatus.PENDING
             ProcessingQueueItemStatus.RUNNING -> PersistedQueueItemStatus.RUNNING
             ProcessingQueueItemStatus.FAILED -> PersistedQueueItemStatus.FAILED
+            ProcessingQueueItemStatus.COMPLETED -> PersistedQueueItemStatus.COMPLETED
         }
     }
 
@@ -1561,6 +1670,7 @@ class ProcessingViewModel(
             PersistedQueueItemStatus.PENDING -> ProcessingQueueItemStatus.PENDING
             PersistedQueueItemStatus.RUNNING -> ProcessingQueueItemStatus.RUNNING
             PersistedQueueItemStatus.FAILED -> ProcessingQueueItemStatus.FAILED
+            PersistedQueueItemStatus.COMPLETED -> ProcessingQueueItemStatus.COMPLETED
         }
     }
 

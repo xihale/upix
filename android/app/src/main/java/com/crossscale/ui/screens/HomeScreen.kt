@@ -1,8 +1,12 @@
 package com.crossscale.ui.screens
 
+import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.provider.DocumentsContract
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,8 +15,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -36,6 +43,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.crossscale.data.repository.InputSourceSpec
 import com.crossscale.ui.components.LayeredSectionCard
 import com.crossscale.ui.components.ProcessingProgress
 import com.crossscale.viewmodel.MainUiState
@@ -43,11 +51,9 @@ import com.crossscale.viewmodel.ProcessingCheckpointSummary
 import com.crossscale.viewmodel.ProcessingQueueItemStatus
 import com.crossscale.viewmodel.ProcessingQueueItemSummary
 import com.crossscale.viewmodel.ProcessingUiState
-
-private enum class QueueViewMode {
-    SIMPLE,
-    DETAILED
-}
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @Composable
 fun HomeScreen(
@@ -68,6 +74,7 @@ fun HomeScreen(
     onPauseBatchQueue: () -> Unit,
     onRetryQueuedBatch: (String) -> Unit,
     onRetryQueuedBatchFailedOnly: (String) -> Unit,
+    onOpenQueuedBatchOutput: (String) -> Unit,
     onRemoveQueuedBatch: (String) -> Unit,
     onClearBatchQueue: () -> Unit,
     onResumeProcessing: () -> Unit,
@@ -80,7 +87,7 @@ fun HomeScreen(
     val selectedInputs = state.selectedInputSources
     val selectedInputLabel = if (selectedInputs.isEmpty()) "未选择" else "${selectedInputs.size} 项"
     val selectedModel = state.selectedModel?.name ?: "未选择"
-    val selectedOutput = state.selectedOutputDirectoryUri ?: "Picture/CrossScale"
+    val selectedOutput = state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/CrossScale"
     val queueItems = processingUiState.queueItems
     val pendingQueueCount = queueItems.count { item -> item.status == ProcessingQueueItemStatus.PENDING }
     val failedQueueCount = queueItems.count { item -> item.status == ProcessingQueueItemStatus.FAILED }
@@ -89,9 +96,7 @@ fun HomeScreen(
 
     var inputExpanded by rememberSaveable { mutableStateOf(false) }
     var outputExpanded by rememberSaveable { mutableStateOf(false) }
-    var queueExpanded by rememberSaveable { mutableStateOf(false) }
     var checkpointExpanded by rememberSaveable { mutableStateOf(false) }
-    var queueViewMode by rememberSaveable { mutableStateOf(QueueViewMode.SIMPLE) }
 
     Column(
         modifier = Modifier
@@ -180,7 +185,7 @@ fun HomeScreen(
                 }
             },
             details = {
-                Text("默认输出至 Picture/CrossScale。", style = MaterialTheme.typography.bodySmall)
+                Text("默认输出至 /sdcard/Pictures/CrossScale。", style = MaterialTheme.typography.bodySmall)
             }
         )
 
@@ -207,34 +212,12 @@ fun HomeScreen(
 
         LayeredSectionCard(
             title = "队列",
-            summary = "状态：$queueRunningLabel；待处理 $pendingQueueCount；失败 $failedQueueCount",
-            expanded = queueExpanded,
-            onToggleExpanded = { queueExpanded = !queueExpanded },
+            summary = "状态：$queueRunningLabel；未开始 $pendingQueueCount；失败 $failedQueueCount",
+            expanded = true,
+            onToggleExpanded = {},
+            showDetailsToggle = false,
             actions = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        if (queueViewMode == QueueViewMode.SIMPLE) {
-                            Button(onClick = { queueViewMode = QueueViewMode.SIMPLE }, modifier = Modifier.weight(1f)) {
-                                Text("简单视图")
-                            }
-                        } else {
-                            OutlinedButton(onClick = { queueViewMode = QueueViewMode.SIMPLE }, modifier = Modifier.weight(1f)) {
-                                Text("简单视图")
-                            }
-                        }
-                        if (queueViewMode == QueueViewMode.DETAILED) {
-                            Button(onClick = { queueViewMode = QueueViewMode.DETAILED }, modifier = Modifier.weight(1f)) {
-                                Text("详细视图")
-                            }
-                        } else {
-                            OutlinedButton(onClick = { queueViewMode = QueueViewMode.DETAILED }, modifier = Modifier.weight(1f)) {
-                                Text("详细视图")
-                            }
-                        }
-                    }
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -267,16 +250,23 @@ fun HomeScreen(
                 if (queueItems.isEmpty()) {
                     Text("队列为空。", style = MaterialTheme.typography.bodySmall)
                 } else {
-                    queueItems.forEachIndexed { index, queueItem ->
-                        QueueItemRow(
-                            index = index,
-                            queueItem = queueItem,
-                            isProcessing = processingUiState.isProcessing,
-                            viewMode = queueViewMode,
-                            onRetryQueuedBatch = onRetryQueuedBatch,
-                            onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
-                            onRemoveQueuedBatch = onRemoveQueuedBatch
-                        )
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 260.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        itemsIndexed(items = queueItems, key = { _, item -> item.id }) { index, queueItem ->
+                            QueueItemRow(
+                                index = index,
+                                queueItem = queueItem,
+                                isProcessing = processingUiState.isProcessing,
+                                onRetryQueuedBatch = onRetryQueuedBatch,
+                                onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
+                                onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,
+                                onRemoveQueuedBatch = onRemoveQueuedBatch
+                            )
+                        }
                     }
                 }
             }
@@ -375,38 +365,39 @@ private fun QueueItemRow(
     index: Int,
     queueItem: ProcessingQueueItemSummary,
     isProcessing: Boolean,
-    viewMode: QueueViewMode,
     onRetryQueuedBatch: (String) -> Unit,
     onRetryQueuedBatchFailedOnly: (String) -> Unit,
+    onOpenQueuedBatchOutput: (String) -> Unit,
     onRemoveQueuedBatch: (String) -> Unit
 ) {
     val queueItemStatus = when (queueItem.status) {
-        ProcessingQueueItemStatus.PENDING -> "待处理"
+        ProcessingQueueItemStatus.PENDING -> "未开始"
         ProcessingQueueItemStatus.RUNNING -> "处理中"
         ProcessingQueueItemStatus.FAILED -> "失败"
+        ProcessingQueueItemStatus.COMPLETED -> "已完成"
     }
+    val canOpenOutput = queueItem.status == ProcessingQueueItemStatus.COMPLETED &&
+        !queueItem.lastOutputUri.isNullOrBlank()
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(enabled = canOpenOutput) {
+                onOpenQueuedBatchOutput(queueItem.id)
+            }
             .padding(vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        if (viewMode == QueueViewMode.DETAILED) {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-                QueueItemThumbnail(source = queueItem.source)
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(text = "#${index + 1} ${inputSourceLabel(queueItem.source)}", style = MaterialTheme.typography.bodyMedium)
-                    Text(
-                        text = "分配：${allocationSummary(queueItem)}",
-                        style = MaterialTheme.typography.bodySmall,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            QueueItemThumbnail(source = queueItem.source)
+            Column(modifier = Modifier.weight(1f)) {
+                Text(text = "#${index + 1} ${inputSourceLabel(queueItem.source)}", style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    text = "分配：${allocationSummary(queueItem)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
-        } else {
-            Text(text = "#${index + 1}", style = MaterialTheme.typography.bodyMedium)
-            Text(text = "分配：${allocationSummary(queueItem)}", style = MaterialTheme.typography.bodySmall)
         }
 
         Text(text = "状态：$queueItemStatus", style = MaterialTheme.typography.bodySmall)
@@ -419,6 +410,11 @@ private fun QueueItemRow(
                 OutlinedButton(onClick = { onRetryQueuedBatchFailedOnly(queueItem.id) }, enabled = !isProcessing) {
                     Text("仅失败项")
                 }
+            }
+        }
+        if (canOpenOutput) {
+            OutlinedButton(onClick = { onOpenQueuedBatchOutput(queueItem.id) }) {
+                Text("打开结果")
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -444,12 +440,11 @@ private fun QueueItemRow(
 private fun QueueItemThumbnail(source: String) {
     val context = LocalContext.current
     val bitmapState by produceState<ImageBitmap?>(initialValue = null, source) {
-        value = runCatching {
-            val decoded = Uri.parse(source)
-            context.contentResolver.openInputStream(decoded)?.use { stream ->
-                BitmapFactory.decodeStream(stream)?.asImageBitmap()
-            }
-        }.getOrNull()
+        value = withContext(Dispatchers.IO) {
+            runCatching {
+                decodeQueueThumbnail(context = context, source = source)
+            }.getOrNull()
+        }
     }
 
     Box(
@@ -473,6 +468,161 @@ private fun QueueItemThumbnail(source: String) {
     }
 }
 
+private fun decodeQueueThumbnail(
+    context: Context,
+    source: String
+): ImageBitmap? {
+    val thumbnailSources = resolveThumbnailCandidateSources(context = context, source = source)
+    for (thumbnailSource in thumbnailSources) {
+        val boundsOptions = BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        val hasBounds = openThumbnailInputStream(context = context, source = thumbnailSource)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, boundsOptions)
+            true
+        } == true
+        if (!hasBounds) {
+            continue
+        }
+
+        val sourceWidth = boundsOptions.outWidth
+        val sourceHeight = boundsOptions.outHeight
+        if (sourceWidth <= 0 || sourceHeight <= 0) {
+            continue
+        }
+
+        val decodeOptions = BitmapFactory.Options().apply {
+            inSampleSize = calculateInSampleSize(sourceWidth, sourceHeight, THUMBNAIL_TARGET_SIZE_PX)
+            inPreferredConfig = Bitmap.Config.RGB_565
+        }
+
+        val thumbnail = openThumbnailInputStream(context = context, source = thumbnailSource)?.use { stream ->
+            BitmapFactory.decodeStream(stream, null, decodeOptions)
+        } ?: continue
+
+        return thumbnail.asImageBitmap()
+    }
+    return null
+}
+
+private fun resolveThumbnailCandidateSources(
+    context: Context,
+    source: String
+): List<String> {
+    val normalizedSource = source.trim()
+    if (normalizedSource.isBlank()) {
+        return emptyList()
+    }
+
+    val decodedSources = InputSourceSpec.decode(normalizedSource).orEmpty()
+    val directSources = if (decodedSources.isEmpty()) {
+        listOf(normalizedSource)
+    } else {
+        decodedSources
+    }
+
+    return directSources
+        .map { candidate -> candidate.trim() }
+        .filter { candidate -> candidate.isNotBlank() }
+        .flatMap { candidate ->
+            val treePreview = resolveTreeSourceThumbnail(context = context, source = candidate)
+            if (treePreview == null) {
+                listOf(candidate)
+            } else {
+                listOf(treePreview, candidate)
+            }
+        }
+        .distinct()
+}
+
+private fun resolveTreeSourceThumbnail(
+    context: Context,
+    source: String
+): String? {
+    val sourceUri = runCatching { Uri.parse(source) }.getOrNull() ?: return null
+    if (sourceUri.scheme?.lowercase() != "content") {
+        return null
+    }
+
+    if (!DocumentsContract.isTreeUri(sourceUri)) {
+        return null
+    }
+
+    val treeDocumentId = runCatching {
+        DocumentsContract.getTreeDocumentId(sourceUri)
+    }.getOrNull() ?: return null
+    val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(sourceUri, treeDocumentId)
+
+    return runCatching {
+        context.contentResolver.query(
+            childrenUri,
+            arrayOf(
+                DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                DocumentsContract.Document.COLUMN_MIME_TYPE
+            ),
+            null,
+            null,
+            null
+        )?.use { cursor ->
+            val documentIdIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+            val mimeTypeIndex = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+            if (documentIdIndex < 0 || mimeTypeIndex < 0) {
+                return@use null
+            }
+            while (cursor.moveToNext()) {
+                val mimeType = cursor.getString(mimeTypeIndex)?.trim().orEmpty()
+                if (!mimeType.startsWith("image/")) {
+                    continue
+                }
+                val documentId = cursor.getString(documentIdIndex)?.trim().orEmpty()
+                if (documentId.isBlank()) {
+                    continue
+                }
+                val documentUri = DocumentsContract.buildDocumentUriUsingTree(sourceUri, documentId)
+                return@use documentUri.toString()
+            }
+            null
+        }
+    }.getOrNull()
+}
+
+private fun openThumbnailInputStream(
+    context: Context,
+    source: String
+) = runCatching {
+    if (source.startsWith("/")) {
+        return@runCatching File(source).inputStream()
+    }
+
+    val parsedUri = Uri.parse(source)
+    when (parsedUri.scheme?.lowercase()) {
+        null -> File(source).inputStream()
+        "file" -> {
+            val path = parsedUri.path ?: return@runCatching null
+            File(path).inputStream()
+        }
+        else -> context.contentResolver.openInputStream(parsedUri)
+    }
+}.getOrNull()
+
+private fun calculateInSampleSize(
+    sourceWidth: Int,
+    sourceHeight: Int,
+    requestedSizePx: Int
+): Int {
+    var sampleSize = 1
+    var currentWidth = sourceWidth
+    var currentHeight = sourceHeight
+    while (currentWidth > requestedSizePx || currentHeight > requestedSizePx) {
+        sampleSize *= 2
+        currentWidth /= 2
+        currentHeight /= 2
+    }
+    return sampleSize.coerceAtLeast(1)
+}
+
+private const val THUMBNAIL_TARGET_SIZE_PX = 192
+
 private fun allocationSummary(item: ProcessingQueueItemSummary): String {
     val mode = if (item.distributedMode) "分布式" else "单机"
     val expected = item.expectedItems?.let { count -> "$count 张" } ?: "待统计"
@@ -484,6 +634,12 @@ private fun allocationSummary(item: ProcessingQueueItemSummary): String {
 private fun inputSourceLabel(source: String): String {
     if (source.isBlank()) {
         return "未命名输入"
+    }
+    val decodedSources = InputSourceSpec.decode(source).orEmpty()
+    if (decodedSources.isNotEmpty()) {
+        val firstLabel = inputSourceLabel(decodedSources.first())
+        val remainingCount = decodedSources.size - 1
+        return if (remainingCount > 0) "$firstLabel +$remainingCount" else firstLabel
     }
     val parsedUri = runCatching { Uri.parse(source) }.getOrNull()
     val lastSegment = parsedUri?.lastPathSegment

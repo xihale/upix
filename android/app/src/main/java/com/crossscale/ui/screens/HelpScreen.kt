@@ -33,7 +33,7 @@ fun HelpScreen() {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(text = "1. 在主页添加图片或文件夹。", style = MaterialTheme.typography.bodyMedium)
                     Text(text = "2. 在设置 → 模型管理中选择模型。", style = MaterialTheme.typography.bodyMedium)
-                    Text(text = "3. 输出默认是 Picture/CrossScale。", style = MaterialTheme.typography.bodyMedium)
+                    Text(text = "3. 输出默认是 /sdcard/Pictures/CrossScale。", style = MaterialTheme.typography.bodyMedium)
                     Text(text = "4. 点击开始超分后会自动入队并启动。", style = MaterialTheme.typography.bodyMedium)
                 }
             },

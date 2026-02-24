@@ -25,10 +25,11 @@ class ModelRepository(
     suspend fun syncBundledModels() = withContext(Dispatchers.IO) {
         ensureModelDirectory()
 
-        val copiedCount = copyBundledModelsRecursively("models")
-        if (copiedCount == 0) {
-            logRepository.warning("ModelRepository", "No bundled model files copied from assets/models")
+        val copied = copyBundledDefaultModel()
+        if (!copied) {
+            logRepository.warning("ModelRepository", "Bundled default model copy failed")
         }
+        removeUnexpectedModelFiles()
 
         refreshModelsInternal()
     }
@@ -58,7 +59,7 @@ class ModelRepository(
     }
 
     fun modelDirectoryPath(): String {
-        return modelsDirectory.absolutePath
+        return modelsDirectory.name
     }
 
     private fun ensureModelDirectory() {
@@ -68,65 +69,84 @@ class ModelRepository(
     }
 
     private fun refreshModelsInternal() {
-        val params = modelsDirectory
-            .listFiles { file -> file.extension == "param" }
-            ?.sortedBy { it.name }
-            ?: emptyList()
-
-        val discoveredModels = params.mapNotNull { param ->
-            val modelName = param.nameWithoutExtension
-            val bin = File(modelsDirectory, "$modelName.bin")
-            if (!bin.exists()) {
-                logRepository.warning("ModelRepository", "Model $modelName missing .bin file, skipped")
-                null
-            } else {
-                toModelInfo(modelName, param, bin)
-            }
+        val param = File(modelsDirectory, DEFAULT_MODEL_PARAM_FILE)
+        val bin = File(modelsDirectory, DEFAULT_MODEL_BIN_FILE)
+        if (!param.exists() || !bin.exists()) {
+            _models.value = emptyList()
+            logRepository.warning(
+                "ModelRepository",
+                "Default model files missing: param=${param.exists()} bin=${bin.exists()}"
+            )
+            return
         }
 
-        _models.value = discoveredModels
+        _models.value = listOf(toModelInfo(DEFAULT_MODEL_NAME, param, bin))
     }
 
-    private fun copyBundledModelsRecursively(assetPath: String): Int {
-        val entries = try {
-            context.assets.list(assetPath) ?: return 0
-        } catch (e: Exception) {
-            return 0
+    private fun copyBundledDefaultModel(): Boolean {
+        val paramAssetPath = findAssetPath(PARAM_ASSET_CANDIDATES)
+        val binAssetPath = findAssetPath(BIN_ASSET_CANDIDATES)
+        if (paramAssetPath == null || binAssetPath == null) {
+            logRepository.error(
+                "ModelRepository",
+                "Bundled default model assets not found (param=$paramAssetPath, bin=$binAssetPath)"
+            )
+            return false
         }
 
-        var copiedCount = 0
-        for (entry in entries) {
-            val fullAssetPath = "$assetPath/$entry"
-            val nestedEntries = try {
-                context.assets.list(fullAssetPath) ?: emptyArray()
-            } catch (e: Exception) {
-                emptyArray()
+        val paramCopied = copyAssetToDestination(
+            assetPath = paramAssetPath,
+            destination = File(modelsDirectory, DEFAULT_MODEL_PARAM_FILE)
+        )
+        val binCopied = copyAssetToDestination(
+            assetPath = binAssetPath,
+            destination = File(modelsDirectory, DEFAULT_MODEL_BIN_FILE)
+        )
+        return paramCopied && binCopied
+    }
+
+    private fun findAssetPath(candidates: List<String>): String? {
+        return candidates.firstOrNull { candidate ->
+            runCatching { context.assets.open(candidate).close() }.isSuccess
+        }
+    }
+
+    private fun copyAssetToDestination(
+        assetPath: String,
+        destination: File
+    ): Boolean {
+        return runCatching {
+            context.assets.open(assetPath).use { input ->
+                destination.outputStream().use { output ->
+                    input.copyTo(output)
+                }
             }
-            if (nestedEntries.isEmpty()) {
-                if (!entry.endsWith(".param") && !entry.endsWith(".bin")) {
-                    continue
+            true
+        }.getOrElse { throwable ->
+            logRepository.error(
+                "ModelRepository",
+                "Failed to copy asset $assetPath -> ${destination.name}: ${throwable.message}"
+            )
+            false
+        }
+    }
+
+    private fun removeUnexpectedModelFiles() {
+        val allowedFiles = setOf(DEFAULT_MODEL_PARAM_FILE, DEFAULT_MODEL_BIN_FILE)
+        val modelFiles = modelsDirectory.listFiles { file ->
+            file.extension == "param" || file.extension == "bin"
+        } ?: return
+
+        modelFiles.forEach { file ->
+            if (file.name !in allowedFiles) {
+                val removed = runCatching { file.delete() }.getOrDefault(false)
+                if (removed) {
+                    logRepository.info("ModelRepository", "Removed legacy model file: ${file.name}")
+                } else {
+                    logRepository.warning("ModelRepository", "Failed to remove legacy model file: ${file.name}")
                 }
-                val destinationName = fullAssetPath.removePrefix("models/").replace('/', '_')
-                val destination = File(modelsDirectory, destinationName)
-                if (destination.exists() && destination.length() > 0L) {
-                    continue
-                }
-                try {
-                    context.assets.open(fullAssetPath).use { input ->
-                        destination.outputStream().use { output ->
-                            input.copyTo(output)
-                        }
-                    }
-                    copiedCount += 1
-                    logRepository.info("ModelRepository", "Bundled model copied: $destinationName")
-                } catch (e: Exception) {
-                    logRepository.error("ModelRepository", "Failed to copy $fullAssetPath: ${e.message}")
-                }
-            } else {
-                copiedCount += copyBundledModelsRecursively(fullAssetPath)
             }
         }
-        return copiedCount
     }
 
     private fun toModelInfo(modelName: String, param: File, bin: File): ModelInfo {
@@ -168,4 +188,21 @@ class ModelRepository(
             }
         }
     }
+
+    companion object {
+        private const val DEFAULT_MODEL_NAME = "Real-ESRGANv3-anime_x2"
+        private const val DEFAULT_MODEL_PARAM_FILE = "$DEFAULT_MODEL_NAME.param"
+        private const val DEFAULT_MODEL_BIN_FILE = "$DEFAULT_MODEL_NAME.bin"
+        private val PARAM_ASSET_CANDIDATES = listOf(
+            "x2.param",
+            "Real-ESRGANv3-anime/x2.param",
+            DEFAULT_MODEL_PARAM_FILE
+        )
+        private val BIN_ASSET_CANDIDATES = listOf(
+            "x2.bin",
+            "Real-ESRGANv3-anime/x2.bin",
+            DEFAULT_MODEL_BIN_FILE
+        )
+    }
+
 }

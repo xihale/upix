@@ -22,10 +22,13 @@ class BatchOutputRepository(
 ) : BatchOutputStore {
     private val appContext = context.applicationContext
     private val contentResolver = appContext.contentResolver
-    private val rootOutputDir = appContext.getExternalFilesDir(Environment.DIRECTORY_PICTURES)
+    private val publicRootOutputDir = File(
+        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+        OUTPUT_ROOT_DIR
+    )
+    private val fallbackRootOutputDir = appContext.getExternalFilesDir(Environment.DIRECTORY_PICTURES)
         ?.let { directory -> File(directory, OUTPUT_ROOT_DIR) }
         ?: File(appContext.filesDir, OUTPUT_ROOT_DIR)
-    private val backupOutputRootDir = File(rootOutputDir, BACKUP_ROOT_DIR)
     private val tempOutputRootDir = File(appContext.cacheDir, TEMP_OUTPUT_ROOT_DIR)
 
     override fun prepareOutputDirectory(
@@ -93,7 +96,7 @@ class BatchOutputRepository(
         }
 
         val internalDirectory = when {
-            normalizedResumeDirectory.isBlank() -> File(rootOutputDir, batchId)
+            normalizedResumeDirectory.isBlank() -> File(defaultOutputRootDir(), batchId)
             else -> File(normalizedResumeDirectory)
         }
         if (!internalDirectory.exists()) {
@@ -144,6 +147,40 @@ class BatchOutputRepository(
             displayName = outputName,
             expectDirectory = false
         ) != null
+    }
+
+    override fun firstReadyOutputUri(
+        outputDirectory: BatchOutputDirectory,
+        inputs: List<ResolvedImageInput>
+    ): String? {
+        if (inputs.isEmpty()) {
+            return null
+        }
+
+        val outputDirectoryUri = outputDirectory.outputDirectoryUri.orEmpty()
+        if (outputDirectoryUri.isBlank()) {
+            val internalDirectory = outputDirectory.internalDirectory ?: return null
+            inputs.forEach { input ->
+                val outputFile = File(internalDirectory, outputNameFor(input))
+                if (outputFile.exists()) {
+                    return outputFile.absolutePath
+                }
+            }
+            return null
+        }
+
+        val parsedDirectoryUri = parseUri(outputDirectoryUri) ?: return null
+        inputs.forEach { input ->
+            val outputUri = findChildDocumentUri(
+                parentDocumentUri = parsedDirectoryUri,
+                displayName = outputNameFor(input),
+                expectDirectory = false
+            )
+            if (outputUri != null) {
+                return outputUri.toString()
+            }
+        }
+        return null
     }
 
     override fun commitOutput(
@@ -268,6 +305,7 @@ class BatchOutputRepository(
         outputDirectory: BatchOutputDirectory,
         input: ResolvedImageInput
     ) {
+        val backupOutputRootDir = File(defaultOutputRootDir(), BACKUP_ROOT_DIR)
         val backupDir = File(backupOutputRootDir, outputDirectory.batchId)
         if (!backupDir.exists()) {
             backupDir.mkdirs()
@@ -356,6 +394,24 @@ class BatchOutputRepository(
             return null
         }
         return runCatching { Uri.parse(rawValue) }.getOrNull()
+    }
+
+    private fun defaultOutputRootDir(): File {
+        val publicReady = runCatching {
+            publicRootOutputDir.exists() || publicRootOutputDir.mkdirs()
+        }.getOrDefault(false)
+        if (publicReady) {
+            return publicRootOutputDir
+        }
+
+        val fallbackReady = runCatching {
+            fallbackRootOutputDir.exists() || fallbackRootOutputDir.mkdirs()
+        }.getOrDefault(false)
+        if (fallbackReady) {
+            return fallbackRootOutputDir
+        }
+
+        return publicRootOutputDir
     }
 
     companion object {

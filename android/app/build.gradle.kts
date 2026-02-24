@@ -18,6 +18,7 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+        buildConfigField("String", "DEBUG_AUTORUN_INPUT", "\"\"")
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -46,6 +47,7 @@ android {
         }
         debug {
             isDebuggable = true
+            buildConfigField("String", "DEBUG_AUTORUN_INPUT", "\"/sdcard/Pictures/crossscale_debug_input.jpg\"")
             externalNativeBuild {
                 cmake {
                     cppFlags += "-g"
@@ -61,6 +63,13 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
+    }
+
+    sourceSets {
+        getByName("main") {
+            assets.directories.add("../../models/models/Real-ESRGANv3-anime")
+        }
     }
 
     packaging {

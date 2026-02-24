@@ -594,25 +594,44 @@ public:
         
         // Set Vulkan device if using GPU
 #if NCNN_VULKAN
+        static const bool enable_gpu_fast_math = []() {
+            const char* env_value = std::getenv("CROSSSCALE_GPU_FAST_MATH");
+            return env_value != nullptr && std::string(env_value) == "1";
+        }();
         if (current_device_ == DeviceType::GPU_VULKAN && vkdev_ != nullptr) {
             net_->set_vulkan_device(vkdev_);
             net_->opt.use_vulkan_compute = true;
-            net_->opt.use_fp16_packed = true;
-            net_->opt.use_fp16_storage = true;
-            net_->opt.use_fp16_arithmetic = true;
-            net_->opt.use_int8_storage = true;
+            const auto& gpu_info = vkdev_->info;
+            net_->opt.use_fp16_packed = enable_gpu_fast_math && gpu_info.support_fp16_packed();
+            net_->opt.use_fp16_storage = enable_gpu_fast_math && gpu_info.support_fp16_storage();
+            net_->opt.use_fp16_arithmetic = enable_gpu_fast_math && gpu_info.support_fp16_arithmetic();
+            net_->opt.use_int8_storage = false;
             unsigned int hw_threads = std::thread::hardware_concurrency();
             int tuned_threads = 2;
             if (hw_threads > 0) {
                 tuned_threads = std::clamp(static_cast<int>(hw_threads / 4), 1, 4);
             }
             net_->opt.num_threads = tuned_threads;
+            LOG_INFO(
+                "Engine",
+                "Vulkan precision profile: fp16_packed=" +
+                    std::to_string(net_->opt.use_fp16_packed ? 1 : 0) +
+                    ", fp16_storage=" + std::to_string(net_->opt.use_fp16_storage ? 1 : 0) +
+                    ", fp16_arithmetic=" + std::to_string(net_->opt.use_fp16_arithmetic ? 1 : 0) +
+                    ", int8_storage=0"
+            );
         } else {
             net_->opt.use_vulkan_compute = false;
+            net_->opt.use_fp16_packed = false;
+            net_->opt.use_fp16_storage = false;
+            net_->opt.use_fp16_arithmetic = false;
             net_->opt.use_int8_storage = false;
         }
 #else
         net_->opt.use_vulkan_compute = false;
+        net_->opt.use_fp16_packed = false;
+        net_->opt.use_fp16_storage = false;
+        net_->opt.use_fp16_arithmetic = false;
         net_->opt.use_int8_storage = false;
 #endif
         
@@ -634,19 +653,29 @@ public:
             if (!gpu_layout_pipeline_ready_) {
                 LOG_WARNING("Engine", "GPU pre/post layout pipeline disabled, fallback to CPU layout conversion");
             }
-            gpu_layout_u8_pipeline_ready_ = preproc_hwc_u8_to_chw_ != nullptr &&
+            gpu_layout_u8_pipeline_ready_ = net_->opt.use_int8_storage &&
+                                            preproc_hwc_u8_to_chw_ != nullptr &&
                                             postproc_chw_to_hwc_u8_ != nullptr &&
                                             quantize_hwc_to_u8_ != nullptr;
             if (!gpu_layout_u8_pipeline_ready_) {
-                LOG_WARNING("Engine", "GPU u8 pre/post layout pipeline disabled, fallback to CPU u8 conversion");
+                if (net_->opt.use_int8_storage) {
+                    LOG_WARNING("Engine", "GPU u8 pre/post layout pipeline disabled, fallback to CPU u8 conversion");
+                } else {
+                    LOG_INFO("Engine", "GPU u8 pre/post layout pipeline disabled by stability profile");
+                }
             }
             gpu_crop_pipeline_ready_ = init_gpu_crop_pipeline();
             if (!gpu_crop_pipeline_ready_) {
                 LOG_WARNING("Engine", "GPU crop pipeline disabled, fallback to CPU tile extraction");
             }
-            gpu_crop_u8_pipeline_ready_ = preproc_hwc_crop_u8_to_chw_ != nullptr;
+            gpu_crop_u8_pipeline_ready_ = net_->opt.use_int8_storage &&
+                                          preproc_hwc_crop_u8_to_chw_ != nullptr;
             if (!gpu_crop_u8_pipeline_ready_) {
-                LOG_WARNING("Engine", "GPU u8 crop pipeline disabled, fallback to CPU tile extraction");
+                if (net_->opt.use_int8_storage) {
+                    LOG_WARNING("Engine", "GPU u8 crop pipeline disabled, fallback to CPU tile extraction");
+                } else {
+                    LOG_INFO("Engine", "GPU u8 crop pipeline disabled by stability profile");
+                }
             }
             gpu_tile_pipeline_ready_ = init_gpu_tile_pipelines();
             if (!gpu_tile_pipeline_ready_) {
@@ -687,7 +716,14 @@ public:
         }
 
 #if NCNN_VULKAN
-        if (current_device_ == DeviceType::GPU_VULKAN && vkdev_ != nullptr && gpu_layout_pipeline_ready_) {
+        static const bool allow_gpu_layout_path = []() {
+            const char* env_value = std::getenv("CROSSSCALE_ENABLE_GPU_LAYOUT_PATH");
+            return env_value != nullptr && std::string(env_value) == "1";
+        }();
+        if (allow_gpu_layout_path &&
+            current_device_ == DeviceType::GPU_VULKAN &&
+            vkdev_ != nullptr &&
+            gpu_layout_pipeline_ready_) {
             auto vk_result = process_vulkan_with_gpu_layout(input, output, width, height, channels, cancel_flag);
             if (vk_result.has_value()) {
                 return {};
@@ -697,8 +733,15 @@ public:
         }
 #endif
         
-        int out_width = width * scale_factor_;
-        int out_height = height * scale_factor_;
+        if (input == nullptr || output == nullptr) {
+            return EngineError{18, "Null input/output buffer"};
+        }
+        if (width <= 0 || height <= 0 || channels <= 0) {
+            return EngineError{11, "Invalid input dimensions"};
+        }
+
+        const int expected_out_width = width * scale_factor_;
+        const int expected_out_height = height * scale_factor_;
         
         // Create input Mat from float array (interleaved RGB -> planar)
         // ncnn expects planar format: RRR...GGG...BBB...
@@ -709,11 +752,12 @@ public:
         
         // Convert interleaved float RGB to planar format
         for (int c = 0; c < channels; ++c) {
+            float* in_channel = in.channel(c);
             for (int h = 0; h < height; ++h) {
                 for (int w = 0; w < width; ++w) {
                     size_t src_idx = (static_cast<size_t>(h) * width + w) * channels + c;
-                    size_t dst_idx = static_cast<size_t>(c) * height * width + h * width + w;
-                    in[dst_idx] = input[src_idx];
+                    size_t dst_idx = static_cast<size_t>(h) * width + w;
+                    in_channel[dst_idx] = input[src_idx];
                 }
             }
         }
@@ -767,14 +811,26 @@ public:
             return EngineError{3, "Processing cancelled"};
         }
         
-        // Copy output to float array
-        // ncnn::Mat stores as planar (channel, height, width)
+        if (out.w != expected_out_width || out.h != expected_out_height || out.c != channels) {
+            return EngineError{
+                16,
+                "Output shape mismatch: expected=" +
+                    std::to_string(expected_out_width) + "x" + std::to_string(expected_out_height) + "x" +
+                    std::to_string(channels) + ", actual=" +
+                    std::to_string(out.w) + "x" + std::to_string(out.h) + "x" + std::to_string(out.c)
+            };
+        }
+
+        const int out_width = out.w;
+        const int out_height = out.h;
+
         for (int c = 0; c < channels; ++c) {
+            const float* out_channel = out.channel(c);
             for (int h = 0; h < out_height; ++h) {
                 for (int w = 0; w < out_width; ++w) {
                     size_t dst_idx = (static_cast<size_t>(h) * out_width + w) * channels + c;
-                    size_t src_idx = static_cast<size_t>(c) * out_height * out_width + h * out_width + w;
-                    output[dst_idx] = out[src_idx];
+                    size_t src_idx = static_cast<size_t>(h) * out_width + w;
+                    output[dst_idx] = out_channel[src_idx];
                 }
             }
         }
@@ -799,7 +855,14 @@ public:
         }
 
 #if NCNN_VULKAN
-        if (current_device_ == DeviceType::GPU_VULKAN && vkdev_ != nullptr && gpu_layout_u8_pipeline_ready_) {
+        static const bool allow_gpu_u8_path = []() {
+            const char* env_value = std::getenv("CROSSSCALE_ENABLE_GPU_U8_PATH");
+            return env_value != nullptr && std::string(env_value) == "1";
+        }();
+        if (allow_gpu_u8_path &&
+            current_device_ == DeviceType::GPU_VULKAN &&
+            vkdev_ != nullptr &&
+            gpu_layout_u8_pipeline_ready_) {
             auto vk_result = process_vulkan_with_gpu_layout_u8(input, output, width, height, channels, cancel_flag);
             if (vk_result.has_value()) {
                 return {};
@@ -828,8 +891,12 @@ public:
         }
 
         for (size_t i = 0; i < out_total; ++i) {
-            const float v = std::clamp(output_float[i] * 255.0f, 0.0f, 255.0f);
-            output[i] = static_cast<uint8_t>(v);
+            const float value = output_float[i];
+            if (!std::isfinite(value)) {
+                return EngineError{20, "Non-finite output value detected"};
+            }
+            const float v = std::clamp(value * 255.0f, 0.0f, 255.0f);
+            output[i] = static_cast<uint8_t>(std::lround(v));
         }
 
         return {};

@@ -35,6 +35,11 @@ interface BatchOutputStore {
         input: ResolvedImageInput
     ): Boolean
 
+    fun firstReadyOutputUri(
+        outputDirectory: BatchOutputDirectory,
+        inputs: List<ResolvedImageInput>
+    ): String?
+
     fun commitOutput(
         outputDirectory: BatchOutputDirectory,
         input: ResolvedImageInput,

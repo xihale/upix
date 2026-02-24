@@ -65,7 +65,8 @@ fun LayeredSectionCard(
 
             actions()
 
-            AnimatedVisibility(visible = expanded && showDetailsToggle) {
+            val detailsVisible = if (showDetailsToggle) expanded else true
+            AnimatedVisibility(visible = detailsVisible) {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     guide?.takeIf { text -> text.isNotBlank() }?.let { text ->
                         Text(
