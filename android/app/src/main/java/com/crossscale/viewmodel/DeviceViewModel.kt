@@ -5,14 +5,15 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.crossscale.AppContainer
 import com.crossscale.data.model.DeviceProfile
+import com.crossscale.data.model.DeviceStatus
 import com.crossscale.data.model.DeviceType
 import com.crossscale.data.repository.DeviceRepository
 import com.crossscale.data.repository.LogRepository
+import com.crossscale.data.repository.PairingRepository
 import com.crossscale.network.CoordinatorClient
 import com.crossscale.network.MDNSDiscovery
 import com.crossscale.network.JoinInviteParser
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -23,28 +24,38 @@ import kotlinx.coroutines.launch
 data class DeviceUiState(
     val devices: List<DeviceProfile> = emptyList(),
     val isDiscovering: Boolean = false,
-    val showManualConnectDialog: Boolean = false
+    val showManualConnectDialog: Boolean = false,
+    val manualConnectHost: String = "",
+    val manualConnectPort: String = "9527"
 )
 
 class DeviceViewModel(
     private val deviceRepository: DeviceRepository,
+    private val pairingRepository: PairingRepository,
     private val coordinatorClient: CoordinatorClient,
     private val mdnsDiscovery: MDNSDiscovery,
     private val logRepository: LogRepository
 ) : ViewModel() {
     private val _isDiscovering = MutableStateFlow(false)
     private val _showManualConnectDialog = MutableStateFlow(false)
+    private val _manualConnectHost = MutableStateFlow("")
+    private val _manualConnectPort = MutableStateFlow("9527")
     private var discoveryJob: Job? = null
+    private val autoConnectingTargets = mutableSetOf<String>()
 
     val uiState: StateFlow<DeviceUiState> = combine(
         deviceRepository.devices,
         _isDiscovering,
-        _showManualConnectDialog
-    ) { devices, isDiscovering, showDialog ->
+        _showManualConnectDialog,
+        _manualConnectHost,
+        _manualConnectPort
+    ) { devices, isDiscovering, showDialog, manualConnectHost, manualConnectPort ->
         DeviceUiState(
             devices = devices,
             isDiscovering = isDiscovering,
-            showManualConnectDialog = showDialog
+            showManualConnectDialog = showDialog,
+            manualConnectHost = manualConnectHost,
+            manualConnectPort = manualConnectPort
         )
     }.stateIn(
         scope = viewModelScope,
@@ -74,17 +85,12 @@ class DeviceViewModel(
                         port = service.port
                     )
                     deviceRepository.updateDiscoveredDevices(listOf(discovered))
+                    attemptAutoConnect(discovered)
                 },
                 onError = { message ->
                     logRepository.error("DeviceViewModel", message)
                 }
             )
-
-            // mDNS may need time before first callback, provide a fallback mock seed.
-            delay(900L)
-            if (uiState.value.devices.size <= 1) {
-                deviceRepository.updateDiscoveredDevices(mockDiscoveredDevices())
-            }
         }
     }
 
@@ -103,6 +109,7 @@ class DeviceViewModel(
         }
         val connected = coordinatorClient.connect(invite.host, invite.port, invite.authKey)
         if (connected) {
+            pairingRepository.savePairing(invite.host, invite.port, invite.authKey)
             deviceRepository.addManualDevice(invite.host, invite.port, invite.authKey)
             logRepository.info("DeviceViewModel", "Connected from QR invite to ${invite.host}:${invite.port}")
         } else {
@@ -118,14 +125,28 @@ class DeviceViewModel(
         }
         val connected = coordinatorClient.connect(host.trim(), port, authKey.trim())
         if (connected) {
-            deviceRepository.addManualDevice(host.trim(), port, authKey.trim())
+            val normalizedHost = host.trim()
+            val normalizedAuthKey = authKey.trim()
+            pairingRepository.savePairing(normalizedHost, port, normalizedAuthKey)
+            deviceRepository.addManualDevice(normalizedHost, port, normalizedAuthKey)
         } else {
             logRepository.error("DeviceViewModel", "Coordinator connect failed: $host:$port")
         }
     }
 
     fun connectDevice(deviceId: String) {
-        deviceRepository.connectDevice(deviceId)
+        val target = uiState.value.devices.firstOrNull { it.deviceId == deviceId }
+        if (target == null) {
+            logRepository.error("DeviceViewModel", "Unknown device: $deviceId")
+            return
+        }
+        _manualConnectHost.value = target.ipAddress
+        _manualConnectPort.value = target.port.toString()
+        _showManualConnectDialog.value = true
+        logRepository.info(
+            "DeviceViewModel",
+            "Pairing required for discovered device ${target.ipAddress}:${target.port}; awaiting manual auth key"
+        )
     }
 
     fun disconnectDevice(deviceId: String) {
@@ -134,6 +155,10 @@ class DeviceViewModel(
 
     fun showManualConnectDialog(show: Boolean) {
         _showManualConnectDialog.value = show
+        if (!show) {
+            _manualConnectHost.value = ""
+            _manualConnectPort.value = "9527"
+        }
     }
 
     override fun onCleared() {
@@ -143,31 +168,37 @@ class DeviceViewModel(
         coordinatorClient.release()
     }
 
-    private fun mockDiscoveredDevices(): List<DeviceProfile> {
-        return listOf(
-            DeviceProfile(
-                deviceId = "pc-01",
-                deviceName = "Desktop RTX",
-                type = DeviceType.GPU,
-                tilesPerSecond = 30.5f,
-                recommendedTileSize = 512,
-                maxBatchSize = 4,
-                weight = 3.2f,
-                ipAddress = "192.168.1.10",
-                port = 9527
-            ),
-            DeviceProfile(
-                deviceId = "laptop-02",
-                deviceName = "Laptop CPU",
-                type = DeviceType.CPU,
-                tilesPerSecond = 6.8f,
-                recommendedTileSize = 256,
-                maxBatchSize = 1,
-                weight = 0.9f,
-                ipAddress = "192.168.1.21",
-                port = 9527
-            )
-        )
+    private fun attemptAutoConnect(device: DeviceProfile) {
+        val deviceId = device.deviceId
+        val alreadyConnected = uiState.value.devices.any {
+            it.deviceId == deviceId && it.status == DeviceStatus.CONNECTED
+        }
+        if (alreadyConnected) {
+            return
+        }
+        if (!autoConnectingTargets.add(deviceId)) {
+            return
+        }
+
+        viewModelScope.launch {
+            try {
+                val authKey = pairingRepository.getAuthKey(device.ipAddress, device.port)
+                if (authKey.isNullOrBlank()) {
+                    return@launch
+                }
+
+                val connected = coordinatorClient.connect(device.ipAddress, device.port, authKey)
+                if (connected) {
+                    deviceRepository.addManualDevice(device.ipAddress, device.port, authKey)
+                    logRepository.info(
+                        "DeviceViewModel",
+                        "Auto-connected paired PC ${device.ipAddress}:${device.port}"
+                    )
+                }
+            } finally {
+                autoConnectingTargets.remove(deviceId)
+            }
+        }
     }
 
     companion object {
@@ -177,6 +208,7 @@ class DeviceViewModel(
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
                     return DeviceViewModel(
                         deviceRepository = container.deviceRepository,
+                        pairingRepository = container.pairingRepository,
                         coordinatorClient = container.coordinatorClient,
                         mdnsDiscovery = container.mdnsDiscovery,
                         logRepository = container.logRepository

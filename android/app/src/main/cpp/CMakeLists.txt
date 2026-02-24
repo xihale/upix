@@ -115,20 +115,20 @@ include_directories(
 set(SHARED_SOURCES
     ${CMAKE_SOURCE_DIR}/../../../../../share/core/engine.cpp
     ${CMAKE_SOURCE_DIR}/../../../../../share/core/config.cpp
+    ${CMAKE_SOURCE_DIR}/../../../../../share/core/model_manager.cpp
+    ${CMAKE_SOURCE_DIR}/../../../../../share/core/distributed/protocol.cpp
+    ${CMAKE_SOURCE_DIR}/../../../../../share/core/distributed/scheduler.cpp
+    ${CMAKE_SOURCE_DIR}/../../../../../share/core/distributed/worker.cpp
     ${CMAKE_SOURCE_DIR}/../../../../../share/utils/image.cpp
     ${CMAKE_SOURCE_DIR}/../../../../../share/utils/benchmark.cpp
+    ${CMAKE_SOURCE_DIR}/../../../../../share/utils/logger.cpp
+    ${CMAKE_SOURCE_DIR}/../../../../../share/utils/network.cpp
+    ${CMAKE_SOURCE_DIR}/../../../../../share/utils/crypto.cpp
 )
 
 if(CROSSSCALE_USE_NCNN)
     list(APPEND SHARED_SOURCES
         ${CMAKE_SOURCE_DIR}/../../../../../share/core/ncnn_engine.cpp
-        ${CMAKE_SOURCE_DIR}/../../../../../share/core/model_manager.cpp
-        ${CMAKE_SOURCE_DIR}/../../../../../share/utils/logger.cpp
-        ${CMAKE_SOURCE_DIR}/../../../../../share/utils/network.cpp
-        ${CMAKE_SOURCE_DIR}/../../../../../share/utils/crypto.cpp
-        ${CMAKE_SOURCE_DIR}/../../../../../share/core/distributed/protocol.cpp
-        ${CMAKE_SOURCE_DIR}/../../../../../share/core/distributed/scheduler.cpp
-        ${CMAKE_SOURCE_DIR}/../../../../../share/core/distributed/worker.cpp
     )
 else()
     list(APPEND SHARED_SOURCES

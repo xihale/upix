@@ -129,6 +129,8 @@ fun DevicesScreen(
 
     ConnectionDialog(
         show = state.showManualConnectDialog,
+        initialHost = state.manualConnectHost,
+        initialPort = state.manualConnectPort,
         onDismiss = { onShowManualConnectDialog(false) },
         onConnect = onManualConnect
     )

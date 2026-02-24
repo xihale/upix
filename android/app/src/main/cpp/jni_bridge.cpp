@@ -2,16 +2,21 @@
 #include <string>
 #include <android/log.h>
 #include <algorithm>
+#include <atomic>
 #include <exception>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
 #include <sstream>
+#include <thread>
 #include <vector>
+#include <filesystem>
+#include <chrono>
 
 #include "core/config.hpp"
 #include "core/engine.hpp"
+#include "core/distributed/worker.hpp"
 #include "utils/image.hpp"
 
 #define LOG_TAG "CrossScale"
@@ -40,22 +45,133 @@ auto get_jni_last_error() -> std::string {
     return g_jni_last_error;
 }
 
-class StubWorker {
+class AndroidWorkerSession {
 public:
-    auto connect(const std::string& host, uint16_t port, const std::string& auth_key) -> bool {
-        if (host.empty() || port == 0 || auth_key.empty()) {
+    ~AndroidWorkerSession() {
+        disconnect();
+    }
+
+    auto connect(
+        const std::string& host,
+        uint16_t port,
+        const std::string& auth_key,
+        const std::string& models_directory
+    ) -> bool {
+        if (host.empty() || port == 0 || auth_key.empty() || models_directory.empty()) {
+            set_last_error("Invalid worker connection parameters");
             return false;
         }
-        connected_ = true;
+
+        disconnect();
+
+        worker_ = std::make_unique<crossscale::Worker>();
+        engine_ = crossscale::create_ncnn_engine();
+        if (!worker_ || !engine_) {
+            set_last_error("Failed to create worker or engine");
+            LOGE("Failed to create worker or engine");
+            return false;
+        }
+
+        const auto gpu_result = engine_->initialize(crossscale::DeviceType::GPU_VULKAN);
+        if (!gpu_result.has_value()) {
+            const auto cpu_result = engine_->initialize(crossscale::DeviceType::CPU);
+            if (!cpu_result.has_value()) {
+                set_last_error(
+                    "Engine init failed: gpu=" + gpu_result.error().message +
+                    " cpu=" + cpu_result.error().message
+                );
+                LOGE("Engine init failed: gpu=%s cpu=%s",
+                     gpu_result.error().message.c_str(),
+                     cpu_result.error().message.c_str());
+                return false;
+            }
+        }
+
+        const auto connect_result = worker_->connect(host, port, auth_key);
+        if (!connect_result.has_value()) {
+            set_last_error("Worker connect failed: " + connect_result.error().message);
+            LOGE("Worker connect failed: %s", connect_result.error().message.c_str());
+            return false;
+        }
+
+        worker_->set_models_directory(std::filesystem::path(models_directory));
+        const auto handshake_result = worker_->handshake(*engine_);
+        if (!handshake_result.has_value()) {
+            set_last_error("Worker handshake failed: " + handshake_result.error().message);
+            LOGE("Worker handshake failed: %s", handshake_result.error().message.c_str());
+            worker_->disconnect();
+            return false;
+        }
+
+        const auto sync_result = worker_->sync_models();
+        if (!sync_result.has_value()) {
+            set_last_error("Worker model sync failed: " + sync_result.error().message);
+            LOGE("Worker model sync failed: %s", sync_result.error().message.c_str());
+            worker_->disconnect();
+            return false;
+        }
+
+        set_last_error("");
+        running_.store(true);
+        worker_->start_heartbeat(std::chrono::seconds(5));
+        task_loop_thread_ = std::thread([this]() { task_loop(); });
         return true;
     }
 
     void disconnect() {
-        connected_ = false;
+        running_.store(false);
+        if (worker_) {
+            worker_->disconnect();
+        }
+        if (task_loop_thread_.joinable()) {
+            task_loop_thread_.join();
+        }
+        engine_.reset();
+        worker_.reset();
+    }
+
+    auto last_error() const -> std::string {
+        std::lock_guard<std::mutex> lock(error_mutex_);
+        return last_error_;
     }
 
 private:
-    bool connected_ = false;
+    void set_last_error(std::string message) {
+        std::lock_guard<std::mutex> lock(error_mutex_);
+        last_error_ = std::move(message);
+    }
+
+    void task_loop() {
+        while (running_.load() && worker_ && engine_ && worker_->is_connected()) {
+            auto task_result = worker_->receive_task();
+            if (!task_result.has_value()) {
+                break;
+            }
+
+            auto execution_result = worker_->execute_task(task_result.value(), *engine_);
+            if (!execution_result.has_value()) {
+                LOGE("Worker task execute failed: %s", execution_result.error().message.c_str());
+                continue;
+            }
+
+            auto submit_result = worker_->submit_results(execution_result.value());
+            if (!submit_result.has_value()) {
+                LOGE("Worker submit result failed: %s", submit_result.error().message.c_str());
+                break;
+            }
+        }
+        running_.store(false);
+        if (worker_) {
+            worker_->disconnect();
+        }
+    }
+
+    std::unique_ptr<crossscale::Worker> worker_;
+    std::unique_ptr<crossscale::Engine> engine_;
+    std::atomic<bool> running_{false};
+    std::thread task_loop_thread_;
+    mutable std::mutex error_mutex_;
+    std::string last_error_;
 };
 
 }  // namespace
@@ -376,7 +492,7 @@ Java_com_crossscale_native_NativeWorker_nativeCreate(
 ) {
     (void)env;
     (void)thiz;
-    auto* worker = new StubWorker();
+    auto* worker = new AndroidWorkerSession();
     return reinterpret_cast<jlong>(worker);
 }
 
@@ -387,21 +503,49 @@ Java_com_crossscale_native_NativeWorker_nativeConnect(
     jlong worker_ptr,
     jstring host,
     jint port,
-    jstring auth_key
+    jstring auth_key,
+    jstring models_directory
 ) {
     (void)thiz;
     if (worker_ptr == 0) return JNI_FALSE;
-    
-    auto* worker = reinterpret_cast<StubWorker*>(worker_ptr);
-    
+
+    if (host == nullptr || auth_key == nullptr || models_directory == nullptr) {
+        return JNI_FALSE;
+    }
+    if (port <= 0 || port > std::numeric_limits<uint16_t>::max()) {
+        return JNI_FALSE;
+    }
+
+    auto* worker = reinterpret_cast<AndroidWorkerSession*>(worker_ptr);
+
     const char* host_str = env->GetStringUTFChars(host, nullptr);
     const char* key_str = env->GetStringUTFChars(auth_key, nullptr);
-    
-    const bool result = worker->connect(host_str, static_cast<uint16_t>(port), key_str);
-    
+    const char* models_dir_str = env->GetStringUTFChars(models_directory, nullptr);
+
+    if (host_str == nullptr || key_str == nullptr || models_dir_str == nullptr) {
+        if (host_str != nullptr) {
+            env->ReleaseStringUTFChars(host, host_str);
+        }
+        if (key_str != nullptr) {
+            env->ReleaseStringUTFChars(auth_key, key_str);
+        }
+        if (models_dir_str != nullptr) {
+            env->ReleaseStringUTFChars(models_directory, models_dir_str);
+        }
+        return JNI_FALSE;
+    }
+
+    const bool result = worker->connect(
+        host_str,
+        static_cast<uint16_t>(port),
+        key_str,
+        models_dir_str
+    );
+
     env->ReleaseStringUTFChars(host, host_str);
     env->ReleaseStringUTFChars(auth_key, key_str);
-    
+    env->ReleaseStringUTFChars(models_directory, models_dir_str);
+
     return result ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -415,8 +559,24 @@ Java_com_crossscale_native_NativeWorker_nativeDisconnect(
     (void)thiz;
     if (worker_ptr == 0) return;
     
-    auto* worker = reinterpret_cast<StubWorker*>(worker_ptr);
+    auto* worker = reinterpret_cast<AndroidWorkerSession*>(worker_ptr);
     worker->disconnect();
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_crossscale_native_NativeWorker_nativeGetLastError(
+    JNIEnv* env,
+    jobject thiz,
+    jlong worker_ptr
+) {
+    (void)thiz;
+    if (worker_ptr == 0) {
+        return env->NewStringUTF("");
+    }
+
+    auto* worker = reinterpret_cast<AndroidWorkerSession*>(worker_ptr);
+    const std::string message = worker->last_error();
+    return env->NewStringUTF(message.c_str());
 }
 
 JNIEXPORT void JNICALL
@@ -429,7 +589,7 @@ Java_com_crossscale_native_NativeWorker_nativeRelease(
     (void)thiz;
     if (worker_ptr == 0) return;
     
-    auto* worker = reinterpret_cast<StubWorker*>(worker_ptr);
+    auto* worker = reinterpret_cast<AndroidWorkerSession*>(worker_ptr);
     delete worker;
     LOGI("Worker released");
 }

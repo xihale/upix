@@ -8,6 +8,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -17,6 +18,8 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun ConnectionDialog(
     show: Boolean,
+    initialHost: String,
+    initialPort: String,
     onDismiss: () -> Unit,
     onConnect: (String, String, String) -> Unit
 ) {
@@ -24,9 +27,17 @@ fun ConnectionDialog(
         return
     }
 
-    var host by remember { mutableStateOf("") }
-    var port by remember { mutableStateOf("9527") }
+    var host by remember { mutableStateOf(initialHost) }
+    var port by remember { mutableStateOf(initialPort) }
     var authKey by remember { mutableStateOf("") }
+
+    LaunchedEffect(show, initialHost, initialPort) {
+        if (show) {
+            host = initialHost
+            port = initialPort
+            authKey = ""
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,

@@ -3,6 +3,7 @@ package com.crossscale.network
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.net.wifi.WifiManager
 import android.util.Log
 
 data class DiscoveredService(
@@ -14,8 +15,15 @@ data class DiscoveredService(
 class MDNSDiscovery(
     context: Context
 ) {
-    private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
+    private val appContext = context.applicationContext
+    private val nsdManager = appContext.getSystemService(Context.NSD_SERVICE) as NsdManager
+    private val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
     private var discoveryListener: NsdManager.DiscoveryListener? = null
+    private var multicastLock: WifiManager.MulticastLock? = null
+
+    private companion object {
+        private const val serviceType = "_crossscale._tcp."
+    }
 
     fun start(
         onServiceFound: (DiscoveredService) -> Unit,
@@ -28,7 +36,8 @@ class MDNSDiscovery(
             }
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                if (serviceInfo.serviceType != "_crossscale._tcp.") {
+                val normalizedType = serviceInfo.serviceType.trim().lowercase()
+                if (normalizedType != serviceType && normalizedType != serviceType.removeSuffix(".")) {
                     return
                 }
                 nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
@@ -68,8 +77,9 @@ class MDNSDiscovery(
             }
         }
 
+        acquireMulticastLockIfNeeded()
         nsdManager.discoverServices(
-            "_crossscale._tcp.",
+            serviceType,
             NsdManager.PROTOCOL_DNS_SD,
             discoveryListener
         )
@@ -83,5 +93,27 @@ class MDNSDiscovery(
             // Ignore duplicate stop invocations.
         }
         discoveryListener = null
+        releaseMulticastLock()
+    }
+
+    private fun acquireMulticastLockIfNeeded() {
+        if (multicastLock?.isHeld == true) {
+            return
+        }
+        val lock = wifiManager?.createMulticastLock("crossscale-mdns") ?: return
+        lock.setReferenceCounted(true)
+        runCatching { lock.acquire() }
+            .onSuccess { multicastLock = lock }
+            .onFailure { Log.w("MDNSDiscovery", "Failed to acquire multicast lock: ${it.message}") }
+    }
+
+    private fun releaseMulticastLock() {
+        val lock = multicastLock ?: return
+        runCatching {
+            if (lock.isHeld) {
+                lock.release()
+            }
+        }
+        multicastLock = null
     }
 }

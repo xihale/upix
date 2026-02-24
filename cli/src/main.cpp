@@ -25,6 +25,7 @@
 #include "core/distributed/worker.hpp"
 #include "core/distributed/protocol.hpp"
 #include "core/engine_pool.hpp"
+#include "utils/mdns.hpp"
 #include "utils/network.hpp"
 #include <fstream>
 #include <cstring>
@@ -50,7 +51,7 @@ void print_usage() {
               << "Usage:\n"
               << "  crossscale process -i <input> -o <output> -m <model> [--output-quality <1-100>] [--output-format <png|jpg|jpeg|webp>]\n"
               << "  crossscale server start -p <port> [-k <key>]\n"
-              << "  crossscale server info\n"
+              << "  crossscale server info -p <port> -k <key>\n"
               << "  crossscale worker connect <host>:<port> -k <key>\n"
               << "  crossscale model list\n"
               << "  crossscale benchmark\n"
@@ -1175,11 +1176,18 @@ int main(int argc, char* argv[]) {
             std::signal(SIGTERM, signal_handler);
 
             auto coordinator = std::make_unique<crossscale::Coordinator>();
+            coordinator->set_models_directory("./models");
 
             auto start_result = coordinator->start(port, key);
             if (!start_result.has_value()) {
                 LOG_ERROR("Server", "Failed to start coordinator: " + start_result.error().message);
                 return 1;
+            }
+
+            crossscale::MDNSBroadcaster mdns_broadcaster;
+            const auto mdns_result = mdns_broadcaster.start("CrossScale-PC", port, "");
+            if (!mdns_result.has_value()) {
+                LOG_WARNING("Server", "mDNS publish unavailable: " + mdns_result.error().message);
             }
 
             LOG_INFO("Server", "Coordinator running. Press Ctrl+C to stop.");
@@ -1191,13 +1199,35 @@ int main(int argc, char* argv[]) {
             }
 
             LOG_INFO("Server", "Shutting down coordinator...");
+            mdns_broadcaster.stop();
             coordinator->stop();
             return 0;
         }
 
         if (subcommand == "info") {
-            auto coordinator = std::make_unique<crossscale::Coordinator>();
-            auto conn_info = coordinator->generate_connection_info();
+            uint16_t port = 9527;
+            std::string key;
+
+            for (int i = 3; i < argc; ++i) {
+                std::string arg = argv[i];
+                if (arg == "-p" && i + 1 < argc) {
+                    port = static_cast<uint16_t>(std::stoi(argv[++i]));
+                } else if (arg == "-k" && i + 1 < argc) {
+                    key = argv[++i];
+                }
+            }
+
+            if (key.empty()) {
+                LOG_ERROR("Server", "server info requires -k <key> from running coordinator");
+                return 1;
+            }
+
+            crossscale::ConnectionInfo conn_info;
+            auto addresses = crossscale::network_utils::get_local_addresses();
+            conn_info.ip = addresses.empty() ? "127.0.0.1" : addresses[0];
+            conn_info.port = port;
+            conn_info.auth_key = key;
+            conn_info.server_name = "CrossScale-Server";
 
             std::string json = "{\"v\":1,\"ip\":\"" + conn_info.ip +
                               "\",\"port\":" + std::to_string(conn_info.port) +
@@ -1277,6 +1307,15 @@ int main(int argc, char* argv[]) {
                 LOG_ERROR("Worker", "Handshake failed: " + handshake_result.error().message);
                 return 1;
             }
+
+            std::filesystem::create_directories("./models");
+            worker->set_models_directory("./models");
+            auto sync_result = worker->sync_models();
+            if (!sync_result.has_value()) {
+                LOG_WARNING("Worker", "Model sync skipped: " + sync_result.error().message);
+            }
+
+            worker->start_heartbeat(std::chrono::seconds(5));
             LOG_INFO("Worker", "Handshake complete. Waiting for tasks...");
 
             while (g_running && worker->is_connected()) {

@@ -7,6 +7,7 @@
 #include <chrono>
 #include <algorithm>
 #include <fstream>
+#include <optional>
 
 namespace crossscale {
 
@@ -281,7 +282,33 @@ void Coordinator::accept_loop() {
 void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
     WorkerConnection conn;
     conn.socket = std::move(socket);
-    conn.device_id = crypto::generate_uuid();
+    conn.device_id = crypto::generate_uuid().substr(0, 35);
+
+    auto read_payload = [&](uint32_t payload_length) -> std::optional<std::vector<uint8_t>> {
+        std::vector<uint8_t> payload(payload_length);
+        if (payload_length == 0) {
+            return payload;
+        }
+        auto payload_result = conn.socket->receive_all(payload.data(), payload.size());
+        if (!payload_result.has_value()) {
+            return std::nullopt;
+        }
+        return payload;
+    };
+
+    auto parse_device_profile = [](const DeviceProfileMessage& msg, const std::string& fallback_device_id) {
+        DeviceProfile profile;
+        profile.device_id = fallback_device_id;
+        profile.device_name = std::string(msg.device_name);
+        profile.type = static_cast<DeviceType>(msg.device_type);
+        profile.tiles_per_second = std::max(msg.tiles_per_second, 1.0f);
+        profile.recommended_tile_size = static_cast<int>(msg.recommended_tile_size);
+        profile.max_batch_size = static_cast<size_t>(msg.max_batch_size);
+        profile.ip_address = std::string(msg.ip_address);
+        profile.port = msg.port;
+        profile.last_heartbeat = std::chrono::steady_clock::now();
+        return profile;
+    };
     
     std::vector<uint8_t> header_buffer(Protocol::HEADER_SIZE);
     auto result = conn.socket->receive_all(header_buffer.data(), header_buffer.size());
@@ -296,16 +323,18 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
     }
     
     if (header->type == MessageType::MSG_AUTH_REQUEST) {
-        std::vector<uint8_t> payload(header->payload_length);
-        conn.socket->receive_all(payload.data(), payload.size());
+        auto payload = read_payload(header->payload_length);
+        if (!payload.has_value() || payload->size() < sizeof(AuthRequest)) {
+            return;
+        }
         
-        AuthRequest* auth_req = reinterpret_cast<AuthRequest*>(payload.data());
+        AuthRequest* auth_req = reinterpret_cast<AuthRequest*>(payload->data());
         if (!authenticate(conn, auth_req->auth_key)) {
-            AuthResponse resp;
+            AuthResponse resp{};
             resp.authenticated = 0;
-            std::strncpy(resp.device_id, "", sizeof(resp.device_id) - 1);
+            resp.device_id[0] = '\0';
             
-            MessageHeader resp_header;
+            MessageHeader resp_header{};
             resp_header.type = MessageType::MSG_AUTH_RESPONSE;
             resp_header.payload_length = sizeof(resp);
             
@@ -314,11 +343,12 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
             return;
         }
         
-        AuthResponse resp;
+        AuthResponse resp{};
         resp.authenticated = 1;
         std::strncpy(resp.device_id, conn.device_id.c_str(), sizeof(resp.device_id) - 1);
+        resp.device_id[sizeof(resp.device_id) - 1] = '\0';
         
-        MessageHeader resp_header;
+        MessageHeader resp_header{};
         resp_header.type = MessageType::MSG_AUTH_RESPONSE;
         resp_header.payload_length = sizeof(resp);
         
@@ -326,46 +356,64 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
         conn.socket->send_all(data.data(), data.size());
         
         conn.authenticated = true;
-        
+        conn.profile.device_id = conn.device_id;
+        conn.profile.device_name = "CLI-Worker";
+        conn.profile.type = DeviceType::CPU;
+        conn.profile.tiles_per_second = 1.0f;
+        conn.profile.recommended_tile_size = 256;
+        conn.profile.max_batch_size = 1;
+        conn.profile.ip_address = conn.socket->peer_address();
+        conn.profile.port = conn.socket->peer_port();
+        conn.profile.last_heartbeat = std::chrono::steady_clock::now();
+
+        conn.socket->set_timeout(5000);
+        std::vector<uint8_t> profile_header_buffer(Protocol::HEADER_SIZE);
+        auto profile_header_result = conn.socket->receive_all(profile_header_buffer.data(), profile_header_buffer.size());
+        if (profile_header_result.has_value()) {
+            auto profile_header = Protocol::parse_header(profile_header_buffer.data(), profile_header_buffer.size());
+            if (profile_header && profile_header->type == MessageType::MSG_DEVICE_PROFILE) {
+                auto profile_payload = read_payload(profile_header->payload_length);
+                if (profile_payload.has_value() && profile_payload->size() >= sizeof(DeviceProfileMessage)) {
+                    const DeviceProfileMessage* msg = reinterpret_cast<const DeviceProfileMessage*>(profile_payload->data());
+                    conn.profile = parse_device_profile(*msg, conn.device_id);
+                }
+            } else if (profile_header) {
+                auto ignored_payload = read_payload(profile_header->payload_length);
+                (void)ignored_payload;
+            }
+        }
+
+        const std::string worker_id = conn.device_id;
         {
             std::lock_guard<std::mutex> lock(workers_mutex_);
-            workers_[conn.device_id] = std::move(conn);
+            scheduler_.register_device(conn.profile);
+            workers_[worker_id] = std::move(conn);
+            auto it = workers_.find(worker_id);
+            if (it != workers_.end()) {
+                send_model_list(it->second);
+            }
         }
         
-        LOG_INFO("Coordinator", "Worker connected: " + conn.device_id);
+        LOG_INFO("Coordinator", "Worker connected: " + worker_id);
         
         if (on_device_connected_) {
-            on_device_connected_(workers_[conn.device_id].profile);
+            std::optional<DeviceProfile> connected_profile;
+            {
+                std::lock_guard<std::mutex> lock(workers_mutex_);
+                auto it = workers_.find(worker_id);
+                if (it != workers_.end()) {
+                    connected_profile = it->second.profile;
+                }
+            }
+            if (connected_profile.has_value()) {
+                on_device_connected_(connected_profile.value());
+            }
         }
     }
     else if (header->type == MessageType::MSG_DEVICE_PROFILE) {
-        std::vector<uint8_t> payload(header->payload_length);
-        conn.socket->receive_all(payload.data(), payload.size());
-        
-        DeviceProfileMessage* msg = reinterpret_cast<DeviceProfileMessage*>(payload.data());
-        
-        // Register device with scheduler
-        DeviceProfile profile;
-        profile.device_id = std::string(msg->device_id);
-        profile.device_name = std::string(msg->device_name);
-        profile.type = static_cast<DeviceType>(msg->device_type);
-        profile.tiles_per_second = msg->tiles_per_second;
-        profile.recommended_tile_size = msg->recommended_tile_size;
-        profile.max_batch_size = msg->max_batch_size;
-        profile.ip_address = std::string(msg->ip_address);
-        profile.port = msg->port;
-        profile.last_heartbeat = std::chrono::steady_clock::now();
-        
-        scheduler_.register_device(profile);
-        LOG_INFO("Coordinator", "Device registered: " + profile.device_id + " (" + profile.device_name + ")");
-        
-        {
-            std::lock_guard<std::mutex> lock(workers_mutex_);
-            auto it = workers_.find(conn.device_id);
-            if (it != workers_.end()) {
-                it->second.profile = profile;
-            }
-        }
+        auto ignored_payload = read_payload(header->payload_length);
+        (void)ignored_payload;
+        LOG_WARNING("Coordinator", "Ignored standalone device profile without authenticated worker context");
     }
     else if (header->type == MessageType::MSG_CLIENT_SUBMIT) {
         std::vector<uint8_t> payload(header->payload_length);

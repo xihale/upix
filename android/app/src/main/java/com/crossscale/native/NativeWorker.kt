@@ -1,13 +1,17 @@
 package com.crossscale.native
 
 class NativeWorker : AutoCloseable {
+    init {
+        System.loadLibrary("crossscale-native")
+    }
+
     private var workerPtr: Long = nativeCreate()
 
-    fun connect(host: String, port: Int, authKey: String): Boolean {
+    fun connect(host: String, port: Int, authKey: String, modelsDirectory: String): Boolean {
         if (workerPtr == 0L) {
             return false
         }
-        return nativeConnect(workerPtr, host, port, authKey)
+        return nativeConnect(workerPtr, host, port, authKey, modelsDirectory)
     }
 
     fun disconnect() {
@@ -15,6 +19,13 @@ class NativeWorker : AutoCloseable {
             return
         }
         nativeDisconnect(workerPtr)
+    }
+
+    fun lastError(): String {
+        if (workerPtr == 0L) {
+            return ""
+        }
+        return nativeGetLastError(workerPtr)
     }
 
     fun release() {
@@ -30,7 +41,14 @@ class NativeWorker : AutoCloseable {
     }
 
     private external fun nativeCreate(): Long
-    private external fun nativeConnect(workerPtr: Long, host: String, port: Int, authKey: String): Boolean
+    private external fun nativeConnect(
+        workerPtr: Long,
+        host: String,
+        port: Int,
+        authKey: String,
+        modelsDirectory: String
+    ): Boolean
     private external fun nativeDisconnect(workerPtr: Long)
+    private external fun nativeGetLastError(workerPtr: Long): String
     private external fun nativeRelease(workerPtr: Long)
 }

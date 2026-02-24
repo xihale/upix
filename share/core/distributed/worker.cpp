@@ -163,7 +163,8 @@ auto Worker::receive_task() -> expected<Task, WorkerError> {
         size_t tile_info_offset = sizeof(TaskAssignmentMessage);
         for (uint32_t i = 0; i < msg->tile_count; ++i) {
             TileInfo* tile = reinterpret_cast<TileInfo*>(payload.data() + tile_info_offset + i * sizeof(TileInfo));
-            task.tile_indices.push_back(tile->x);
+            (void)tile;
+            task.tile_indices.push_back(i);
         }
         
         if (on_task_received_) {
@@ -194,7 +195,10 @@ auto Worker::execute_task(const Task& task, Engine& engine,
     }
     
     if (engine.model_name() != task.model_name) {
-        std::filesystem::path models_dir = "./models";
+        std::filesystem::path models_dir = model_manager_.models_directory();
+        if (models_dir.empty()) {
+            models_dir = "./models";
+        }
         std::string param_path = (models_dir / (task.model_name + ".param")).string();
         std::string bin_path = (models_dir / (task.model_name + ".bin")).string();
 
