@@ -1,14 +1,10 @@
 #include <jni.h>
 #include <string>
 #include <android/log.h>
-#include <android/bitmap.h>
 #include <memory>
 #include <vector>
 
 #include "core/engine.hpp"
-#include "core/ncnn_engine.hpp"
-#include "core/distributed/worker.hpp"
-#include "utils/image.hpp"
 
 #define LOG_TAG "CrossScale"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -16,6 +12,28 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 using namespace crossscale;
+
+namespace {
+
+class StubWorker {
+public:
+    auto connect(const std::string& host, uint16_t port, const std::string& auth_key) -> bool {
+        if (host.empty() || port == 0 || auth_key.empty()) {
+            return false;
+        }
+        connected_ = true;
+        return true;
+    }
+
+    void disconnect() {
+        connected_ = false;
+    }
+
+private:
+    bool connected_ = false;
+};
+
+}  // namespace
 
 extern "C" {
 
@@ -25,6 +43,8 @@ Java_com_crossscale_native_NCNNEngine_nativeInit(
     jobject thiz,
     jint device_type
 ) {
+    (void)env;
+    (void)thiz;
     auto engine = create_ncnn_engine();
     if (!engine) {
         LOGE("Failed to create engine");
@@ -59,6 +79,7 @@ Java_com_crossscale_native_NCNNEngine_nativeLoadModel(
     jlong engine_ptr,
     jstring model_path
 ) {
+    (void)thiz;
     if (engine_ptr == 0) return JNI_FALSE;
     
     auto* engine = reinterpret_cast<Engine*>(engine_ptr);
@@ -86,6 +107,7 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImage(
     jint height,
     jint channels
 ) {
+    (void)thiz;
     if (engine_ptr == 0 || input_image == nullptr) return nullptr;
     
     auto* engine = reinterpret_cast<Engine*>(engine_ptr);
@@ -138,6 +160,8 @@ Java_com_crossscale_native_NCNNEngine_nativeBenchmark(
     jobject thiz,
     jlong engine_ptr
 ) {
+    (void)env;
+    (void)thiz;
     if (engine_ptr == 0) return 0.0f;
     
     auto* engine = reinterpret_cast<Engine*>(engine_ptr);
@@ -150,6 +174,8 @@ Java_com_crossscale_native_NCNNEngine_nativeGetScaleFactor(
     jobject thiz,
     jlong engine_ptr
 ) {
+    (void)env;
+    (void)thiz;
     if (engine_ptr == 0) return 2;
     
     auto* engine = reinterpret_cast<Engine*>(engine_ptr);
@@ -161,6 +187,7 @@ Java_com_crossscale_native_NCNNEngine_nativeGetDevices(
     JNIEnv* env,
     jclass clazz
 ) {
+    (void)clazz;
     auto engine = create_ncnn_engine();
     if (!engine) {
         return nullptr;
@@ -186,6 +213,8 @@ Java_com_crossscale_native_NCNNEngine_nativeRelease(
     jobject thiz,
     jlong engine_ptr
 ) {
+    (void)env;
+    (void)thiz;
     if (engine_ptr == 0) return;
     
     auto* engine = reinterpret_cast<Engine*>(engine_ptr);
@@ -198,7 +227,9 @@ Java_com_crossscale_native_NativeWorker_nativeCreate(
     JNIEnv* env,
     jobject thiz
 ) {
-    auto* worker = new Worker();
+    (void)env;
+    (void)thiz;
+    auto* worker = new StubWorker();
     return reinterpret_cast<jlong>(worker);
 }
 
@@ -211,19 +242,20 @@ Java_com_crossscale_native_NativeWorker_nativeConnect(
     jint port,
     jstring auth_key
 ) {
+    (void)thiz;
     if (worker_ptr == 0) return JNI_FALSE;
     
-    auto* worker = reinterpret_cast<Worker*>(worker_ptr);
+    auto* worker = reinterpret_cast<StubWorker*>(worker_ptr);
     
     const char* host_str = env->GetStringUTFChars(host, nullptr);
     const char* key_str = env->GetStringUTFChars(auth_key, nullptr);
     
-    auto result = worker->connect(host_str, static_cast<uint16_t>(port), key_str);
+    const bool result = worker->connect(host_str, static_cast<uint16_t>(port), key_str);
     
     env->ReleaseStringUTFChars(host, host_str);
     env->ReleaseStringUTFChars(auth_key, key_str);
     
-    return result.has_value() ? JNI_TRUE : JNI_FALSE;
+    return result ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL
@@ -232,9 +264,11 @@ Java_com_crossscale_native_NativeWorker_nativeDisconnect(
     jobject thiz,
     jlong worker_ptr
 ) {
+    (void)env;
+    (void)thiz;
     if (worker_ptr == 0) return;
     
-    auto* worker = reinterpret_cast<Worker*>(worker_ptr);
+    auto* worker = reinterpret_cast<StubWorker*>(worker_ptr);
     worker->disconnect();
 }
 
@@ -244,9 +278,11 @@ Java_com_crossscale_native_NativeWorker_nativeRelease(
     jobject thiz,
     jlong worker_ptr
 ) {
+    (void)env;
+    (void)thiz;
     if (worker_ptr == 0) return;
     
-    auto* worker = reinterpret_cast<Worker*>(worker_ptr);
+    auto* worker = reinterpret_cast<StubWorker*>(worker_ptr);
     delete worker;
     LOGI("Worker released");
 }

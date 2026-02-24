@@ -6,5 +6,7 @@ data class ModelInfo(
     val inputChannels: Int,
     val tileSize: Int,
     val totalSize: Long,
-    val hash: String
+    val hash: String,
+    val paramPath: String,
+    val binPath: String
 )

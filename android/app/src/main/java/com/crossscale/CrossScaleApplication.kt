@@ -5,11 +5,16 @@ import android.util.Log
 
 class CrossScaleApplication : Application() {
     companion object {
-        const val TAG = "CrossScale"
+        private const val TAG = "CrossScale"
     }
+
+    lateinit var container: AppContainer
+        private set
 
     override fun onCreate() {
         super.onCreate()
+        System.loadLibrary("crossscale-native")
+        container = AppContainer(this)
         Log.i(TAG, "CrossScale Application started")
     }
 }

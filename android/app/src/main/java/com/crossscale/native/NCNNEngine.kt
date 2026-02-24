@@ -15,6 +15,7 @@ object NCNNEngine {
         channels: Int
     ): ByteArray?
     external fun nativeBenchmark(enginePtr: Long): Float
+    external fun nativeGetScaleFactor(enginePtr: Long): Int
     external fun nativeGetDevices(): Array<String>
     external fun nativeRelease(enginePtr: Long)
 }
