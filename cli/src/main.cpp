@@ -52,7 +52,7 @@ void print_usage() {
               << "  crossscale process -i <input> -o <output> -m <model> [--output-quality <1-100>] [--output-format <png|jpg|jpeg|webp>]\n"
               << "  crossscale server start -p <port> [-k <key>]\n"
               << "  crossscale server info -p <port> -k <key>\n"
-              << "  crossscale worker connect <host>:<port> -k <key>\n"
+              << "  crossscale worker connect <host>:<port> -k <key> [--recommended-weight <num>] [--queue-depth <num>] [--recommended-tile-size <num>]\n"
               << "  crossscale model list\n"
               << "  crossscale benchmark\n"
               << "  crossscale --help\n";
@@ -1177,6 +1177,22 @@ int main(int argc, char* argv[]) {
 
             auto coordinator = std::make_unique<crossscale::Coordinator>();
             coordinator->set_models_directory("./models");
+            coordinator->on_device_connected() = [](const crossscale::DeviceProfile& profile) {
+                LOG_INFO(
+                    "Server",
+                    "Worker joined: id=" + profile.device_id +
+                        " name=" + profile.device_name +
+                        " type=" + std::to_string(static_cast<int>(profile.type)) +
+                        " tps=" + std::to_string(profile.tiles_per_second)
+                );
+            };
+            coordinator->on_device_disconnected() = [](const std::string& worker_id) {
+                LOG_WARNING("Server", "Worker disconnected: id=" + worker_id);
+            };
+            coordinator->on_task_progress() = [](float progress) {
+                const auto pct = static_cast<int>(std::clamp(progress, 0.0f, 1.0f) * 100.0f);
+                LOG_INFO("Server", "Task progress: " + std::to_string(pct) + "%");
+            };
 
             auto start_result = coordinator->start(port, key);
             if (!start_result.has_value()) {
@@ -1257,10 +1273,22 @@ int main(int argc, char* argv[]) {
             
             std::string host_port = argv[3];
             std::string key;
+            float recommended_weight = 0.0f;
+            size_t queue_depth = 0;
+            int recommended_tile_size = 0;
             
             for (int i = 4; i < argc; ++i) {
                 std::string arg = argv[i];
                 if (arg == "-k" && i + 1 < argc) key = argv[++i];
+                else if (arg == "--recommended-weight" && i + 1 < argc) {
+                    recommended_weight = std::stof(argv[++i]);
+                }
+                else if (arg == "--queue-depth" && i + 1 < argc) {
+                    queue_depth = static_cast<size_t>(std::max(1, std::stoi(argv[++i])));
+                }
+                else if (arg == "--recommended-tile-size" && i + 1 < argc) {
+                    recommended_tile_size = std::max(0, std::stoi(argv[++i]));
+                }
             }
             
             if (key.empty()) {
@@ -1278,71 +1306,121 @@ int main(int argc, char* argv[]) {
             uint16_t port = std::stoi(host_port.substr(colon_pos + 1));
             
             LOG_INFO("Worker", "Connecting to coordinator at " + host + ":" + std::to_string(port));
+            if (recommended_weight > 0.0f) {
+                LOG_INFO("Worker", "Using manual recommended weight: " + std::to_string(recommended_weight));
+            }
+            if (queue_depth > 0) {
+                LOG_INFO("Worker", "Using manual queue depth: " + std::to_string(queue_depth));
+            }
+            if (recommended_tile_size > 0) {
+                LOG_INFO("Worker", "Using manual recommended tile size: " + std::to_string(recommended_tile_size));
+            }
 
             std::signal(SIGINT, signal_handler);
             std::signal(SIGTERM, signal_handler);
 
-            auto worker = std::make_unique<crossscale::Worker>();
-            auto conn_result = worker->connect(host, port, key);
-            if (!conn_result.has_value()) {
-                LOG_ERROR("Worker", "Failed to connect: " + conn_result.error().message);
-                return 1;
-            }
+            int reconnect_attempt = 0;
+            while (g_running) {
+                auto worker = std::make_unique<crossscale::Worker>();
+                worker->set_recommended_weight(recommended_weight);
+                worker->set_queue_depth(queue_depth);
+                worker->set_recommended_tile_size(recommended_tile_size);
 
-            auto engine = crossscale::create_ncnn_engine();
-            auto init_result = engine->initialize(crossscale::DeviceType::GPU_VULKAN);
-            if (!init_result.has_value()) {
-                LOG_WARNING("Worker", "GPU not available, falling back to CPU");
-                auto cpu_result = engine->initialize(crossscale::DeviceType::CPU);
-                if (!cpu_result.has_value()) {
-                    LOG_ERROR("Worker", "Failed to initialize engine");
-                    return 1;
-                }
-            }
-            LOG_INFO("Worker", "Engine initialized on " +
-                     std::string(engine->current_device() == crossscale::DeviceType::GPU_VULKAN ? "GPU" : "CPU"));
-
-            auto handshake_result = worker->handshake(*engine);
-            if (!handshake_result.has_value()) {
-                LOG_ERROR("Worker", "Handshake failed: " + handshake_result.error().message);
-                return 1;
-            }
-
-            std::filesystem::create_directories("./models");
-            worker->set_models_directory("./models");
-            auto sync_result = worker->sync_models();
-            if (!sync_result.has_value()) {
-                LOG_WARNING("Worker", "Model sync skipped: " + sync_result.error().message);
-            }
-
-            worker->start_heartbeat(std::chrono::seconds(5));
-            LOG_INFO("Worker", "Handshake complete. Waiting for tasks...");
-
-            while (g_running && worker->is_connected()) {
-                auto task_opt = worker->receive_task();
-                if (!task_opt.has_value()) {
-                    LOG_WARNING("Worker", "Task receive failed or disconnected");
-                    break;
-                }
-                const auto& task = task_opt.value();
-                LOG_INFO("Worker", "Received task: " + std::string(task.task_id) + " model=" + task.model_name);
-
-                auto result_opt = worker->execute_task(task, *engine, [](float) {});
-                if (!result_opt.has_value()) {
-                    LOG_ERROR("Worker", "Task execution failed: " + result_opt.error().message);
+                auto conn_result = worker->connect(host, port, key);
+                if (!conn_result.has_value()) {
+                    LOG_ERROR("Worker", "Failed to connect: " + conn_result.error().message);
+                    if (!g_running) {
+                        break;
+                    }
+                    reconnect_attempt += 1;
+                    const int retry_delay_seconds = std::min(12, 1 << std::min(reconnect_attempt, 3));
+                    LOG_WARNING("Worker", "Reconnect in " + std::to_string(retry_delay_seconds) + "s");
+                    std::this_thread::sleep_for(std::chrono::seconds(retry_delay_seconds));
                     continue;
                 }
 
-                auto submit_opt = worker->submit_results(result_opt.value());
-                if (!submit_opt.has_value()) {
-                    LOG_ERROR("Worker", "Submit results failed: " + submit_opt.error().message);
-                } else {
-                    LOG_INFO("Worker", "Task completed and results submitted");
+                auto engine = crossscale::create_ncnn_engine();
+                auto init_result = engine->initialize(crossscale::DeviceType::GPU_VULKAN);
+                if (!init_result.has_value()) {
+                    LOG_WARNING("Worker", "GPU not available, falling back to CPU");
+                    auto cpu_result = engine->initialize(crossscale::DeviceType::CPU);
+                    if (!cpu_result.has_value()) {
+                        LOG_ERROR("Worker", "Failed to initialize engine");
+                        if (!g_running) {
+                            break;
+                        }
+                        reconnect_attempt += 1;
+                        const int retry_delay_seconds = std::min(12, 1 << std::min(reconnect_attempt, 3));
+                        LOG_WARNING("Worker", "Reconnect in " + std::to_string(retry_delay_seconds) + "s");
+                        std::this_thread::sleep_for(std::chrono::seconds(retry_delay_seconds));
+                        continue;
+                    }
                 }
+                LOG_INFO(
+                    "Worker",
+                    "Engine initialized on " +
+                        std::string(engine->current_device() == crossscale::DeviceType::GPU_VULKAN ? "GPU" : "CPU")
+                );
+
+                auto handshake_result = worker->handshake(*engine);
+                if (!handshake_result.has_value()) {
+                    LOG_ERROR("Worker", "Handshake failed: " + handshake_result.error().message);
+                    worker->disconnect();
+                    if (!g_running) {
+                        break;
+                    }
+                    reconnect_attempt += 1;
+                    const int retry_delay_seconds = std::min(12, 1 << std::min(reconnect_attempt, 3));
+                    LOG_WARNING("Worker", "Reconnect in " + std::to_string(retry_delay_seconds) + "s");
+                    std::this_thread::sleep_for(std::chrono::seconds(retry_delay_seconds));
+                    continue;
+                }
+
+                std::filesystem::create_directories("./models");
+                worker->set_models_directory("./models");
+                auto sync_result = worker->sync_models();
+                if (!sync_result.has_value()) {
+                    LOG_WARNING("Worker", "Model sync skipped: " + sync_result.error().message);
+                }
+
+                worker->start_heartbeat(std::chrono::seconds(5));
+                reconnect_attempt = 0;
+                LOG_INFO("Worker", "Handshake complete. Waiting for tasks...");
+
+                while (g_running && worker->is_connected()) {
+                    auto task_opt = worker->receive_task();
+                    if (!task_opt.has_value()) {
+                        LOG_WARNING("Worker", "Task receive failed or disconnected");
+                        break;
+                    }
+                    const auto& task = task_opt.value();
+                    LOG_INFO("Worker", "Received task: " + std::string(task.task_id) + " model=" + task.model_name);
+
+                    auto result_opt = worker->execute_task(task, *engine, [](float) {});
+                    if (!result_opt.has_value()) {
+                        LOG_ERROR("Worker", "Task execution failed: " + result_opt.error().message);
+                        continue;
+                    }
+
+                    auto submit_opt = worker->submit_results(result_opt.value());
+                    if (!submit_opt.has_value()) {
+                        LOG_ERROR("Worker", "Submit results failed: " + submit_opt.error().message);
+                    } else {
+                        LOG_INFO("Worker", "Task completed and results submitted");
+                    }
+                }
+
+                worker->disconnect();
+                if (!g_running) {
+                    break;
+                }
+                reconnect_attempt += 1;
+                const int retry_delay_seconds = std::min(12, 1 << std::min(reconnect_attempt, 3));
+                LOG_WARNING("Worker", "Disconnected from coordinator, reconnect in " + std::to_string(retry_delay_seconds) + "s");
+                std::this_thread::sleep_for(std::chrono::seconds(retry_delay_seconds));
             }
 
-            LOG_INFO("Worker", "Disconnecting...");
-            worker->disconnect();
+            LOG_INFO("Worker", "Worker stopped");
             return 0;
         }
         
@@ -1402,7 +1480,7 @@ int main(int argc, char* argv[]) {
             std::copy_n(auth_key.c_str(), std::min(auth_key.size(), sizeof(auth_req.auth_key)-1), auth_req.auth_key);
             auth_req.auth_key[sizeof(auth_req.auth_key)-1] = '\0';
             
-            crossscale::MessageHeader auth_header;
+            crossscale::MessageHeader auth_header{};
             auth_header.type = crossscale::MessageType::MSG_AUTH_REQUEST;
             auth_header.payload_length = sizeof(auth_req);
             
@@ -1410,7 +1488,11 @@ int main(int argc, char* argv[]) {
             socket.send_all(auth_data.data(), auth_data.size());
             
             std::vector<uint8_t> resp_header_buf(crossscale::Protocol::HEADER_SIZE);
-            socket.receive_all(resp_header_buf.data(), resp_header_buf.size());
+            auto auth_header_recv = socket.receive_all(resp_header_buf.data(), resp_header_buf.size());
+            if (!auth_header_recv.has_value()) {
+                LOG_ERROR("Client", "Failed to receive auth response header: " + auth_header_recv.error().message);
+                return 1;
+            }
             auto resp_header = crossscale::Protocol::parse_header(resp_header_buf.data(), resp_header_buf.size());
             
             if (!resp_header || resp_header->type != crossscale::MessageType::MSG_AUTH_RESPONSE) {
@@ -1419,7 +1501,11 @@ int main(int argc, char* argv[]) {
             }
             
             std::vector<uint8_t> resp_payload(resp_header->payload_length);
-            socket.receive_all(resp_payload.data(), resp_payload.size());
+            auto auth_payload_recv = socket.receive_all(resp_payload.data(), resp_payload.size());
+            if (!auth_payload_recv.has_value()) {
+                LOG_ERROR("Client", "Failed to receive auth response payload: " + auth_payload_recv.error().message);
+                return 1;
+            }
             crossscale::AuthResponse* auth_resp = reinterpret_cast<crossscale::AuthResponse*>(resp_payload.data());
             
             if (!auth_resp->authenticated) {
@@ -1441,7 +1527,7 @@ int main(int argc, char* argv[]) {
             task_submit.tile_overlap = static_cast<uint32_t>(tile_overlap);
             task_submit.image_data_length = static_cast<uint32_t>(image.size());
             
-            crossscale::MessageHeader submit_header;
+            crossscale::MessageHeader submit_header{};
             submit_header.type = crossscale::MessageType::MSG_CLIENT_SUBMIT;
             submit_header.payload_length = sizeof(task_submit);
             
@@ -1451,7 +1537,11 @@ int main(int argc, char* argv[]) {
             
             // Receive result
             std::vector<uint8_t> result_header_buf(crossscale::Protocol::HEADER_SIZE);
-            socket.receive_all(result_header_buf.data(), result_header_buf.size());
+            auto result_header_recv = socket.receive_all(result_header_buf.data(), result_header_buf.size());
+            if (!result_header_recv.has_value()) {
+                LOG_ERROR("Client", "Failed to receive task response header: " + result_header_recv.error().message);
+                return 1;
+            }
             auto result_header = crossscale::Protocol::parse_header(result_header_buf.data(), result_header_buf.size());
             
             if (!result_header || result_header->type != crossscale::MessageType::MSG_CLIENT_RESPONSE) {
@@ -1460,7 +1550,11 @@ int main(int argc, char* argv[]) {
             }
             
             std::vector<uint8_t> result_resp_payload(result_header->payload_length);
-            socket.receive_all(result_resp_payload.data(), result_resp_payload.size());
+            auto result_payload_recv = socket.receive_all(result_resp_payload.data(), result_resp_payload.size());
+            if (!result_payload_recv.has_value()) {
+                LOG_ERROR("Client", "Failed to receive task response payload: " + result_payload_recv.error().message);
+                return 1;
+            }
             crossscale::ClientTaskResponse* task_resp = reinterpret_cast<crossscale::ClientTaskResponse*>(result_resp_payload.data());
             
             if (!task_resp->success) {
@@ -1471,7 +1565,11 @@ int main(int argc, char* argv[]) {
             LOG_INFO("Client", "Task completed, receiving result (" + std::to_string(task_resp->result_data_length) + " bytes)...");
             
             std::vector<uint8_t> result_data(task_resp->result_data_length);
-            socket.receive_all(result_data.data(), result_data.size());
+            auto result_data_recv = socket.receive_all(result_data.data(), result_data.size());
+            if (!result_data_recv.has_value()) {
+                LOG_ERROR("Client", "Failed to receive task result bytes: " + result_data_recv.error().message);
+                return 1;
+            }
             
             std::ofstream out_file(output_path, std::ios::binary);
             if (!out_file.is_open()) {
