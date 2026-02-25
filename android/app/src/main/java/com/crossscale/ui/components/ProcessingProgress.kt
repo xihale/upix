@@ -81,6 +81,20 @@ fun ProcessingProgress(uiState: ProcessingUiState) {
                 style = MaterialTheme.typography.bodySmall
             )
         }
+        task.lastProcessedItemName?.let { itemName ->
+            val processorLabel = task.lastProcessorLabel ?: "未知节点"
+            Text(
+                text = "最近完成: $itemName · 处理节点: $processorLabel",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
+        if (task.recentProcessorAttributions.isNotEmpty()) {
+            val previewAttributions = task.recentProcessorAttributions.takeLast(3)
+            Text(
+                text = "近期分配: ${previewAttributions.joinToString(separator = " | ")}",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
         task.outputDirectory?.let { outputDirectory ->
             Text(
                 text = "输出目录: $outputDirectory",

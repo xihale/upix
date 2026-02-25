@@ -1190,7 +1190,12 @@ int main(int argc, char* argv[]) {
                 LOG_WARNING("Server", "Worker disconnected: id=" + worker_id);
             };
             coordinator->on_task_progress() = [](float progress) {
+                static std::atomic<int> last_pct{-1};
                 const auto pct = static_cast<int>(std::clamp(progress, 0.0f, 1.0f) * 100.0f);
+                const int previous = last_pct.exchange(pct);
+                if (previous == pct) {
+                    return;
+                }
                 LOG_INFO("Server", "Task progress: " + std::to_string(pct) + "%");
             };
 
@@ -1208,9 +1213,13 @@ int main(int argc, char* argv[]) {
 
             LOG_INFO("Server", "Coordinator running. Press Ctrl+C to stop.");
 
+            std::optional<size_t> last_worker_count;
             while (g_running && coordinator->is_running()) {
-                size_t worker_count = coordinator->device_count();
-                LOG_INFO("Server", "Connected workers: " + std::to_string(worker_count));
+                const size_t worker_count = coordinator->device_count();
+                if (!last_worker_count.has_value() || last_worker_count.value() != worker_count) {
+                    LOG_INFO("Server", "Connected workers: " + std::to_string(worker_count));
+                    last_worker_count = worker_count;
+                }
                 std::this_thread::sleep_for(std::chrono::seconds(5));
             }
 

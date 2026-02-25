@@ -36,21 +36,23 @@ fun LogsScreen(
     var query by remember { mutableStateOf("") }
     val minLevel = selectedLevel
 
-    val filteredLogs = logs
-        .asSequence()
-        .filter { entry ->
-            minLevel == null || entry.level.ordinal >= minLevel.ordinal
-        }
-        .filter { entry ->
-            if (query.isBlank()) {
-                true
-            } else {
-                entry.tag.contains(query, ignoreCase = true) ||
-                    entry.message.contains(query, ignoreCase = true)
+    val filteredLogs = remember(logs, minLevel, query) {
+        logs
+            .asSequence()
+            .filter { entry ->
+                minLevel == null || entry.level.ordinal >= minLevel.ordinal
             }
-        }
-        .sortedByDescending { it.id }
-        .toList()
+            .filter { entry ->
+                if (query.isBlank()) {
+                    true
+                } else {
+                    entry.tag.contains(query, ignoreCase = true) ||
+                        entry.message.contains(query, ignoreCase = true)
+                }
+            }
+            .sortedByDescending { it.id }
+            .toList()
+    }
 
     Column(
         modifier = Modifier

@@ -19,7 +19,7 @@ class AppContainer(context: Context) {
 
     val logRepository = LogRepository()
     val modelRepository = ModelRepository(appContext, logRepository)
-    val deviceRepository = DeviceRepository(logRepository)
+    val deviceRepository = DeviceRepository(appContext, logRepository)
     val pairingRepository = PairingRepository(appContext, logRepository)
     val inputSourceRepository = InputSourceRepository(appContext, logRepository)
     val batchOutputRepository = BatchOutputRepository(appContext)

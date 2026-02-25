@@ -26,6 +26,9 @@ data class ProcessingTask(
     val failedItemNames: List<String> = emptyList(),
     val failureDetails: List<ProcessingFailureDetail> = emptyList(),
     val totalItems: Int = 1,
+    val lastProcessedItemName: String? = null,
+    val lastProcessorLabel: String? = null,
+    val recentProcessorAttributions: List<String> = emptyList(),
     val lastErrorMessage: String? = null,
     val progress: Float,
     val status: ProcessingStatus

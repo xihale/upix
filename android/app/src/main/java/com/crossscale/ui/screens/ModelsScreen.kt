@@ -25,6 +25,7 @@ fun ModelsScreen(
     selectedModel: ModelInfo?,
     onSelectModel: (ModelInfo) -> Unit,
     onRefreshModels: () -> Unit,
+    onImportModels: () -> Unit,
     onDeleteModel: (ModelInfo) -> Unit,
     modelDirectoryPath: String,
     onOpenModelRelease: () -> Unit
@@ -60,6 +61,14 @@ fun ModelsScreen(
         ) {
             Text("刷新模型列表")
         }
+        Button(
+            onClick = onImportModels,
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = BorderlessTokens.InteractiveRowMinHeight)
+        ) {
+            Text("导入模型（.param/.bin/.zip）")
+        }
         OutlinedButton(
             onClick = onOpenModelRelease,
             modifier = Modifier
@@ -70,6 +79,11 @@ fun ModelsScreen(
         }
         Text(
             text = "模型目录：$modelDirectoryPath",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Text(
+            text = "导入规则：必须成对同名 .param + .bin；zip 支持多模型与多层文件夹。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )

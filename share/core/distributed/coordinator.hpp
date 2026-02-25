@@ -12,6 +12,7 @@
 #include <atomic>
 #include <unordered_map>
 #include <mutex>
+#include <thread>
 
 namespace crossscale {
 
@@ -124,6 +125,7 @@ private:
     Scheduler scheduler_;
     std::unordered_map<std::string, WorkerConnection> workers_;
     std::mutex workers_mutex_;
+    std::thread accept_thread_;
 
     std::unordered_map<std::string, ActiveTask> active_tasks_;
     std::unordered_map<uint32_t, ProcessedTile> pending_results_;

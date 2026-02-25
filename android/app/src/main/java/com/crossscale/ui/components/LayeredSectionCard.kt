@@ -1,6 +1,8 @@
 package com.crossscale.ui.components
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -60,7 +62,11 @@ fun LayeredSectionCard(
         actions()
 
         val detailsVisible = if (showDetailsToggle) expanded else true
-        AnimatedVisibility(visible = detailsVisible) {
+        AnimatedVisibility(
+            visible = detailsVisible,
+            enter = EnterTransition.None,
+            exit = ExitTransition.None
+        ) {
             Column(verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing)) {
                 guide?.takeIf { text -> text.isNotBlank() }?.let { text ->
                     Text(

@@ -139,6 +139,10 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
     const int tiles_y = (height + tile_size - 1) / tile_size;
     const int total_tiles = tiles_x * tiles_y;
 
+    if (on_task_progress_ && total_tiles > 0) {
+        on_task_progress_(0.0f);
+    }
+
     LOG_INFO("Coordinator", "Splitting image into " + std::to_string(total_tiles) +
              " tiles (" + std::to_string(tiles_x) + "x" + std::to_string(tiles_y) + ")");
 
@@ -391,6 +395,12 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
                 " completed_tiles=" + std::to_string(completed_tile_indices.size()) +
                 " remaining_tiles=" + std::to_string(pending_tile_indices.size())
         );
+
+        if (on_task_progress_ && total_tiles > 0) {
+            const int completed_tiles = total_tiles - static_cast<int>(pending_tile_indices.size());
+            const float overall_progress = static_cast<float>(completed_tiles) / static_cast<float>(total_tiles);
+            on_task_progress_(std::clamp(overall_progress, 0.0f, 1.0f));
+        }
     }
 
     LOG_INFO("Coordinator", "Stitching " + std::to_string(all_results.size()) + " tiles into final image");
@@ -1011,23 +1021,22 @@ auto Coordinator::collect_results(const std::string& task_id,
                 }
                 worker_it->second.profile.last_heartbeat = std::chrono::steady_clock::now();
                 scheduler_.register_device(worker_it->second.profile);
-                if (payload.size() >= sizeof(float) + 36) {
-                    struct ProgressMessage {
-                        char task_id[36];
-                        float progress;
-                    };
+
+                struct ProgressMessage {
+                    char task_id[36];
+                    float progress;
+                };
+
+                if (payload.size() >= sizeof(ProgressMessage)) {
                     const auto* progress_message = reinterpret_cast<const ProgressMessage*>(payload.data());
                     const float progress = std::clamp(progress_message->progress, 0.0f, 1.0f);
                     const int progress_percent = static_cast<int>(progress * 100.0f);
-                    LOG_INFO(
+                    LOG_DEBUG(
                         "Coordinator",
                         "Worker progress " + active_task.worker_id + " task=" +
                             std::string(progress_message->task_id) +
                             " progress=" + std::to_string(progress_percent) + "%"
                     );
-                    if (on_task_progress_) {
-                        on_task_progress_(progress);
-                    }
                 }
             } else if (header->type == MessageType::MSG_TASK_ACCEPT) {
                 std::vector<uint8_t> payload(header->payload_length);

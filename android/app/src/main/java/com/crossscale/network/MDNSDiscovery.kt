@@ -20,6 +20,7 @@ class MDNSDiscovery(
     private val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
     private var discoveryListener: NsdManager.DiscoveryListener? = null
     private var multicastLock: WifiManager.MulticastLock? = null
+    private val resolvedServicesByName = mutableMapOf<String, DiscoveredService>()
 
     private companion object {
         private const val serviceType = "_crossscale._tcp."
@@ -27,9 +28,11 @@ class MDNSDiscovery(
 
     fun start(
         onServiceFound: (DiscoveredService) -> Unit,
+        onServiceLost: (DiscoveredService) -> Unit,
         onError: (String) -> Unit
     ) {
         stop()
+        resolvedServicesByName.clear()
         discoveryListener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(regType: String) {
                 Log.i("MDNSDiscovery", "Discovery started: $regType")
@@ -47,19 +50,23 @@ class MDNSDiscovery(
 
                     override fun onServiceResolved(resolvedInfo: NsdServiceInfo) {
                         val hostAddress = resolvedInfo.host?.hostAddress ?: return
-                        onServiceFound(
-                            DiscoveredService(
-                                name = resolvedInfo.serviceName,
-                                host = hostAddress,
-                                port = resolvedInfo.port
-                            )
+                        val discoveredService = DiscoveredService(
+                            name = resolvedInfo.serviceName,
+                            host = hostAddress,
+                            port = resolvedInfo.port
                         )
+                        resolvedServicesByName[resolvedInfo.serviceName] = discoveredService
+                        onServiceFound(discoveredService)
                     }
                 })
             }
 
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
                 Log.w("MDNSDiscovery", "Service lost: ${serviceInfo.serviceName}")
+                val resolvedService = resolvedServicesByName.remove(serviceInfo.serviceName)
+                if (resolvedService != null) {
+                    onServiceLost(resolvedService)
+                }
             }
 
             override fun onDiscoveryStopped(serviceType: String) {
@@ -93,6 +100,7 @@ class MDNSDiscovery(
             // Ignore duplicate stop invocations.
         }
         discoveryListener = null
+        resolvedServicesByName.clear()
         releaseMulticastLock()
     }
 

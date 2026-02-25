@@ -4,9 +4,12 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.ExperimentalGetImage
 import androidx.compose.foundation.layout.padding
@@ -25,6 +28,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.rememberNavController
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
+import com.crossscale.data.model.ModelImportResult
 import com.crossscale.data.repository.LogRepository
 import com.crossscale.ui.components.BottomNavigationBar
 import com.crossscale.ui.navigation.AppScreen
@@ -47,32 +51,80 @@ fun CrossScaleApp(container: AppContainer) {
     val mainUiState by mainViewModel.uiState.collectAsState()
     val deviceUiState by deviceViewModel.uiState.collectAsState()
     val processingUiState by processingViewModel.uiState.collectAsState()
-    val logs by container.logRepository.logs.collectAsState()
     val logRepository = container.logRepository
 
     LaunchedEffect(mainUiState.selectedImagePath) {
         processingViewModel.refreshExpectedTotal(mainUiState.selectedImagePath)
     }
 
+    val handlePickedImageUris: (List<Uri>, String) -> Unit = { uris, pickerName ->
+        if (uris.isEmpty()) {
+            logRepository.warning("CrossScaleApp", "$pickerName returned no images")
+        } else {
+            uris.forEach { uri ->
+                persistUriPermission(context = context, uri = uri, read = true, write = true)
+            }
+            val selectedModelName = mainUiState.selectedModel?.name
+            val inputSources = uris.map { uri -> uri.toString() }
+            val corruptedSources = inputSources.filterTo(mutableSetOf()) { source ->
+                !isImageSourceDecodable(context = context, rawSource = source)
+            }
+            mainViewModel.selectImages(
+                imagePaths = inputSources,
+                corruptedSources = corruptedSources
+            )
+
+            val queueEligibleSources = inputSources.filterNot { source -> source in corruptedSources }
+            if (corruptedSources.isNotEmpty()) {
+                logRepository.warning(
+                    "CrossScaleApp",
+                    "Skipped ${corruptedSources.size} corrupted image(s) from queue"
+                )
+            }
+            if (selectedModelName == null) {
+                logRepository.warning("CrossScaleApp", "No model selected, skip auto enqueue for newly added images")
+            } else {
+                queueEligibleSources.forEach { source ->
+                    processingViewModel.enqueueBatch(
+                        imagePath = source,
+                        modelName = selectedModelName,
+                        distributedMode = mainUiState.isDistributedMode,
+                        outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
+                        overwriteOriginal = mainUiState.overwriteOriginalImage,
+                        backupOriginal = mainUiState.backupOriginalImage
+                    )
+                }
+            }
+            logRepository.info(
+                "CrossScaleApp",
+                "Added ${uris.size} input images via $pickerName, queue eligible=${queueEligibleSources.size}"
+            )
+        }
+    }
+
     val pickMultipleImagesLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenMultipleDocuments()
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
     ) { uris ->
         if (uris.isNullOrEmpty()) {
             logRepository.warning("CrossScaleApp", "Multiple image picker canceled")
             return@rememberLauncherForActivityResult
         }
-        uris.forEach { uri ->
-            persistUriPermission(context = context, uri = uri, read = true, write = false)
-        }
-        val selectedModelName = mainUiState.selectedModel?.name
-        val inputSources = uris.map { uri -> uri.toString() }
-        mainViewModel.selectImages(inputSources)
-        if (selectedModelName == null) {
-            logRepository.warning("CrossScaleApp", "No model selected, skip auto enqueue for newly added images")
+        handlePickedImageUris(uris, "system photo picker")
+    }
+
+    val handlePickedInputFolderUri: (Uri?) -> Unit = { uri ->
+        if (uri == null) {
+            logRepository.warning("CrossScaleApp", "Folder picker canceled")
         } else {
-            inputSources.forEach { source ->
+            persistUriPermission(context = context, uri = uri, read = true, write = true)
+            val selectedModelName = mainUiState.selectedModel?.name
+            val inputSource = uri.toString()
+            mainViewModel.selectImage(inputSource)
+            if (selectedModelName == null) {
+                logRepository.warning("CrossScaleApp", "No model selected, skip auto enqueue for newly added folder")
+            } else {
                 processingViewModel.enqueueBatch(
-                    imagePath = source,
+                    imagePath = inputSource,
                     modelName = selectedModelName,
                     distributedMode = mainUiState.isDistributedMode,
                     outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
@@ -80,46 +132,54 @@ fun CrossScaleApp(container: AppContainer) {
                     backupOriginal = mainUiState.backupOriginalImage
                 )
             }
+            logRepository.info("CrossScaleApp", "Added input folder: $uri")
         }
-        logRepository.info("CrossScaleApp", "Added ${uris.size} input images from picker")
+    }
+
+    val handlePickedOutputFolderUri: (Uri?) -> Unit = { uri ->
+        if (uri == null) {
+            logRepository.warning("CrossScaleApp", "Output folder picker canceled")
+        } else {
+            persistUriPermission(context = context, uri = uri, read = true, write = true)
+            mainViewModel.selectOutputDirectory(uri.toString())
+            logRepository.info("CrossScaleApp", "Selected output folder: $uri")
+        }
     }
 
     val pickImageFolderLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
-        if (uri == null) {
-            logRepository.warning("CrossScaleApp", "Folder picker canceled")
-            return@rememberLauncherForActivityResult
-        }
-        persistUriPermission(context = context, uri = uri, read = true, write = false)
-        val selectedModelName = mainUiState.selectedModel?.name
-        val inputSource = uri.toString()
-        mainViewModel.selectImage(inputSource)
-        if (selectedModelName == null) {
-            logRepository.warning("CrossScaleApp", "No model selected, skip auto enqueue for newly added folder")
-        } else {
-            processingViewModel.enqueueBatch(
-                imagePath = inputSource,
-                modelName = selectedModelName,
-                distributedMode = mainUiState.isDistributedMode,
-                outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
-                overwriteOriginal = mainUiState.overwriteOriginalImage,
-                backupOriginal = mainUiState.backupOriginalImage
-            )
-        }
-        logRepository.info("CrossScaleApp", "Added input folder: $uri")
+        handlePickedInputFolderUri(uri)
     }
 
     val pickOutputFolderLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocumentTree()
     ) { uri ->
-        if (uri == null) {
-            logRepository.warning("CrossScaleApp", "Output folder picker canceled")
+        handlePickedOutputFolderUri(uri)
+    }
+
+    val handleImportedModelUris: (List<Uri>, String) -> Unit = { uris, pickerName ->
+        if (uris.isEmpty()) {
+            logRepository.warning("CrossScaleApp", "$pickerName did not return model files")
+        } else {
+            uris.forEach { uri ->
+                persistUriPermission(context = context, uri = uri, read = true, write = false)
+            }
+            mainViewModel.importModels(uris) { result ->
+                val message = buildModelImportFeedbackMessage(result)
+                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    val pickModelFilesLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNullOrEmpty()) {
+            logRepository.warning("CrossScaleApp", "Model import canceled")
             return@rememberLauncherForActivityResult
         }
-        persistUriPermission(context = context, uri = uri, read = true, write = true)
-        mainViewModel.selectOutputDirectory(uri.toString())
-        logRepository.info("CrossScaleApp", "Selected output folder: $uri")
+        handleImportedModelUris(uris, "system picker")
     }
 
     var pendingQueueStartBatchId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -161,10 +221,12 @@ fun CrossScaleApp(container: AppContainer) {
             mainUiState = mainUiState,
             deviceUiState = deviceUiState,
             processingUiState = processingUiState,
-            logs = logs,
+            logsFlow = container.logRepository.logs,
             onSelectModel = mainViewModel::selectModel,
-            onSelectMultipleImages = {
-                pickMultipleImagesLauncher.launch(arrayOf("image/*"))
+            onSelectImages = {
+                pickMultipleImagesLauncher.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                )
             },
             onSelectImageFolder = {
                 pickImageFolderLauncher.launch(null)
@@ -186,6 +248,12 @@ fun CrossScaleApp(container: AppContainer) {
             onToggleOverwriteOriginal = mainViewModel::setOverwriteOriginalImage,
             onToggleBackupOriginal = mainViewModel::setBackupOriginalImage,
             onStartProcessing = {
+                processingViewModel.syncPendingQueueDefaults(
+                    distributedMode = mainUiState.isDistributedMode,
+                    outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
+                    overwriteOriginal = mainUiState.overwriteOriginalImage,
+                    backupOriginal = mainUiState.backupOriginalImage
+                )
                 var hasQueueItems = processingUiState.queueItems.isNotEmpty()
                 if (processingUiState.queueItems.isEmpty()) {
                     val selectedModelName = mainUiState.selectedModel?.name
@@ -208,7 +276,15 @@ fun CrossScaleApp(container: AppContainer) {
                     startQueueWithWritePermissionCheck(null)
                 }
             },
-            onStartBatchQueue = { startQueueWithWritePermissionCheck(null) },
+            onStartBatchQueue = {
+                processingViewModel.syncPendingQueueDefaults(
+                    distributedMode = mainUiState.isDistributedMode,
+                    outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
+                    overwriteOriginal = mainUiState.overwriteOriginalImage,
+                    backupOriginal = mainUiState.backupOriginalImage
+                )
+                startQueueWithWritePermissionCheck(null)
+            },
             onPauseBatchQueue = processingViewModel::pauseBatchQueue,
             onRetryQueuedBatch = processingViewModel::retryQueuedBatch,
             onRetryQueuedBatchFailedOnly = processingViewModel::retryQueuedBatchFailedOnly,
@@ -243,11 +319,15 @@ fun CrossScaleApp(container: AppContainer) {
             onDiscardCheckpoint = processingViewModel::discardCheckpoint,
             onCancelProcessing = processingViewModel::cancelProcessing,
             onRefreshModels = mainViewModel::refreshModels,
+            onImportModels = {
+                pickModelFilesLauncher.launch(arrayOf("*/*"))
+            },
             onDeleteModel = mainViewModel::deleteModel,
             onStartDiscovery = deviceViewModel::startDiscovery,
             onStopDiscovery = deviceViewModel::stopDiscovery,
             onConnectDevice = deviceViewModel::connectDevice,
             onDisconnectDevice = deviceViewModel::disconnectDevice,
+            onAdjustDeviceWeight = deviceViewModel::updateDeviceWeight,
             onShowManualConnectDialog = deviceViewModel::showManualConnectDialog,
             onManualConnect = deviceViewModel::connectManual,
             onConnectByQr = deviceViewModel::connectByQrPayload,
@@ -269,6 +349,17 @@ fun CrossScaleApp(container: AppContainer) {
 }
 
 private const val MODEL_RELEASE_URL = "https://github.com/xihale/crossscale/releases"
+
+private fun buildModelImportFeedbackMessage(result: ModelImportResult): String {
+    if (result.importedCount <= 0) {
+        return "模型无效：必须成对包含同名 .param 和 .bin（支持从 zip 导入）"
+    }
+    return if (result.invalidCount > 0) {
+        "已导入 ${result.importedCount} 个模型，${result.invalidCount} 个无效"
+    } else {
+        "已成功导入 ${result.importedCount} 个模型"
+    }
+}
 
 private fun openImageOutput(
     context: Context,
@@ -365,4 +456,39 @@ private fun persistUriPermission(
     } catch (_: IllegalArgumentException) {
         // URI does not support persistable permissions.
     }
+}
+
+private fun isImageSourceDecodable(
+    context: Context,
+    rawSource: String
+): Boolean {
+    val normalizedSource = rawSource.trim()
+    if (normalizedSource.isBlank()) {
+        return false
+    }
+
+    return runCatching {
+        val inputStream = when {
+            normalizedSource.startsWith("/") -> File(normalizedSource).inputStream()
+            else -> {
+                val uri = Uri.parse(normalizedSource)
+                when (uri.scheme?.lowercase()) {
+                    null -> File(normalizedSource).inputStream()
+                    "file" -> {
+                        val path = uri.path ?: return false
+                        File(path).inputStream()
+                    }
+                    else -> context.contentResolver.openInputStream(uri)
+                }
+            }
+        } ?: return false
+
+        inputStream.use { stream ->
+            val boundsOptions = BitmapFactory.Options().apply {
+                inJustDecodeBounds = true
+            }
+            BitmapFactory.decodeStream(stream, null, boundsOptions)
+            boundsOptions.outWidth > 0 && boundsOptions.outHeight > 0
+        }
+    }.getOrDefault(false)
 }

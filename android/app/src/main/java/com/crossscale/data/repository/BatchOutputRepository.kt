@@ -49,6 +49,7 @@ class BatchOutputRepository(
         resumeBackupOriginal: Boolean?
     ): BatchOutputDirectory {
         val batchId = batchIdFor(source = source, modelName = modelName)
+        val layout = resolveOutputLayout(source)
         val resolvedOverwrite = resumeOverwriteOriginal ?: overwriteOriginal
         val resolvedBackup = if (resolvedOverwrite) (resumeBackupOriginal ?: backupOriginal) else false
         val normalizedResumeUri = resumeOutputDirectoryUri.orEmpty().trim()
@@ -84,11 +85,13 @@ class BatchOutputRepository(
 
         val preferredUri = parseUri(preferredTreeUri.orEmpty().trim())
         if (preferredUri != null) {
-            val folderName = "crossscale_$batchId"
-            val outputDirectoryUri = ensureSubDirectory(
-                rootTreeUri = preferredUri,
-                directoryName = folderName
-            )
+            val outputDirectoryUri = when (val sourceFolderName = layout.sourceFolderName) {
+                null -> rootDocumentUriFromTreeUri(preferredUri)
+                else -> ensureSubDirectory(
+                    rootTreeUri = preferredUri,
+                    directoryName = sourceFolderName
+                )
+            }
             if (outputDirectoryUri != null) {
                 return BatchOutputDirectory(
                     batchId = batchId,
@@ -101,9 +104,13 @@ class BatchOutputRepository(
             }
         }
 
-        val internalDirectory = when {
-            normalizedResumeDirectory.isBlank() -> File(defaultOutputRootDir(), batchId)
+        val baseInternalDirectory = when {
+            normalizedResumeDirectory.isBlank() -> defaultOutputRootDir()
             else -> File(normalizedResumeDirectory)
+        }
+        val internalDirectory = when (val sourceFolderName = layout.sourceFolderName) {
+            null -> baseInternalDirectory
+            else -> File(baseInternalDirectory, sourceFolderName)
         }
         if (!internalDirectory.exists()) {
             internalDirectory.mkdirs()
@@ -134,6 +141,9 @@ class BatchOutputRepository(
         outputDirectory: BatchOutputDirectory,
         input: ResolvedImageInput
     ): Boolean {
+        if (outputDirectory.overwriteOriginal) {
+            return false
+        }
         val outputName = outputNameFor(input)
         val outputDirectoryUri = outputDirectory.outputDirectoryUri.orEmpty()
         if (outputDirectoryUri.isBlank()) {
@@ -154,6 +164,9 @@ class BatchOutputRepository(
     ): String? {
         if (inputs.isEmpty()) {
             return null
+        }
+        if (outputDirectory.overwriteOriginal) {
+            return inputs.firstOrNull()?.uri?.toString()
         }
 
         val outputDirectoryUri = outputDirectory.outputDirectoryUri.orEmpty()
@@ -237,7 +250,10 @@ class BatchOutputRepository(
                 throw IOException("Failed to create output directory: ${targetDirectory.absolutePath}")
             }
 
-            val targetFile = File(targetDirectory, outputName)
+            val targetFile = resolveAvailableTargetFile(
+                targetDirectory = targetDirectory,
+                outputName = outputName
+            )
             if (targetFile.exists() && targetFile.isDirectory) {
                 if (!targetFile.deleteRecursively()) {
                     throw IOException("Output target is directory and cannot be removed: ${targetFile.absolutePath}")
@@ -248,7 +264,7 @@ class BatchOutputRepository(
                 targetDirectory.absolutePath.startsWith(publicRootOutputDir.absolutePath)
             if (useMediaStore) {
                 val mediaStoreUri = commitToMediaStore(
-                    batchId = outputDirectory.batchId,
+                    targetDirectory = targetDirectory,
                     outputName = outputName,
                     outputFile = outputFile
                 )
@@ -264,11 +280,23 @@ class BatchOutputRepository(
     }
 
     private fun commitToMediaStore(
-        batchId: String,
+        targetDirectory: File,
         outputName: String,
         outputFile: File
     ): Uri {
-        val relativePath = "${Environment.DIRECTORY_PICTURES}/$OUTPUT_ROOT_DIR/$batchId/"
+        val relativeSubPath = targetDirectory.absolutePath
+            .removePrefix(publicRootOutputDir.absolutePath)
+            .trimStart('/')
+        val relativePath = buildString {
+            append(Environment.DIRECTORY_PICTURES)
+            append('/')
+            append(OUTPUT_ROOT_DIR)
+            append('/')
+            if (relativeSubPath.isNotBlank()) {
+                append(relativeSubPath)
+                append('/')
+            }
+        }
         var lastError: Throwable? = null
         for (attempt in 0..MAX_CREATE_DOCUMENT_RETRIES) {
             val candidateName = if (attempt == 0) outputName else outputNameWithRetrySuffix(outputName, attempt)
@@ -372,9 +400,8 @@ class BatchOutputRepository(
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
             .take(64)
             .ifBlank { "image" }
-        val uniqueSuffix = shortHash(input.uri.toString())
         val extension = normalizedOutputExtension(input.displayName)
-        return "${baseName}_${uniqueSuffix}.$extension"
+        return "$baseName.$extension"
     }
 
     private fun normalizedOutputExtension(displayName: String): String {
@@ -407,15 +434,15 @@ class BatchOutputRepository(
             }
             if (inputUri.scheme.equals("file", ignoreCase = true)) {
                 val targetFile = File(requireNotNull(inputUri.path) { "Invalid file uri: $inputUri" })
-                outputFile.copyTo(targetFile, overwrite = true)
+                writeTempToTarget(outputFile = outputFile, targetFile = targetFile)
                 outputFile.delete()
                 targetFile.absolutePath
             } else {
-                contentResolver.openOutputStream(inputUri, "w")?.use { outputStream ->
+                openDocumentOutputStream(inputUri).use { outputStream ->
                     outputFile.inputStream().use { inputStream ->
                         inputStream.copyTo(outputStream)
                     }
-                } ?: throw IOException("Unable to overwrite input URI: $inputUri")
+                }
                 outputFile.delete()
                 inputUri.toString()
             }
@@ -428,21 +455,23 @@ class BatchOutputRepository(
     ) {
         val backupOutputRootDir = File(defaultOutputRootDir(), BACKUP_ROOT_DIR)
         val backupDir = File(backupOutputRootDir, outputDirectory.batchId)
-        if (!backupDir.exists()) {
-            backupDir.mkdirs()
+        if (!backupDir.exists() && !backupDir.mkdirs()) {
+            throw IOException("Failed to create backup directory: ${backupDir.absolutePath}")
         }
-        val backupFile = File(backupDir, input.displayName)
-        if (backupFile.exists()) {
-            return
-        }
+        val backupFile = resolveAvailableTargetFile(targetDirectory = backupDir, outputName = input.displayName)
 
         if (input.uri.scheme.equals("file", ignoreCase = true)) {
             val sourceFile = File(requireNotNull(input.uri.path) { "Invalid file uri: ${input.uri}" })
+            if (!sourceFile.exists()) {
+                throw IOException("Source file does not exist for backup: ${sourceFile.absolutePath}")
+            }
             sourceFile.copyTo(backupFile, overwrite = false)
         } else {
-            contentResolver.openInputStream(input.uri)?.use { source ->
+            val source = contentResolver.openInputStream(input.uri)
+                ?: throw IOException("Unable to read original file for backup: ${input.uri}")
+            source.use {
                 backupFile.outputStream().use { sink ->
-                    source.copyTo(sink)
+                    it.copyTo(sink)
                 }
             }
         }
@@ -463,6 +492,84 @@ class BatchOutputRepository(
                 allowAlternateNameOnConflict = false
             )
         }.getOrNull()
+    }
+
+    private fun rootDocumentUriFromTreeUri(rootTreeUri: Uri): Uri? {
+        return runCatching {
+            val rootDocumentId = DocumentsContract.getTreeDocumentId(rootTreeUri)
+            DocumentsContract.buildDocumentUriUsingTree(rootTreeUri, rootDocumentId)
+        }.getOrNull()
+    }
+
+    private fun resolveOutputLayout(source: String): OutputLayout {
+        return OutputLayout(sourceFolderName = sourceFolderName(source))
+    }
+
+    private fun sourceFolderName(source: String): String? {
+        val decodedSources = InputSourceSpec.decode(source)
+        if (decodedSources != null) {
+            return null
+        }
+
+        val parsedUri = parseUri(source.trim())
+        if (parsedUri != null && !parsedUri.scheme.isNullOrBlank()) {
+            if (DocumentsContract.isTreeUri(parsedUri)) {
+                val documentId = runCatching {
+                    DocumentsContract.getTreeDocumentId(parsedUri)
+                }.getOrNull().orEmpty()
+                val treeName = documentId.substringAfter(':', documentId)
+                    .substringAfterLast('/')
+                return sanitizeFolderName(treeName)
+            }
+
+            if (parsedUri.scheme.equals("file", ignoreCase = true)) {
+                val directory = parsedUri.path?.let { path -> File(path) }
+                if (directory != null && directory.isDirectory) {
+                    return sanitizeFolderName(directory.name)
+                }
+            }
+
+            return null
+        }
+
+        val sourceFile = File(source)
+        if (!sourceFile.isDirectory) {
+            return null
+        }
+        return sanitizeFolderName(sourceFile.name)
+    }
+
+    private fun sanitizeFolderName(rawName: String): String? {
+        val normalized = rawName
+            .trim()
+            .replace(Regex("[\\\\/:*?\"<>|]"), "_")
+            .take(80)
+        return normalized.ifBlank { null }
+    }
+
+    private fun resolveAvailableTargetFile(
+        targetDirectory: File,
+        outputName: String
+    ): File {
+        val directTarget = File(targetDirectory, outputName)
+        if (!directTarget.exists()) {
+            return directTarget
+        }
+        if (directTarget.isDirectory) {
+            return directTarget
+        }
+
+        for (attempt in 1..MAX_CREATE_DOCUMENT_RETRIES) {
+            val candidate = File(targetDirectory, outputNameWithRetrySuffix(outputName, attempt))
+            if (!candidate.exists()) {
+                return candidate
+            }
+            if (candidate.isDirectory) {
+                return candidate
+            }
+        }
+
+        return File(targetDirectory, outputNameWithRetrySuffix(outputName, MAX_CREATE_DOCUMENT_RETRIES + 1))
     }
 
     private fun findOrCreateChildDocumentUri(
@@ -640,6 +747,10 @@ class BatchOutputRepository(
         private const val JPEG_MIME_TYPE = "image/jpeg"
         private const val WEBP_MIME_TYPE = "image/webp"
         private const val CONTENT_SCHEME_PREFIX = "content://"
-        private const val MAX_CREATE_DOCUMENT_RETRIES = 3
+        private const val MAX_CREATE_DOCUMENT_RETRIES = 99
     }
+
+    private data class OutputLayout(
+        val sourceFolderName: String?
+    )
 }

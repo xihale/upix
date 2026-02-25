@@ -21,6 +21,13 @@ class NativeWorker : AutoCloseable {
         nativeDisconnect(workerPtr)
     }
 
+    fun isConnected(): Boolean {
+        if (workerPtr == 0L) {
+            return false
+        }
+        return nativeIsConnected(workerPtr)
+    }
+
     fun lastError(): String {
         if (workerPtr == 0L) {
             return ""
@@ -49,6 +56,7 @@ class NativeWorker : AutoCloseable {
         modelsDirectory: String
     ): Boolean
     private external fun nativeDisconnect(workerPtr: Long)
+    private external fun nativeIsConnected(workerPtr: Long): Boolean
     private external fun nativeGetLastError(workerPtr: Long): String
     private external fun nativeRelease(workerPtr: Long)
 }

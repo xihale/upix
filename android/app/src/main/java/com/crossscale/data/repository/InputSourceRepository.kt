@@ -1,6 +1,7 @@
 package com.crossscale.data.repository
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
@@ -63,9 +64,14 @@ class InputSourceRepository(
             if (!isImageMimeOrName(mimeType = null, name = file.name)) {
                 return emptyList()
             }
+            val fileUri = Uri.fromFile(file)
+            if (!isDecodableImage(uri = fileUri, displayName = file.name)) {
+                logRepository.warning("InputSourceRepository", "Corrupted image skipped: ${file.absolutePath}")
+                return emptyList()
+            }
             return listOf(
                 ResolvedImageInput(
-                    uri = Uri.fromFile(file),
+                    uri = fileUri,
                     displayName = file.name
                 )
             )
@@ -79,11 +85,18 @@ class InputSourceRepository(
             .filter { it.isFile }
             .filter { isImageMimeOrName(mimeType = null, name = it.name) }
             .map { path ->
-                ResolvedImageInput(
-                    uri = Uri.fromFile(path),
-                    displayName = path.name
-                )
+                val fileUri = Uri.fromFile(path)
+                if (!isDecodableImage(uri = fileUri, displayName = path.name)) {
+                    logRepository.warning("InputSourceRepository", "Corrupted image skipped: ${path.absolutePath}")
+                    null
+                } else {
+                    ResolvedImageInput(
+                        uri = fileUri,
+                        displayName = path.name
+                    )
+                }
             }
+            .filterNotNull()
             .sortedWith(resolvedImageComparator())
             .toList()
     }
@@ -100,6 +113,10 @@ class InputSourceRepository(
         val mimeType = contentResolver.getType(uri)
         val displayName = queryDisplayName(uri) ?: uri.lastPathSegment ?: uri.toString()
         if (!isImageMimeOrName(mimeType = mimeType, name = displayName)) {
+            return emptyList()
+        }
+        if (!isDecodableImage(uri = uri, displayName = displayName)) {
+            logRepository.warning("InputSourceRepository", "Corrupted image skipped: $displayName")
             return emptyList()
         }
         return listOf(
@@ -151,12 +168,12 @@ class InputSourceRepository(
                         if (!isImageMimeOrName(mimeType = mimeType, name = displayName)) {
                             continue
                         }
-                        images.add(
-                            ResolvedImageInput(
-                                uri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocumentId),
-                                displayName = displayName
-                            )
-                        )
+                        val imageUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, childDocumentId)
+                        if (!isDecodableImage(uri = imageUri, displayName = displayName)) {
+                            logRepository.warning("InputSourceRepository", "Corrupted image skipped: $displayName")
+                            continue
+                        }
+                        images.add(ResolvedImageInput(uri = imageUri, displayName = displayName))
                     }
                 }
             } catch (securityException: SecurityException) {
@@ -208,6 +225,26 @@ class InputSourceRepository(
         }
         val lowerName = name.lowercase(Locale.US)
         return IMAGE_EXTENSIONS.any { extension -> lowerName.endsWith(extension) }
+    }
+
+    private fun isDecodableImage(
+        uri: Uri,
+        displayName: String
+    ): Boolean {
+        return runCatching {
+            context.contentResolver.openInputStream(uri)?.use { stream ->
+                val boundsOptions = BitmapFactory.Options().apply {
+                    inJustDecodeBounds = true
+                }
+                BitmapFactory.decodeStream(stream, null, boundsOptions)
+                boundsOptions.outWidth > 0 && boundsOptions.outHeight > 0
+            } == true
+        }.onFailure { throwable ->
+            logRepository.warning(
+                "InputSourceRepository",
+                "Failed to decode image $displayName: ${throwable.message}"
+            )
+        }.getOrDefault(false)
     }
 
     companion object {

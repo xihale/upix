@@ -19,7 +19,8 @@ data class NativeProcessResult(
     val inputWidth: Int,
     val inputHeight: Int,
     val outputWidth: Int,
-    val outputHeight: Int
+    val outputHeight: Int,
+    val processorLabel: String? = null
 )
 
 class NativeImageProcessingRepository(
@@ -415,7 +416,8 @@ class NativeImageProcessingRepository(
                     inputWidth = decoded.width,
                     inputHeight = decoded.height,
                     outputWidth = outputWidth,
-                    outputHeight = outputHeight
+                    outputHeight = outputHeight,
+                    processorLabel = "本机"
                 )
             }
         }

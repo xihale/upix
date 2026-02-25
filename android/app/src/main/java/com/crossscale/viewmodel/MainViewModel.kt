@@ -1,9 +1,11 @@
 package com.crossscale.viewmodel
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.crossscale.AppContainer
+import com.crossscale.data.model.ModelImportResult
 import com.crossscale.data.model.DeviceProfile
 import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.repository.DeviceRepository
@@ -23,6 +25,7 @@ data class MainUiState(
     val models: List<ModelInfo> = emptyList(),
     val selectedModel: ModelInfo? = null,
     val selectedInputSources: List<String> = emptyList(),
+    val corruptedInputSources: Set<String> = emptySet(),
     val selectedImagePath: String? = null,
     val selectedOutputDirectoryUri: String? = null,
     val overwriteOriginalImage: Boolean = false,
@@ -39,6 +42,7 @@ class MainViewModel(
 ) : ViewModel() {
     private val _selectedModelName = MutableStateFlow<String?>(null)
     private val _selectedInputSources = MutableStateFlow<List<String>>(emptyList())
+    private val _corruptedInputSources = MutableStateFlow<Set<String>>(emptySet())
     private val _selectedOutputDirectoryUri = MutableStateFlow<String?>(null)
     private val _overwriteOriginalImage = MutableStateFlow(false)
     private val _backupOriginalImage = MutableStateFlow(true)
@@ -54,6 +58,12 @@ class MainViewModel(
             model.name == selectedModelName
         } ?: models.firstOrNull()
         val encodedInputSource = InputSourceSpec.encode(selectedInputSources)
+        val hasLocalConnectedDevice = connectedDevices.any { device ->
+            deviceRepository.isLocalDevice(device.deviceId)
+        }
+        val hasRemoteConnectedDevice = connectedDevices.any { device ->
+            !deviceRepository.isLocalDevice(device.deviceId)
+        }
         MainUiState(
             models = models,
             selectedModel = selectedModel,
@@ -62,16 +72,18 @@ class MainViewModel(
             selectedOutputDirectoryUri = selectedOutputDirectoryUri,
             modelDirectoryPath = modelRepository.modelDirectoryPath(),
             connectedDevices = connectedDevices,
-            isDistributedMode = connectedDevices.size > 1
+            isDistributedMode = hasRemoteConnectedDevice && !hasLocalConnectedDevice
         )
     }
 
     val uiState: StateFlow<MainUiState> = combine(
         baseUiState,
+        _corruptedInputSources,
         _overwriteOriginalImage,
         _backupOriginalImage
-    ) { state, overwriteOriginalImage, backupOriginalImage ->
+    ) { state, corruptedInputSources, overwriteOriginalImage, backupOriginalImage ->
         state.copy(
+            corruptedInputSources = corruptedInputSources,
             overwriteOriginalImage = overwriteOriginalImage,
             backupOriginalImage = backupOriginalImage
         )
@@ -106,7 +118,10 @@ class MainViewModel(
         selectImages(listOf(imagePath))
     }
 
-    fun selectImages(imagePaths: List<String>) {
+    fun selectImages(
+        imagePaths: List<String>,
+        corruptedSources: Set<String> = emptySet()
+    ) {
         if (imagePaths.isEmpty()) {
             return
         }
@@ -132,6 +147,18 @@ class MainViewModel(
         if (addedCount <= 0) {
             return
         }
+
+        _corruptedInputSources.update { currentCorrupted ->
+            val updatedCorrupted = currentCorrupted.toMutableSet()
+            normalizedSources.forEach { source ->
+                if (source in corruptedSources) {
+                    updatedCorrupted.add(source)
+                } else {
+                    updatedCorrupted.remove(source)
+                }
+            }
+            updatedCorrupted
+        }
         logRepository.info(
             "MainViewModel",
             "Added $addedCount input source(s), total=${_selectedInputSources.value.size}"
@@ -140,6 +167,7 @@ class MainViewModel(
 
     fun clearSelectedImage() {
         _selectedInputSources.value = emptyList()
+        _corruptedInputSources.value = emptySet()
         logRepository.info("MainViewModel", "Cleared all input sources")
     }
 
@@ -160,6 +188,9 @@ class MainViewModel(
             }
         }
         if (removed) {
+            _corruptedInputSources.update { currentCorrupted ->
+                currentCorrupted - normalizedSource
+            }
             logRepository.info(
                 "MainViewModel",
                 "Removed input source (${_selectedInputSources.value.size} left): $normalizedSource"
@@ -231,6 +262,37 @@ class MainViewModel(
     fun refreshModels() {
         viewModelScope.launch {
             modelRepository.refreshModels()
+        }
+    }
+
+    fun importModels(
+        modelUris: List<Uri>,
+        onCompleted: (ModelImportResult) -> Unit = {}
+    ) {
+        val normalizedUris = modelUris.distinct()
+        if (normalizedUris.isEmpty()) {
+            onCompleted(
+                ModelImportResult(
+                    invalidItems = listOf("未选择模型文件")
+                )
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            val result = modelRepository.importModels(normalizedUris)
+            if (result.importedCount > 0) {
+                logRepository.info(
+                    "MainViewModel",
+                    "Imported ${result.importedCount} model(s): ${result.importedModelNames.joinToString()}"
+                )
+            }
+            if (result.invalidCount > 0) {
+                result.invalidItems.forEach { invalidItem ->
+                    logRepository.warning("MainViewModel", "Model import invalid: $invalidItem")
+                }
+            }
+            onCompleted(result)
         }
     }
 

@@ -19,6 +19,7 @@ import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.model.ProcessingStatus
 import com.crossscale.data.model.ProcessingTask
 import com.crossscale.data.repository.BatchOutputDirectory
+import com.crossscale.data.repository.DeviceRepository
 import com.crossscale.data.repository.LogRepository
 import com.crossscale.data.repository.ProcessingCheckpoint
 import com.crossscale.data.repository.ProcessingFailureDetail
@@ -26,6 +27,7 @@ import com.crossscale.data.repository.ProcessingPendingItem
 import com.crossscale.data.repository.ResolvedImageInput
 import com.crossscale.data.repository.canRetryFailedOnly
 import com.crossscale.data.repository.failedPendingCount
+import com.crossscale.network.CoordinatorClient
 import kotlinx.coroutines.CoroutineDispatcher
 import java.util.LinkedHashMap
 import java.util.UUID
@@ -123,6 +125,8 @@ class ProcessingViewModel(
     private val checkpointRepository: ProcessingCheckpointStore,
     private val queueRepository: ProcessingQueueStore,
     private val nativeImageProcessingRepository: ImageProcessingStore,
+    private val coordinatorClient: CoordinatorClient? = null,
+    private val deviceRepository: DeviceRepository? = null,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) : ViewModel() {
@@ -353,6 +357,42 @@ class ProcessingViewModel(
             state.copy(isQueueRunning = true)
         }
         runNextQueuedBatchIfNeeded(preferredBatchId = normalizedPreferredBatchId)
+    }
+
+    fun syncPendingQueueDefaults(
+        distributedMode: Boolean,
+        outputDirectoryUri: String?,
+        overwriteOriginal: Boolean,
+        backupOriginal: Boolean
+    ) {
+        val normalizedOutputDirectoryUri = outputDirectoryUri?.trim()?.ifBlank { null }
+        var updatedCount = 0
+        _uiState.update { state ->
+            state.copy(
+                queueItems = state.queueItems.map { item ->
+                    if (item.status != ProcessingQueueItemStatus.PENDING) {
+                        item
+                    } else {
+                        val updatedItem = item.copy(
+                            distributedMode = distributedMode,
+                            outputDirectoryUri = normalizedOutputDirectoryUri,
+                            overwriteOriginal = overwriteOriginal,
+                            backupOriginal = backupOriginal
+                        )
+                        if (updatedItem != item) {
+                            updatedCount += 1
+                        }
+                        updatedItem
+                    }
+                }
+            )
+        }
+        if (updatedCount > 0) {
+            logRepository.info(
+                "ProcessingViewModel",
+                "Updated $updatedCount pending queued batch(es) with latest run options"
+            )
+        }
     }
 
     fun pauseBatchQueue() {
@@ -776,6 +816,17 @@ class ProcessingViewModel(
             return false
         }
 
+        val coordinatorConnected = coordinatorClient?.isConnected() == true
+        val localConnected = deviceRepository?.isLocalDeviceConnected() ?: true
+        val effectiveDistributedMode = distributedMode || (coordinatorConnected && !localConnected)
+        if (!effectiveDistributedMode && !localConnected) {
+            logRepository.warning(
+                "ProcessingViewModel",
+                "Local client is disconnected. Connect local client or remote coordinator before processing."
+            )
+            return false
+        }
+
         val modelInfo = modelRepository.getModelByName(modelName)
         if (modelInfo == null) {
             val errorMessage = "Model not found: $modelName"
@@ -786,7 +837,7 @@ class ProcessingViewModel(
                         id = resumeCheckpoint?.taskId ?: UUID.randomUUID().toString(),
                         imagePath = imagePath,
                         modelName = modelName,
-                        distributedMode = distributedMode,
+                        distributedMode = effectiveDistributedMode,
                         overwriteOriginal = overwriteOriginal,
                         backupOriginal = backupOriginal,
                         pendingItems = 0,
@@ -861,7 +912,7 @@ class ProcessingViewModel(
                         id = taskId,
                         imagePath = imagePath,
                         modelName = modelName,
-                        distributedMode = distributedMode,
+                        distributedMode = effectiveDistributedMode,
                         outputDirectory = outputDirectory.displayPath,
                         outputDirectoryUri = outputDirectory.outputDirectoryUri,
                         overwriteOriginal = outputDirectory.overwriteOriginal,
@@ -886,7 +937,7 @@ class ProcessingViewModel(
             taskId = taskId,
             imagePath = imagePath,
             modelName = modelName,
-            distributedMode = distributedMode,
+            distributedMode = effectiveDistributedMode,
             totalItems = totalItems,
             completedItems = completedCount,
             outputDirectory = outputDirectory.displayPath,
@@ -905,7 +956,7 @@ class ProcessingViewModel(
                         id = taskId,
                         imagePath = imagePath,
                         modelName = modelName,
-                        distributedMode = distributedMode,
+                        distributedMode = effectiveDistributedMode,
                         outputDirectory = outputDirectory.displayPath,
                         outputDirectoryUri = outputDirectory.outputDirectoryUri,
                         overwriteOriginal = outputDirectory.overwriteOriginal,
@@ -937,54 +988,75 @@ class ProcessingViewModel(
             val pendingByUri = LinkedHashMap<String, ResolvedImageInput>()
             pendingImages.forEach { pendingByUri[it.uri.toString()] = it }
             val failureDetailsByUri = initialFailures.toMutableMap()
+            val distributedRemoteEnabled = effectiveDistributedMode && coordinatorConnected
             var processingSession: ImageProcessingSession? = null
 
             try {
-                processingSession = withContext(defaultDispatcher) {
-                    nativeImageProcessingRepository.openSession(
-                        modelName = modelName,
-                        modelBasePath = modelBasePath,
-                        preferGpu = true
+                if (!distributedMode && distributedRemoteEnabled) {
+                    logRepository.info(
+                        "ProcessingViewModel",
+                        "Remote coordinator connected, local processing disabled by default"
+                    )
+                } else if (distributedMode && !distributedRemoteEnabled) {
+                    logRepository.warning(
+                        "ProcessingViewModel",
+                        "Distributed mode requested but remote coordinator is unavailable; fallback to local processing"
                     )
                 }
 
-                if (processingSession == null) {
-                    val errorMessage = "Failed to initialize native session for model $modelName"
-                    lastError = errorMessage
-                    logRepository.error("ProcessingViewModel", errorMessage)
-                    saveCheckpointSnapshot(
-                        taskId = taskId,
-                        imagePath = imagePath,
-                        modelName = modelName,
-                        distributedMode = distributedMode,
-                        totalItems = totalItems,
-                        completedItems = successfulCount,
-                        outputDirectory = outputDirectory.displayPath,
-                        outputDirectoryUri = outputDirectory.outputDirectoryUri,
-                        overwriteOriginal = outputDirectory.overwriteOriginal,
-                        backupOriginal = outputDirectory.backupOriginal,
-                        createdAtEpochMs = createdAt,
-                        pendingImages = pendingByUri.values.toList(),
-                        failureDetails = failureDetailsByUri,
-                        lastErrorMessage = lastError
+                if (distributedRemoteEnabled) {
+                    val endpoint = coordinatorClient.activeDeviceId().orEmpty()
+                    logRepository.info(
+                        "ProcessingViewModel",
+                        "Distributed execution enabled, routing tasks to coordinator $endpoint"
                     )
-                    _uiState.update { state ->
-                        val currentTask = state.task ?: return@update state
-                        val orderedFailures = orderedFailureDetails(failureDetailsByUri)
-                        state.copy(
-                            task = currentTask.copy(
-                                status = ProcessingStatus.FAILED,
-                                currentItemName = null,
-                                pendingItems = pendingByUri.size,
-                                failedItems = orderedFailures.size,
-                                failedItemNames = failureNamesFromOrdered(orderedFailures),
-                                failureDetails = orderedFailures,
-                                lastErrorMessage = errorMessage
-                            ),
-                            isProcessing = false
+                } else {
+                    processingSession = withContext(defaultDispatcher) {
+                        nativeImageProcessingRepository.openSession(
+                            modelName = modelName,
+                            modelBasePath = modelBasePath,
+                            preferGpu = true
                         )
                     }
-                    return@launch
+
+                    if (processingSession == null) {
+                        val errorMessage = "Failed to initialize native session for model $modelName"
+                        lastError = errorMessage
+                        logRepository.error("ProcessingViewModel", errorMessage)
+                        saveCheckpointSnapshot(
+                            taskId = taskId,
+                            imagePath = imagePath,
+                            modelName = modelName,
+                            distributedMode = effectiveDistributedMode,
+                            totalItems = totalItems,
+                            completedItems = successfulCount,
+                            outputDirectory = outputDirectory.displayPath,
+                            outputDirectoryUri = outputDirectory.outputDirectoryUri,
+                            overwriteOriginal = outputDirectory.overwriteOriginal,
+                            backupOriginal = outputDirectory.backupOriginal,
+                            createdAtEpochMs = createdAt,
+                            pendingImages = pendingByUri.values.toList(),
+                            failureDetails = failureDetailsByUri,
+                            lastErrorMessage = lastError
+                        )
+                        _uiState.update { state ->
+                            val currentTask = state.task ?: return@update state
+                            val orderedFailures = orderedFailureDetails(failureDetailsByUri)
+                            state.copy(
+                                task = currentTask.copy(
+                                    status = ProcessingStatus.FAILED,
+                                    currentItemName = null,
+                                    pendingItems = pendingByUri.size,
+                                    failedItems = orderedFailures.size,
+                                    failedItemNames = failureNamesFromOrdered(orderedFailures),
+                                    failureDetails = orderedFailures,
+                                    lastErrorMessage = errorMessage
+                                ),
+                                isProcessing = false
+                            )
+                        }
+                        return@launch
+                    }
                 }
                 val session = processingSession
 
@@ -1008,13 +1080,25 @@ class ProcessingViewModel(
 
                     val startedAt = System.currentTimeMillis()
                     val result = withContext(defaultDispatcher) {
-                        session.process(
-                            input = item,
-                            outputFile = outputFile
-                        )
+                        if (distributedRemoteEnabled) {
+                            coordinatorClient.processInputRemotely(
+                                input = item,
+                                modelName = modelName,
+                                tileSize = DISTRIBUTED_TILE_SIZE,
+                                tileOverlap = DISTRIBUTED_TILE_OVERLAP,
+                                outputFile = outputFile
+                            )
+                        } else {
+                            checkNotNull(session).process(
+                                input = item,
+                                outputFile = outputFile
+                            )
+                        }
                     }
                     val elapsedMs = System.currentTimeMillis() - startedAt
                     val itemUri = item.uri.toString()
+                    var latestProcessorLabel: String? = null
+                    var latestAttributionEntry: String? = null
 
                     if (result.isSuccess) {
                         val commitResult = batchOutputRepository.commitOutput(
@@ -1029,10 +1113,23 @@ class ProcessingViewModel(
                             val destination = commitResult.getOrNull()
                                 ?: result.getOrNull()?.outputFile?.absolutePath
                                 ?: outputFile.absolutePath
+                            latestProcessorLabel = resolveProcessorLabel(
+                                explicitProcessor = result.getOrNull()?.processorLabel,
+                                distributedRemoteEnabled = distributedRemoteEnabled
+                            )
+                            latestAttributionEntry = "${item.displayName} · ${latestProcessorLabel}"
                             logRepository.info(
                                 "ProcessingViewModel",
-                                "Processed ${item.displayName} -> $destination (${elapsedMs}ms, done=$successfulCount/$totalItems, pending=${pendingByUri.size})"
+                                "Processed ${item.displayName} by ${latestProcessorLabel} -> $destination (${elapsedMs}ms, done=$successfulCount/$totalItems, pending=${pendingByUri.size})"
                             )
+                            result.getOrNull()?.let { nativeResult ->
+                                updateDeviceThroughputSample(
+                                    distributedRemoteEnabled = distributedRemoteEnabled,
+                                    elapsedMs = elapsedMs,
+                                    inputWidth = nativeResult.inputWidth,
+                                    inputHeight = nativeResult.inputHeight
+                                )
+                            }
                             if (!queueItemId.isNullOrBlank()) {
                                 _uiState.update { state ->
                                     state.copy(
@@ -1081,7 +1178,7 @@ class ProcessingViewModel(
                         taskId = taskId,
                         imagePath = imagePath,
                         modelName = modelName,
-                        distributedMode = distributedMode,
+                        distributedMode = effectiveDistributedMode,
                         totalItems = totalItems,
                         completedItems = successfulCount,
                         outputDirectory = outputDirectory.displayPath,
@@ -1097,6 +1194,11 @@ class ProcessingViewModel(
                     _uiState.update { state ->
                         val currentTask = state.task ?: return@update state
                         val orderedFailures = orderedFailureDetails(failureDetailsByUri)
+                        val updatedAttributions = if (latestAttributionEntry == null) {
+                            currentTask.recentProcessorAttributions
+                        } else {
+                            (currentTask.recentProcessorAttributions + latestAttributionEntry).takeLast(MAX_RECENT_ATTRIBUTIONS)
+                        }
                         state.copy(
                             task = currentTask.copy(
                                 progress = progressOf(successfulCount, totalItems),
@@ -1106,6 +1208,13 @@ class ProcessingViewModel(
                                 failedItems = orderedFailures.size,
                                 failedItemNames = failureNamesFromOrdered(orderedFailures),
                                 failureDetails = orderedFailures,
+                                lastProcessedItemName = if (latestProcessorLabel == null) {
+                                    currentTask.lastProcessedItemName
+                                } else {
+                                    item.displayName
+                                },
+                                lastProcessorLabel = latestProcessorLabel ?: currentTask.lastProcessorLabel,
+                                recentProcessorAttributions = updatedAttributions,
                                 lastErrorMessage = lastError
                             )
                         )
@@ -1177,7 +1286,7 @@ class ProcessingViewModel(
                     taskId = taskId,
                     imagePath = imagePath,
                     modelName = modelName,
-                    distributedMode = distributedMode,
+                    distributedMode = effectiveDistributedMode,
                     totalItems = totalItems,
                     completedItems = successfulCount,
                     outputDirectory = outputDirectory.displayPath,
@@ -1198,7 +1307,7 @@ class ProcessingViewModel(
                     taskId = taskId,
                     imagePath = imagePath,
                     modelName = modelName,
-                    distributedMode = distributedMode,
+                    distributedMode = effectiveDistributedMode,
                     totalItems = totalItems,
                     completedItems = successfulCount,
                     outputDirectory = outputDirectory.displayPath,
@@ -1346,9 +1455,13 @@ class ProcessingViewModel(
                 return
             }
         }
+        val coordinatorConnected = coordinatorClient?.isConnected() == true
+        val localConnected = deviceRepository?.isLocalDeviceConnected() ?: true
+        val effectiveDistributedMode = nextBatch.distributedMode || (coordinatorConnected && !localConnected)
         val updatedQueueItems = _uiState.value.queueItems.map { item ->
             if (item.id == nextBatch.id) {
                 item.copy(
+                    distributedMode = effectiveDistributedMode,
                     status = ProcessingQueueItemStatus.RUNNING,
                     attempts = item.attempts + 1,
                     lastErrorMessage = null,
@@ -1374,7 +1487,7 @@ class ProcessingViewModel(
         val started = startProcessingInternal(
             imagePath = nextBatch.source,
             modelName = nextBatch.modelName,
-            distributedMode = nextBatch.distributedMode,
+            distributedMode = effectiveDistributedMode,
             outputDirectoryUri = nextBatch.outputDirectoryUri,
             overwriteOriginal = nextBatch.overwriteOriginal,
             backupOriginal = nextBatch.backupOriginal,
@@ -1852,6 +1965,59 @@ class ProcessingViewModel(
         )
     }
 
+    private fun updateDeviceThroughputSample(
+        distributedRemoteEnabled: Boolean,
+        elapsedMs: Long,
+        inputWidth: Int,
+        inputHeight: Int
+    ) {
+        val sample = estimateTilesPerSecond(
+            elapsedMs = elapsedMs,
+            inputWidth = inputWidth,
+            inputHeight = inputHeight,
+            tileSize = DISTRIBUTED_TILE_SIZE
+        )
+        if (sample <= 0.0f) {
+            return
+        }
+
+        if (distributedRemoteEnabled) {
+            val remoteDeviceId = coordinatorClient?.activeDeviceId() ?: return
+            deviceRepository?.recordThroughputSample(remoteDeviceId, sample)
+        } else {
+            deviceRepository?.recordLocalThroughputSample(sample)
+        }
+    }
+
+    private fun estimateTilesPerSecond(
+        elapsedMs: Long,
+        inputWidth: Int,
+        inputHeight: Int,
+        tileSize: Int
+    ): Float {
+        if (elapsedMs <= 0L || inputWidth <= 0 || inputHeight <= 0 || tileSize <= 0) {
+            return 0.0f
+        }
+        val tilesX = (inputWidth + tileSize - 1) / tileSize
+        val tilesY = (inputHeight + tileSize - 1) / tileSize
+        val totalTiles = (tilesX * tilesY).coerceAtLeast(1)
+        return totalTiles * 1000.0f / elapsedMs.toFloat()
+    }
+
+    private fun resolveProcessorLabel(
+        explicitProcessor: String?,
+        distributedRemoteEnabled: Boolean
+    ): String {
+        val normalizedExplicitProcessor = explicitProcessor?.trim().orEmpty()
+        if (normalizedExplicitProcessor.isNotBlank()) {
+            return normalizedExplicitProcessor
+        }
+        if (!distributedRemoteEnabled) {
+            return "本机"
+        }
+        return coordinatorClient?.activeDeviceId().orEmpty().ifBlank { "远端节点" }
+    }
+
     override fun onCleared() {
         previewCountJob?.cancel()
         super.onCleared()
@@ -1859,6 +2025,9 @@ class ProcessingViewModel(
 
     companion object {
         private const val PARAM_FILE_SUFFIX = ".param"
+        private const val DISTRIBUTED_TILE_SIZE = 256
+        private const val DISTRIBUTED_TILE_OVERLAP = 16
+        private const val MAX_RECENT_ATTRIBUTIONS = 8
 
         fun factory(container: AppContainer): ViewModelProvider.Factory {
             return object : ViewModelProvider.Factory {
@@ -1871,7 +2040,9 @@ class ProcessingViewModel(
                         batchOutputRepository = container.batchOutputRepository,
                         checkpointRepository = container.processingCheckpointRepository,
                         queueRepository = container.processingQueueRepository,
-                        nativeImageProcessingRepository = container.nativeImageProcessingRepository
+                        nativeImageProcessingRepository = container.nativeImageProcessingRepository,
+                        coordinatorClient = container.coordinatorClient,
+                        deviceRepository = container.deviceRepository
                     ) as T
                 }
             }

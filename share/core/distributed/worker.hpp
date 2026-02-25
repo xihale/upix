@@ -9,6 +9,8 @@
 #include <memory>
 #include <functional>
 #include <atomic>
+#include <thread>
+#include <filesystem>
 
 namespace crossscale {
 
@@ -45,6 +47,10 @@ public:
     auto submit_results(const std::vector<uint8_t>& results)
         -> expected<void, WorkerError>;
 
+    void set_recommended_weight(float weight);
+    void set_queue_depth(size_t queue_depth);
+    void set_recommended_tile_size(int tile_size);
+
     void start_heartbeat(std::chrono::seconds interval = std::chrono::seconds(5));
     void stop_heartbeat();
 
@@ -76,6 +82,11 @@ private:
     std::string auth_key_;
     std::atomic<bool> running_{false};
     std::atomic<bool> heartbeat_running_{false};
+    std::thread heartbeat_thread_;
+
+    float recommended_weight_override_ = 0.0f;
+    size_t queue_depth_override_ = 0;
+    int recommended_tile_size_override_ = 0;
 
     ModelManager model_manager_;
 

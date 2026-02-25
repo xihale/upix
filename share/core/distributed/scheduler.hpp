@@ -6,6 +6,7 @@
 #include <mutex>
 #include <chrono>
 #include <atomic>
+#include <optional>
 #include "core/engine.hpp"
 
 namespace crossscale {

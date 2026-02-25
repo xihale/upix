@@ -8,6 +8,45 @@
 #include <filesystem>
 #include <fstream>
 
+namespace {
+
+auto default_recommended_weight(crossscale::DeviceType device_type) -> float {
+#if defined(__ANDROID__)
+    if (device_type == crossscale::DeviceType::GPU_VULKAN) {
+        return 2.0f;
+    }
+    return 2.0f;
+#else
+    if (device_type == crossscale::DeviceType::GPU_VULKAN) {
+        return 5.0f;
+    }
+    return 4.0f;
+#endif
+}
+
+auto default_queue_depth(crossscale::DeviceType device_type) -> size_t {
+#if defined(__ANDROID__)
+    if (device_type == crossscale::DeviceType::GPU_VULKAN) {
+        return 2;
+    }
+    return 2;
+#else
+    if (device_type == crossscale::DeviceType::GPU_VULKAN) {
+        return 5;
+    }
+    return 3;
+#endif
+}
+
+auto default_recommended_tile_size(crossscale::DeviceType device_type) -> int {
+    if (device_type == crossscale::DeviceType::GPU_VULKAN) {
+        return 256;
+    }
+    return 192;
+}
+
+}
+
 namespace crossscale {
 
 Worker::Worker() = default;
@@ -34,6 +73,18 @@ auto Worker::connect(const std::string& host, uint16_t port, const std::string& 
     
     LOG_INFO("Worker", "Connected to " + host + ":" + std::to_string(port));
     return {};
+}
+
+void Worker::set_recommended_weight(float weight) {
+    recommended_weight_override_ = std::max(weight, 0.0f);
+}
+
+void Worker::set_queue_depth(size_t queue_depth) {
+    queue_depth_override_ = queue_depth;
+}
+
+void Worker::set_recommended_tile_size(int tile_size) {
+    recommended_tile_size_override_ = std::max(tile_size, 0);
 }
 
 auto Worker::handshake(Engine& engine) -> expected<void, WorkerError> {
@@ -77,9 +128,17 @@ auto Worker::handshake(Engine& engine) -> expected<void, WorkerError> {
     profile.device_id = device_id_;
     profile.device_name = "CLI-Worker";
     profile.type = engine.current_device();
-    profile.tiles_per_second = engine.benchmark(256);
-    profile.recommended_tile_size = 256;
-    profile.max_batch_size = 1;
+    const float benchmark_tiles_per_second = engine.benchmark(256);
+    const float default_weight = default_recommended_weight(profile.type);
+    profile.tiles_per_second = recommended_weight_override_ > 0.0f
+        ? recommended_weight_override_
+        : std::max(benchmark_tiles_per_second, default_weight);
+    profile.recommended_tile_size = recommended_tile_size_override_ > 0
+        ? recommended_tile_size_override_
+        : default_recommended_tile_size(profile.type);
+    profile.max_batch_size = queue_depth_override_ > 0
+        ? queue_depth_override_
+        : default_queue_depth(profile.type);
     profile.ip_address = socket_->peer_address();
     profile.port = socket_->peer_port();
 
@@ -91,6 +150,16 @@ void Worker::disconnect() {
     stop_heartbeat();
     
     if (socket_) {
+        if (socket_->is_connected()) {
+            MessageHeader header;
+            header.type = MessageType::MSG_DISCONNECT;
+            header.payload_length = 0;
+            auto data = Protocol::serialize(header, nullptr);
+            auto send_result = socket_->send_all(data.data(), data.size());
+            if (!send_result.has_value()) {
+                LOG_WARNING("Worker", "Failed to notify coordinator before disconnect: " + send_result.error().message);
+            }
+        }
         socket_->close();
         socket_.reset();
     }
@@ -455,12 +524,20 @@ auto Worker::submit_results(const std::vector<uint8_t>& results)
 }
 
 void Worker::start_heartbeat(std::chrono::seconds interval) {
+    stop_heartbeat();
     heartbeat_running_ = true;
-    std::thread(&Worker::heartbeat_loop, this, interval).detach();
+    heartbeat_thread_ = std::thread(&Worker::heartbeat_loop, this, interval);
 }
 
 void Worker::stop_heartbeat() {
     heartbeat_running_ = false;
+    if (heartbeat_thread_.joinable()) {
+        if (heartbeat_thread_.get_id() == std::this_thread::get_id()) {
+            heartbeat_thread_.detach();
+        } else {
+            heartbeat_thread_.join();
+        }
+    }
 }
 
 void Worker::heartbeat_loop(std::chrono::seconds interval) {
@@ -471,11 +548,16 @@ void Worker::heartbeat_loop(std::chrono::seconds interval) {
             header.payload_length = 0;
             
             auto data = Protocol::serialize(header, nullptr);
-            socket_->send_all(data.data(), data.size());
+            auto send_result = socket_->send_all(data.data(), data.size());
+            if (!send_result.has_value()) {
+                LOG_WARNING("Worker", "Heartbeat send failed: " + send_result.error().message);
+                break;
+            }
         }
         
         std::this_thread::sleep_for(interval);
     }
+    heartbeat_running_ = false;
 }
 
 void Worker::set_models_directory(const std::filesystem::path& dir) {

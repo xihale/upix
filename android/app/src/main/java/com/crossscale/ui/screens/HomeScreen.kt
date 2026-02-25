@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.provider.DocumentsContract
+import android.util.LruCache
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -75,6 +76,8 @@ import com.crossscale.viewmodel.ProcessingUiState
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -82,7 +85,7 @@ fun HomeScreen(
     state: MainUiState,
     processingUiState: ProcessingUiState,
     onSelectModel: (ModelInfo) -> Unit,
-    onSelectMultipleImages: () -> Unit,
+    onSelectImages: () -> Unit,
     onSelectImageFolder: () -> Unit,
     onClearInputSources: () -> Unit,
     onRemoveInputSource: (String) -> Unit,
@@ -108,6 +111,7 @@ fun HomeScreen(
     onCancelProcessing: () -> Unit
 ) {
     val selectedInputs = state.selectedInputSources
+    val corruptedSources = state.corruptedInputSources
     val selectedModel = state.selectedModel?.name ?: "未选择"
     val selectedOutput = abbreviatePath(state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/CrossScale")
     val queueItems = processingUiState.queueItems
@@ -132,7 +136,8 @@ fun HomeScreen(
 
             HeroArea(
                 selectedInputs = selectedInputs,
-                onAddImage = onSelectMultipleImages,
+                corruptedSources = corruptedSources,
+                onAddImage = onSelectImages,
                 onAddFolder = onSelectImageFolder,
                 onClearInput = onClearInputSources,
                 onRemoveInput = onRemoveInputSource,
@@ -260,6 +265,7 @@ fun HomeScreen(
     previewSource?.let { source ->
         PreviewBottomSheet(
             source = source,
+            isCorrupted = source in corruptedSources,
             onDismiss = { previewSource = null }
         )
     }
@@ -268,6 +274,7 @@ fun HomeScreen(
 @Composable
 private fun HeroArea(
     selectedInputs: List<String>,
+    corruptedSources: Set<String>,
     onAddImage: () -> Unit,
     onAddFolder: () -> Unit,
     onClearInput: () -> Unit,
@@ -290,6 +297,7 @@ private fun HeroArea(
         } else {
             SelectedHero(
                 selectedInputs = selectedInputs,
+                corruptedSources = corruptedSources,
                 onAddImage = onAddImage,
                 onAddFolder = onAddFolder,
                 onClearInput = onClearInput,
@@ -342,6 +350,7 @@ private fun EmptyHero() {
 @Composable
 private fun SelectedHero(
     selectedInputs: List<String>,
+    corruptedSources: Set<String>,
     onAddImage: () -> Unit,
     onAddFolder: () -> Unit,
     onClearInput: () -> Unit,
@@ -351,8 +360,8 @@ private fun SelectedHero(
     val context = LocalContext.current
     val firstSource = selectedInputs.firstOrNull()
     val bgBitmap by produceState<ImageBitmap?>(initialValue = null, firstSource) {
-        value = withContext(Dispatchers.IO) {
-            firstSource?.let { source -> decodeQueueThumbnail(context = context, source = source) }
+        value = firstSource?.let { source ->
+            decodeQueueThumbnailWithLimit(context = context, source = source)
         }
     }
 
@@ -401,6 +410,7 @@ private fun SelectedHero(
                 items(items = selectedInputs, key = { item -> item }) { source ->
                     HeroThumbnail(
                         source = source,
+                        isCorrupted = source in corruptedSources,
                         onDelete = { onRemoveInput(source) },
                         onPreview = { onPreviewInput(source) }
                     )
@@ -432,14 +442,13 @@ private fun SelectedHero(
 @Composable
 private fun HeroThumbnail(
     source: String,
+    isCorrupted: Boolean,
     onDelete: () -> Unit,
     onPreview: () -> Unit
 ) {
     val context = LocalContext.current
     val bitmapState by produceState<ImageBitmap?>(initialValue = null, source) {
-        value = withContext(Dispatchers.IO) {
-            decodeQueueThumbnail(context = context, source = source)
-        }
+        value = decodeQueueThumbnailWithLimit(context = context, source = source)
     }
 
     Box(
@@ -459,7 +468,11 @@ private fun HeroThumbnail(
                 contentScale = ContentScale.Crop
             )
         } else {
-            Text(text = "预览", style = MaterialTheme.typography.bodySmall)
+            Text(
+                text = if (isCorrupted) "损坏" else "预览",
+                style = MaterialTheme.typography.bodySmall,
+                color = if (isCorrupted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
+            )
         }
     }
 }
@@ -468,13 +481,12 @@ private fun HeroThumbnail(
 @OptIn(ExperimentalMaterial3Api::class)
 private fun PreviewBottomSheet(
     source: String,
+    isCorrupted: Boolean,
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
     val previewBitmap by produceState<ImageBitmap?>(initialValue = null, source) {
-        value = withContext(Dispatchers.IO) {
-            decodeQueueThumbnail(context = context, source = source)
-        }
+        value = decodeQueueThumbnailWithLimit(context = context, source = source)
     }
     val previewTitle = remember(source) {
         source.substringAfterLast('/').ifBlank {
@@ -505,9 +517,9 @@ private fun PreviewBottomSheet(
                 val bitmap = previewBitmap
                 if (bitmap == null) {
                     Text(
-                        text = "暂无可预览图像",
+                        text = if (isCorrupted) "图片损坏" else "暂无可预览图像",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                        color = if (isCorrupted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 } else {
                     Image(
@@ -1001,11 +1013,9 @@ private fun QueueItemRow(
 private fun QueueItemThumbnail(source: String) {
     val context = LocalContext.current
     val bitmapState by produceState<ImageBitmap?>(initialValue = null, source) {
-        value = withContext(Dispatchers.IO) {
-            runCatching {
-                decodeQueueThumbnail(context = context, source = source)
-            }.getOrNull()
-        }
+        value = runCatching {
+            decodeQueueThumbnailWithLimit(context = context, source = source)
+        }.getOrNull()
     }
 
     Box(
@@ -1033,8 +1043,19 @@ private fun decodeQueueThumbnail(
     context: Context,
     source: String
 ): ImageBitmap? {
+    val sourceKey = thumbnailCacheKey(source)
+    ThumbnailMemoryCache.getThumbnail(sourceKey)?.let { cachedBitmap ->
+        return cachedBitmap
+    }
+
     val thumbnailSources = resolveThumbnailCandidateSources(context = context, source = source)
     for (thumbnailSource in thumbnailSources) {
+        val candidateKey = thumbnailCacheKey(thumbnailSource)
+        ThumbnailMemoryCache.getThumbnail(candidateKey)?.let { cachedBitmap ->
+            ThumbnailMemoryCache.putThumbnail(sourceKey, cachedBitmap)
+            return cachedBitmap
+        }
+
         val boundsOptions = BitmapFactory.Options().apply {
             inJustDecodeBounds = true
         }
@@ -1061,9 +1082,23 @@ private fun decodeQueueThumbnail(
             BitmapFactory.decodeStream(stream, null, decodeOptions)
         } ?: continue
 
-        return thumbnail.asImageBitmap()
+        val imageBitmap = thumbnail.asImageBitmap()
+        ThumbnailMemoryCache.putThumbnail(candidateKey, imageBitmap)
+        ThumbnailMemoryCache.putThumbnail(sourceKey, imageBitmap)
+        return imageBitmap
     }
     return null
+}
+
+private suspend fun decodeQueueThumbnailWithLimit(
+    context: Context,
+    source: String
+): ImageBitmap? {
+    return withContext(Dispatchers.IO) {
+        ThumbnailDecodeLimiter.withPermit {
+            decodeQueueThumbnail(context = context, source = source)
+        }
+    }
 }
 
 private fun resolveThumbnailCandidateSources(
@@ -1075,6 +1110,10 @@ private fun resolveThumbnailCandidateSources(
         return emptyList()
     }
 
+    ThumbnailMemoryCache.getSourceCandidates(normalizedSource)?.let { cachedCandidates ->
+        return cachedCandidates
+    }
+
     val decodedSources = InputSourceSpec.decode(normalizedSource).orEmpty()
     val directSources = if (decodedSources.isEmpty()) {
         listOf(normalizedSource)
@@ -1082,7 +1121,7 @@ private fun resolveThumbnailCandidateSources(
         decodedSources
     }
 
-    return directSources
+    val resolvedSources = directSources
         .map { candidate -> candidate.trim() }
         .filter { candidate -> candidate.isNotBlank() }
         .flatMap { candidate ->
@@ -1094,6 +1133,9 @@ private fun resolveThumbnailCandidateSources(
             }
         }
         .distinct()
+
+    ThumbnailMemoryCache.putSourceCandidates(normalizedSource, resolvedSources)
+    return resolvedSources
 }
 
 private fun resolveTreeSourceThumbnail(
@@ -1182,7 +1224,65 @@ private fun calculateInSampleSize(
     return sampleSize.coerceAtLeast(1)
 }
 
+private fun thumbnailCacheKey(source: String): String {
+    return source.trim()
+}
+
+private object ThumbnailMemoryCache {
+    private const val THUMBNAIL_CACHE_SIZE = 96
+    private const val SOURCE_CANDIDATE_CACHE_SIZE = 128
+    private val thumbnailCache = LruCache<String, ImageBitmap>(THUMBNAIL_CACHE_SIZE)
+    private val sourceCandidateCache = LruCache<String, List<String>>(SOURCE_CANDIDATE_CACHE_SIZE)
+
+    fun getThumbnail(sourceKey: String): ImageBitmap? {
+        if (sourceKey.isBlank()) {
+            return null
+        }
+        return synchronized(this) {
+            thumbnailCache.get(sourceKey)
+        }
+    }
+
+    fun putThumbnail(sourceKey: String, bitmap: ImageBitmap) {
+        if (sourceKey.isBlank()) {
+            return
+        }
+        synchronized(this) {
+            thumbnailCache.put(sourceKey, bitmap)
+        }
+    }
+
+    fun getSourceCandidates(sourceKey: String): List<String>? {
+        if (sourceKey.isBlank()) {
+            return null
+        }
+        return synchronized(this) {
+            sourceCandidateCache.get(sourceKey)
+        }
+    }
+
+    fun putSourceCandidates(sourceKey: String, candidates: List<String>) {
+        if (sourceKey.isBlank() || candidates.isEmpty()) {
+            return
+        }
+        synchronized(this) {
+            sourceCandidateCache.put(sourceKey, candidates)
+        }
+    }
+}
+
+private object ThumbnailDecodeLimiter {
+    private val semaphore = Semaphore(THUMBNAIL_DECODE_PARALLELISM)
+
+    suspend fun <T> withPermit(block: () -> T): T {
+        return semaphore.withPermit {
+            block()
+        }
+    }
+}
+
 private const val THUMBNAIL_TARGET_SIZE_PX = 192
+private const val THUMBNAIL_DECODE_PARALLELISM = 2
 
 private fun allocationSummary(item: ProcessingQueueItemSummary): String {
     val mode = if (item.distributedMode) "分布式" else "单机"

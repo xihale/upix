@@ -3,6 +3,7 @@
 #include <android/log.h>
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <exception>
 #include <limits>
 #include <memory>
@@ -17,11 +18,14 @@
 #include "core/config.hpp"
 #include "core/engine.hpp"
 #include "core/distributed/worker.hpp"
+#include "protocol.hpp"
 #include "utils/image.hpp"
+#include "utils/network.hpp"
 
 #define LOG_TAG "CrossScale"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 using namespace crossscale;
@@ -43,6 +47,37 @@ void clear_jni_last_error() {
 auto get_jni_last_error() -> std::string {
     std::lock_guard<std::mutex> lock(g_jni_error_mutex);
     return g_jni_last_error;
+}
+
+auto infer_scale_factor_from_model_name(const std::string& model_name) -> int {
+    if (model_name.empty()) {
+        return 2;
+    }
+
+    auto extract_scale = [&](size_t marker_pos) -> int {
+        if (marker_pos == std::string::npos || marker_pos + 2 >= model_name.size()) {
+            return -1;
+        }
+        const char next_char = model_name[marker_pos + 2];
+        if (!std::isdigit(static_cast<unsigned char>(next_char))) {
+            return -1;
+        }
+        return std::max(1, next_char - '0');
+    };
+
+    const auto underscore_marker = model_name.find("_x");
+    const int underscore_scale = extract_scale(underscore_marker);
+    if (underscore_scale > 0) {
+        return underscore_scale;
+    }
+
+    const auto dash_marker = model_name.find("-x");
+    const int dash_scale = extract_scale(dash_marker);
+    if (dash_scale > 0) {
+        return dash_scale;
+    }
+
+    return 2;
 }
 
 class AndroidWorkerSession {
@@ -130,6 +165,10 @@ public:
         worker_.reset();
     }
 
+    auto is_connected() const -> bool {
+        return running_.load() && worker_ != nullptr && worker_->is_connected();
+    }
+
     auto last_error() const -> std::string {
         std::lock_guard<std::mutex> lock(error_mutex_);
         return last_error_;
@@ -145,6 +184,8 @@ private:
         while (running_.load() && worker_ && engine_ && worker_->is_connected()) {
             auto task_result = worker_->receive_task();
             if (!task_result.has_value()) {
+                set_last_error("Worker receive task failed: " + task_result.error().message);
+                LOGW("Worker receive task failed: %s", task_result.error().message.c_str());
                 break;
             }
 
@@ -156,6 +197,7 @@ private:
 
             auto submit_result = worker_->submit_results(execution_result.value());
             if (!submit_result.has_value()) {
+                set_last_error("Worker submit failed: " + submit_result.error().message);
                 LOGE("Worker submit result failed: %s", submit_result.error().message.c_str());
                 break;
             }
@@ -431,6 +473,247 @@ Java_com_crossscale_native_NCNNEngine_nativeBenchmark(
     return engine->benchmark(256);
 }
 
+JNIEXPORT jbyteArray JNICALL
+Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
+    JNIEnv* env,
+    jobject thiz,
+    jstring host,
+    jint port,
+    jstring auth_key,
+    jstring model_name,
+    jint tile_size,
+    jint tile_overlap,
+    jbyteArray input_image,
+    jint width,
+    jint height,
+    jint channels,
+    jstring output_format,
+    jint output_quality
+) {
+    (void)thiz;
+    if (host == nullptr || auth_key == nullptr || model_name == nullptr || input_image == nullptr) {
+        set_jni_last_error("Distributed processing parameters are incomplete");
+        return nullptr;
+    }
+    if (port <= 0 || port > std::numeric_limits<uint16_t>::max()) {
+        set_jni_last_error("Distributed processing port is invalid");
+        return nullptr;
+    }
+    if (width <= 0 || height <= 0 || channels <= 0) {
+        set_jni_last_error("Distributed processing image shape is invalid");
+        return nullptr;
+    }
+
+    const char* host_chars = env->GetStringUTFChars(host, nullptr);
+    const char* key_chars = env->GetStringUTFChars(auth_key, nullptr);
+    const char* model_chars = env->GetStringUTFChars(model_name, nullptr);
+    const char* format_chars = output_format == nullptr ? nullptr : env->GetStringUTFChars(output_format, nullptr);
+
+    if (host_chars == nullptr || key_chars == nullptr || model_chars == nullptr) {
+        if (host_chars != nullptr) {
+            env->ReleaseStringUTFChars(host, host_chars);
+        }
+        if (key_chars != nullptr) {
+            env->ReleaseStringUTFChars(auth_key, key_chars);
+        }
+        if (model_chars != nullptr) {
+            env->ReleaseStringUTFChars(model_name, model_chars);
+        }
+        if (format_chars != nullptr) {
+            env->ReleaseStringUTFChars(output_format, format_chars);
+        }
+        set_jni_last_error("Failed to read distributed processing strings from Java");
+        return nullptr;
+    }
+
+    const std::string host_str(host_chars);
+    const std::string key_str(key_chars);
+    const std::string model_str(model_chars);
+    std::string output_format_str = "jpg";
+    if (format_chars != nullptr) {
+        output_format_str = normalize_output_format(format_chars);
+    }
+    if (!is_supported_output_format(output_format_str)) {
+        output_format_str = "jpg";
+    }
+    const int normalized_quality = std::clamp(static_cast<int>(output_quality), 1, 100);
+
+    env->ReleaseStringUTFChars(host, host_chars);
+    env->ReleaseStringUTFChars(auth_key, key_chars);
+    env->ReleaseStringUTFChars(model_name, model_chars);
+    if (format_chars != nullptr) {
+        env->ReleaseStringUTFChars(output_format, format_chars);
+    }
+
+    const jsize input_size = env->GetArrayLength(input_image);
+    const int64_t expected_input_size =
+        static_cast<int64_t>(width) * static_cast<int64_t>(height) * static_cast<int64_t>(channels);
+    if (expected_input_size <= 0 || expected_input_size > std::numeric_limits<jsize>::max()) {
+        set_jni_last_error("Distributed processing input size overflow");
+        return nullptr;
+    }
+    if (input_size != static_cast<jsize>(expected_input_size)) {
+        set_jni_last_error("Distributed processing input size mismatch");
+        return nullptr;
+    }
+
+    std::vector<uint8_t> input_bytes(static_cast<size_t>(input_size));
+    env->GetByteArrayRegion(
+        input_image,
+        0,
+        input_size,
+        reinterpret_cast<jbyte*>(input_bytes.data())
+    );
+
+    crossscale::TCPSocket socket;
+    const auto connect_result = socket.connect(host_str, static_cast<uint16_t>(port));
+    if (!connect_result.has_value()) {
+        set_jni_last_error("Distributed connect failed: " + connect_result.error().message);
+        return nullptr;
+    }
+
+    crossscale::AuthRequest auth_request{};
+    std::strncpy(auth_request.auth_key, key_str.c_str(), sizeof(auth_request.auth_key) - 1);
+
+    crossscale::MessageHeader auth_header{};
+    auth_header.type = crossscale::MessageType::MSG_AUTH_REQUEST;
+    auth_header.payload_length = sizeof(auth_request);
+    auto auth_payload = crossscale::Protocol::serialize(auth_header, &auth_request);
+    const auto auth_send_result = socket.send_all(auth_payload.data(), auth_payload.size());
+    if (!auth_send_result.has_value()) {
+        set_jni_last_error("Distributed auth send failed: " + auth_send_result.error().message);
+        return nullptr;
+    }
+
+    std::vector<uint8_t> auth_response_header_buffer(crossscale::Protocol::HEADER_SIZE);
+    auto auth_header_recv = socket.receive_all(auth_response_header_buffer.data(), auth_response_header_buffer.size());
+    if (!auth_header_recv.has_value()) {
+        set_jni_last_error("Distributed auth header receive failed: " + auth_header_recv.error().message);
+        return nullptr;
+    }
+
+    const auto auth_response_header =
+        crossscale::Protocol::parse_header(auth_response_header_buffer.data(), auth_response_header_buffer.size());
+    if (!auth_response_header || auth_response_header->type != crossscale::MessageType::MSG_AUTH_RESPONSE) {
+        set_jni_last_error("Distributed auth response type is invalid");
+        return nullptr;
+    }
+
+    std::vector<uint8_t> auth_response_payload(auth_response_header->payload_length);
+    auto auth_payload_recv = socket.receive_all(auth_response_payload.data(), auth_response_payload.size());
+    if (!auth_payload_recv.has_value()) {
+        set_jni_last_error("Distributed auth payload receive failed: " + auth_payload_recv.error().message);
+        return nullptr;
+    }
+    if (auth_response_payload.size() < sizeof(crossscale::AuthResponse)) {
+        set_jni_last_error("Distributed auth payload is truncated");
+        return nullptr;
+    }
+
+    const auto* auth_response = reinterpret_cast<const crossscale::AuthResponse*>(auth_response_payload.data());
+    if (auth_response->authenticated == 0) {
+        set_jni_last_error("Distributed authentication rejected by coordinator");
+        return nullptr;
+    }
+
+    crossscale::ClientTaskSubmit submit_request{};
+    submit_request.image_width = static_cast<uint32_t>(width);
+    submit_request.image_height = static_cast<uint32_t>(height);
+    submit_request.channels = static_cast<uint8_t>(channels);
+    std::strncpy(submit_request.model_name, model_str.c_str(), sizeof(submit_request.model_name) - 1);
+    submit_request.tile_size = static_cast<uint32_t>(std::max(tile_size, 16));
+    submit_request.tile_overlap = static_cast<uint32_t>(std::max(tile_overlap, 0));
+    submit_request.image_data_length = static_cast<uint32_t>(input_bytes.size());
+
+    crossscale::MessageHeader submit_header{};
+    submit_header.type = crossscale::MessageType::MSG_CLIENT_SUBMIT;
+    submit_header.payload_length = sizeof(submit_request);
+    auto submit_header_data = crossscale::Protocol::serialize(submit_header, &submit_request);
+    auto submit_send_result = socket.send_all(submit_header_data.data(), submit_header_data.size());
+    if (!submit_send_result.has_value()) {
+        set_jni_last_error("Distributed submit header send failed: " + submit_send_result.error().message);
+        return nullptr;
+    }
+    submit_send_result = socket.send_all(input_bytes.data(), input_bytes.size());
+    if (!submit_send_result.has_value()) {
+        set_jni_last_error("Distributed submit payload send failed: " + submit_send_result.error().message);
+        return nullptr;
+    }
+
+    std::vector<uint8_t> result_header_buffer(crossscale::Protocol::HEADER_SIZE);
+    auto result_header_recv = socket.receive_all(result_header_buffer.data(), result_header_buffer.size());
+    if (!result_header_recv.has_value()) {
+        set_jni_last_error("Distributed response header receive failed: " + result_header_recv.error().message);
+        return nullptr;
+    }
+
+    const auto result_header =
+        crossscale::Protocol::parse_header(result_header_buffer.data(), result_header_buffer.size());
+    if (!result_header || result_header->type != crossscale::MessageType::MSG_CLIENT_RESPONSE) {
+        set_jni_last_error("Distributed response header type is invalid");
+        return nullptr;
+    }
+
+    std::vector<uint8_t> result_payload(result_header->payload_length);
+    auto result_payload_recv = socket.receive_all(result_payload.data(), result_payload.size());
+    if (!result_payload_recv.has_value()) {
+        set_jni_last_error("Distributed response payload receive failed: " + result_payload_recv.error().message);
+        return nullptr;
+    }
+    if (result_payload.size() < sizeof(crossscale::ClientTaskResponse)) {
+        set_jni_last_error("Distributed response payload is truncated");
+        return nullptr;
+    }
+
+    const auto* task_response = reinterpret_cast<const crossscale::ClientTaskResponse*>(result_payload.data());
+    if (task_response->success == 0) {
+        set_jni_last_error("Distributed task failed: " + std::string(task_response->error_message));
+        return nullptr;
+    }
+
+    std::vector<uint8_t> processed_raw(task_response->result_data_length);
+    auto processed_raw_recv = socket.receive_all(processed_raw.data(), processed_raw.size());
+    if (!processed_raw_recv.has_value()) {
+        set_jni_last_error("Distributed result receive failed: " + processed_raw_recv.error().message);
+        return nullptr;
+    }
+
+    const int scale_factor = infer_scale_factor_from_model_name(model_str);
+    const int output_width = width * std::max(scale_factor, 1);
+    const int output_height = height * std::max(scale_factor, 1);
+    const int64_t expected_output_size =
+        static_cast<int64_t>(output_width) * static_cast<int64_t>(output_height) * static_cast<int64_t>(channels);
+    if (expected_output_size <= 0 ||
+        expected_output_size != static_cast<int64_t>(processed_raw.size())) {
+        set_jni_last_error("Distributed result size mismatch");
+        return nullptr;
+    }
+
+    crossscale::Image output_image(output_width, output_height, channels);
+    std::copy(processed_raw.begin(), processed_raw.end(), output_image.data());
+    auto encoded_result = output_image.save_to_memory(output_format_str, normalized_quality);
+    if (!encoded_result.has_value()) {
+        set_jni_last_error("Distributed output encode failed: " + encoded_result.error().message);
+        return nullptr;
+    }
+
+    const auto& encoded_bytes = encoded_result.value();
+    jbyteArray encoded_array = env->NewByteArray(static_cast<jsize>(encoded_bytes.size()));
+    if (encoded_array == nullptr) {
+        set_jni_last_error("Distributed output allocation failed");
+        return nullptr;
+    }
+    env->SetByteArrayRegion(
+        encoded_array,
+        0,
+        static_cast<jsize>(encoded_bytes.size()),
+        reinterpret_cast<const jbyte*>(encoded_bytes.data())
+    );
+
+    clear_jni_last_error();
+    return encoded_array;
+}
+
 JNIEXPORT jint JNICALL
 Java_com_crossscale_native_NCNNEngine_nativeGetScaleFactor(
     JNIEnv* env,
@@ -561,6 +844,22 @@ Java_com_crossscale_native_NativeWorker_nativeDisconnect(
     
     auto* worker = reinterpret_cast<AndroidWorkerSession*>(worker_ptr);
     worker->disconnect();
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_crossscale_native_NativeWorker_nativeIsConnected(
+    JNIEnv* env,
+    jobject thiz,
+    jlong worker_ptr
+) {
+    (void)env;
+    (void)thiz;
+    if (worker_ptr == 0) {
+        return JNI_FALSE;
+    }
+
+    auto* worker = reinterpret_cast<AndroidWorkerSession*>(worker_ptr);
+    return worker->is_connected() ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jstring JNICALL

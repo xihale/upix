@@ -32,6 +32,7 @@ fun DevicesScreen(
     onStopDiscovery: () -> Unit,
     onConnectDevice: (String) -> Unit,
     onDisconnectDevice: (String) -> Unit,
+    onAdjustDeviceWeight: (String, Float) -> Unit,
     onShowManualConnectDialog: (Boolean) -> Unit,
     onManualConnect: (String, String, String) -> Unit,
     onConnectByQr: (String) -> Unit
@@ -120,7 +121,8 @@ fun DevicesScreen(
                     DeviceCard(
                         device = device,
                         onConnect = onConnectDevice,
-                        onDisconnect = onDisconnectDevice
+                        onDisconnect = onDisconnectDevice,
+                        onAdjustWeight = onAdjustDeviceWeight
                     )
                 }
             }

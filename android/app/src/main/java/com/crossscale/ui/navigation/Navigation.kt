@@ -1,8 +1,15 @@
 package com.crossscale.ui.navigation
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.camera.core.ExperimentalGetImage
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import kotlinx.coroutines.flow.StateFlow
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -25,9 +32,9 @@ fun CrossScaleNavigation(
     mainUiState: MainUiState,
     deviceUiState: DeviceUiState,
     processingUiState: ProcessingUiState,
-    logs: List<LogEntry>,
+    logsFlow: StateFlow<List<LogEntry>>,
     onSelectModel: (ModelInfo) -> Unit,
-    onSelectMultipleImages: () -> Unit,
+    onSelectImages: () -> Unit,
     onSelectImageFolder: () -> Unit,
     onClearInputSources: () -> Unit,
     onRemoveInputSource: (String) -> Unit,
@@ -52,11 +59,13 @@ fun CrossScaleNavigation(
     onDiscardCheckpoint: () -> Unit,
     onCancelProcessing: () -> Unit,
     onRefreshModels: () -> Unit,
+    onImportModels: () -> Unit,
     onDeleteModel: (ModelInfo) -> Unit,
     onStartDiscovery: () -> Unit,
     onStopDiscovery: () -> Unit,
     onConnectDevice: (String) -> Unit,
     onDisconnectDevice: (String) -> Unit,
+    onAdjustDeviceWeight: (String, Float) -> Unit,
     onShowManualConnectDialog: (Boolean) -> Unit,
     onManualConnect: (String, String, String) -> Unit,
     onConnectByQr: (String) -> Unit,
@@ -71,80 +80,106 @@ fun CrossScaleNavigation(
         modifier = modifier
     ) {
         composable(AppScreen.Home.route) {
-            HomeScreen(
-                state = mainUiState,
-                processingUiState = processingUiState,
-                onSelectModel = onSelectModel,
-                onSelectMultipleImages = onSelectMultipleImages,
-                onSelectImageFolder = onSelectImageFolder,
-                onClearInputSources = onClearInputSources,
-                onRemoveInputSource = onRemoveInputSource,
-                onMoveInputSourceUp = onMoveInputSourceUp,
-                onMoveInputSourceDown = onMoveInputSourceDown,
-                onSelectOutputFolder = onSelectOutputFolder,
-                onUseDefaultOutputFolder = onUseDefaultOutputFolder,
-                onToggleOverwriteOriginal = onToggleOverwriteOriginal,
-                onToggleBackupOriginal = onToggleBackupOriginal,
-                onStartProcessing = onStartProcessing,
-                onStartBatchQueue = onStartBatchQueue,
-                onPauseBatchQueue = onPauseBatchQueue,
-                onRetryQueuedBatch = onRetryQueuedBatch,
-                onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
-                onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,
-                onRemoveQueuedBatch = onRemoveQueuedBatch,
-                onClearBatchQueue = onClearBatchQueue,
-                onResumeProcessing = onResumeProcessing,
-                onRetryFailedItems = onRetryFailedItems,
-                onResumePendingItem = onResumePendingItem,
-                onRetryFailedItem = onRetryFailedItem,
-                onDiscardCheckpoint = onDiscardCheckpoint,
-                onCancelProcessing = onCancelProcessing
-            )
+            DestinationContainer {
+                HomeScreen(
+                    state = mainUiState,
+                    processingUiState = processingUiState,
+                    onSelectModel = onSelectModel,
+                    onSelectImages = onSelectImages,
+                    onSelectImageFolder = onSelectImageFolder,
+                    onClearInputSources = onClearInputSources,
+                    onRemoveInputSource = onRemoveInputSource,
+                    onMoveInputSourceUp = onMoveInputSourceUp,
+                    onMoveInputSourceDown = onMoveInputSourceDown,
+                    onSelectOutputFolder = onSelectOutputFolder,
+                    onUseDefaultOutputFolder = onUseDefaultOutputFolder,
+                    onToggleOverwriteOriginal = onToggleOverwriteOriginal,
+                    onToggleBackupOriginal = onToggleBackupOriginal,
+                    onStartProcessing = onStartProcessing,
+                    onStartBatchQueue = onStartBatchQueue,
+                    onPauseBatchQueue = onPauseBatchQueue,
+                    onRetryQueuedBatch = onRetryQueuedBatch,
+                    onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
+                    onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,
+                    onRemoveQueuedBatch = onRemoveQueuedBatch,
+                    onClearBatchQueue = onClearBatchQueue,
+                    onResumeProcessing = onResumeProcessing,
+                    onRetryFailedItems = onRetryFailedItems,
+                    onResumePendingItem = onResumePendingItem,
+                    onRetryFailedItem = onRetryFailedItem,
+                    onDiscardCheckpoint = onDiscardCheckpoint,
+                    onCancelProcessing = onCancelProcessing
+                )
+            }
         }
         composable(AppScreen.Devices.route) {
-            DevicesScreen(
-                state = deviceUiState,
-                onStartDiscovery = onStartDiscovery,
-                onStopDiscovery = onStopDiscovery,
-                onConnectDevice = onConnectDevice,
-                onDisconnectDevice = onDisconnectDevice,
-                onShowManualConnectDialog = onShowManualConnectDialog,
-                onManualConnect = onManualConnect,
-                onConnectByQr = onConnectByQr
-            )
+            DestinationContainer {
+                DevicesScreen(
+                    state = deviceUiState,
+                    onStartDiscovery = onStartDiscovery,
+                    onStopDiscovery = onStopDiscovery,
+                    onConnectDevice = onConnectDevice,
+                    onDisconnectDevice = onDisconnectDevice,
+                    onAdjustDeviceWeight = onAdjustDeviceWeight,
+                    onShowManualConnectDialog = onShowManualConnectDialog,
+                    onManualConnect = onManualConnect,
+                    onConnectByQr = onConnectByQr
+                )
+            }
         }
         composable(AppScreen.Settings.route) {
-            SettingsScreen(
-                modelDirectoryPath = mainUiState.modelDirectoryPath,
-                selectedModelName = mainUiState.selectedModel?.name,
-                onOpenModels = {
-                    navController.navigate(AppScreen.SettingsModels.route)
-                },
-                onOpenLogs = {
-                    navController.navigate(AppScreen.SettingsLogs.route)
-                },
-                onOpenHelp = onOpenHelp
-            )
+            DestinationContainer {
+                SettingsScreen(
+                    modelDirectoryPath = mainUiState.modelDirectoryPath,
+                    selectedModelName = mainUiState.selectedModel?.name,
+                    onOpenModels = {
+                        navController.navigate(AppScreen.SettingsModels.route)
+                    },
+                    onOpenLogs = {
+                        navController.navigate(AppScreen.SettingsLogs.route)
+                    },
+                    onOpenHelp = onOpenHelp
+                )
+            }
         }
         composable(AppScreen.SettingsModels.route) {
-            ModelsScreen(
-                models = mainUiState.models,
-                selectedModel = mainUiState.selectedModel,
-                onSelectModel = onSelectModel,
-                onRefreshModels = onRefreshModels,
-                onDeleteModel = onDeleteModel,
-                modelDirectoryPath = mainUiState.modelDirectoryPath,
-                onOpenModelRelease = onOpenModelRelease
-            )
+            DestinationContainer {
+                ModelsScreen(
+                    models = mainUiState.models,
+                    selectedModel = mainUiState.selectedModel,
+                    onSelectModel = onSelectModel,
+                    onRefreshModels = onRefreshModels,
+                    onImportModels = onImportModels,
+                    onDeleteModel = onDeleteModel,
+                    modelDirectoryPath = mainUiState.modelDirectoryPath,
+                    onOpenModelRelease = onOpenModelRelease
+                )
+            }
         }
         composable(AppScreen.SettingsLogs.route) {
-            LogsScreen(
-                logs = logs,
-                onClearLogs = onClearLogs
-            )
+            val logs by logsFlow.collectAsState()
+            DestinationContainer {
+                LogsScreen(
+                    logs = logs,
+                    onClearLogs = onClearLogs
+                )
+            }
         }
         composable(AppScreen.Help.route) {
-            HelpScreen()
+            DestinationContainer {
+                HelpScreen()
+            }
         }
+    }
+}
+
+@Composable
+private fun DestinationContainer(content: @Composable () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        content()
     }
 }
