@@ -18,15 +18,20 @@ class InputSourceRepository(
     private val context: Context,
     private val logRepository: LogRepository
 ) : InputSourceResolver {
-    override fun resolveImageInputs(source: String): List<ResolvedImageInput> {
+    override fun resolveImageInputs(
+        source: String,
+        nested: Boolean
+    ): List<ResolvedImageInput> {
         return resolveImageInputsInternal(
             source = source,
+            nested = nested,
             visitedSources = mutableSetOf()
         )
     }
 
     private fun resolveImageInputsInternal(
         source: String,
+        nested: Boolean,
         visitedSources: MutableSet<String>
     ): List<ResolvedImageInput> {
         if (source.isBlank()) {
@@ -42,6 +47,7 @@ class InputSourceRepository(
             multiSources.forEach { subSource ->
                 resolveImageInputsInternal(
                     source = subSource,
+                    nested = nested,
                     visitedSources = visitedSources
                 ).forEach { input ->
                     mergedInputs.putIfAbsent(input.uri.toString(), input)
@@ -52,7 +58,7 @@ class InputSourceRepository(
 
         val parsedUri = runCatching { Uri.parse(source) }.getOrNull()
         if (parsedUri != null && !parsedUri.scheme.isNullOrBlank()) {
-            return resolveUriSource(parsedUri)
+            return resolveUriSource(uri = parsedUri, nested = nested)
         }
 
         val file = File(source)
@@ -81,7 +87,13 @@ class InputSourceRepository(
             return emptyList()
         }
 
-        return file.walkTopDown()
+        val fileSequence = if (nested) {
+            file.walkTopDown()
+        } else {
+            file.listFiles()?.asSequence() ?: emptySequence()
+        }
+
+        return fileSequence
             .filter { it.isFile }
             .filter { isImageMimeOrName(mimeType = null, name = it.name) }
             .map { path ->
@@ -101,9 +113,9 @@ class InputSourceRepository(
             .toList()
     }
 
-    private fun resolveUriSource(uri: Uri): List<ResolvedImageInput> {
+    private fun resolveUriSource(uri: Uri, nested: Boolean): List<ResolvedImageInput> {
         if (DocumentsContract.isTreeUri(uri)) {
-            return resolveTreeImages(treeUri = uri)
+            return resolveTreeImages(treeUri = uri, nested = nested)
         }
         return resolveSingleUriImage(uri = uri)
     }
@@ -127,7 +139,7 @@ class InputSourceRepository(
         )
     }
 
-    private fun resolveTreeImages(treeUri: Uri): List<ResolvedImageInput> {
+    private fun resolveTreeImages(treeUri: Uri, nested: Boolean): List<ResolvedImageInput> {
         val documentId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull()
             ?: return emptyList()
         val pendingDocumentIds = ArrayDeque<String>()
@@ -162,7 +174,9 @@ class InputSourceRepository(
                         } ?: childDocumentId.substringAfterLast(':', childDocumentId)
 
                         if (mimeType == DocumentsContract.Document.MIME_TYPE_DIR) {
-                            pendingDocumentIds.addLast(childDocumentId)
+                            if (nested) {
+                                pendingDocumentIds.addLast(childDocumentId)
+                            }
                             continue
                         }
                         if (!isImageMimeOrName(mimeType = mimeType, name = displayName)) {

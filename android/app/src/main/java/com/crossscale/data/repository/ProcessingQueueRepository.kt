@@ -35,12 +35,15 @@ data class PersistedQueueItem(
     val outputDirectoryUri: String? = null,
     val overwriteOriginal: Boolean = false,
     val backupOriginal: Boolean = true,
+    val processNestedFolders: Boolean = true,
+    val submittedAt: Long = System.currentTimeMillis(),
     val createdAtEpochMs: Long,
     val expectedItems: Int? = null,
     val status: PersistedQueueItemStatus = PersistedQueueItemStatus.PENDING,
     val attempts: Int = 0,
     val lastErrorMessage: String? = null,
-    val lastOutputUri: String? = null
+    val lastOutputUri: String? = null,
+    val corruptedSources: Set<String> = emptySet()
 )
 
 data class ProcessingQueueSnapshot(
@@ -152,12 +155,15 @@ class ProcessingQueueRepository(
                     outputDirectoryUri = item.outputDirectoryUri?.trim()?.ifBlank { null },
                     overwriteOriginal = item.overwriteOriginal,
                     backupOriginal = item.backupOriginal,
+                    processNestedFolders = item.processNestedFolders,
+                    submittedAt = item.submittedAt,
                     createdAtEpochMs = item.createdAtEpochMs,
                     expectedItems = item.expectedItems?.coerceAtLeast(0),
                     status = item.status,
                     attempts = item.attempts.coerceAtLeast(0),
                     lastErrorMessage = item.lastErrorMessage?.trim()?.ifBlank { null },
-                    lastOutputUri = item.lastOutputUri?.trim()?.ifBlank { null }
+                    lastOutputUri = item.lastOutputUri?.trim()?.ifBlank { null },
+                    corruptedSources = item.corruptedSources
                 )
             }
         }
@@ -208,6 +214,8 @@ class ProcessingQueueRepository(
                                 }
                                 put("overwriteOriginal", item.overwriteOriginal)
                                 put("backupOriginal", item.backupOriginal)
+                                put("processNestedFolders", item.processNestedFolders)
+                                put("submittedAt", item.submittedAt)
                                 put("createdAtEpochMs", item.createdAtEpochMs)
                                 item.expectedItems?.let { expectedItems ->
                                     put("expectedItems", expectedItems)
@@ -220,7 +228,7 @@ class ProcessingQueueRepository(
                                 item.lastOutputUri?.let { outputUri ->
                                     put("lastOutputUri", outputUri)
                                 }
-                            }
+                                put("corruptedSources", buildJsonArray { item.corruptedSources.forEach { add(it) } })
                         )
                     }
                 }
@@ -252,12 +260,15 @@ class ProcessingQueueRepository(
                     outputDirectoryUri = item["outputDirectoryUri"]?.jsonPrimitive?.contentOrNull,
                     overwriteOriginal = item["overwriteOriginal"]?.jsonPrimitive?.booleanOrNull ?: false,
                     backupOriginal = item["backupOriginal"]?.jsonPrimitive?.booleanOrNull ?: true,
+                    processNestedFolders = item["processNestedFolders"]?.jsonPrimitive?.booleanOrNull ?: true,
+                    submittedAt = item["submittedAt"]?.jsonPrimitive?.longOrNull ?: 0L,
                     createdAtEpochMs = item["createdAtEpochMs"]?.jsonPrimitive?.longOrNull ?: 0L,
                     expectedItems = item["expectedItems"]?.jsonPrimitive?.intOrNull,
                     status = parsedStatus,
                     attempts = item["attempts"]?.jsonPrimitive?.intOrNull ?: 0,
                     lastErrorMessage = item["lastErrorMessage"]?.jsonPrimitive?.contentOrNull,
-                    lastOutputUri = item["lastOutputUri"]?.jsonPrimitive?.contentOrNull
+                    lastOutputUri = item["lastOutputUri"]?.jsonPrimitive?.contentOrNull,
+                    corruptedSources = item["corruptedSources"]?.jsonArray?.map { it.jsonPrimitive.content }?.toSet() ?: emptySet()
                 )
             } ?: emptyList()
 

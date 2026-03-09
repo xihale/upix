@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <unordered_set>
 
 namespace crossscale {
 
@@ -174,24 +175,163 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
     
     info.input_channels = 3;
     info.tile_size = 256;
-    
+
     std::string line;
     std::getline(file, line);
-    
-    int layer_count = 0, blob_count = 0;
+
+    int layer_count = 0;
+    int blob_count = 0;
     file >> layer_count >> blob_count;
-    
-    std::string last_layer_type;
-    while (std::getline(file, line)) {
-        if (line.empty() || line[0] == '#') continue;
-        
-        std::istringstream iss(line);
-        std::string type, name;
-        iss >> type >> name;
-        
-        if (!type.empty() && type != "Input") {
-            last_layer_type = type;
+    (void)layer_count;
+    (void)blob_count;
+
+    bool inferred_input_channels = false;
+    std::unordered_set<std::string> input_dependent_blobs;
+
+    auto read_param_int = [](const std::vector<std::string>& param_tokens, int key) -> std::optional<int> {
+        const std::string prefix = std::to_string(key) + "=";
+        for (const auto& token : param_tokens) {
+            if (token.rfind(prefix, 0) != 0) {
+                continue;
+            }
+
+            const std::string value_str = token.substr(prefix.size());
+            if (value_str.empty()) {
+                return std::nullopt;
+            }
+
+            try {
+                size_t parsed = 0;
+                int value = std::stoi(value_str, &parsed);
+                if (parsed == value_str.size()) {
+                    return value;
+                }
+            } catch (...) {
+            }
+
+            try {
+                return static_cast<int>(std::stod(value_str));
+            } catch (...) {
+                return std::nullopt;
+            }
         }
+        return std::nullopt;
+    };
+
+    while (std::getline(file, line)) {
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+
+        std::istringstream iss(line);
+        std::string type;
+        std::string name;
+        int bottom_count = 0;
+        int top_count = 0;
+        if (!(iss >> type >> name >> bottom_count >> top_count)) {
+            continue;
+        }
+
+        if (bottom_count < 0 || top_count < 0) {
+            continue;
+        }
+
+        std::vector<std::string> bottoms(static_cast<size_t>(bottom_count));
+        std::vector<std::string> tops(static_cast<size_t>(top_count));
+
+        bool parse_failed = false;
+        for (int i = 0; i < bottom_count; ++i) {
+            if (!(iss >> bottoms[static_cast<size_t>(i)])) {
+                parse_failed = true;
+                break;
+            }
+        }
+        for (int i = 0; i < top_count && !parse_failed; ++i) {
+            if (!(iss >> tops[static_cast<size_t>(i)])) {
+                parse_failed = true;
+                break;
+            }
+        }
+        if (parse_failed) {
+            continue;
+        }
+
+        std::vector<std::string> param_tokens;
+        std::string token;
+        while (iss >> token) {
+            param_tokens.push_back(token);
+        }
+
+        bool depends_on_input = false;
+        if (type == "Input") {
+            depends_on_input = true;
+            for (const auto& top : tops) {
+                input_dependent_blobs.insert(top);
+            }
+
+            auto channels = read_param_int(param_tokens, 2);
+            if (channels.has_value() && channels.value() > 0) {
+                info.input_channels = channels.value();
+                inferred_input_channels = true;
+            }
+            continue;
+        }
+
+        for (const auto& bottom : bottoms) {
+            if (input_dependent_blobs.find(bottom) != input_dependent_blobs.end()) {
+                depends_on_input = true;
+                break;
+            }
+        }
+        if (!depends_on_input) {
+            continue;
+        }
+
+        for (const auto& top : tops) {
+            input_dependent_blobs.insert(top);
+        }
+
+        if (inferred_input_channels) {
+            continue;
+        }
+        if (type != "Convolution" && type != "ConvolutionDepthWise") {
+            continue;
+        }
+
+        auto num_output = read_param_int(param_tokens, 0);
+        auto kernel_w = read_param_int(param_tokens, 1);
+        auto kernel_h = read_param_int(param_tokens, 11);
+        auto weight_data_size = read_param_int(param_tokens, 6);
+        auto group = read_param_int(param_tokens, 7);
+
+        if (!num_output.has_value() || !kernel_w.has_value() || !weight_data_size.has_value()) {
+            continue;
+        }
+        if (num_output.value() <= 0 || kernel_w.value() <= 0 || weight_data_size.value() <= 0) {
+            continue;
+        }
+
+        const int kh = kernel_h.value_or(kernel_w.value());
+        if (kh <= 0) {
+            continue;
+        }
+
+        const int groups = std::max(1, group.value_or(1));
+        const long long denominator =
+            static_cast<long long>(num_output.value()) * kernel_w.value() * kh;
+        const long long numerator =
+            static_cast<long long>(weight_data_size.value()) * groups;
+        if (denominator <= 0 || numerator <= 0 || (numerator % denominator) != 0) {
+            continue;
+        }
+
+        const int inferred_channels = static_cast<int>(numerator / denominator);
+        if (inferred_channels <= 0) {
+            continue;
+        }
+
+        info.input_channels = inferred_channels;
+        inferred_input_channels = true;
     }
     
     std::string bin_path_str = path.string();

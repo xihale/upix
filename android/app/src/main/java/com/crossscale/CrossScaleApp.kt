@@ -20,6 +20,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalContext
@@ -37,6 +38,7 @@ import com.crossscale.viewmodel.DeviceViewModel
 import com.crossscale.viewmodel.MainViewModel
 import com.crossscale.viewmodel.ProcessingViewModel
 import java.io.File
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @ExperimentalGetImage
@@ -53,8 +55,17 @@ fun CrossScaleApp(container: AppContainer) {
     val processingUiState by processingViewModel.uiState.collectAsState()
     val logRepository = container.logRepository
 
-    LaunchedEffect(mainUiState.selectedImagePath) {
-        processingViewModel.refreshExpectedTotal(mainUiState.selectedImagePath)
+    var hasBackupAvailable by rememberSaveable { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(mainUiState.selectedImagePath, mainUiState.processNestedFolders) {
+        val path = mainUiState.selectedImagePath
+        if (path != null) {
+            hasBackupAvailable = processingViewModel.hasBackupFor(path, mainUiState.processNestedFolders)
+        } else {
+            hasBackupAvailable = false
+        }
+        processingViewModel.refreshExpectedTotal(path)
     }
 
     val handlePickedImageUris: (List<Uri>, String) -> Unit = { uris, pickerName ->
@@ -318,6 +329,20 @@ fun CrossScaleApp(container: AppContainer) {
             onRetryFailedItem = processingViewModel::retryFailedItem,
             onDiscardCheckpoint = processingViewModel::discardCheckpoint,
             onCancelProcessing = processingViewModel::cancelProcessing,
+            hasBackupAvailable = hasBackupAvailable,
+            onRestoreBackup = {
+                val path = mainUiState.selectedImagePath
+                if (path != null) {
+                    processingViewModel.restoreBackup(path, mainUiState.processNestedFolders) { restored, failed ->
+                        scope.launch {
+                            val msg = if (failed > 0) "恢复了 $restored 个备份，失败 $failed 个" else "成功恢复 $restored 个备份"
+                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                            // Refresh backup availability state after restore
+                            hasBackupAvailable = processingViewModel.hasBackupFor(path, mainUiState.processNestedFolders)
+                        }
+                    }
+                }
+            },
             onRefreshModels = mainViewModel::refreshModels,
             onImportModels = {
                 pickModelFilesLauncher.launch(arrayOf("*/*"))

@@ -30,6 +30,7 @@ data class MainUiState(
     val selectedOutputDirectoryUri: String? = null,
     val overwriteOriginalImage: Boolean = false,
     val backupOriginalImage: Boolean = true,
+    val processNestedFolders: Boolean = true,
     val modelDirectoryPath: String = "",
     val connectedDevices: List<DeviceProfile> = emptyList(),
     val isDistributedMode: Boolean = false
@@ -46,6 +47,7 @@ class MainViewModel(
     private val _selectedOutputDirectoryUri = MutableStateFlow<String?>(null)
     private val _overwriteOriginalImage = MutableStateFlow(false)
     private val _backupOriginalImage = MutableStateFlow(true)
+    private val _processNestedFolders = MutableStateFlow(true)
 
     private val baseUiState = combine(
         modelRepository.models,
@@ -80,12 +82,14 @@ class MainViewModel(
         baseUiState,
         _corruptedInputSources,
         _overwriteOriginalImage,
-        _backupOriginalImage
-    ) { state, corruptedInputSources, overwriteOriginalImage, backupOriginalImage ->
+        _backupOriginalImage,
+        _processNestedFolders
+    ) { state, corruptedInputSources, overwriteOriginalImage, backupOriginalImage, processNestedFolders ->
         state.copy(
             corruptedInputSources = corruptedInputSources,
             overwriteOriginalImage = overwriteOriginalImage,
-            backupOriginalImage = backupOriginalImage
+            backupOriginalImage = backupOriginalImage,
+            processNestedFolders = processNestedFolders
         )
     }.stateIn(
         scope = viewModelScope,
@@ -257,6 +261,10 @@ class MainViewModel(
 
     fun setBackupOriginalImage(enabled: Boolean) {
         _backupOriginalImage.value = enabled
+    }
+
+    fun setProcessNestedFolders(enabled: Boolean) {
+        _processNestedFolders.value = enabled
     }
 
     fun refreshModels() {

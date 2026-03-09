@@ -328,7 +328,12 @@ class ProcessingViewModel(
     ) {
         viewModelScope.launch {
             val expectedItems = withContext(ioDispatcher) {
-                inputSourceRepository.resolveImageInputs(source = source).size
+                val task = _uiState.value.task
+                if (task != null) {
+                    inputSourceRepository.resolveImageInputs(source = source, nested = task.processNestedFolders).size
+                } else {
+                    inputSourceRepository.resolveImageInputs(source = source, nested = true).size // Default to nested for queue estimation if no active task
+                }
             }
             _uiState.update { state ->
                 state.copy(
@@ -635,7 +640,13 @@ class ProcessingViewModel(
 
         previewCountJob = viewModelScope.launch {
             val expectedTotal = withContext(ioDispatcher) {
-                inputSourceRepository.resolveImageInputs(source = normalizedImagePath).size
+                val totalImages =
+                    inputSourceRepository.resolveImageInputs(source = normalizedImagePath, nested = true).size
+                if (totalImages <= 0) {
+                    null
+                } else {
+                    totalImages
+                }
             }
             if (!isActive || requestId != previewRequestId) {
                 return@launch
@@ -765,11 +776,26 @@ class ProcessingViewModel(
             resumeCheckpoint = checkpoint,
             retryFailedOnly = true,
             resumePendingUris = setOf(normalizedUri),
-            queueItemId = null
         )
     }
 
     fun discardCheckpoint() {
+        fun clearCheckpoint(taskId: String? = null) {
+        val currentCheckpoint = checkpointRepository.loadCheckpoint()
+        if (taskId != null && currentCheckpoint?.taskId != taskId) {
+            return
+        }
+        checkpointRepository.clearCheckpoint()
+        _uiState.update { state ->
+            state.copy(
+                canResume = false,
+                checkpointSummary = null,
+                canRetryFailedOnly = false
+            )
+        }
+        val targetTask = taskId ?: currentCheckpoint?.taskId ?: "unknown"
+        logRepository.info("ProcessingViewModel", "Discarded checkpoint: $targetTask")
+    }
         if (processingJob?.isActive == true) {
             logRepository.warning("ProcessingViewModel", "Cannot discard checkpoint while processing is running")
             return
@@ -780,6 +806,38 @@ class ProcessingViewModel(
         }
         checkpointRepository.clearCheckpoint()
         logRepository.info("ProcessingViewModel", "Discarded processing checkpoint")
+    }
+
+    suspend fun hasBackupFor(imagePath: String, nested: Boolean): Boolean = withContext(ioDispatcher) {
+        val inputs = inputSourceRepository.resolveImageInputs(source = imagePath, nested = nested)
+        inputs.any { input ->
+            batchOutputRepository.hasBackup(input)
+        }
+    }
+
+    fun restoreBackup(imagePath: String, nested: Boolean, onComplete: (Int, Int) -> Unit) {
+        viewModelScope.launch {
+            var restored = 0
+            var failed = 0
+            withContext(ioDispatcher) {
+                val inputs = inputSourceRepository.resolveImageInputs(source = imagePath, nested = nested)
+                for (input in inputs) {
+                    if (batchOutputRepository.hasBackup(input)) {
+                        batchOutputRepository.restoreBackup(input).fold(
+                            onSuccess = { restored++ },
+                            onFailure = {
+                                failed++
+                                logRepository.error("ProcessingViewModel", "Failed to restore backup for ${input.displayName}: ${it.message}")
+                            }
+                        )
+                    }
+                }
+            }
+            if (restored > 0 || failed > 0) {
+                logRepository.info("ProcessingViewModel", "Restore completed. Restored: $restored, Failed: $failed")
+            }
+            onComplete(restored, failed)
+        }
     }
 
     private fun startProcessingInternal(
@@ -1622,6 +1680,9 @@ class ProcessingViewModel(
             )
         }
 
+        val task = _uiState.value.task
+        val processNestedFolders = task?.processNestedFolders ?: true // Default to true if no active task
+
         if (resumeCheckpoint != null && resumeCheckpoint.pendingItems.isNotEmpty()) {
             val pendingImagesFromCheckpoint = resumeCheckpoint.pendingItems.mapNotNull { pendingItem ->
                 val parsedUri = runCatching { Uri.parse(pendingItem.uri) }.getOrNull()
@@ -1734,12 +1795,16 @@ class ProcessingViewModel(
             }
         }
 
-        val inputImages = inputSourceRepository.resolveImageInputs(source = imagePath)
-        if (inputImages.isEmpty()) {
+        val inputImages = inputSourceRepository.resolveImageInputs(source = imagePath, nested = processNestedFolders)
+        val validImages = inputImages.filter { input ->
+            // Add any validation logic here if needed
+            true
+        }
+        if (validImages.isEmpty()) {
             return null
         }
 
-        val pendingImages = inputImages.filterNot { item ->
+        val pendingImages = validImages.filterNot { item ->
             batchOutputRepository.isOutputReady(outputDirectory = outputDirectory, input = item)
         }
         val totalItems = inputImages.size

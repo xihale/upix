@@ -95,6 +95,7 @@ fun HomeScreen(
     onUseDefaultOutputFolder: () -> Unit,
     onToggleOverwriteOriginal: (Boolean) -> Unit,
     onToggleBackupOriginal: (Boolean) -> Unit,
+    onToggleProcessNestedFolders: (Boolean) -> Unit,
     onStartProcessing: () -> Unit,
     onStartBatchQueue: () -> Unit,
     onPauseBatchQueue: () -> Unit,
@@ -107,8 +108,12 @@ fun HomeScreen(
     onRetryFailedItems: () -> Unit,
     onResumePendingItem: (String) -> Unit,
     onRetryFailedItem: (String) -> Unit,
+    onResumePendingItem: (String) -> Unit,
+    onRetryFailedItem: (String) -> Unit,
     onDiscardCheckpoint: () -> Unit,
-    onCancelProcessing: () -> Unit
+    onCancelProcessing: () -> Unit,
+    hasBackupAvailable: Boolean = false,
+    onRestoreBackup: () -> Unit = {}
 ) {
     val selectedInputs = state.selectedInputSources
     val corruptedSources = state.corruptedInputSources
@@ -192,6 +197,15 @@ fun HomeScreen(
                     enabled = state.overwriteOriginalImage,
                     onCheckedChange = onToggleBackupOriginal
                 )
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha)
+                )
+
+                SwitchRow(
+                    title = "包含子目录",
+                    checked = state.processNestedFolders,
+                    onCheckedChange = onToggleProcessNestedFolders
+                )
             }
 
             if (!processingUiState.isProcessing && processingUiState.checkpointSummary != null) {
@@ -213,10 +227,12 @@ fun HomeScreen(
             isProcessing = processingUiState.isProcessing,
             pendingQueueCount = pendingQueueCount,
             failedQueueCount = failedQueueCount,
+            hasBackupAvailable = hasBackupAvailable && !processingUiState.isProcessing && queueItems.isEmpty(),
             onShowQueue = {
                 queueSheetVisible = true
             },
             onStart = onStartProcessing,
+            onRestore = onRestoreBackup,
             onCancel = onCancelProcessing
         )
     }
@@ -597,8 +613,10 @@ private fun BottomActionBar(
     isProcessing: Boolean,
     pendingQueueCount: Int,
     failedQueueCount: Int,
+    hasBackupAvailable: Boolean = false,
     onShowQueue: () -> Unit,
     onStart: () -> Unit,
+    onRestore: () -> Unit = {},
     onCancel: () -> Unit
 ) {
     Surface(modifier = modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.background) {
@@ -619,6 +637,25 @@ private fun BottomActionBar(
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
+                if (hasBackupAvailable && !isProcessing) {
+                    Button(
+                        onClick = onRestore,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(52.dp),
+                        shape = CircleShape,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+                            contentColor = MaterialTheme.colorScheme.onTertiaryContainer
+                        )
+                    ) {
+                        Text(
+                            "恢复备份",
+                            fontWeight = BorderlessTokens.SectionTitleWeight
+                        )
+                    }
+                }
+
                 Button(
                     onClick = onStart,
                     modifier = Modifier

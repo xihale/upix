@@ -9,7 +9,10 @@ interface ModelProvider {
 }
 
 interface InputSourceResolver {
-    fun resolveImageInputs(source: String): List<ResolvedImageInput>
+    fun resolveImageInputs(
+        source: String,
+        nested: Boolean
+    ): List<ResolvedImageInput>
 }
 
 interface BatchOutputStore {
@@ -19,6 +22,7 @@ interface BatchOutputStore {
         preferredTreeUri: String?,
         overwriteOriginal: Boolean,
         backupOriginal: Boolean,
+        processNestedFolders: Boolean,
         resumeOutputDirectory: String?,
         resumeOutputDirectoryUri: String?,
         resumeOverwriteOriginal: Boolean?,
@@ -39,6 +43,10 @@ interface BatchOutputStore {
         outputDirectory: BatchOutputDirectory,
         inputs: List<ResolvedImageInput>
     ): String?
+
+    fun hasBackup(input: ResolvedImageInput): Boolean
+
+    fun restoreBackup(input: ResolvedImageInput): Result<Unit>
 
     fun commitOutput(
         outputDirectory: BatchOutputDirectory,

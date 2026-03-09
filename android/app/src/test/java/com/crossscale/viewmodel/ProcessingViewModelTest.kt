@@ -860,7 +860,10 @@ class ProcessingViewModelTest {
             }
         }
 
-        override fun resolveImageInputs(source: String): List<ResolvedImageInput> {
+        override fun resolveImageInputs(
+            source: String,
+            nested: Boolean
+        ): List<ResolvedImageInput> {
             resolveCallCount += 1
             return sourceMap[source].orEmpty()
         }

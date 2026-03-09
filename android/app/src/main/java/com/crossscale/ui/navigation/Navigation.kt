@@ -56,8 +56,9 @@ fun CrossScaleNavigation(
     onRetryFailedItems: () -> Unit,
     onResumePendingItem: (String) -> Unit,
     onRetryFailedItem: (String) -> Unit,
-    onDiscardCheckpoint: () -> Unit,
     onCancelProcessing: () -> Unit,
+    hasBackupAvailable: Boolean = false,
+    onRestoreBackup: () -> Unit = {},
     onRefreshModels: () -> Unit,
     onImportModels: () -> Unit,
     onDeleteModel: (ModelInfo) -> Unit,
@@ -108,7 +109,9 @@ fun CrossScaleNavigation(
                     onResumePendingItem = onResumePendingItem,
                     onRetryFailedItem = onRetryFailedItem,
                     onDiscardCheckpoint = onDiscardCheckpoint,
-                    onCancelProcessing = onCancelProcessing
+                    onCancelProcessing = onCancelProcessing,
+                    hasBackupAvailable = hasBackupAvailable,
+                    onRestoreBackup = onRestoreBackup
                 )
             }
         }

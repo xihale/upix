@@ -46,6 +46,133 @@ void signal_handler(int) {
     g_cancel_requested = true;
 }
 
+auto convert_image_channels(const crossscale::Image& source, int target_channels)
+    -> std::optional<crossscale::Image> {
+    const int src_channels = source.channels();
+    if (src_channels < 1 || src_channels > 4 || target_channels < 1 || target_channels > 4) {
+        return std::nullopt;
+    }
+
+    crossscale::Image converted(source.width(), source.height(), target_channels);
+    const size_t pixel_count = static_cast<size_t>(source.width()) * source.height();
+    const uint8_t* src = source.data();
+    uint8_t* dst = converted.data();
+
+    for (size_t i = 0; i < pixel_count; ++i) {
+        const uint8_t* src_px = src + i * static_cast<size_t>(src_channels);
+        uint8_t r = 0;
+        uint8_t g = 0;
+        uint8_t b = 0;
+        uint8_t a = 255;
+
+        switch (src_channels) {
+            case 1:
+                r = g = b = src_px[0];
+                break;
+            case 2:
+                r = g = b = src_px[0];
+                a = src_px[1];
+                break;
+            case 3:
+                r = src_px[0];
+                g = src_px[1];
+                b = src_px[2];
+                break;
+            case 4:
+                r = src_px[0];
+                g = src_px[1];
+                b = src_px[2];
+                a = src_px[3];
+                break;
+            default:
+                return std::nullopt;
+        }
+
+        const uint8_t gray = static_cast<uint8_t>(
+            (77u * static_cast<unsigned int>(r) +
+             150u * static_cast<unsigned int>(g) +
+             29u * static_cast<unsigned int>(b) +
+             128u) >> 8
+        );
+
+        uint8_t* dst_px = dst + i * static_cast<size_t>(target_channels);
+        switch (target_channels) {
+            case 1:
+                dst_px[0] = gray;
+                break;
+            case 2:
+                dst_px[0] = gray;
+                dst_px[1] = a;
+                break;
+            case 3:
+                dst_px[0] = r;
+                dst_px[1] = g;
+                dst_px[2] = b;
+                break;
+            case 4:
+                dst_px[0] = r;
+                dst_px[1] = g;
+                dst_px[2] = b;
+                dst_px[3] = a;
+                break;
+            default:
+                return std::nullopt;
+        }
+    }
+
+    return converted;
+}
+
+auto normalize_channels_for_model(
+    crossscale::Image& image,
+    int expected_channels,
+    const std::string& image_path
+) -> bool {
+    if (expected_channels <= 0 || image.channels() == expected_channels) {
+        return true;
+    }
+
+    auto converted = convert_image_channels(image, expected_channels);
+    if (!converted.has_value()) {
+        LOG_ERROR(
+            "Engine",
+            "Input image channel count " + std::to_string(image.channels()) +
+                " is incompatible with model input channels " + std::to_string(expected_channels) +
+                ": " + image_path
+        );
+        return false;
+    }
+
+    LOG_WARNING(
+        "Engine",
+        "Input image channel count " + std::to_string(image.channels()) +
+            " does not match model input channels " + std::to_string(expected_channels) +
+            ", converting channels: " + image_path
+    );
+
+    image = std::move(converted.value());
+    if (image.channels() != expected_channels) {
+        LOG_ERROR(
+            "Engine",
+            "Failed to convert input channels from " + std::to_string(image.channels()) +
+                " to " + std::to_string(expected_channels) +
+                ": " + image_path
+        );
+        return false;
+    }
+
+    if (image.channels() < 1 || image.channels() > 4) {
+        LOG_ERROR(
+            "Engine",
+            "Converted image has unsupported channel count " + std::to_string(image.channels()) +
+            ": " + image_path
+        );
+        return false;
+    }
+
+    return true;
+}
+
 void print_usage() {
     std::cout << "CrossScale - Distributed Image Super-Resolution System\n\n"
               << "Usage:\n"
@@ -214,6 +341,7 @@ int main(int argc, char* argv[]) {
             std::string bin_path = selected_model->bin_path.string();
             std::string model_name_used = selected_model->name;
             size_t model_total_size = selected_model->total_size;
+            int model_input_channels = std::max(1, selected_model->input_channels);
             LOG_INFO("Engine", "Using model: " + model_name_used + " (" + std::to_string(selected_model->scale_factor) + "x)");
             
             // Load configuration if specified
@@ -276,10 +404,15 @@ int main(int argc, char* argv[]) {
                 PreparedTask prepared;
                 prepared.in_path = in_path;
                 prepared.out_path = out_path;
-                prepared.width = img_res->width();
-                prepared.height = img_res->height();
-                prepared.channels = img_res->channels();
                 prepared.input_image = std::move(img_res.value());
+
+                if (!normalize_channels_for_model(prepared.input_image, model_input_channels, in_path)) {
+                    return std::nullopt;
+                }
+
+                prepared.width = prepared.input_image.width();
+                prepared.height = prepared.input_image.height();
+                prepared.channels = prepared.input_image.channels();
 
                 return prepared;
             };
@@ -979,6 +1112,7 @@ int main(int argc, char* argv[]) {
         param_path = selected_model->param_path.string();
         bin_path = selected_model->bin_path.string();
         model_name = selected_model->name;
+        int model_input_channels = std::max(1, selected_model->input_channels);
         LOG_INFO("Engine", "Using model: " + model_name + " (" + std::to_string(selected_model->scale_factor) + "x)");
 
         auto load_result = engine->load_model(param_path, bin_path);
@@ -991,6 +1125,18 @@ int main(int argc, char* argv[]) {
 
         int scale = engine->get_scale_factor();
         LOG_INFO("Engine", "Scale factor: " + std::to_string(scale) + "x");
+
+        int input_channels_before = image.channels();
+        if (!normalize_channels_for_model(image, model_input_channels, input_path)) {
+            return 1;
+        }
+        if (image.channels() != input_channels_before) {
+            LOG_INFO(
+                "Engine",
+                "Adjusted input channels: " + std::to_string(input_channels_before) +
+                    " -> " + std::to_string(image.channels())
+            );
+        }
 
         // 加载配置文件（如果指定）
         crossscale::ProcessingConfig config;
@@ -1206,7 +1352,7 @@ int main(int argc, char* argv[]) {
             }
 
             crossscale::MDNSBroadcaster mdns_broadcaster;
-            const auto mdns_result = mdns_broadcaster.start("CrossScale-PC", port, "");
+            const auto mdns_result = mdns_broadcaster.start("CrossScale-PC", port, key);
             if (!mdns_result.has_value()) {
                 LOG_WARNING("Server", "mDNS publish unavailable: " + mdns_result.error().message);
             }
