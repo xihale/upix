@@ -73,6 +73,7 @@ data class ProcessingQueueItemSummary(
     val outputDirectoryUri: String? = null,
     val overwriteOriginal: Boolean = false,
     val backupOriginal: Boolean = true,
+    val processNestedFolders: Boolean = true,
     val createdAtEpochMs: Long,
     val expectedItems: Int? = null,
     val status: ProcessingQueueItemStatus = ProcessingQueueItemStatus.PENDING,
@@ -170,7 +171,8 @@ class ProcessingViewModel(
         distributedMode: Boolean,
         outputDirectoryUri: String? = null,
         overwriteOriginal: Boolean = false,
-        backupOriginal: Boolean = true
+        backupOriginal: Boolean = true,
+        processNestedFolders: Boolean = true
     ) {
         pauseBatchQueueForManualRun()
         startProcessingInternal(
@@ -180,6 +182,7 @@ class ProcessingViewModel(
             outputDirectoryUri = outputDirectoryUri,
             overwriteOriginal = overwriteOriginal,
             backupOriginal = backupOriginal,
+            processNestedFolders = processNestedFolders,
             resumeCheckpoint = null,
             retryFailedOnly = false,
             resumePendingUris = null,
@@ -193,7 +196,8 @@ class ProcessingViewModel(
         distributedMode: Boolean,
         outputDirectoryUri: String?,
         overwriteOriginal: Boolean = false,
-        backupOriginal: Boolean = true
+        backupOriginal: Boolean = true,
+        processNestedFolders: Boolean = true
     ): String? {
         val normalizedImagePath = imagePath.trim()
         val normalizedModelName = modelName.trim()
@@ -215,7 +219,8 @@ class ProcessingViewModel(
                     distributedMode = distributedMode,
                     outputDirectoryUri = normalizedOutputDirectoryUri,
                     overwriteOriginal = overwriteOriginal,
-                    backupOriginal = backupOriginal
+                    backupOriginal = backupOriginal,
+                    processNestedFolders = processNestedFolders
                 )
         }?.id
 
@@ -255,7 +260,8 @@ class ProcessingViewModel(
                     distributedMode = distributedMode,
                     outputDirectoryUri = normalizedOutputDirectoryUri,
                     overwriteOriginal = overwriteOriginal,
-                    backupOriginal = backupOriginal
+                    backupOriginal = backupOriginal,
+                    processNestedFolders = processNestedFolders
                 )
         }?.id
 
@@ -292,6 +298,7 @@ class ProcessingViewModel(
             outputDirectoryUri = normalizedOutputDirectoryUri,
             overwriteOriginal = overwriteOriginal,
             backupOriginal = backupOriginal,
+            processNestedFolders = processNestedFolders,
             createdAtEpochMs = System.currentTimeMillis()
         )
         _uiState.update { state ->
@@ -312,14 +319,16 @@ class ProcessingViewModel(
         distributedMode: Boolean,
         outputDirectoryUri: String?,
         overwriteOriginal: Boolean,
-        backupOriginal: Boolean
+        backupOriginal: Boolean,
+        processNestedFolders: Boolean
     ): Boolean {
         return this.source == source &&
             this.modelName == modelName &&
             this.distributedMode == distributedMode &&
             this.outputDirectoryUri == outputDirectoryUri &&
             this.overwriteOriginal == overwriteOriginal &&
-            this.backupOriginal == backupOriginal
+            this.backupOriginal == backupOriginal &&
+            this.processNestedFolders == processNestedFolders
     }
 
     private fun estimateQueuedBatchExpectedItems(
@@ -368,7 +377,8 @@ class ProcessingViewModel(
         distributedMode: Boolean,
         outputDirectoryUri: String?,
         overwriteOriginal: Boolean,
-        backupOriginal: Boolean
+        backupOriginal: Boolean,
+        processNestedFolders: Boolean
     ) {
         val normalizedOutputDirectoryUri = outputDirectoryUri?.trim()?.ifBlank { null }
         var updatedCount = 0
@@ -382,7 +392,8 @@ class ProcessingViewModel(
                             distributedMode = distributedMode,
                             outputDirectoryUri = normalizedOutputDirectoryUri,
                             overwriteOriginal = overwriteOriginal,
-                            backupOriginal = backupOriginal
+                            backupOriginal = backupOriginal,
+                            processNestedFolders = processNestedFolders
                         )
                         if (updatedItem != item) {
                             updatedCount += 1
@@ -677,10 +688,11 @@ class ProcessingViewModel(
             outputDirectoryUri = checkpoint.outputDirectoryUri,
             overwriteOriginal = checkpoint.overwriteOriginal,
             backupOriginal = checkpoint.backupOriginal,
+            processNestedFolders = checkpoint.processNestedFolders,
             resumeCheckpoint = checkpoint,
             retryFailedOnly = false,
             resumePendingUris = null,
-            queueItemId = null
+            queueItemId = checkpoint.taskId
         )
     }
 
@@ -702,10 +714,11 @@ class ProcessingViewModel(
                 outputDirectoryUri = checkpoint.outputDirectoryUri,
                 overwriteOriginal = checkpoint.overwriteOriginal,
                 backupOriginal = checkpoint.backupOriginal,
+                processNestedFolders = checkpoint.processNestedFolders,
                 resumeCheckpoint = checkpoint,
                 retryFailedOnly = true,
                 resumePendingUris = null,
-                queueItemId = null
+                queueItemId = checkpoint.taskId
             )
             return
         }
@@ -720,7 +733,8 @@ class ProcessingViewModel(
             distributedMode = task.distributedMode,
             outputDirectoryUri = task.outputDirectoryUri,
             overwriteOriginal = task.overwriteOriginal,
-            backupOriginal = task.backupOriginal
+            backupOriginal = task.backupOriginal,
+            processNestedFolders = task.processNestedFolders
         )
     }
 
@@ -745,10 +759,11 @@ class ProcessingViewModel(
             outputDirectoryUri = checkpoint.outputDirectoryUri,
             overwriteOriginal = checkpoint.overwriteOriginal,
             backupOriginal = checkpoint.backupOriginal,
+            processNestedFolders = checkpoint.processNestedFolders,
             resumeCheckpoint = checkpoint,
             retryFailedOnly = false,
             resumePendingUris = setOf(normalizedUri),
-            queueItemId = null
+            queueItemId = checkpoint.taskId
         )
     }
 
@@ -773,9 +788,11 @@ class ProcessingViewModel(
             outputDirectoryUri = checkpoint.outputDirectoryUri,
             overwriteOriginal = checkpoint.overwriteOriginal,
             backupOriginal = checkpoint.backupOriginal,
+            processNestedFolders = checkpoint.processNestedFolders,
             resumeCheckpoint = checkpoint,
             retryFailedOnly = true,
             resumePendingUris = setOf(normalizedUri),
+            queueItemId = checkpoint.taskId
         )
     }
 
@@ -847,6 +864,7 @@ class ProcessingViewModel(
         outputDirectoryUri: String?,
         overwriteOriginal: Boolean,
         backupOriginal: Boolean,
+        processNestedFolders: Boolean,
         resumeCheckpoint: ProcessingCheckpoint?,
         retryFailedOnly: Boolean,
         resumePendingUris: Set<String>?,
@@ -898,6 +916,7 @@ class ProcessingViewModel(
                         distributedMode = effectiveDistributedMode,
                         overwriteOriginal = overwriteOriginal,
                         backupOriginal = backupOriginal,
+                        processNestedFolders = processNestedFolders,
                         pendingItems = 0,
                         progress = 0.0f,
                         status = ProcessingStatus.FAILED,
@@ -915,6 +934,7 @@ class ProcessingViewModel(
             requestedOutputDirectoryUri = outputDirectoryUri,
             overwriteOriginal = overwriteOriginal,
             backupOriginal = backupOriginal,
+            processNestedFolders = processNestedFolders,
             resumeCheckpoint = resumeCheckpoint,
             retryFailedOnly = retryFailedOnly,
             resumePendingUris = resumePendingUris
@@ -975,6 +995,7 @@ class ProcessingViewModel(
                         outputDirectoryUri = outputDirectory.outputDirectoryUri,
                         overwriteOriginal = outputDirectory.overwriteOriginal,
                         backupOriginal = outputDirectory.backupOriginal,
+                        processNestedFolders = outputDirectory.processNestedFolders,
                         completedItems = totalItems,
                         pendingItems = 0,
                         totalItems = totalItems,
@@ -1549,6 +1570,7 @@ class ProcessingViewModel(
             outputDirectoryUri = nextBatch.outputDirectoryUri,
             overwriteOriginal = nextBatch.overwriteOriginal,
             backupOriginal = nextBatch.backupOriginal,
+            processNestedFolders = nextBatch.processNestedFolders,
             resumeCheckpoint = resumeCheckpoint,
             retryFailedOnly = nextBatch.retryFailedOnly,
             resumePendingUris = null,
@@ -1658,6 +1680,7 @@ class ProcessingViewModel(
         requestedOutputDirectoryUri: String?,
         overwriteOriginal: Boolean,
         backupOriginal: Boolean,
+        processNestedFolders: Boolean,
         resumeCheckpoint: ProcessingCheckpoint?,
         retryFailedOnly: Boolean,
         resumePendingUris: Set<String>?
@@ -1668,6 +1691,7 @@ class ProcessingViewModel(
             preferredTreeUri = requestedOutputDirectoryUri,
             overwriteOriginal = overwriteOriginal,
             backupOriginal = backupOriginal,
+            processNestedFolders = processNestedFolders,
             resumeOutputDirectory = resumeCheckpoint?.outputDirectory,
             resumeOutputDirectoryUri = resumeCheckpoint?.outputDirectoryUri,
             resumeOverwriteOriginal = resumeCheckpoint?.overwriteOriginal,

@@ -108,8 +108,6 @@ fun HomeScreen(
     onRetryFailedItems: () -> Unit,
     onResumePendingItem: (String) -> Unit,
     onRetryFailedItem: (String) -> Unit,
-    onResumePendingItem: (String) -> Unit,
-    onRetryFailedItem: (String) -> Unit,
     onDiscardCheckpoint: () -> Unit,
     onCancelProcessing: () -> Unit,
     hasBackupAvailable: Boolean = false,

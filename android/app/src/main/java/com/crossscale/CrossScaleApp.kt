@@ -258,12 +258,14 @@ fun CrossScaleApp(container: AppContainer) {
             onUseDefaultOutputFolder = mainViewModel::useDefaultOutputDirectory,
             onToggleOverwriteOriginal = mainViewModel::setOverwriteOriginalImage,
             onToggleBackupOriginal = mainViewModel::setBackupOriginalImage,
+            onToggleProcessNestedFolders = mainViewModel::setProcessNestedFolders,
             onStartProcessing = {
                 processingViewModel.syncPendingQueueDefaults(
                     distributedMode = mainUiState.isDistributedMode,
                     outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
                     overwriteOriginal = mainUiState.overwriteOriginalImage,
-                    backupOriginal = mainUiState.backupOriginalImage
+                    backupOriginal = mainUiState.backupOriginalImage,
+                    processNestedFolders = mainUiState.processNestedFolders
                 )
                 var hasQueueItems = processingUiState.queueItems.isNotEmpty()
                 if (processingUiState.queueItems.isEmpty()) {
@@ -278,7 +280,8 @@ fun CrossScaleApp(container: AppContainer) {
                             distributedMode = mainUiState.isDistributedMode,
                             outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
                             overwriteOriginal = mainUiState.overwriteOriginalImage,
-                            backupOriginal = mainUiState.backupOriginalImage
+                            backupOriginal = mainUiState.backupOriginalImage,
+                            processNestedFolders = mainUiState.processNestedFolders
                         )
                         hasQueueItems = true
                     }
@@ -292,7 +295,8 @@ fun CrossScaleApp(container: AppContainer) {
                     distributedMode = mainUiState.isDistributedMode,
                     outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
                     overwriteOriginal = mainUiState.overwriteOriginalImage,
-                    backupOriginal = mainUiState.backupOriginalImage
+                    backupOriginal = mainUiState.backupOriginalImage,
+                    processNestedFolders = mainUiState.processNestedFolders
                 )
                 startQueueWithWritePermissionCheck(null)
             },

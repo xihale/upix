@@ -25,7 +25,7 @@ data class BatchOutputDirectory(
 )
 
 class BatchOutputRepository(
-    context: Context
+    private val context: Context
 ) : BatchOutputStore {
     private val appContext = context.applicationContext
     private val contentResolver = appContext.contentResolver
@@ -169,25 +169,30 @@ class BatchOutputRepository(
         inputs: List<ResolvedImageInput>
     ): String? {
         if (inputs.isEmpty()) {
-            return false
+            return null
         }
         if (outputDirectory.overwriteOriginal) {
-            return hasBackupForInput(input) // Output is ready if backup exists (meaning we already processed it)
+            inputs.forEach { input ->
+                if (hasBackupForInput(input)) {
+                    return input.uri.toString()
+                }
+            }
+            return null
         }
 
         val outputDirectoryUri = outputDirectory.outputDirectoryUri.orEmpty()
         if (outputDirectoryUri.isBlank()) {
-            val internalDirectory = outputDirectory.internalDirectory ?: return false
+            val internalDirectory = outputDirectory.internalDirectory ?: return null
             inputs.forEach { input ->
                 val outputFile = File(internalDirectory, outputNameFor(input))
                 if (outputFile.exists()) {
-                    return true
+                    return Uri.fromFile(outputFile).toString()
                 }
             }
-            return false
+            return null
         }
 
-        val parsedDirectoryUri = parseUri(outputDirectoryUri) ?: return false
+        val parsedDirectoryUri = parseUri(outputDirectoryUri) ?: return null
         inputs.forEach { input ->
             val outputUri = findChildDocumentUri(
                 parentDocumentUri = parsedDirectoryUri,
@@ -195,10 +200,10 @@ class BatchOutputRepository(
                 expectDirectory = false
             )
             if (outputUri != null) {
-                return true
+                return outputUri.toString()
             }
         }
-        return false
+        return null
     }
 
     private fun hasBackupForInput(input: ResolvedImageInput): Boolean {
@@ -506,24 +511,178 @@ class BatchOutputRepository(
         input: ResolvedImageInput,
         outputFile: File
     ): Result<String> {
-        val inputUri = input.uri
+        var targetUri = input.uri
+        
+        // Check for read-only URIs first (like Photo Picker)
+        if (isPhotoPickerUri(targetUri)) {
+            val realUri = resolveRealUriFromPicker(targetUri)
+            if (realUri != null) {
+                // We successfully found the real underlying URI, so we can try to overwrite it.
+                targetUri = realUri
+            } else {
+                // Photo Picker URIs are read-only and cannot be overwritten.
+                // Fallback to saving as a new file in the output directory.
+                val outputName = outputNameFor(input)
+                val outputDirectoryUri = outputDirectory.outputDirectoryUri.orEmpty()
+                if (outputDirectoryUri.isBlank()) {
+                    return commitToFilesystem(
+                        outputDirectory = outputDirectory,
+                        outputName = outputName,
+                        outputFile = outputFile
+                    )
+                }
+                val parsedDirectoryUri = parseUri(outputDirectoryUri)
+                    ?: return Result.failure(IllegalArgumentException("Invalid output URI: $outputDirectoryUri"))
+                
+                return commitToContentUri(
+                    parentDirectoryUri = parsedDirectoryUri,
+                    outputName = outputName,
+                    outputFile = outputFile
+                )
+            }
+        }
+
         return runCatching {
             if (outputDirectory.backupOriginal) {
+                // Backup reads from the original input.uri, which is always readable (even if it's from Picker)
                 backupOriginalInput(outputDirectory = outputDirectory, input = input)
             }
-            if (inputUri.scheme.equals("file", ignoreCase = true)) {
-                val targetFile = File(requireNotNull(inputUri.path) { "Invalid file uri: $inputUri" })
+            if (targetUri.scheme.equals("file", ignoreCase = true)) {
+                val targetFile = File(requireNotNull(targetUri.path) { "Invalid file uri: $targetUri" })
                 writeTempToTarget(outputFile = outputFile, targetFile = targetFile)
                 outputFile.delete()
                 targetFile.absolutePath
+            } else if (isMediaStoreUri(targetUri)) {
+                commitOverwriteMediaStore(targetUri, outputFile)
+                outputFile.delete()
+                targetUri.toString()
             } else {
-                openDocumentOutputStream(inputUri).use { outputStream ->
+                openDocumentOutputStream(targetUri).use { outputStream ->
                     outputFile.inputStream().use { inputStream ->
                         inputStream.copyTo(outputStream)
                     }
+                    if (outputStream is FileOutputStream) {
+                        outputStream.fd.sync()
+                    } else {
+                        outputStream.flush()
+                    }
                 }
                 outputFile.delete()
-                inputUri.toString()
+                targetUri.toString()
+            }
+        }
+    }
+
+    private fun resolveRealUriFromPicker(pickerUri: Uri): Uri? {
+        var realPath: String? = null
+        runCatching {
+            contentResolver.query(pickerUri, arrayOf(MediaStore.MediaColumns.DATA), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val columnIndex = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                    if (columnIndex != -1) {
+                        realPath = cursor.getString(columnIndex)
+                    }
+                }
+            }
+        }
+        
+        if (realPath.isNullOrBlank()) return null
+        
+        // Try to map back to a real MediaStore URI
+        runCatching {
+            val projection = arrayOf(MediaStore.Images.Media._ID)
+            val selection = "${MediaStore.Images.Media.DATA} = ?"
+            val selectionArgs = arrayOf(realPath)
+            contentResolver.query(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, projection, selection, selectionArgs, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idColumn = cursor.getColumnIndex(MediaStore.Images.Media._ID)
+                    if (idColumn != -1) {
+                        val id = cursor.getLong(idColumn)
+                        return android.content.ContentUris.withAppendedId(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, id)
+                    }
+                }
+            }
+        }
+        
+        // Fallback to a File URI if we got a valid path but couldn't find it in MediaStore
+        return Uri.fromFile(File(realPath))
+    }
+
+    private fun isPhotoPickerUri(uri: Uri): Boolean {
+        // Photo Picker authority is often "com.android.providers.media.photopicker".
+        // However, on some systems (like MIUI/HyperOS), the authority might be "media" 
+        // while the path contains "photopicker" or starts with "/picker".
+        val authority = uri.authority
+        val path = uri.path
+        return authority?.contains("photopicker", ignoreCase = true) == true ||
+                path?.contains("photopicker", ignoreCase = true) == true ||
+                path?.startsWith("/picker") == true
+    }
+
+    private fun isMediaStoreUri(uri: Uri): Boolean {
+        // Regular MediaStore authority is "media".
+        // We ensure it's specifically the media authority and NOT photopicker.
+        return uri.authority == MediaStore.AUTHORITY && !isPhotoPickerUri(uri)
+    }
+
+    private fun commitToContentUri(
+        parentDirectoryUri: Uri,
+        outputName: String,
+        outputFile: File
+    ): Result<String> {
+        return runCatching {
+            val outputDocumentUri = findOrCreateChildDocumentUri(
+                parentDocumentUri = parentDirectoryUri,
+                displayName = outputName,
+                mimeType = mimeTypeForOutputName(outputName),
+                expectDirectory = false
+            )
+
+            openDocumentOutputStream(outputDocumentUri).use { outputStream ->
+                outputFile.inputStream().use { inputStream ->
+                    inputStream.copyTo(outputStream)
+                }
+                if (outputStream is FileOutputStream) {
+                    outputStream.fd.sync()
+                } else {
+                    outputStream.flush()
+                }
+            }
+
+            outputFile.delete()
+            outputDocumentUri.toString()
+        }
+    }
+
+    private fun commitOverwriteMediaStore(uri: Uri, outputFile: File) {
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+        
+        try {
+            contentResolver.update(uri, values, null, null)
+        } catch (e: Exception) {
+            // Ignore if IS_PENDING update fails (e.g. on older Android versions or read-only items)
+        }
+
+        try {
+            contentResolver.openOutputStream(uri, "wt")?.use { outputStream ->
+                outputFile.inputStream().use { inputStream ->
+                    inputStream.copyTo(outputStream)
+                }
+                if (outputStream is FileOutputStream) {
+                    outputStream.fd.sync()
+                } else {
+                    outputStream.flush()
+                }
+            } ?: throw IOException("Unable to open output stream: $uri (pending=1)")
+        } finally {
+            values.clear()
+            values.put(MediaStore.Images.Media.IS_PENDING, 0)
+            try {
+                contentResolver.update(uri, values, null, null)
+            } catch (e: Exception) {
+                // Ignore failure to clear IS_PENDING
             }
         }
     }
@@ -792,7 +951,9 @@ class BatchOutputRepository(
     }
 
     private fun openDocumentOutputStream(documentUri: Uri): OutputStream {
-        val modes = arrayOf("rwt", "wt", "w")
+        // Prefer "wt" (Write + Truncate) for overwriting behavior.
+        // Some providers might not support it, so we fallback.
+        val modes = arrayOf("wt", "rwt", "w")
         var lastError: Throwable? = null
         for (mode in modes) {
             val stream = runCatching {
@@ -804,7 +965,7 @@ class BatchOutputRepository(
                 return stream
             }
         }
-        throw IOException("Unable to open output stream: $documentUri", lastError)
+        throw IOException("Failed to open document output stream for $documentUri", lastError)
     }
 
     private fun findChildDocumentUri(

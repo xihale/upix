@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -229,6 +230,7 @@ class ProcessingQueueRepository(
                                     put("lastOutputUri", outputUri)
                                 }
                                 put("corruptedSources", buildJsonArray { item.corruptedSources.forEach { add(it) } })
+                            }
                         )
                     }
                 }

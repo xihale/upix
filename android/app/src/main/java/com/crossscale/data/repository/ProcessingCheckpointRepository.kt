@@ -43,6 +43,7 @@ data class ProcessingCheckpoint(
     val outputDirectoryUri: String? = null,
     val overwriteOriginal: Boolean = false,
     val backupOriginal: Boolean = true,
+    val processNestedFolders: Boolean = true,
     val createdAtEpochMs: Long,
     val updatedAtEpochMs: Long,
     val lastErrorMessage: String? = null,
@@ -132,6 +133,7 @@ class ProcessingCheckpointRepository(
             outputDirectoryUri?.let { put("outputDirectoryUri", it) }
             put("overwriteOriginal", overwriteOriginal)
             put("backupOriginal", backupOriginal)
+            put("processNestedFolders", processNestedFolders)
             put("createdAtEpochMs", createdAtEpochMs)
             put("updatedAtEpochMs", updatedAtEpochMs)
             lastErrorMessage?.let { put("lastErrorMessage", it) }
@@ -210,6 +212,7 @@ class ProcessingCheckpointRepository(
             outputDirectoryUri = this["outputDirectoryUri"]?.jsonPrimitive?.contentOrNull,
             overwriteOriginal = this["overwriteOriginal"]?.jsonPrimitive?.booleanOrNull ?: false,
             backupOriginal = this["backupOriginal"]?.jsonPrimitive?.booleanOrNull ?: true,
+            processNestedFolders = this["processNestedFolders"]?.jsonPrimitive?.booleanOrNull ?: true,
             createdAtEpochMs = this["createdAtEpochMs"]?.jsonPrimitive?.longOrNull ?: 0L,
             updatedAtEpochMs = this["updatedAtEpochMs"]?.jsonPrimitive?.longOrNull ?: 0L,
             lastErrorMessage = this["lastErrorMessage"]?.jsonPrimitive?.contentOrNull,

@@ -209,15 +209,25 @@ class ModelRepository(
             return false
         }
 
-        val paramCopied = copyAssetToDestination(
+        val paramCopied = ensureBundledAssetPresent(
             assetPath = paramAssetPath,
             destination = File(modelsDirectory, DEFAULT_MODEL_PARAM_FILE)
         )
-        val binCopied = copyAssetToDestination(
+        val binCopied = ensureBundledAssetPresent(
             assetPath = binAssetPath,
             destination = File(modelsDirectory, DEFAULT_MODEL_BIN_FILE)
         )
         return paramCopied && binCopied
+    }
+
+    private fun ensureBundledAssetPresent(
+        assetPath: String,
+        destination: File
+    ): Boolean {
+        if (destination.isFile && destination.length() > 0L) {
+            return true
+        }
+        return copyAssetToDestination(assetPath = assetPath, destination = destination)
     }
 
     private fun findAssetPath(candidates: List<String>): String? {
