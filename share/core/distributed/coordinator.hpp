@@ -127,6 +127,9 @@ private:
     std::mutex workers_mutex_;
     std::thread accept_thread_;
 
+    std::vector<std::thread> client_threads_;
+    std::mutex client_threads_mutex_;
+
     std::unordered_map<std::string, ActiveTask> active_tasks_;
     std::unordered_map<uint32_t, ProcessedTile> pending_results_;
 

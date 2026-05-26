@@ -5,7 +5,7 @@
 
 进入软件若无组机，则是单机模式，默认只启用本机性能最好的那个资源，比如 Nvidia 显卡；
 
-总体上分为 PC 端 CLI 跨平台（cpp）+ android 端（kt + cpp native）+ share （共用代码层）；使用 ncnn、libwebp 等库，可以参考 <https://github.com/nihui/realcugan-ncnn-vulkan>
+总体上分为 PC 端 CLI 跨平台（cpp）+ apps 工作区（Android + Desktop，kt + cpp native / KMP）+ share （共用代码层）；使用 ncnn、libwebp 等库，可以参考 <https://github.com/nihui/realcugan-ncnn-vulkan>
 
 使用 xmake 作为依赖管理、编译管理；
 
@@ -15,6 +15,6 @@ android 使用 MD3 界面设计，多页面，需要有日志界面
 
 文件：
 
-- android - Android 端代码，包括 NDK
+- apps - 多平台应用工作区，包括 Android 端、Desktop 端与共享 Compose UI
 - cli - CLI 端代码，跨平台
 - share - 共用 CPP 代码

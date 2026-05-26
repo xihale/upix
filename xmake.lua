@@ -14,6 +14,19 @@ if is_mode("release") then
     set_strip("all")
 end
 
+-- Security hardening flags
+if is_plat("linux") or is_plat("macosx") then
+    add_cxflags("-fstack-protector-strong", "-D_FORTIFY_SOURCE=2")
+    add_cxflags("-fPIE")
+    add_ldflags("-pie", "-Wl,-z,relro,-z,now")
+end
+
+-- Compiler warnings
+add_cxflags("-Wall", "-Wextra", "-Wpedantic")
+if is_mode("release") then
+    add_cxflags("-Werror")
+end
+
 add_requires("ncnn", {configs = {vulkan = true}})
 add_requires("libwebp")
 add_requires("libpng")

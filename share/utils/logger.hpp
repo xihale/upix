@@ -6,7 +6,9 @@
 #include <fstream>
 #include <chrono>
 #include <iostream>
+#if __cplusplus >= 202002L
 #include <source_location>
+#endif
 #include <iomanip>
 #include <sstream>
 
@@ -52,8 +54,12 @@ public:
         file_.open(path, std::ios::app);
     }
 
+#if __cplusplus >= 202002L
     void log(LogLevel level, std::string_view tag, std::string_view message,
              const std::source_location& location = std::source_location::current()) {
+#else
+    void log(LogLevel level, std::string_view tag, std::string_view message) {
+#endif
         if (level < min_level_) {
             return;
         }
@@ -67,8 +73,10 @@ public:
             now.time_since_epoch()) % 1000;
 
         // Format: [2024-01-15 10:30:45.123] [Tag] [LEVEL] Message
+        struct tm tm_buf{};
+        localtime_r(&time, &tm_buf);
         std::ostringstream ts_stream;
-        ts_stream << std::put_time(std::localtime(&time), "%Y-%m-%d %H:%M:%S");
+        ts_stream << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S");
         std::string timestamp = ts_stream.str() + "." + 
             (ms.count() < 100 ? "0" : "") + (ms.count() < 10 ? "0" : "") + std::to_string(ms.count());
 
@@ -83,8 +91,13 @@ public:
 
         // File output (no colors)
         if (file_.is_open()) {
+#if __cplusplus >= 202002L
             file_ << "[" << timestamp << "] [" << tag << "] [" << level_str << "] " 
                   << message << " (" << location.file_name() << ":" << location.line() << ")\n";
+#else
+            file_ << "[" << timestamp << "] [" << tag << "] [" << level_str << "] " 
+                  << message << "\n";
+#endif
             file_.flush();
         }
 
@@ -94,6 +107,7 @@ public:
         }
     }
 
+#if __cplusplus >= 202002L
     void debug(std::string_view tag, std::string_view message,
                const std::source_location& location = std::source_location::current()) {
         log(LogLevel::DEBUG, tag, message, location);
@@ -118,9 +132,31 @@ public:
                   const std::source_location& location = std::source_location::current()) {
         log(LogLevel::CRITICAL, tag, message, location);
     }
+#else
+    void debug(std::string_view tag, std::string_view message) {
+        log(LogLevel::DEBUG, tag, message);
+    }
+
+    void info(std::string_view tag, std::string_view message) {
+        log(LogLevel::INFO, tag, message);
+    }
+
+    void warning(std::string_view tag, std::string_view message) {
+        log(LogLevel::WARNING, tag, message);
+    }
+
+    void error(std::string_view tag, std::string_view message) {
+        log(LogLevel::ERROR, tag, message);
+    }
+
+    void critical(std::string_view tag, std::string_view message) {
+        log(LogLevel::CRITICAL, tag, message);
+    }
+#endif
 
     using AndroidLogCallback = void(*)(LogLevel, const char*, const char*);
     void set_android_callback(AndroidLogCallback callback) {
+        std::lock_guard<std::mutex> lock(mutex_);
         android_callback_ = callback;
     }
 

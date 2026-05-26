@@ -49,6 +49,9 @@ auto default_recommended_tile_size(crossscale::DeviceType device_type) -> int {
 
 namespace crossscale {
 
+// Maximum payload size for network messages (100 MB)
+static constexpr uint32_t MAX_NETWORK_PAYLOAD = 100 * 1024 * 1024;
+
 Worker::Worker() = default;
 
 Worker::~Worker() {
@@ -293,7 +296,11 @@ auto Worker::execute_task(const Task& task, Engine& engine,
         return WorkerError{6, "Expected TILES_BATCH message, got type " + std::to_string(parsed_hdr ? static_cast<int>(parsed_hdr->type) : 0)};
     }
 
-    std::vector<uint8_t> batch_payload(parsed_hdr->payload_length);
+    std::vector<uint8_t> batch_payload;
+    if (parsed_hdr->payload_length > MAX_NETWORK_PAYLOAD) {
+        return WorkerError{7, "Batch payload too large: " + std::to_string(parsed_hdr->payload_length) + " bytes"};
+    }
+    batch_payload.resize(parsed_hdr->payload_length);
     auto pay_res = socket_->receive_all(batch_payload.data(), batch_payload.size());
     if (!pay_res.has_value()) {
         return WorkerError{4, "Failed to receive batch payload"};
@@ -639,15 +646,39 @@ auto Worker::sync_models() -> expected<void, WorkerError> {
 auto Worker::download_model(const std::string& model_name, uint8_t file_type)
     -> expected<void, WorkerError> {
 
+    // Validate model name to prevent path traversal
+    if (model_name.empty() || model_name.size() > 256) {
+        return WorkerError{21, "Invalid model name length"};
+    }
+    if (model_name.find("..") != std::string::npos ||
+        model_name.find('/') != std::string::npos ||
+        model_name.find('\\') != std::string::npos ||
+        model_name.find('\0') != std::string::npos) {
+        return WorkerError{21, "Model name contains invalid characters: " + model_name};
+    }
+
     uint64_t offset = 0;
     std::vector<uint8_t> file_data;
 
-    std::filesystem::path temp_path = model_manager_.models_directory() / 
-                                       (model_name + (file_type == 0 ? ".param" : ".bin") + ".tmp");
+    std::filesystem::path models_dir = model_manager_.models_directory();
+    std::string suffix = (file_type == 0 ? ".param" : ".bin");
+    std::filesystem::path temp_path = models_dir / (model_name + suffix + ".tmp");
+    std::filesystem::path final_path = models_dir / (model_name + suffix);
+
+    // Verify final path is within models directory
+    auto canonical_temp = std::filesystem::weakly_canonical(temp_path);
+    auto canonical_dir = std::filesystem::weakly_canonical(models_dir);
+    if (canonical_temp.string().find(canonical_dir.string()) != 0) {
+        return WorkerError{21, "Model path escapes models directory: " + model_name};
+    }
+
+    // Maximum model file size (500 MB)
+    constexpr uint64_t MAX_MODEL_FILE_SIZE = 500ULL * 1024 * 1024;
 
     while (true) {
         ModelDataMessage request;
         std::strncpy(request.model_name, model_name.c_str(), sizeof(request.model_name) - 1);
+        request.model_name[sizeof(request.model_name) - 1] = '\0';
         request.file_type = file_type;
         request.file_offset = offset;
         request.data_length = 0;
@@ -677,7 +708,11 @@ auto Worker::download_model(const std::string& model_name, uint8_t file_type)
             return WorkerError{18, "Expected MODEL_DATA message"};
         }
 
-        std::vector<uint8_t> resp_payload(resp_header->payload_length);
+        std::vector<uint8_t> resp_payload;
+        if (resp_header->payload_length > MAX_NETWORK_PAYLOAD) {
+            return WorkerError{22, "Model data payload too large: " + std::to_string(resp_header->payload_length)};
+        }
+        resp_payload.resize(resp_header->payload_length);
         recv_result = socket_->receive_all(resp_payload.data(), resp_payload.size());
         if (!recv_result.has_value()) {
             return WorkerError{19, "Failed to receive model data payload"};
@@ -690,7 +725,17 @@ auto Worker::download_model(const std::string& model_name, uint8_t file_type)
             break;
         }
 
+        // Validate data_length doesn't exceed payload
         size_t data_offset = sizeof(ModelDataMessage);
+        if (data_offset + data_length > resp_payload.size()) {
+            return WorkerError{23, "Model data length exceeds payload size"};
+        }
+
+        // Check total file size limit
+        if (file_data.size() + data_length > MAX_MODEL_FILE_SIZE) {
+            return WorkerError{24, "Model file too large (>" + std::to_string(MAX_MODEL_FILE_SIZE / (1024*1024)) + " MB)"};
+        }
+
         file_data.insert(file_data.end(), 
                          resp_payload.data() + data_offset,
                          resp_payload.data() + data_offset + data_length);
@@ -714,7 +759,7 @@ auto Worker::download_model(const std::string& model_name, uint8_t file_type)
                                         (model_name + (file_type == 0 ? ".param" : ".bin"));
     std::filesystem::rename(temp_path, final_path);
 
-    LOG_INFO("Worker", "Downloaded " + model_name + (file_type == 0 ? ".param" : ".bin") + 
+    LOG_INFO("Worker", "Downloaded " + model_name + suffix + 
              " (" + std::to_string(file_data.size()) + " bytes)");
 
     return {};

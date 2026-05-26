@@ -31,7 +31,7 @@ CrossScale 是一个**跨平台分布式图像超分辨率系统**，核心理�
 ### 2.1 项目结构
 ```
 crossscale/
-├── android/                    # Android 应用
+├── apps/                       # 多平台应用工作区（Android + Desktop）
 │   ├── app/
 │   │   ├── src/main/java/     # Kotlin UI 层
 │   │   │   └── com/crossscale/
@@ -76,6 +76,13 @@ crossscale/
 ├── docs/                       # 文档
 │   ├── protocol.md            # 通信协议规范
 │   └── model_format.md        # 模型格式说明
+│
+├── apps/
+│   ├── app/                    # Android 应用
+│   ├── shared-ui/              # KMP 共享 Compose UI
+│   │   └── src/commonMain/     # Android / Desktop 共享主题与页面
+│   └── desktopApp/             # Compose Multiplatform 桌面端宿主
+│       └── src/desktopMain/    # 桌面状态、文件对话框、CLI 桥接
 │
 ├── AGENTS.md                   # 开发指南（已存在）
 ├── PLAN.md                     # 本规划书
@@ -842,7 +849,7 @@ public:
 
 #### 5.3.2 Android 端扫描二维码
 ```kotlin
-// android/app/src/main/java/com/crossscale/ui/scanner/QRScannerScreen.kt
+// apps/app/src/main/java/com/crossscale/ui/scanner/QRScannerScreen.kt
 
 @Composable
 fun QRScannerScreen(
@@ -887,7 +894,7 @@ private:
 
 #### 5.4.2 客户端发现 (Android)
 ```kotlin
-// android/app/src/main/java/com/crossscale/network/MDNSDiscovery.kt
+// apps/app/src/main/java/com/crossscale/network/MDNSDiscovery.kt
 
 class MDNSDiscovery(private val context: Context) {
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
@@ -971,7 +978,7 @@ class MDNSDiscovery(private val context: Context) {
 ### 6.3 核心组件设计
 
 ```kotlin
-// android/app/src/main/java/com/crossscale/
+// apps/app/src/main/java/com/crossscale/
 
 // UI 层
 ui/
@@ -1016,7 +1023,7 @@ data/
 ### 6.4 JNI 接口设计
 
 ```cpp
-// android/app/src/main/cpp/jni_bridge.cpp
+// apps/app/src/main/cpp/jni_bridge.cpp
 
 extern "C" {
 
@@ -1308,7 +1315,7 @@ target("crossscale-cli")
 Android 使用 Gradle + CMake/xmake 混合构建：
 
 ```kotlin
-// android/app/build.gradle.kts
+// apps/app/build.gradle.kts
 android {
     ndkVersion = "25.2.9519653"
     
@@ -1333,7 +1340,7 @@ android {
 ```
 
 ```cmake
-# android/app/src/main/cpp/CMakeLists.txt
+# apps/app/src/main/cpp/CMakeLists.txt
 cmake_minimum_required(VERSION 3.18.1)
 
 project("crossscale")
@@ -1407,7 +1414,19 @@ target_link_libraries(crossscale-native
 - [ ] 性能优化
 - [ ] Bug 修复
 
-### Phase 7: 文档与发布 (Week 15-16)
+### Phase 7: 桌面端图形界面 (Week 15-20)
+
+> **技术栈调研与选型**见下方 §11。
+
+- [ ] 桌面 GUI 项目骨架搭建与构建系统集成
+- [ ] 主窗口框架：拖拽导入、图片预览、模型选择
+- [ ] 处理进度与实时预览（对比查看 before/after）
+- [ ] 设备管理页：分布式设备列表、连接状态
+- [ ] 日志查看器集成
+- [ ] 设置页：GPU/CPU 切换、tile 参数、输出格式
+- [ ] 跨平台打包（Linux AppImage / Windows installer / macOS dmg）
+
+### Phase 8: 文档与发布 (Week 21-22)
 - [ ] 用户文档
 - [ ] API 文档
 - [ ] 示例模型
@@ -1415,7 +1434,73 @@ target_link_libraries(crossscale-native
 
 ---
 
-## 11. 风险与缓解
+## 11. 桌面端图形界面技术栈调研
+
+### 11.1 候选方案对比
+
+| 方案 | 语言 | UI 共享度 | Android 对齐成本 | 与现有代码集成 | 生态成熟度 | 适合场景 |
+|------|------|-----------|------------------|----------------|-----------|---------|
+| **KMP + Compose Multiplatform** | Kotlin | ⭐⭐⭐ 主题/页面可共享 | ⭐⭐⭐ 最低 | ⭐⭐ 通过 CLI / JNI / FFI 桥接原生后端 | ⭐⭐⭐ JetBrains 官方 | Android + Desktop 一体化 |
+| **Qt 6** | C++ | ❌ 无法复用 Compose UI | ⭐ 需重做桌面设计系统 | ⭐⭐⭐ 原生 C++ | ⭐⭐⭐ 功能全面 | 完整桌面应用 |
+| **Tauri 2.0** | Rust + Web | ❌ 无法复用 Compose UI | ⭐⭐ 需重写前端 | ⭐⭐ FFI/Sidecar | ⭐⭐⭐ 增长中 | 现代 Web UI |
+| **Electron** | JS/TS | ❌ 无法复用 Compose UI | ⭐⭐ 需重写前端 | ⭐ Node addon / IPC | ⭐⭐⭐ 最成熟 | 快速开发 Web 应用 |
+| **GTK 4 / wxWidgets** | C/C++ | ❌ 无法复用 Compose UI | ⭐ 需重做桌面设计 | ⭐⭐⭐ 原生 C++ | ⭐⭐ 稳定但偏传统 | 平台原生工具 |
+
+### 11.2 推荐方案：KMP + Compose Multiplatform
+
+**推荐理由：**
+
+1. **直接继承 Android 设计语言**：桌面端可复用 Android 现有的 Compose 主题、颜色、排版和页面结构，避免再次维护两套视觉系统
+2. **技术栈统一**：Android 与 Desktop 同为 Kotlin + Compose，后续页面演进可优先在 `shared-ui` 中一次实现、多端消费
+3. **迁移成本最低**：当前 Android 已是 Compose 项目，新增 `shared-ui` 和 `desktopApp` 模块即可扩展桌面端
+4. **跨平台原生分发**：Compose Desktop 原生支持 macOS / Windows / Linux 打包，适合后续发布桌面版本
+5. **后端可渐进演进**：桌面端现阶段可通过 CLI bridge 复用已有 C++ 能力，后续再升级到 JNI / JNA / Kotlin/Native FFI 直连
+
+**当前架构：**
+
+```
+apps/
+├── app/                                # Android 应用
+├── shared-ui/                          # KMP 共享 Compose UI
+│   └── src/commonMain/kotlin/
+│       └── com/crossscale/sharedui/
+│           ├── theme/                  # 共享主题
+│           ├── model/                  # 共享桌面 UI 状态模型
+│           └── home/                   # 共享桌面首页/预览/日志布局
+└── desktopApp/                         # Compose Desktop 宿主
+    └── src/desktopMain/kotlin/
+        └── com/crossscale/desktop/
+            ├── Main.kt                # 桌面入口
+            ├── DesktopApp.kt          # Compose Desktop 宿主装配
+            ├── DesktopController.kt   # 桌面状态、模型扫描、CLI bridge
+            └── DesktopFileDialogs.kt  # 文件/目录选择
+```
+
+**现阶段桌面后端策略：**
+
+- **短期**：Compose Desktop 前端通过 `DesktopController` 调用 `crossscale-cli process`，快速复用已有推理能力
+- **中期**：抽出稳定的 JNI/JNA/FFI 接口，桌面端直接调用共享 C++ 核心，减少进程桥接开销
+- **长期**：将更多 Android Compose 组件和状态模型上移到 `shared-ui`，实现真正的多端 UI 共享
+
+### 11.3 备选方案
+
+若 KMP 无法满足桌面端特定需求（例如复杂原生窗口系统、深度系统集成），备选路径：
+
+- **Plan B: Qt 6** — 最完整的 C++ 桌面 GUI 方案，适合极重桌面交互和原生系统集成，但与 Android Compose 设计体系割裂
+- **Plan C: Tauri 2.0** — 适合偏运营工具 / Web 风格产品，但无法复用 Android Compose UI，需要重新设计前端
+
+### 11.4 技术风险
+
+| 风险 | 缓解 |
+|------|------|
+| 共享 UI 与平台实现边界不清 | 严格区分 `shared-ui`（纯 Compose）与 `desktopApp`（文件系统/进程/平台能力） |
+| CLI bridge 带来额外进程开销 | 作为过渡方案保留，后续切换到原生 FFI 直连 |
+| Compose Desktop 打包细节较多 | 优先用官方 `nativeDistributions`，逐平台补齐图标、签名与安装器配置 |
+| Android / Desktop 状态模型分化 | 优先共享主题、信息架构和展示组件，再逐步提炼可复用状态层 |
+
+---
+
+## 12. 风险与缓解
 
 | 风险 | 影响 | 缓解措施 |
 |------|------|----------|
@@ -1427,7 +1512,7 @@ target_link_libraries(crossscale-native
 
 ---
 
-## 12. 后续扩展
+## 13. 后续扩展
 
 1. **云端模型市场**：用户可下载社区模型
 2. **互联网模式**：支持远程设备加入 (需打洞/中继)

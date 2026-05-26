@@ -1,12 +1,12 @@
 #include "ncnn_engine.hpp"
 #include "utils/logger.hpp"
 #include "utils/benchmark.hpp"
-#include <ncnn/net.h>
-#include <ncnn/cpu.h>
+#include <net.h>
+#include <cpu.h>
 #if NCNN_VULKAN
-#include <ncnn/gpu.h>
-#include <ncnn/command.h>
-#include <ncnn/pipeline.h>
+#include <gpu.h>
+#include <command.h>
+#include <pipeline.h>
 #endif
 #include <algorithm>
 #include <cmath>
@@ -869,19 +869,59 @@ public:
 #if NCNN_VULKAN
         if (current_device_ == DeviceType::GPU_VULKAN) {
             if (vkdev_ == nullptr) {
-                const std::string detail = format_vulkan_runtime_snapshot("process_u8_pipeline_not_ready", width, height, channels);
-                LOG_ERROR("Engine", "Rejecting GPU u8 processing because pipeline is not ready: " + detail);
-                return EngineError{23, "GPU u8 pipeline is not ready; " + detail};
+                const std::string detail = format_vulkan_runtime_snapshot("process_u8_device_not_ready", width, height, channels);
+                return EngineError{23, "GPU device not ready; " + detail};
             }
 
-            if (!gpu_layout_pipeline_ready_) {
-                const std::string detail = format_vulkan_runtime_snapshot("process_u8_pipeline_not_ready", width, height, channels);
-                LOG_ERROR("Engine", "Rejecting GPU u8 processing because both u8 and float layout pipelines are unavailable: " + detail);
-                return EngineError{23, "GPU u8 and float layout pipelines are not ready; " + detail};
+            // Use the most efficient U8 queue pipeline if available
+            if (supports_gpu_tile_pipeline_u8_queue()) {
+                LOG_INFO("Engine", "Processing u8 input through optimized Vulkan U8 queue pipeline");
+
+                TileConfig tile_config;
+                tile_config.tile_size = 512; // Increased default tile size for modern GPUs
+                tile_config.overlap = 16;
+                tile_config.batch_size = 4; // Increased batch size
+                
+                if (const char* tile_size_env = std::getenv("CROSSSCALE_GPU_TILE_SIZE")) {
+                    try { tile_config.tile_size = std::clamp(std::stoi(tile_size_env), 64, 2048); } catch (...) {}
+                }
+                if (const char* tile_overlap_env = std::getenv("CROSSSCALE_GPU_TILE_OVERLAP")) {
+                    try { tile_config.overlap = std::clamp(std::stoi(tile_overlap_env), 0, tile_config.tile_size / 2); } catch (...) {}
+                }
+                if (const char* tile_batch_env = std::getenv("CROSSSCALE_GPU_TILE_BATCH")) {
+                    try { tile_config.batch_size = std::clamp(std::stoi(tile_batch_env), 1, 32); } catch (...) {}
+                }
+
+                std::vector<TileRegion> regions;
+                const int step = std::max(1, tile_config.tile_size - tile_config.overlap);
+                for (int y = 0; y < height; y += step) {
+                    int tile_h = std::min(tile_config.tile_size, height - y);
+                    for (int x = 0; x < width; x += step) {
+                        int tile_w = std::min(tile_config.tile_size, width - x);
+                        TileRegion region;
+                        region.x = static_cast<uint32_t>(x);
+                        region.y = static_cast<uint32_t>(y);
+                        region.width = static_cast<uint32_t>(tile_w);
+                        region.height = static_cast<uint32_t>(tile_h);
+                        region.overlap = static_cast<uint32_t>(tile_config.overlap);
+                        regions.push_back(region);
+                    }
+                }
+
+                GPUTileTaskU8 task;
+                task.input_data = input;
+                task.output_data = output;
+                task.input_width = width;
+                task.input_height = height;
+                task.channels = channels;
+                task.regions = &regions;
+                task.config = tile_config;
+
+                return process_tiles_gpu_u8_queue({task}, cancel_flag);
             }
 
             if (gpu_tile_pipeline_ready_) {
-                LOG_INFO("Engine", "Processing u8 input through Vulkan float tile pipeline");
+                LOG_INFO("Engine", "Processing u8 input through Vulkan float tile pipeline (fallback)");
 
                 const size_t in_total = static_cast<size_t>(width) * height * channels;
                 const int out_width = width * scale_factor_;
@@ -2590,6 +2630,8 @@ public:
         }
 
         if (use_gpu_crop) {
+            LOG_INFO("Engine", "Using GPU tile pipeline with crop u8 preprocessing");
+            
             size_t region_idx = 0;
             while (region_idx < regions.size()) {
                 if (cancel_flag) {

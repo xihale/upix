@@ -13,6 +13,9 @@
 
 namespace crossscale {
 
+// Maximum payload size for network messages (100 MB)
+static constexpr uint32_t MAX_NETWORK_PAYLOAD = 100 * 1024 * 1024;
+
 Coordinator::Coordinator() = default;
 
 Coordinator::~Coordinator() {
@@ -60,6 +63,17 @@ void Coordinator::stop() {
 
     if (accept_thread_.joinable()) {
         accept_thread_.join();
+    }
+    
+    // Join all client handler threads
+    {
+        std::lock_guard<std::mutex> lock(client_threads_mutex_);
+        for (auto& t : client_threads_) {
+            if (t.joinable()) {
+                t.join();
+            }
+        }
+        client_threads_.clear();
     }
     
     {
@@ -427,7 +441,16 @@ void Coordinator::accept_loop() {
             continue;
         }
         
-        std::thread(&Coordinator::handle_client, this, std::move(client.value())).detach();
+        {
+            std::lock_guard<std::mutex> lock(client_threads_mutex_);
+            // Clean up finished threads
+            client_threads_.erase(
+                std::remove_if(client_threads_.begin(), client_threads_.end(),
+                    [](const std::thread& t) { return !t.joinable(); }),
+                client_threads_.end());
+            client_threads_.emplace_back(
+                &Coordinator::handle_client, this, std::move(client.value()));
+        }
     }
 }
 
@@ -437,6 +460,10 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
     conn.device_id = crypto::generate_uuid().substr(0, 35);
 
     auto read_payload = [&](uint32_t payload_length) -> std::optional<std::vector<uint8_t>> {
+        if (payload_length > MAX_NETWORK_PAYLOAD) {
+            LOG_ERROR("Coordinator", "Payload too large: " + std::to_string(payload_length) + " bytes");
+            return std::nullopt;
+        }
         std::vector<uint8_t> payload(payload_length);
         if (payload_length == 0) {
             return payload;
@@ -544,6 +571,21 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                 uint32_t tile_size = task->tile_size;
                 uint32_t tile_overlap = task->tile_overlap;
                 uint32_t image_data_len = task->image_data_length;
+
+                // Validate image data length to prevent OOM
+                if (image_data_len > MAX_NETWORK_PAYLOAD) {
+                    LOG_ERROR("Coordinator", "Image data too large: " + std::to_string(image_data_len) + " bytes");
+                    return;
+                }
+                // Validate image dimensions are reasonable
+                if (img_width == 0 || img_height == 0 || img_width > 65536 || img_height > 65536) {
+                    LOG_ERROR("Coordinator", "Invalid image dimensions: " + std::to_string(img_width) + "x" + std::to_string(img_height));
+                    return;
+                }
+                if (channels == 0 || channels > 4) {
+                    LOG_ERROR("Coordinator", "Invalid channel count: " + std::to_string(channels));
+                    return;
+                }
 
                 std::vector<uint8_t> image_data(image_data_len);
                 auto image_receive = conn.socket->receive_all(image_data.data(), image_data_len);

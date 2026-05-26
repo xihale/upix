@@ -46,6 +46,33 @@ void signal_handler(int) {
     g_cancel_requested = true;
 }
 
+// Safe integer parsing with error handling
+template<typename T>
+T safe_parse_int(const std::string& str, const std::string& param_name, T min_val = std::numeric_limits<T>::min(), T max_val = std::numeric_limits<T>::max()) {
+    try {
+        long long val = std::stoll(str);
+        if (val < static_cast<long long>(min_val) || val > static_cast<long long>(max_val)) {
+            throw std::out_of_range("Value " + str + " out of range for " + param_name);
+        }
+        return static_cast<T>(val);
+    } catch (const std::exception& e) {
+        LOG_ERROR("CLI", "Invalid value for " + param_name + ": " + str + " (" + e.what() + ")");
+        throw;
+    }
+}
+
+float safe_parse_float(const std::string& str, const std::string& param_name) {
+    try {
+        return std::stof(str);
+    } catch (const std::exception& e) {
+        LOG_ERROR("CLI", "Invalid value for " + param_name + ": " + str + " (" + e.what() + ")");
+        throw;
+    }
+}
+
+// Maximum payload size for network messages (100 MB)
+static constexpr uint32_t MAX_NETWORK_PAYLOAD = 100 * 1024 * 1024;
+
 auto convert_image_channels(const crossscale::Image& source, int target_channels)
     -> std::optional<crossscale::Image> {
     const int src_channels = source.channels();
@@ -251,16 +278,16 @@ int main(int argc, char* argv[]) {
             else if (arg == "-o" && i + 1 < argc) output_path = argv[++i];
             else if (arg == "-m" && i + 1 < argc) model_name = argv[++i];
             else if (arg == "--models" && i + 1 < argc) models_dir = argv[++i];
-            else if (arg == "--tile-size" && i + 1 < argc) tile_size = std::stoi(argv[++i]);
-            else if (arg == "--tile-overlap" && i + 1 < argc) tile_overlap = std::stoi(argv[++i]);
-            else if (arg == "--batch-size" && i + 1 < argc) batch_size = std::stoi(argv[++i]);
+            else if (arg == "--tile-size" && i + 1 < argc) tile_size = safe_parse_int<int>(argv[++i], "--tile-size", 16, 8192);
+            else if (arg == "--tile-overlap" && i + 1 < argc) tile_overlap = safe_parse_int<int>(argv[++i], "--tile-overlap", 0, 1024);
+            else if (arg == "--batch-size" && i + 1 < argc) batch_size = safe_parse_int<int>(argv[++i], "--batch-size", 1, 64);
             else if (arg == "--auto-tile") auto_tile = true;
-            else if (arg == "--min-tile" && i + 1 < argc) min_tile = std::stoi(argv[++i]);
-            else if (arg == "--max-tile" && i + 1 < argc) max_tile = std::stoi(argv[++i]);
-            else if (arg == "--jobs" && i + 1 < argc) jobs = std::stoi(argv[++i]);
-            else if (arg == "-j" && i + 1 < argc) jobs = std::stoi(argv[++i]);
+            else if (arg == "--min-tile" && i + 1 < argc) min_tile = safe_parse_int<int>(argv[++i], "--min-tile", 16, 8192);
+            else if (arg == "--max-tile" && i + 1 < argc) max_tile = safe_parse_int<int>(argv[++i], "--max-tile", 16, 8192);
+            else if (arg == "--jobs" && i + 1 < argc) jobs = safe_parse_int<int>(argv[++i], "--jobs", 1, 1024);
+            else if (arg == "-j" && i + 1 < argc) jobs = safe_parse_int<int>(argv[++i], "-j", 1, 1024);
             else if (arg == "--gpu") use_gpu = true;
-            else if (arg == "--output-quality" && i + 1 < argc) cli_output_quality = std::stoi(argv[++i]);
+            else if (arg == "--output-quality" && i + 1 < argc) cli_output_quality = safe_parse_int<int>(argv[++i], "--output-quality", 0, 100);
             else if (arg == "--output-format" && i + 1 < argc) cli_output_format = argv[++i];
             else if (arg == "--config" && i + 1 < argc) config_file = argv[++i];
         }
@@ -1035,13 +1062,25 @@ int main(int argc, char* argv[]) {
                     for (const auto& task : tasks) {
                         futures.emplace_back(std::async(std::launch::async, [&, task]() -> bool {
                             crossscale::Engine* eng = pool.acquire();
+                            if (!eng) {
+                                LOG_ERROR("Engine", "Failed to acquire engine from pool");
+                                return false;
+                            }
                             bool ok = false;
                             try {
                                 ok = process_one(task.first, task.second, *eng);
+                            } catch (const std::exception& e) {
+                                LOG_ERROR("Engine", std::string("Task processing exception: ") + e.what());
+                                ok = false;
                             } catch (...) {
+                                LOG_ERROR("Engine", "Task processing unknown exception");
                                 ok = false;
                             }
-                            pool.release(eng);
+                            try {
+                                pool.release(eng);
+                            } catch (...) {
+                                LOG_ERROR("Engine", "Failed to release engine back to pool");
+                            }
                             return ok;
                         }));
                     }
@@ -1239,11 +1278,6 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        if (!process_result.has_value()) {
-            LOG_ERROR("Engine", "Processing failed: " + process_result.error().message);
-            return 1;
-        }
-
         const auto final_output_path = crossscale::resolve_output_path(output_path, config);
         auto save_result = output_image.save(final_output_path, config.output_quality);
         if (!save_result.has_value()) {
@@ -1307,7 +1341,7 @@ int main(int argc, char* argv[]) {
 
             for (int i = 3; i < argc; ++i) {
                 std::string arg = argv[i];
-                if (arg == "-p" && i + 1 < argc) port = std::stoi(argv[++i]);
+                if (arg == "-p" && i + 1 < argc) port = safe_parse_int<uint16_t>(argv[++i], "-p", 1, 65535);
                 else if (arg == "-k" && i + 1 < argc) key = argv[++i];
             }
 
@@ -1382,7 +1416,7 @@ int main(int argc, char* argv[]) {
             for (int i = 3; i < argc; ++i) {
                 std::string arg = argv[i];
                 if (arg == "-p" && i + 1 < argc) {
-                    port = static_cast<uint16_t>(std::stoi(argv[++i]));
+                    port = safe_parse_int<uint16_t>(argv[++i], "-p", 1, 65535);
                 } else if (arg == "-k" && i + 1 < argc) {
                     key = argv[++i];
                 }
@@ -1436,13 +1470,13 @@ int main(int argc, char* argv[]) {
                 std::string arg = argv[i];
                 if (arg == "-k" && i + 1 < argc) key = argv[++i];
                 else if (arg == "--recommended-weight" && i + 1 < argc) {
-                    recommended_weight = std::stof(argv[++i]);
+                    recommended_weight = safe_parse_float(argv[++i], "--recommended-weight");
                 }
                 else if (arg == "--queue-depth" && i + 1 < argc) {
-                    queue_depth = static_cast<size_t>(std::max(1, std::stoi(argv[++i])));
+                    queue_depth = static_cast<size_t>(safe_parse_int<int>(argv[++i], "--queue-depth", 1, 1024));
                 }
                 else if (arg == "--recommended-tile-size" && i + 1 < argc) {
-                    recommended_tile_size = std::max(0, std::stoi(argv[++i]));
+                    recommended_tile_size = safe_parse_int<int>(argv[++i], "--recommended-tile-size", 0, 8192);
                 }
             }
             
@@ -1458,7 +1492,7 @@ int main(int argc, char* argv[]) {
             }
             
             std::string host = host_port.substr(0, colon_pos);
-            uint16_t port = std::stoi(host_port.substr(colon_pos + 1));
+            uint16_t port = safe_parse_int<uint16_t>(host_port.substr(colon_pos + 1), "host:port", 1, 65535);
             
             LOG_INFO("Worker", "Connecting to coordinator at " + host + ":" + std::to_string(port));
             if (recommended_weight > 0.0f) {
@@ -1596,8 +1630,8 @@ int main(int argc, char* argv[]) {
                 else if (arg == "-o" && i + 1 < argc) output_path = argv[++i];
                 else if (arg == "-s" && i + 1 < argc) server_addr = argv[++i];
                 else if (arg == "-k" && i + 1 < argc) auth_key = argv[++i];
-                else if (arg == "--tile-size" && i + 1 < argc) tile_size = std::stoi(argv[++i]);
-                else if (arg == "--tile-overlap" && i + 1 < argc) tile_overlap = std::stoi(argv[++i]);
+                else if (arg == "--tile-size" && i + 1 < argc) tile_size = safe_parse_int<int>(argv[++i], "--tile-size", 16, 8192);
+                else if (arg == "--tile-overlap" && i + 1 < argc) tile_overlap = safe_parse_int<int>(argv[++i], "--tile-overlap", 0, 1024);
             }
             
             if (input_path.empty() || output_path.empty() || server_addr.empty() || auth_key.empty()) {
@@ -1611,7 +1645,7 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
             std::string host = server_addr.substr(0, colon_pos);
-            uint16_t port = std::stoi(server_addr.substr(colon_pos + 1));
+            uint16_t port = safe_parse_int<uint16_t>(server_addr.substr(colon_pos + 1), "server port", 1, 65535);
             
             LOG_INFO("Client", "Loading image: " + input_path);
             auto image_result = crossscale::Image::load(input_path);
@@ -1656,6 +1690,10 @@ int main(int argc, char* argv[]) {
             }
             
             std::vector<uint8_t> resp_payload(resp_header->payload_length);
+            if (resp_header->payload_length > MAX_NETWORK_PAYLOAD) {
+                LOG_ERROR("Client", "Auth response payload too large: " + std::to_string(resp_header->payload_length));
+                return 1;
+            }
             auto auth_payload_recv = socket.receive_all(resp_payload.data(), resp_payload.size());
             if (!auth_payload_recv.has_value()) {
                 LOG_ERROR("Client", "Failed to receive auth response payload: " + auth_payload_recv.error().message);
@@ -1705,6 +1743,10 @@ int main(int argc, char* argv[]) {
             }
             
             std::vector<uint8_t> result_resp_payload(result_header->payload_length);
+            if (result_header->payload_length > MAX_NETWORK_PAYLOAD) {
+                LOG_ERROR("Client", "Task response payload too large: " + std::to_string(result_header->payload_length));
+                return 1;
+            }
             auto result_payload_recv = socket.receive_all(result_resp_payload.data(), result_resp_payload.size());
             if (!result_payload_recv.has_value()) {
                 LOG_ERROR("Client", "Failed to receive task response payload: " + result_payload_recv.error().message);
@@ -1719,6 +1761,10 @@ int main(int argc, char* argv[]) {
             
             LOG_INFO("Client", "Task completed, receiving result (" + std::to_string(task_resp->result_data_length) + " bytes)...");
             
+            if (task_resp->result_data_length > MAX_NETWORK_PAYLOAD) {
+                LOG_ERROR("Client", "Result data too large: " + std::to_string(task_resp->result_data_length));
+                return 1;
+            }
             std::vector<uint8_t> result_data(task_resp->result_data_length);
             auto result_data_recv = socket.receive_all(result_data.data(), result_data.size());
             if (!result_data_recv.has_value()) {

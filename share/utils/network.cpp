@@ -10,6 +10,7 @@
 #include <cstring>
 #include <random>
 #include <chrono>
+#include <mutex>
 
 namespace crossscale {
 
@@ -229,7 +230,10 @@ auto TCPServer::accept()
 
     auto socket = std::make_unique<TCPSocket>();
     socket->socket_ = client_socket;
-    socket->peer_address_ = inet_ntoa(client_addr.sin_addr);
+    socket->peer_address_ = std::string(INET_ADDRSTRLEN, '\0');
+    inet_ntop(AF_INET, &client_addr.sin_addr,
+              socket->peer_address_.data(), INET_ADDRSTRLEN);
+    socket->peer_address_.resize(std::strlen(socket->peer_address_.c_str()));
     socket->peer_port_ = ntohs(client_addr.sin_port);
 
     int flag = 1;
@@ -311,19 +315,18 @@ std::string generate_auth_key(size_t length) {
 }
 
 static uint32_t crc32_table[256];
-static bool crc32_table_init = false;
+static std::once_flag crc32_init_flag;
 
 static void init_crc32_table() {
-    if (crc32_table_init) return;
-    
-    for (uint32_t i = 0; i < 256; ++i) {
-        uint32_t crc = i;
-        for (int j = 0; j < 8; ++j) {
-            crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
+    std::call_once(crc32_init_flag, []() {
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint32_t crc = i;
+            for (int j = 0; j < 8; ++j) {
+                crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
+            }
+            crc32_table[i] = crc;
         }
-        crc32_table[i] = crc;
-    }
-    crc32_table_init = true;
+    });
 }
 
 uint32_t crc32(const void* data, size_t size) {
