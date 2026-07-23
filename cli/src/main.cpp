@@ -51,6 +51,18 @@ void signal_handler(int) {
     g_cancel_requested = true;
 }
 
+// Used by the `serve` subcommand so SIGINT/SIGTERM (e.g. from `serve stop`)
+// actually wake the daemon's accept() loop. signal_handler only sets g_running,
+// which ServeDaemon::run() does not observe. Set to the running daemon by the
+// serve start path; null otherwise.
+namespace crossscale { class ServeDaemon; }
+static crossscale::ServeDaemon* g_serve_daemon = nullptr;
+void serve_signal_handler(int) {
+    g_running = false;
+    g_cancel_requested = true;
+    if (g_serve_daemon) g_serve_daemon->stop();
+}
+
 // Safe integer parsing with error handling
 template<typename T>
 T safe_parse_int(const std::string& str, const std::string& param_name, T min_val = std::numeric_limits<T>::min(), T max_val = std::numeric_limits<T>::max()) {
@@ -2400,9 +2412,6 @@ int main(int argc, char* argv[]) {
             ::close(STDERR_FILENO);
         }
 
-        std::signal(SIGINT, signal_handler);
-        std::signal(SIGTERM, signal_handler);
-
         crossscale::ServeDaemon daemon;
         int rc = daemon.start(socket_path, models_dir, model_name,
                               force_cpu ? crossscale::ServeDevice::CPU
@@ -2415,7 +2424,18 @@ int main(int argc, char* argv[]) {
         // Write pid file after successful start (so stop can find us).
         std::ofstream(pid_path) << ::getpid();
 
-        daemon.run();  // returns when stop_requested_ is set (signal)
+        // Wire signals to the daemon's stop(). `signal_handler` only sets the
+        // generic g_running flag, which the daemon's run() loop does NOT
+        // observe — so a SIGTERM from `serve stop` would otherwise leave the
+        // daemon stuck in accept(). g_serve_daemon lets the handler reach in
+        // and request the daemon's own shutdown.
+        g_serve_daemon = &daemon;
+        std::signal(SIGINT, serve_signal_handler);
+        std::signal(SIGTERM, serve_signal_handler);
+
+        daemon.run();  // returns when stop_requested_ is set (via signal)
+
+        g_serve_daemon = nullptr;
 
         // Cleanup on shutdown: daemon destructor unlinks the socket; we unlink pid.
         std::filesystem::remove(pid_path);
