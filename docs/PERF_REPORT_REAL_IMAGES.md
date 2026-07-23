@@ -191,10 +191,10 @@ crossscale process -i in -o out          crossscale serve (后台)
 
 **用法:**
 ```bash
-crossscale serve start              # 后台启动(双 fork 守护化)
+crossscale serve start              # 后台启动(单 fork + setsid 守护化)
 crossscale process -i in.png -o out.png   # 自动复用热引擎
-crossscale serve status             # 查询 pid/model/scale/device
-crossscale serve stop               # 优雅停止(发 MSG_SERVE_STOP)
+pgrep -af 'crossscale serve'        # 查询是否在运行(及 pid)
+crossscale serve stop               # 优雅停止(pid 文件 + SIGTERM)
 crossscale process ... --no-daemon  # 强制走内联路径(调试用)
 ```
 
@@ -243,8 +243,8 @@ $CLI process -i /tmp/srtest/photo_1024.png -o /tmp/out.png --gpu | tee log.txt
 # 5. serve 守护进程加速(见 §7.3)
 $CLI serve start                      # 后台启动热引擎守护进程
 $CLI process -i /tmp/srtest/photo_256.png -o out.png   # 自动复用,~14×
-$CLI serve status                     # 查询状态
-$CLI serve stop                       # 停止
+pgrep -af 'crossscale serve'          # 查询是否在运行
+$CLI serve stop                       # 停止(pid 文件 + SIGTERM)
 $CLI process ... --no-daemon          # 强制内联路径对比
 ```
 
