@@ -127,7 +127,7 @@ struct ModelDataMessage {
 // All integers little-endian (host order on POSIX serve targets).
 
 struct ServeRequest {
-    char model_name[64];     // 空名 = 用守护进程当前模型;非空且不同 → lazy reload
+    char model_name[64];     // empty = use daemon's current model; non-empty & different -> lazy reload
     int32_t tile_size;
     int32_t tile_overlap;
     int32_t width;

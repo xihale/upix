@@ -37,6 +37,7 @@
 #include <sstream>
 #include <unistd.h>
 #include <cctype>
+#include <cerrno>
 #include <optional>
 #include <cstdlib>
 
@@ -412,59 +413,31 @@ int main(int argc, char* argv[]) {
 
         // ── Serve-daemon delegation (single-file only) ──────────────────────
         // If a local serve daemon is running, send it the image and let the
-        // warm engine do the inference — skipping the ~490 ms init+load fixed
-        // cost the inline single-file path pays every invocation. Falls back
-        // silently (returns "not handled") if no daemon, the model differs and
-        // isn't loadable, or anything goes wrong on the wire.
+        // warm engine do inference — skipping the ~490 ms init+load fixed
+        // cost. Falls back silently (returns nullopt) if no daemon or the
+        // connection fails; on a real daemon-side error returns 1.
         if (!is_dir && !no_daemon) {
             auto delegate = [&]() -> std::optional<int> {
+                // 1. Probe: no socket file / connect fails → no daemon, fall back.
                 std::string sock_path = crossscale::default_serve_socket_path();
                 if (sock_path.empty()) return std::nullopt;
-                // Fast existence check: if the socket file isn't there, no
-                // daemon — skip the connect syscall entirely.
                 std::error_code ec;
                 if (!std::filesystem::exists(sock_path, ec)) return std::nullopt;
 
                 crossscale::UnixSocket sock;
                 auto conn = sock.connect(sock_path);
-                if (!conn) return std::nullopt;  // stale socket file → no daemon
+                if (!conn) return std::nullopt;  // stale socket → no daemon
 
-                // Read HELLO; decide whether to reuse.
-                std::vector<uint8_t> hdr(crossscale::Protocol::HEADER_SIZE);
-                if (!sock.receive_all(hdr.data(), hdr.size())) return std::nullopt;
-                auto parsed = crossscale::Protocol::parse_header(hdr.data(), hdr.size());
-                if (!parsed || parsed->type != crossscale::MessageType::MSG_SERVE_HELLO ||
-                    parsed->payload_length < sizeof(crossscale::ServeHello)) {
-                    return std::nullopt;
-                }
-                crossscale::ServeHello hello{};
-                if (!sock.receive_all(&hello, sizeof(hello))) return std::nullopt;
-
-                // If user asked for a specific model and it differs from what
-                // the daemon has loaded, the daemon will lazily reload — but
-                // only honor delegation when no explicit -m is set or it
-                // matches. Reload on mismatch is fine since the daemon supports
-                // it; we just forward the requested name (empty = daemon's).
-                std::string req_model = model_name;
-
-                // Load the image (kept on the client side — I/O is ~18 ms).
+                // 2. Load image; on failure let the inline path report the error.
                 auto img_res = crossscale::Image::load(input_path);
-                if (!img_res) {
-                    LOG_ERROR("Engine", "Failed to load image: " + img_res.error().message);
-                    return 1;
-                }
+                if (!img_res) return std::nullopt;
                 auto& image = img_res.value();
                 if (image.size() == 0) return std::nullopt;
 
-                // Build + send the request. The payload is ServeRequest struct
-                // immediately followed by the image bytes (one contiguous blob,
-                // so the daemon can read payload_length bytes in one go).
-                // Protocol::serialize assumes a single contiguous payload, but
-                // here payload = req + image, so we assemble the frame manually:
-                //   [magic(4)][ver(1)][type(2)][length(4)] [req + image] [checksum(4)]
+                // 3. Build contiguous payload = [ServeRequest][image], one frame.
                 crossscale::ServeRequest req{};
                 std::memset(req.model_name, 0, sizeof(req.model_name));
-                req_model.copy(req.model_name, sizeof(req.model_name) - 1);
+                model_name.copy(req.model_name, sizeof(req.model_name) - 1);
                 req.tile_size = tile_size;
                 req.tile_overlap = tile_overlap;
                 req.width = image.width();
@@ -472,82 +445,59 @@ int main(int argc, char* argv[]) {
                 req.channels = image.channels();
                 req.img_length = static_cast<uint32_t>(image.size());
 
-                uint32_t payload_len = static_cast<uint32_t>(sizeof(req) + image.size());
-                // Header layout (HEADER_SIZE=15): magic(4) version(1) type(2)
-                // length(4) checksum(4). Payload follows the checksum. We must
-                // leave 4 bytes for checksum BEFORE the payload, matching how
-                // Protocol::serialize lays it out.
-                size_t frame_len = crossscale::Protocol::HEADER_SIZE + payload_len;
-                std::vector<uint8_t> frame(frame_len);
-                uint8_t* p = frame.data();
-                uint32_t magic = crossscale::Protocol::MAGIC;
-                std::memcpy(p, &magic, 4); p += 4;
-                *p++ = crossscale::Protocol::VERSION;
-                uint16_t type = static_cast<uint16_t>(crossscale::MessageType::MSG_SERVE_REQUEST);
-                std::memcpy(p, &type, 2); p += 2;
-                std::memcpy(p, &payload_len, 4); p += 4;
-                uint8_t* checksum_slot = p;  // checksum goes here, payload after it
-                p += 4;
-                // payload: req struct + raw image bytes
-                std::memcpy(p, &req, sizeof(req)); p += sizeof(req);
-                std::memcpy(p, image.data(), image.size()); p += image.size();
-                // checksum covers everything except the trailing 4 checksum bytes
-                uint32_t cksum = crossscale::Protocol::compute_checksum(frame.data(), frame_len - 4);
-                std::memcpy(checksum_slot, &cksum, 4);
+                std::vector<uint8_t> payload(sizeof(req) + image.size());
+                std::memcpy(payload.data(), &req, sizeof(req));
+                std::memcpy(payload.data() + sizeof(req), image.data(), image.size());
 
+                crossscale::MessageHeader h{};
+                h.magic = crossscale::Protocol::MAGIC;
+                h.version = crossscale::Protocol::VERSION;
+                h.type = crossscale::MessageType::MSG_SERVE_REQUEST;
+                h.payload_length = static_cast<uint32_t>(payload.size());
+                h.checksum = 0;  // filled by serialize
+                auto frame = crossscale::Protocol::serialize(h, payload.data());
                 if (!sock.send_all(frame.data(), frame.size())) return std::nullopt;
 
-                // Read the response header.
-                std::vector<uint8_t> rhdr_buf(crossscale::Protocol::HEADER_SIZE);
-                if (!sock.receive_all(rhdr_buf.data(), rhdr_buf.size())) {
+                // 4. Read response header, then contiguous payload
+                //    [ServeResponse][image].
+                std::vector<uint8_t> rhdr(crossscale::Protocol::HEADER_SIZE);
+                if (!sock.receive_all(rhdr.data(), rhdr.size())) {
                     LOG_ERROR("Engine", "daemon connection lost mid-request");
                     return 1;
                 }
-                auto rparsed = crossscale::Protocol::parse_header(rhdr_buf.data(), rhdr_buf.size());
+                auto rparsed = crossscale::Protocol::parse_header(rhdr.data(), rhdr.size());
                 if (!rparsed || rparsed->type != crossscale::MessageType::MSG_SERVE_RESPONSE ||
                     rparsed->payload_length < sizeof(crossscale::ServeResponse)) {
                     LOG_ERROR("Engine", "malformed daemon response");
                     return 1;
                 }
-                crossscale::ServeResponse resp{};
-                if (!sock.receive_all(&resp, sizeof(resp))) {
-                    LOG_ERROR("Engine", "failed to read daemon response");
+                if (rparsed->payload_length > MAX_NETWORK_PAYLOAD) {
+                    LOG_ERROR("Engine", "daemon response too large");
                     return 1;
                 }
+                std::vector<uint8_t> rpayload(rparsed->payload_length);
+                if (!sock.receive_all(rpayload.data(), rpayload.size())) {
+                    LOG_ERROR("Engine", "truncated daemon response");
+                    return 1;
+                }
+
+                crossscale::ServeResponse resp{};
+                std::memcpy(&resp, rpayload.data(), sizeof(resp));
                 if (!resp.ok) {
                     LOG_ERROR("Engine", "daemon error: " + std::string(resp.error));
                     return 1;
                 }
-                // Remaining bytes of the response payload are the image.
-                size_t extra = rparsed->payload_length - sizeof(resp);
-                if (extra + resp.img_length > MAX_NETWORK_PAYLOAD) {
-                    LOG_ERROR("Engine", "daemon response too large");
+                const uint8_t* out = rpayload.data() + sizeof(resp);
+                size_t out_size = rparsed->payload_length - sizeof(resp);
+                if (out_size != resp.img_length) {
+                    LOG_ERROR("Engine", "daemon response length mismatch");
                     return 1;
                 }
-                std::vector<uint8_t> out_bytes(resp.img_length);
-                // First drain any bytes already in the payload, then the rest.
-                size_t got = 0;
-                if (extra > 0) {
-                    // We already consumed sizeof(resp) from payload; there is no
-                    // "extra" in our framing (response payload == sizeof(resp),
-                    // image bytes follow as a separate unframed stream). Keep
-                    // this branch for robustness but it shouldn't trigger.
-                    size_t take = std::min(extra, out_bytes.size());
-                    // (cannot happen with current framing; skip)
-                    got += take;
-                }
-                if (got < out_bytes.size()) {
-                    if (!sock.receive_all(out_bytes.data() + got, out_bytes.size() - got)) {
-                        LOG_ERROR("Engine", "truncated daemon image response");
-                        return 1;
-                    }
-                }
 
-                // Wrap into an Image and save (same as inline path).
+                // 5. Wrap into Image and save (same path as inline single-file).
                 crossscale::Image out_image(resp.width, resp.height, resp.channels);
-                std::copy(out_bytes.begin(), out_bytes.end(), out_image.data());
+                std::memcpy(out_image.data(), out, out_size);
 
-                // Apply config for output path/quality/format like inline path.
                 crossscale::ProcessingConfig config;
                 if (!config_file.empty()) {
                     auto cfg = crossscale::ProcessingConfig::load(config_file);
@@ -566,13 +516,14 @@ int main(int argc, char* argv[]) {
                     return 1;
                 }
                 LOG_INFO("Engine", "Output saved (via warm daemon): " + final_path.string());
-                LOG_INFO("Engine", "Processing complete: " + std::to_string(resp.width) + "x" + std::to_string(resp.height));
+                LOG_INFO("Engine", "Processing complete: " + std::to_string(resp.width) +
+                                   "x" + std::to_string(resp.height));
                 return 0;
             };
 
             auto delegated = delegate();
             if (delegated.has_value()) return delegated.value();
-            // else: no daemon / delegated-but-not-applicable → fall through to inline path
+            // else: no daemon / probe failed → fall through to inline path
         }
         if (is_dir) {
             // Validate output path
@@ -2372,15 +2323,15 @@ int main(int argc, char* argv[]) {
                 std::cout << "CrossScale serve - local warm-engine daemon\n\n"
                           << "Usage:\n"
                           << "  crossscale serve start [--model <name>] [--socket <path>] [--cpu] [--fg]\n"
-                          << "  crossscale serve stop [--socket <path>]\n"
-                          << "  crossscale serve status [--socket <path>]\n\n"
+                          << "  crossscale serve stop  [--socket <path>]\n\n"
                           << "Holds a warm ncnn engine so that `crossscale process` single-image calls\n"
                           << "reuse it and skip the ~490ms init+load fixed cost (~4x faster).\n\n"
                           << "Options:\n"
                           << "  --model <name>   Initial model (default: first available)\n"
                           << "  --socket <path>  Unix socket path (default: " << crossscale::default_serve_socket_path() << ")\n"
                           << "  --cpu            Force CPU (default: GPU with CPU fallback)\n"
-                          << "  --fg             Run in foreground (default: background)\n";
+                          << "  --fg             Run in foreground (default: background)\n\n"
+                          << "Status: `pgrep -af 'crossscale serve'`\n";
                 return 0;
             }
         }
@@ -2390,87 +2341,60 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        if (subcommand == "stop") {
-            // Connect to the running daemon and send MSG_SERVE_STOP.
-            crossscale::UnixSocket sock;
-            auto conn = sock.connect(socket_path);
-            if (!conn) {
-                LOG_ERROR("Serve", "no daemon at " + socket_path + ": " + conn.error().message);
-                return 1;
-            }
-            // Read HELLO (the daemon sends it on connect), then send STOP.
-            std::vector<uint8_t> hdr(crossscale::Protocol::HEADER_SIZE);
-            if (!sock.receive_all(hdr.data(), hdr.size())) {
-                LOG_ERROR("Serve", "failed to read hello");
-                return 1;
-            }
-            crossscale::MessageHeader stop_hdr{};
-            stop_hdr.magic = crossscale::Protocol::MAGIC;
-            stop_hdr.version = crossscale::Protocol::VERSION;
-            stop_hdr.type = crossscale::MessageType::MSG_SERVE_STOP;
-            stop_hdr.payload_length = 0;
-            stop_hdr.checksum = 0;
-            auto buf = crossscale::Protocol::serialize(stop_hdr, nullptr);
-            (void)sock.send_all(buf.data(), buf.size());
-            LOG_INFO("Serve", "stop signal sent");
-            return 0;
-        }
+        std::string pid_path = socket_path + ".pid";
 
-        if (subcommand == "status") {
-            crossscale::UnixSocket sock;
-            auto conn = sock.connect(socket_path);
-            if (!conn) {
-                std::cout << "daemon: not running (" << conn.error().message << ")\n";
+        if (subcommand == "stop") {
+            // Read pid, send SIGTERM. The daemon's run() loop observes the
+            // resulting g_running=false and exits; its destructor unlinks the
+            // socket, and the start path unlinks the pid file.
+            std::ifstream pf(pid_path);
+            if (!pf) {
+                LOG_ERROR("Serve", "no pid file at " + pid_path + " (daemon not running?)");
                 return 1;
             }
-            std::vector<uint8_t> hdr(crossscale::Protocol::HEADER_SIZE);
-            if (!sock.receive_all(hdr.data(), hdr.size())) {
-                std::cout << "daemon: connected but no hello\n";
+            pid_t pid = 0;
+            pf >> pid;
+            if (pid <= 0) {
+                LOG_ERROR("Serve", "corrupt pid file at " + pid_path);
                 return 1;
             }
-            auto parsed = crossscale::Protocol::parse_header(hdr.data(), hdr.size());
-            if (!parsed || parsed->type != crossscale::MessageType::MSG_SERVE_HELLO ||
-                parsed->payload_length < sizeof(crossscale::ServeHello)) {
-                std::cout << "daemon: unexpected hello\n";
+            if (::kill(pid, SIGTERM) < 0) {
+                LOG_ERROR("Serve", std::string("kill pid ") + std::to_string(pid) +
+                                   " failed: " + std::strerror(errno));
+                // Stale pid file: clean it up so next start isn't confused.
+                if (errno == ESRCH) std::filesystem::remove(pid_path);
                 return 1;
             }
-            crossscale::ServeHello hello{};
-            if (!sock.receive_all(&hello, sizeof(hello))) {
-                std::cout << "daemon: failed to read hello body\n";
-                return 1;
-            }
-            std::cout << "daemon: running\n"
-                      << "  pid:      " << hello.pid << "\n"
-                      << "  model:    " << hello.model_name << "\n"
-                      << "  scale:    " << hello.scale << "x\n"
-                      << "  device:   " << (hello.device == 1 ? "GPU" : "CPU") << "\n"
-                      << "  socket:   " << socket_path << "\n";
+            LOG_INFO("Serve", "stopped pid " + std::to_string(pid));
             return 0;
         }
 
         if (subcommand != "start") {
-            LOG_ERROR("Serve", "unknown subcommand: " + subcommand + " (try start|stop|status)");
+            LOG_ERROR("Serve", "unknown subcommand: " + subcommand + " (try start|stop)");
             return 1;
         }
 
         // ── start ───────────────────────────────────────────────────────────
-        // Daemonize unless --fg. Double-fork to detach from the controlling
-        // terminal; the child becomes a session leader-free orphan that keeps
-        // the warm engine alive across CLI exits.
+        // Guard: if a pid file exists and the pid is alive, refuse (already running).
+        {
+            std::ifstream pf(pid_path);
+            if (pf) {
+                pid_t existing = 0;
+                pf >> existing;
+                if (existing > 0 && ::kill(existing, 0) == 0) {
+                    LOG_ERROR("Serve", "daemon already running, pid " + std::to_string(existing));
+                    return 1;
+                }
+                // pid file present but process dead → stale, overwrite below.
+            }
+        }
+
+        // Background via single fork + setsid (detaches controlling terminal).
         if (!foreground) {
             pid_t pid = ::fork();
             if (pid < 0) { LOG_ERROR("Serve", "fork failed"); return 1; }
-            if (pid > 0) {
-                // Parent: the child will print its own ready line. Just exit.
-                return 0;
-            }
-            // Child: become a new session leader, then fork again so we can't
-            // reacquire a controlling terminal.
+            if (pid > 0) return 0;  // parent exits
             ::setsid();
-            pid = ::fork();
-            if (pid < 0) { LOG_ERROR("Serve", "second fork failed"); ::_exit(1); }
-            if (pid > 0) { ::_exit(0); }
-            // Detach stdio so the grandchild doesn't hold the terminal.
             ::close(STDIN_FILENO);
             ::close(STDOUT_FILENO);
             ::close(STDERR_FILENO);
@@ -2483,8 +2407,18 @@ int main(int argc, char* argv[]) {
         int rc = daemon.start(socket_path, models_dir, model_name,
                               force_cpu ? crossscale::ServeDevice::CPU
                                         : crossscale::ServeDevice::GPU);
-        if (rc != 0) return rc;
-        daemon.run();
+        if (rc != 0) {
+            std::filesystem::remove(pid_path);
+            return rc;
+        }
+
+        // Write pid file after successful start (so stop can find us).
+        std::ofstream(pid_path) << ::getpid();
+
+        daemon.run();  // returns when stop_requested_ is set (signal)
+
+        // Cleanup on shutdown: daemon destructor unlinks the socket; we unlink pid.
+        std::filesystem::remove(pid_path);
         LOG_INFO("Serve", "daemon shutting down");
         return 0;
     }
