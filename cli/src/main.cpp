@@ -27,6 +27,7 @@
 #include "core/engine_pool.hpp"
 #include "utils/mdns.hpp"
 #include "utils/network.hpp"
+#include "perf/runner.hpp"
 #include <fstream>
 #include <cstring>
 #include <algorithm>
@@ -337,7 +338,7 @@ int main(int argc, char* argv[]) {
     bool implicit_process = false;
     if (command != "process" && command != "server" && command != "worker" &&
         command != "model" && command != "benchmark" && command != "client" &&
-        command != "pair") {
+        command != "pair" && command != "perf") {
         // Check if any arg looks like a process flag
         for (int i = 1; i < argc; ++i) {
             std::string a = argv[i];
@@ -1469,6 +1470,110 @@ int main(int argc, char* argv[]) {
                   << "  Avg time: " << result.avg_time_ms << " ms\n"
                   << "  Ops/sec: " << result.ops_per_second << "\n";
         return 0;
+    }
+
+    if (command == "perf") {
+        // Perf: modular performance testing.
+        //   perf gpu-efficiency [--model <name>] [--tile 256] [--batch 1]
+        //                       [--duration 5s] [--warmup 1s] [--no-cpu-baseline]
+        //                       [--out events.jsonl] [--sample-ms 100] [--models-dir ./models]
+        //   perf list-probes
+        std::string subcommand = argc > 2 ? argv[2] : "";
+
+        if (subcommand.empty() || subcommand == "--help" || subcommand == "-h") {
+            std::cout << "CrossScale perf - performance testing\n\n"
+                      << "Usage:\n"
+                      << "  crossscale perf gpu-efficiency [options]\n"
+                      << "  crossscale perf list-probes\n\n"
+                      << "gpu-efficiency options:\n"
+                      << "  --model <name>        Model name (default: first available)\n"
+                      << "  --tile <n>            Tile size (default: 256)\n"
+                      << "  --duration <Ns>       Run length, e.g. 5s (default: 5s)\n"
+                      << "  --warmup <Ns>         Warmup window (default: 1s)\n"
+                      << "  --no-cpu-baseline     Skip CPU comparison run\n"
+                      << "  --out <path>          JSONL output file (default: stdout)\n"
+                      << "  --sample-ms <n>       Probe sample interval (default: 100)\n"
+                      << "  --models-dir <path>   Models directory (default: ./models)\n";
+            return 0;
+        }
+
+        if (subcommand == "list-probes") {
+            crossscale::perf::list_available();
+            return 0;
+        }
+
+        if (subcommand == "gpu-efficiency") {
+            std::string model_name;
+            std::string models_dir = "./models";
+            std::string out_path;
+            int tile_size = 256;
+            double duration_s = 5.0;
+            double warmup_s = 1.0;
+            int sample_ms = 100;
+            bool no_cpu_baseline = false;
+
+            for (int i = 3; i < argc; ++i) {
+                std::string arg = argv[i];
+                if (arg == "--model" && i + 1 < argc) model_name = argv[++i];
+                else if (arg == "--models-dir" && i + 1 < argc) models_dir = argv[++i];
+                else if (arg == "--tile" && i + 1 < argc) tile_size = safe_parse_int<int>(argv[++i], "--tile", 16, 8192);
+                else if (arg == "--duration" && i + 1 < argc) {
+                    std::string d = argv[++i];
+                    if (!d.empty() && d.back() == 's') d.pop_back();
+                    duration_s = std::stod(d);
+                }
+                else if (arg == "--warmup" && i + 1 < argc) {
+                    std::string w = argv[++i];
+                    if (!w.empty() && w.back() == 's') w.pop_back();
+                    warmup_s = std::stod(w);
+                }
+                else if (arg == "--sample-ms" && i + 1 < argc) sample_ms = safe_parse_int<int>(argv[++i], "--sample-ms", 10, 10000);
+                else if (arg == "--no-cpu-baseline") no_cpu_baseline = true;
+                else if (arg == "--out" && i + 1 < argc) out_path = argv[++i];
+            }
+
+            // Resolve model via ModelManager.
+            crossscale::ModelManager mgr;
+            mgr.set_models_directory(models_dir);
+            auto scan_res = mgr.scan_models();
+            if (!scan_res) {
+                LOG_ERROR("Perf", "model scan failed: " + scan_res.error().message);
+                return 1;
+            }
+            auto& models = scan_res.value();
+            if (models.empty()) {
+                LOG_ERROR("Perf", "no models found in: " + models_dir);
+                return 1;
+            }
+            const auto* sel = &models[0];
+            if (!model_name.empty()) {
+                auto it = std::find_if(models.begin(), models.end(),
+                    [&](const auto& m) { return m.name == model_name; });
+                if (it == models.end()) {
+                    LOG_ERROR("Perf", "model not found: " + model_name);
+                    for (const auto& m : models) LOG_INFO("Perf", "  available: " + m.name);
+                    return 1;
+                }
+                sel = &*it;
+            }
+
+            crossscale::perf::TestConfig cfg;
+            cfg.model_param = sel->param_path.string();
+            cfg.model_bin = sel->bin_path.string();
+            cfg.model_name = sel->name;
+            cfg.tile_width = tile_size;
+            cfg.tile_height = tile_size;
+            cfg.scale = sel->scale_factor;
+            cfg.duration_s = duration_s;
+            cfg.warmup_s = warmup_s;
+            cfg.sample_ms = sample_ms;
+            cfg.cpu_baseline = !no_cpu_baseline;
+
+            return crossscale::perf::run_test("gpu-efficiency", cfg, out_path);
+        }
+
+        LOG_ERROR("Perf", "Unknown perf subcommand: " + subcommand);
+        return 1;
     }
 
     if (command == "server") {

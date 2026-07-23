@@ -37,4 +37,4 @@ add_requires("libjpeg")
 add_requires("glaze")
 add_requires("qr-code-generator-cpp")
 
-includes("share", "cli")
+includes("share", "share/perf", "cli")
