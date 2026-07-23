@@ -19,9 +19,11 @@ auto run_test(const std::string& test_name, const TestConfig& cfg, const std::st
         test = std::make_unique<GpuEfficiencyTest>();
     } else if (test_name == "gpu-concurrency") {
         test = std::make_unique<GpuConcurrencyTest>();
+    } else if (test_name == "gpu-reuse") {
+        test = std::make_unique<GpuReuseTest>();
     } else {
         LOG_ERROR("Perf", "unknown test: " + test_name);
-        LOG_INFO("Perf", "available: gpu-efficiency, gpu-concurrency");
+        LOG_INFO("Perf", "available: gpu-efficiency, gpu-concurrency, gpu-reuse");
         return 1;
     }
 
@@ -34,6 +36,7 @@ auto list_available() -> void {
     std::print("Available perf tests:\n");
     std::print("  gpu-efficiency   GPU utilization/memory/power under synthetic-tensor load\n");
     std::print("  gpu-concurrency  N independent GPU engines/threads; measures queue saturation\n");
+    std::print("  gpu-reuse        A/B test: VkCompute reuse vs per-tile reconstruction\n");
     std::print("\nProbes:\n");
     std::print("  timer            high-resolution per-tile timing\n");
     std::print("  nvml             GPU util/mem/power/clock via NVML (runtime-loaded)\n");

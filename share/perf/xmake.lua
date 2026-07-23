@@ -6,6 +6,10 @@ target("crossscale-perf")
     set_default(false)
 
     add_deps("crossscale-core")
+    -- gpu-reuse test drives ncnn's public Vulkan API directly (builds its own
+    -- ncnn::Net + VkCompute in the test), so it needs the ncnn package itself,
+    -- not just the transitive dep through crossscale-core.
+    add_packages("ncnn")
     add_includedirs(".", {public = true})
 
     if not is_plat("android") then
@@ -19,5 +23,6 @@ target("crossscale-perf")
         "workload.cpp",
         "runner.cpp",
         "tests/gpu_efficiency.cpp",
-        "tests/gpu_concurrency.cpp"
+        "tests/gpu_concurrency.cpp",
+        "tests/gpu_reuse.cpp"
     )

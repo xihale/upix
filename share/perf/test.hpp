@@ -55,4 +55,15 @@ public:
     auto run(const TestConfig& cfg, Reporter& rep) -> int override;
 };
 
+// Stage 3 experiment: A/B test of VkCompute reuse. Mode A calls the engine's
+// process() (fresh VkCompute per tile); Mode B drives ncnn directly and reuses
+// one VkCompute per worker thread via cmd.reset(). Verifies output equivalence
+// before timing. Isolates whether per-tile VkCompute construction is the
+// bottleneck behind GpuConcurrencyTest's 75% overlap efficiency.
+class GpuReuseTest : public PerfTest {
+public:
+    auto name() const -> std::string override { return "gpu-reuse"; }
+    auto run(const TestConfig& cfg, Reporter& rep) -> int override;
+};
+
 } // namespace crossscale::perf
