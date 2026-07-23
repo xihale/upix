@@ -25,6 +25,7 @@ auto Reporter::open() -> bool {
 
 void Reporter::write(std::string_view line) {
     if (!file_) return;
+    std::lock_guard<std::mutex> lock(write_mutex_);
     std::fwrite(line.data(), 1, line.size(), static_cast<FILE*>(file_));
     std::fputc('\n', static_cast<FILE*>(file_));
 }

@@ -3,6 +3,7 @@
 // parses line-by-line with any JSON library.
 #pragma once
 
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -31,6 +32,7 @@ private:
 
     std::string path_;
     void* file_ = nullptr;  // FILE*
+    std::mutex write_mutex_;  // serializes concurrent emit_* calls
 };
 
 } // namespace crossscale::perf

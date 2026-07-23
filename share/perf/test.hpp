@@ -1,5 +1,6 @@
 // PerfTest: one performance scenario. Composes probes + workload + engine to
-// produce metrics. Stage 1 implements GpuEfficiencyTest; the interface is shared
+// produce metrics. GpuEfficiencyTest measures single-engine util;
+// GpuConcurrencyTest measures N-engine concurrent util. The interface is shared
 // by future tests (tile-sweep, precision-sweep, distributed).
 #pragma once
 
@@ -23,6 +24,7 @@ struct TestConfig {
     double warmup_s = 1.0;       // warmup window before timing
     int sample_ms = 100;         // probe sample interval
     bool cpu_baseline = true;    // also run CPU backend for comparison
+    int concurrency = 1;         // independent engines/threads (gpu-concurrency test)
 };
 
 class PerfTest {
@@ -33,12 +35,23 @@ public:
     virtual auto run(const TestConfig& cfg, Reporter& rep) -> int = 0;
 };
 
-// Stage 1 test. Measures GPU utilization/memory/power/clock under sustained
-// synthetic-tensor inference load, identifies CPU-vs-GPU bottleneck, optionally
-// compares against the CPU backend.
+// Measures GPU utilization/memory/power/clock under sustained synthetic-tensor
+// inference load with a single engine, identifies CPU-vs-GPU bottleneck,
+// optionally compares against the CPU backend.
 class GpuEfficiencyTest : public PerfTest {
 public:
     auto name() const -> std::string override { return "gpu-efficiency"; }
+    auto run(const TestConfig& cfg, Reporter& rep) -> int override;
+};
+
+// Stage 2 experiment: raises GPU utilization by running N independent ncnn::Net
+// instances (each its own VkCompute + thread), each calling process() on its own
+// tile. Two threads each calling submit_and_wait() on their OWN VkCompute submit
+// to the shared Vulkan queue; the driver can keep the queue fuller than one
+// serialized submitter can. Respects ncnn's single-queue threading model.
+class GpuConcurrencyTest : public PerfTest {
+public:
+    auto name() const -> std::string override { return "gpu-concurrency"; }
     auto run(const TestConfig& cfg, Reporter& rep) -> int override;
 };
 

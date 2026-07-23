@@ -18,5 +18,6 @@ target("crossscale-perf")
         "reporter.cpp",
         "workload.cpp",
         "runner.cpp",
-        "tests/gpu_efficiency.cpp"
+        "tests/gpu_efficiency.cpp",
+        "tests/gpu_concurrency.cpp"
     )
