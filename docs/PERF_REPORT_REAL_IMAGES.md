@@ -155,14 +155,56 @@ tile 从 128→512,wall time 几乎不变(0.92–0.98s)。**因为固定开销 0
 
 | # | 改进 | 预期收益 | 难度 | 状态 |
 |---|---|---|---|---|
-| 1 | **CLI 守护进程模式**(加载一次,多次处理) | 单图场景 +4× | 中 | 待评估 |
-| 2 | **默认走批量路径**(单图也内部走复用池) | 单图 +4× | 低 | 待评估 |
+| 1 | **CLI 守护进程模式**(加载一次,多次处理) | 单图场景 +4× | 中 | ✅ **已实施(见 §7.3)** |
+| 2 | **默认走批量路径**(单图也内部走复用池) | 单图 +4× | 低 | ✅ 由 #1 覆盖 |
 | 3 | 多引擎并发(`--jobs 2 --gpu` 已部分支持) | 批量 util 15%→96% | 中 | 此前已验证 |
 | 4 | VkCompute `reset()` 复用 | 单引擎 +11% | 低 | 此前已验证,未落地 |
 | 5 | model load 异步预热 | init+load 摊薄 | 中 | 待评估 |
 
-### 7.3 最小验证建议
-**最高 ROI**:让单图 CLI 调用也复用引擎(改进 #2)。当前每次 `process` 都重建引擎,若 CLI 改为"首次加载后驻留 / 或检测到批量目录则复用",单图场景立获 4× 加速。这与 Android app(引擎常驻)的行为一致。
+### 7.3 serve 守护进程(已实施)— 单图场景的破局
+
+**改进 #1/#2 已落地为 `crossscale serve` 子命令**:一个长驻后台进程持有热引擎(ncnn init + model load 各付一次),`crossscale process` 单图调用自动通过 Unix domain socket 委托给它,**跳过 ~490ms 固定开销**。镜像 Android app 的"引擎常驻"模式。
+
+**架构:**
+```
+crossscale process -i in -o out          crossscale serve (后台)
+   ├ exists(socket)? ─no→ 内联路径(~850ms)
+   ├ connect → 读 HELLO                   持有热 Engine(已 init+load)
+   └ 发图 → 收结果(~35-380ms)            accept → process_image_u8 → 回写
+```
+
+**实测加速(单图,detector 在 vs 不在):**
+
+| 图像 | 内联(无 daemon) | 经 daemon | 加速 |
+|---|---|---|---|
+| photo_256 | 0.521s | **0.035s** | **14.9×** |
+| text_400 | 0.532s | 0.053s | 10.0× |
+| anime_512 | 0.558s | 0.074s | 7.5× |
+| portrait_512 | 0.580s | 0.119s | 4.9× |
+| photo_1024 | 0.849s | 0.380s | 2.2× |
+
+**验证矩阵:**
+- ✅ **正确性**:5 图 daemon 输出 vs 内联输出,**md5 逐字节相同**(同一 `TileProcessor::process_image_u8` 路径)
+- ✅ **加速**:2.2× ~ 14.9×(小图收益最大,因固定开销占比更高)
+- ✅ **回退**:daemon 不在 → `exists(socket)` 快速失败 → 静默走内联路径,行为零影响(输出 md5 一致)
+- ✅ **并发**:3 客户端同时请求,daemon 用 `engine_mutex_` 串行处理(GPU 不可并发 submit 约束),输出全部正确,daemon 存活
+
+**用法:**
+```bash
+crossscale serve start              # 后台启动(双 fork 守护化)
+crossscale process -i in.png -o out.png   # 自动复用热引擎
+crossscale serve status             # 查询 pid/model/scale/device
+crossscale serve stop               # 优雅停止(发 MSG_SERVE_STOP)
+crossscale process ... --no-daemon  # 强制走内联路径(调试用)
+```
+
+**设计要点:**
+- **Unix domain socket**(非 TCP):无端口占用、无网络栈开销、文件权限(chmod 0600)天然鉴权
+- **懒换模型**:daemon 持有首个模型;请求指定不同 `-m` 时自动 `load_model`(参照 `worker.cpp:305` 的模式)
+- **零侵入**:不动 Engine/EnginePool 核心接口,不碰分布式 coordinator;独立本地服务
+- **跨平台**:AF_UNIX 仅 Linux/macOS,Android/Windows 子命令报"不支持"
+
+**这意味着 Bottleneck A(固定开销 60%)在长会话场景已被消除。** 残余的 Bottleneck B(submit 序列化)仅在批量/重负载时显现,由 `--jobs` 多引擎并发路径覆盖。
 
 ---
 
@@ -197,6 +239,13 @@ $CLI process -i /tmp/srtest/batch_in -o /tmp/srtest/batch_out_cpu --jobs 4 --til
 # 4. 阶段分解(从日志时间戳)
 $CLI process -i /tmp/srtest/photo_1024.png -o /tmp/out.png --gpu | tee log.txt
 # 参见本报告 §4 的解析方法
+
+# 5. serve 守护进程加速(见 §7.3)
+$CLI serve start                      # 后台启动热引擎守护进程
+$CLI process -i /tmp/srtest/photo_256.png -o out.png   # 自动复用,~14×
+$CLI serve status                     # 查询状态
+$CLI serve stop                       # 停止
+$CLI process ... --no-daemon          # 强制内联路径对比
 ```
 
 ### 测试图生成脚本

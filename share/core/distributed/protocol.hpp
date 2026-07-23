@@ -29,6 +29,13 @@ enum class MessageType : uint16_t {
 
     MSG_CLIENT_SUBMIT = 0x0500,
     MSG_CLIENT_RESPONSE = 0x0501,
+
+    // Local serve daemon (Unix domain socket). Separate range so the daemon's
+    // protocol can evolve independently of the distributed TCP protocol.
+    MSG_SERVE_HELLO = 0x0600,     // daemon→client, sent right after accept
+    MSG_SERVE_REQUEST = 0x0601,   // client→daemon: upscale request header
+    MSG_SERVE_RESPONSE = 0x0602,  // daemon→client: upscale result header
+    MSG_SERVE_STOP = 0x0603,      // client→daemon: request graceful shutdown
 };
 
 struct MessageHeader {
@@ -113,6 +120,47 @@ struct ModelDataMessage {
     uint8_t file_type;
     uint64_t file_offset;
     uint32_t data_length;
+};
+
+// ── Local serve daemon messages ─────────────────────────────────────────────
+// The daemon holds a warm engine; clients send an image, receive the upscaled
+// result. Header struct is followed on the wire by the raw pixel bytes
+// (img_length of them). All integers little-endian (host order on the POSIX
+// machines the daemon targets).
+
+// Sent by the daemon immediately after accepting a connection, before the
+// client sends anything. Lets the client decide whether to reuse this daemon
+// (model matches) or fall back to the inline path.
+struct ServeHello {
+    int32_t pid;             // daemon process pid (for stop/status)
+    char model_name[64];     // currently loaded model
+    int32_t scale;           // model scale factor
+    int32_t device;          // 0 = CPU, 1 = GPU_VULKAN
+    int64_t start_time_unix; // daemon start time, for uptime
+};
+
+// Client → daemon. Followed by img_length bytes of interleaved HWC uint8 image
+// data (same layout Image::data() produces).
+struct ServeRequest {
+    char model_name[64];     // requested model (daemon reloads if differs)
+    int32_t tile_size;
+    int32_t tile_overlap;
+    int32_t width;
+    int32_t height;
+    int32_t channels;
+    uint32_t img_length;     // number of image bytes following this struct
+};
+
+// Daemon → client. On success (ok==1), followed by img_length bytes of the
+// upscaled image. On failure (ok==0), no image bytes follow and error holds
+// the message.
+struct ServeResponse {
+    int32_t ok;              // 1 = success, 0 = error
+    int32_t width;
+    int32_t height;
+    int32_t channels;
+    uint32_t img_length;
+    char error[128];
 };
 
 class Protocol {

@@ -18,9 +18,16 @@ target("crossscale-core")
         "utils/network.cpp",
         "utils/benchmark.cpp",
         "utils/crypto.cpp",
-        "utils/mdns.cpp"
+        "utils/mdns.cpp",
+        "core/serve/daemon.cpp"
     )
-    
+
     if is_plat("android") then
         add_files("utils/android_utils.cpp")
+    end
+
+    -- AF_UNIX serve daemon is Linux/macOS only. The UnixSocket helper compiles
+    -- only on POSIX-with-AF_UNIX platforms; on others the daemon source is a no-op stub.
+    if is_plat("linux", "macosx") then
+        add_files("utils/unix_socket.cpp")
     end
