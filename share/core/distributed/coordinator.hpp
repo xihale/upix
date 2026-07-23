@@ -13,6 +13,7 @@
 #include <unordered_map>
 #include <mutex>
 #include <thread>
+#include <glaze/json.hpp>
 
 namespace crossscale {
 
@@ -26,8 +27,9 @@ struct CoordinatorError {
 };
 
 struct ConnectionInfo {
+    int version = 1;
     std::string ip;
-    uint16_t port;
+    uint16_t port{};
     std::string auth_key;
     std::string server_name;
     std::string current_model;
@@ -37,6 +39,24 @@ struct ConnectionInfo {
     auto to_short_string() const -> std::string;
     static auto from_short_string(const std::string& str) -> expected<ConnectionInfo, CoordinatorError>;
 };
+
+} // namespace crossscale
+
+// JSON key 映射：保持与 Android JoinInvite 解析一致的历史字段名
+template <>
+struct glz::meta<crossscale::ConnectionInfo> {
+    using T = crossscale::ConnectionInfo;
+    static constexpr auto value = glz::object(
+        "v", &T::version,
+        "ip", &T::ip,
+        "port", &T::port,
+        "key", &T::auth_key,
+        "name", &T::server_name,
+        "model", &T::current_model
+    );
+};
+
+namespace crossscale {
 
 struct WorkerConnection {
     std::unique_ptr<TCPSocket> socket;
@@ -50,6 +70,13 @@ struct ActiveTask {
     std::string worker_id;
     std::vector<uint32_t> tile_indices;
     bool completed = false;
+    std::chrono::steady_clock::time_point dispatched_at;
+    // Tile pixel-data batch, sent only after the worker accepts the task and
+    // (if needed) fetches the model. Keeping this deferred avoids a protocol
+    // desync: the worker can issue MSG_MODEL_REQUEST between ACCEPT and the
+    // batch without colliding with in-flight TILES_BATCH bytes.
+    std::vector<uint8_t> pending_batch;
+    bool batch_sent = false;
 };
 
 class Coordinator {
@@ -62,8 +89,6 @@ public:
 
     void stop();
     bool is_running() const;
-
-    auto generate_connection_info() -> ConnectionInfo;
 
     auto get_connected_devices() -> std::vector<DeviceProfile>;
     auto device_count() const -> size_t;
@@ -85,8 +110,6 @@ public:
     auto& on_task_progress() { return on_task_progress_; }
 
     void set_models_directory(const std::filesystem::path& dir);
-    auto sync_models_with_worker(const std::string& device_id)
-        -> expected<void, CoordinatorError>;
 
 private:
     void accept_loop();
@@ -98,20 +121,6 @@ private:
 
     auto handle_model_request(WorkerConnection& conn, const std::vector<uint8_t>& payload)
         -> expected<void, CoordinatorError>;
-
-    auto send_tile_data(const std::unique_ptr<TCPSocket>& socket,
-                        const std::string& task_id,
-                        uint32_t tile_index,
-                        int x, int y, int width, int height,
-                        int channels,
-                        const std::vector<uint8_t>& image_data,
-                        int img_width, int img_height)
-        -> expected<void, CoordinatorError>;
-
-    auto collect_results(const std::string& task_id,
-                         size_t num_workers,
-                         int total_tiles)
-        -> expected<std::vector<ProcessedTile>, CoordinatorError>;
 
     auto deserialize_results(const std::vector<uint8_t>& data)
         -> std::vector<ProcessedTile>;
@@ -129,9 +138,6 @@ private:
 
     std::vector<std::thread> client_threads_;
     std::mutex client_threads_mutex_;
-
-    std::unordered_map<std::string, ActiveTask> active_tasks_;
-    std::unordered_map<uint32_t, ProcessedTile> pending_results_;
 
     ModelManager model_manager_;
 

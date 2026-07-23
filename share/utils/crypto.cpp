@@ -1,8 +1,6 @@
 #include "crypto.hpp"
-#include <fstream>
+#include <format>
 #include <random>
-#include <sstream>
-#include <iomanip>
 #include <cstring>
 
 namespace crossscale {
@@ -18,15 +16,16 @@ static std::random_device& get_rng() {
     return rd;
 }
 
-auto sha256(const void* data, size_t size) -> std::vector<uint8_t> {
+// Raw 32-byte SHA-256. Kept internal; only sha256_hex is exposed.
+static auto sha256(const void* data, size_t size) -> std::vector<uint8_t> {
     std::vector<uint8_t> hash(32);
     const uint8_t* ptr = static_cast<const uint8_t*>(data);
-    
+
     uint32_t h[8] = {
         0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
         0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
     };
-    
+
     static const uint32_t k[64] = {
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
         0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -37,17 +36,17 @@ auto sha256(const void* data, size_t size) -> std::vector<uint8_t> {
         0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
         0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
     };
-    
+
     size_t padded_size = ((size + 9) / 64 + 1) * 64;
     std::vector<uint8_t> padded(padded_size, 0);
     std::memcpy(padded.data(), ptr, size);
     padded[size] = 0x80;
-    
+
     uint64_t bit_len = size * 8;
     for (int i = 0; i < 8; ++i) {
         padded[padded_size - 1 - i] = (bit_len >> (i * 8)) & 0xFF;
     }
-    
+
     for (size_t chunk = 0; chunk < padded_size; chunk += 64) {
         uint32_t w[64];
         for (int i = 0; i < 16; ++i) {
@@ -59,10 +58,10 @@ auto sha256(const void* data, size_t size) -> std::vector<uint8_t> {
             uint32_t s1 = rotr32(w[i-2], 17) ^ rotr32(w[i-2], 19) ^ (w[i-2] >> 10);
             w[i] = w[i-16] + s0 + w[i-7] + s1;
         }
-        
+
         uint32_t a = h[0], b = h[1], c = h[2], d = h[3];
         uint32_t e = h[4], f = h[5], g = h[6], hh = h[7];
-        
+
         for (int i = 0; i < 64; ++i) {
             uint32_t S1 = rotr32(e, 6) ^ rotr32(e, 11) ^ rotr32(e, 25);
             uint32_t ch = (e & f) ^ (~e & g);
@@ -70,172 +69,51 @@ auto sha256(const void* data, size_t size) -> std::vector<uint8_t> {
             uint32_t S0 = rotr32(a, 2) ^ rotr32(a, 13) ^ rotr32(a, 22);
             uint32_t maj = (a & b) ^ (a & c) ^ (b & c);
             uint32_t temp2 = S0 + maj;
-            
+
             hh = g; g = f; f = e; e = d + temp1;
             d = c; c = b; b = a; a = temp1 + temp2;
         }
-        
+
         h[0] += a; h[1] += b; h[2] += c; h[3] += d;
         h[4] += e; h[5] += f; h[6] += g; h[7] += hh;
     }
-    
+
     for (int i = 0; i < 8; ++i) {
         hash[i*4] = (h[i] >> 24) & 0xFF;
         hash[i*4 + 1] = (h[i] >> 16) & 0xFF;
         hash[i*4 + 2] = (h[i] >> 8) & 0xFF;
         hash[i*4 + 3] = h[i] & 0xFF;
     }
-    
+
     return hash;
 }
 
-auto sha256(const std::string& str) -> std::vector<uint8_t> {
-    return sha256(str.data(), str.size());
-}
-
 auto sha256_hex(const std::string& str) -> std::string {
-    auto hash = sha256(str);
-    std::ostringstream oss;
+    auto hash = sha256(str.data(), str.size());
+    std::string out;
+    out.reserve(hash.size() * 2);
     for (uint8_t b : hash) {
-        oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
+        out += std::format("{:02x}", b);
     }
-    return oss.str();
-}
-
-auto random_bytes(size_t size) -> std::vector<uint8_t> {
-    std::vector<uint8_t> bytes(size);
-    std::uniform_int_distribution<uint8_t> dis(0, 255);
-    auto& rng = get_rng();
-    for (size_t i = 0; i < size; ++i) {
-        bytes[i] = dis(rng);
-    }
-    return bytes;
-}
-
-auto random_hex(size_t size) -> std::string {
-    auto bytes = random_bytes(size);
-    std::ostringstream oss;
-    for (uint8_t b : bytes) {
-        oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
-    }
-    return oss.str();
-}
-
-static const char base64_chars[] = 
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-auto base64_encode(const void* data, size_t size) -> std::string {
-    const uint8_t* ptr = static_cast<const uint8_t*>(data);
-    std::string result;
-    result.reserve(((size + 2) / 3) * 4);
-    
-    for (size_t i = 0; i < size; i += 3) {
-        uint32_t octet_a = i < size ? ptr[i] : 0;
-        uint32_t octet_b = i + 1 < size ? ptr[i + 1] : 0;
-        uint32_t octet_c = i + 2 < size ? ptr[i + 2] : 0;
-        
-        uint32_t triple = (octet_a << 16) | (octet_b << 8) | octet_c;
-        
-        result += base64_chars[(triple >> 18) & 0x3F];
-        result += base64_chars[(triple >> 12) & 0x3F];
-        result += (i + 1 < size) ? base64_chars[(triple >> 6) & 0x3F] : '=';
-        result += (i + 2 < size) ? base64_chars[triple & 0x3F] : '=';
-    }
-    
-    return result;
-}
-
-auto base64_encode(const std::vector<uint8_t>& data) -> std::string {
-    return base64_encode(data.data(), data.size());
-}
-
-auto base64_decode(const std::string& encoded) -> std::vector<uint8_t> {
-    static int decode_table[256];
-    static bool init = false;
-    if (!init) {
-        std::fill_n(decode_table, 256, -1);
-        for (int i = 0; i < 64; ++i) {
-            decode_table[static_cast<uint8_t>(base64_chars[i])] = i;
-        }
-        init = true;
-    }
-    
-    std::vector<uint8_t> result;
-    result.reserve(encoded.size() / 4 * 3);
-    
-    uint32_t triple = 0;
-    int bits = 0;
-    
-    for (char c : encoded) {
-        if (c == '=') break;
-        int val = decode_table[static_cast<uint8_t>(c)];
-        if (val < 0) continue;
-        
-        triple = (triple << 6) | val;
-        bits += 6;
-        
-        if (bits >= 8) {
-            bits -= 8;
-            result.push_back((triple >> bits) & 0xFF);
-        }
-    }
-    
-    return result;
-}
-
-auto xor_encrypt(const std::string& data, const std::string& key) -> std::string {
-    std::string result(data.size(), '\0');
-    for (size_t i = 0; i < data.size(); ++i) {
-        result[i] = data[i] ^ key[i % key.size()];
-    }
-    return result;
-}
-
-auto xor_decrypt(const std::string& data, const std::string& key) -> std::string {
-    return xor_encrypt(data, key);
-}
-
-uint64_t hash64(const void* data, size_t size) {
-    auto h = sha256(data, size);
-    uint64_t result = 0;
-    for (int i = 0; i < 8; ++i) {
-        result = (result << 8) | h[i];
-    }
-    return result;
-}
-
-uint32_t hash32(const void* data, size_t size) {
-    auto h = sha256(data, size);
-    return (h[0] << 24) | (h[1] << 16) | (h[2] << 8) | h[3];
+    return out;
 }
 
 auto generate_uuid() -> std::string {
-    auto bytes = random_bytes(16);
+    std::uniform_int_distribution<uint8_t> dis(0, 255);
+    auto& rng = get_rng();
+
+    uint8_t bytes[16];
+    for (int i = 0; i < 16; ++i) {
+        bytes[i] = dis(rng);
+    }
     bytes[6] = (bytes[6] & 0x0F) | 0x40;
     bytes[8] = (bytes[8] & 0x3F) | 0x80;
-    
-    std::ostringstream oss;
-    oss << std::hex << std::setfill('0');
-    for (int i = 0; i < 16; ++i) {
-        if (i == 4 || i == 6 || i == 8 || i == 10) oss << '-';
-        oss << std::setw(2) << static_cast<int>(bytes[i]);
-    }
-    return oss.str();
-}
 
-auto file_hash(const std::string& path) -> std::string {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) return "";
-    
-    std::vector<uint8_t> buffer(8192);
-    std::vector<uint8_t> accumulated;
-    
-    while (file) {
-        file.read(reinterpret_cast<char*>(buffer.data()), buffer.size());
-        accumulated.insert(accumulated.end(), buffer.begin(), buffer.begin() + file.gcount());
-    }
-    
-    return sha256_hex(std::string(accumulated.begin(), accumulated.end()));
+    return std::format(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
+    );
 }
 
 } // namespace crypto

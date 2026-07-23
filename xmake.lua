@@ -27,12 +27,14 @@ if is_mode("release") then
     add_cxflags("-Werror")
 end
 
-add_requires("ncnn", {configs = {vulkan = true}})
+-- Pin to 20260113: glslang-nihui (a vulkan build dep of ncnn) has no 20260526 release,
+-- so the latest ncnn (20260526) fails to resolve its glslang-nihui dependency.
+-- 20260113 is the newest ncnn version with a matching glslang-nihui release.
+add_requires("ncnn 20260113", {configs = {vulkan = true}})
 add_requires("libwebp")
 add_requires("libpng")
 add_requires("libjpeg")
-add_requires("nlohmann_json")
-add_requires("cxxopts")
+add_requires("glaze")
 add_requires("qr-code-generator-cpp")
 
 includes("share", "cli")

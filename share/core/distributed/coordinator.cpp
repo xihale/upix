@@ -10,6 +10,8 @@
 #include <fstream>
 #include <optional>
 #include <numeric>
+#include <deque>
+#include <unordered_set>
 
 namespace crossscale {
 
@@ -33,7 +35,7 @@ auto Coordinator::start(uint16_t port, const std::string& auth_key)
     
     auto result = server_->listen(port);
     if (!result.has_value()) {
-        return CoordinatorError{1, "Failed to start server: " + result.error().message};
+        return std::unexpected(CoordinatorError{1, "Failed to start server: " + result.error().message});
     }
     
     port_ = port;
@@ -92,18 +94,6 @@ bool Coordinator::is_running() const {
     return running_;
 }
 
-auto Coordinator::generate_connection_info() -> ConnectionInfo {
-    ConnectionInfo info;
-    
-    auto addresses = network_utils::get_local_addresses();
-    info.ip = addresses.empty() ? "127.0.0.1" : addresses[0];
-    info.port = port_;
-    info.auth_key = auth_key_;
-    info.server_name = server_name_;
-    
-    return info;
-}
-
 auto Coordinator::get_connected_devices() -> std::vector<DeviceProfile> {
     return scheduler_.get_all_devices();
 }
@@ -122,7 +112,7 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
     std::lock_guard<std::mutex> lock(workers_mutex_);
 
     if (workers_.empty()) {
-        return CoordinatorError{2, "No workers connected"};
+        return std::unexpected(CoordinatorError{2, "No workers connected"});
     }
 
     LOG_INFO(
@@ -145,6 +135,9 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
 
     for (auto& [id, conn] : workers_) {
         conn.socket->set_buffer_size(max_tile_bytes);
+        // Use a short receive timeout so the dispatch loop can poll for results
+        // without blocking indefinitely on any single worker.
+        conn.socket->set_timeout(200);
     }
 
     const int tile_size = config.tile_size;
@@ -160,260 +153,364 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
     LOG_INFO("Coordinator", "Splitting image into " + std::to_string(total_tiles) +
              " tiles (" + std::to_string(tiles_x) + "x" + std::to_string(tiles_y) + ")");
 
-    std::vector<uint32_t> pending_tile_indices(static_cast<size_t>(total_tiles));
-    std::iota(pending_tile_indices.begin(), pending_tile_indices.end(), 0);
+    // --- Continuous dispatch: work-pool with per-worker re-dispatch, no global barrier ---
+    // Tiles flow: pending pool -> dispatched to a worker (inflight) -> results collected.
+    // When a worker finishes its batch, it immediately gets more tiles from the pool.
+    // If a worker disconnects, its inflight tiles go back to the pool (retried).
+    std::deque<uint32_t> pending_pool;
+    for (int i = 0; i < total_tiles; ++i) {
+        pending_pool.push_back(static_cast<uint32_t>(i));
+    }
 
+    std::unordered_map<std::string, ActiveTask> inflight;  // worker_id -> active task
     std::vector<ProcessedTile> all_results;
     all_results.reserve(static_cast<size_t>(total_tiles));
+    std::unordered_set<uint32_t> completed_tile_set;
 
     task_cancelled_ = false;
-    size_t wave_index = 0;
 
-    while (!pending_tile_indices.empty()) {
+    // Helper: compute tile geometry for a linear tile index.
+    auto tile_geometry = [&](uint32_t tile_idx) {
+        const int tx = static_cast<int>(tile_idx % tiles_x);
+        const int ty = static_cast<int>(tile_idx / tiles_x);
+        const int x = tx * tile_size;
+        const int y = ty * tile_size;
+        const int w = std::min(tile_size, width - x);
+        const int h = std::min(tile_size, height - y);
+        struct Geo { int x, y, w, h; } g{x, y, w, h};
+        return g;
+    };
+
+    // Helper: dispatch a batch of tiles to a specific worker.
+    // Returns the number of tiles dispatched (0 on failure).
+    auto dispatch_to_worker = [&](WorkerConnection& conn,
+                                   const std::string& worker_id,
+                                   std::vector<uint32_t>& tiles) -> size_t {
+        if (tiles.empty()) return 0;
+
+        const std::string task_id = crypto::generate_uuid();
+
+        // Build task assignment message
+        TaskAssignmentMessage msg{};
+        std::strncpy(msg.task_id, task_id.c_str(), sizeof(msg.task_id) - 1);
+        std::strncpy(msg.model_name, model_name.c_str(), sizeof(msg.model_name) - 1);
+        msg.tile_count = static_cast<uint32_t>(tiles.size());
+
+        MessageHeader header{};
+        header.type = MessageType::MSG_TASK_ASSIGNMENT;
+        header.payload_length = sizeof(msg) + msg.tile_count * sizeof(TileInfo);
+
+        std::vector<uint8_t> payload(header.payload_length);
+        std::memcpy(payload.data(), &msg, sizeof(msg));
+        size_t offset = sizeof(msg);
+        for (uint32_t tile_idx : tiles) {
+            auto g = tile_geometry(tile_idx);
+            TileInfo ti{};
+            ti.x = static_cast<uint32_t>(g.x);
+            ti.y = static_cast<uint32_t>(g.y);
+            ti.width = static_cast<uint32_t>(g.w);
+            ti.height = static_cast<uint32_t>(g.h);
+            ti.overlap = static_cast<uint32_t>(overlap);
+            std::memcpy(payload.data() + offset, &ti, sizeof(ti));
+            offset += sizeof(ti);
+        }
+
+        auto data = Protocol::serialize(header, payload.data());
+        auto send_res = conn.socket->send_all(data.data(), data.size());
+        if (!send_res.has_value()) return 0;
+
+        // Build and send tile pixel data batch
+        size_t total_batch_size = 0;
+        std::vector<ImageTileMessage> tile_msgs;
+        tile_msgs.reserve(tiles.size());
+        std::vector<std::vector<uint8_t>> tile_data_bufs;
+        tile_data_bufs.reserve(tiles.size());
+
+        for (uint32_t tile_idx : tiles) {
+            auto g = tile_geometry(tile_idx);
+            size_t tile_data_size = static_cast<size_t>(g.w) * static_cast<size_t>(g.h) * static_cast<size_t>(channels);
+            std::vector<uint8_t> tile_data(tile_data_size);
+            for (int row = 0; row < g.h; ++row) {
+                const int src_row_offset = ((g.y + row) * width + g.x) * channels;
+                const int dst_row_offset = row * g.w * channels;
+                std::memcpy(tile_data.data() + dst_row_offset,
+                            image_data.data() + src_row_offset,
+                            static_cast<size_t>(g.w * channels));
+            }
+
+            ImageTileMessage tm{};
+            std::strncpy(tm.task_id, task_id.c_str(), sizeof(tm.task_id) - 1);
+            tm.tile_index = tile_idx;
+            tm.tile_x = static_cast<uint32_t>(g.x);
+            tm.tile_y = static_cast<uint32_t>(g.y);
+            tm.width = static_cast<uint32_t>(g.w);
+            tm.height = static_cast<uint32_t>(g.h);
+            tm.channels = static_cast<uint8_t>(channels);
+            tm.pixel_format = 0;
+            tm.data_length = static_cast<uint32_t>(tile_data_size);
+
+            total_batch_size += sizeof(tm) + tile_data_size;
+            tile_msgs.push_back(tm);
+            tile_data_bufs.push_back(std::move(tile_data));
+        }
+
+        std::vector<uint8_t> batch_payload(total_batch_size);
+        size_t batch_offset = 0;
+        for (size_t i = 0; i < tile_msgs.size(); ++i) {
+            std::memcpy(batch_payload.data() + batch_offset, &tile_msgs[i], sizeof(tile_msgs[i]));
+            batch_offset += sizeof(tile_msgs[i]);
+            std::memcpy(batch_payload.data() + batch_offset,
+                        tile_data_bufs[i].data(), tile_data_bufs[i].size());
+            batch_offset += tile_data_bufs[i].size();
+        }
+
+        MessageHeader batch_header{};
+        batch_header.type = MessageType::MSG_TILES_BATCH;
+        batch_header.payload_length = static_cast<uint32_t>(total_batch_size);
+        // IMPORTANT: do NOT send the tile batch yet. It is held back until the
+        // worker accepts the task — see the dispatch loop. This lets the worker
+        // request the model (MSG_MODEL_REQUEST) between ACCEPT and the batch
+        // without the batch bytes colliding with the model-request exchange.
+        auto batch_msg = Protocol::serialize(batch_header, batch_payload.data());
+
+        ActiveTask at;
+        at.task_id = task_id;
+        at.worker_id = worker_id;
+        at.tile_indices = tiles;
+        at.completed = false;
+        at.dispatched_at = std::chrono::steady_clock::now();
+        at.pending_batch = std::move(batch_msg);
+        at.batch_sent = false;
+        inflight[worker_id] = std::move(at);
+
+        return tiles.size();
+    };
+
+    // Helper: handle a worker disconnection — requeue its inflight tiles.
+    auto handle_disconnect = [&](const std::string& worker_id) {
+        auto it = inflight.find(worker_id);
+        if (it != inflight.end()) {
+            for (uint32_t ti : it->second.tile_indices) {
+                if (completed_tile_set.find(ti) == completed_tile_set.end()) {
+                    pending_pool.push_back(ti);
+                }
+            }
+            inflight.erase(it);
+        }
+        scheduler_.unregister_device(worker_id);
+        workers_.erase(worker_id);
+        if (on_device_disconnected_) {
+            on_device_disconnected_(worker_id);
+        }
+    };
+
+    // Per-tile timeout: if a worker's batch hasn't completed in this duration,
+    // requeue its tiles and drop the worker.
+    constexpr auto TILE_TIMEOUT = std::chrono::seconds(120);
+
+    while (!pending_pool.empty() || !inflight.empty()) {
         if (task_cancelled_) {
-            return CoordinatorError{6, "Task cancelled"};
+            return std::unexpected(CoordinatorError{6, "Task cancelled"});
         }
 
-        wave_index += 1;
-        const uint32_t pending_count = static_cast<uint32_t>(pending_tile_indices.size());
-        auto assignments = scheduler_.assign_tiles(pending_count, model_name);
-        if (assignments.empty()) {
-            LOG_WARNING(
-                "Coordinator",
-                "Scheduler returned no alive assignments, refreshing worker heartbeats and retrying"
-            );
-            const auto now = std::chrono::steady_clock::now();
-            for (auto& [worker_id, connection] : workers_) {
-                connection.profile.last_heartbeat = now;
-                scheduler_.register_device(connection.profile);
-            }
-            assignments = scheduler_.assign_tiles(pending_count, model_name);
+        // --- Phase 1: Dispatch tiles to idle workers ---
+        if (!pending_pool.empty()) {
+            auto assignments = scheduler_.assign_tiles(
+                static_cast<uint32_t>(pending_pool.size()), model_name);
             if (assignments.empty()) {
-                return CoordinatorError{3, "Failed to assign tasks"};
+                // Refresh heartbeats and retry once
+                const auto now = std::chrono::steady_clock::now();
+                for (auto& [wid, conn] : workers_) {
+                    conn.profile.last_heartbeat = now;
+                    scheduler_.register_device(conn.profile);
+                }
+                assignments = scheduler_.assign_tiles(
+                    static_cast<uint32_t>(pending_pool.size()), model_name);
+            }
+
+            for (const auto& assignment : assignments) {
+                if (pending_pool.empty()) break;
+
+                auto worker_it = workers_.find(assignment.device_id);
+                if (worker_it == workers_.end()) continue;
+                if (inflight.find(assignment.device_id) != inflight.end()) continue;  // busy
+
+                // Take tiles from the front of the pool. Give the worker its full
+                // assigned share in a single task so it can stream results back
+                // without round-tripping per batch — the per-task tile count is
+                // governed by the scheduler's weight-based assignment, and
+                // max_batch_size only caps how many tiles a worker processes
+                // concurrently inside that task (a throughput hint, not a hard
+                // cap on task size). Capping task size here fragments a small
+                // job across multiple ASSIGNMENT/ACCEPT/batch/result round
+                // trips and races the dispatch loop.
+                size_t take = std::min(assignment.assigned_tiles.size(), pending_pool.size());
+                if (take == 0) continue;
+
+                std::vector<uint32_t> batch;
+                batch.reserve(take);
+                for (size_t i = 0; i < take && !pending_pool.empty(); ++i) {
+                    batch.push_back(pending_pool.front());
+                    pending_pool.pop_front();
+                }
+                if (batch.empty()) continue;
+
+                size_t dispatched = dispatch_to_worker(worker_it->second, assignment.device_id, batch);
+                if (dispatched == 0) {
+                    LOG_WARNING("Coordinator", "Failed to dispatch to worker " + assignment.device_id);
+                    // Put tiles back and drop worker
+                    for (uint32_t ti : batch) pending_pool.push_front(ti);
+                    handle_disconnect(assignment.device_id);
+                }
             }
         }
 
-        active_tasks_.clear();
-        pending_results_.clear();
+        if (workers_.empty() && !pending_pool.empty()) {
+            return std::unexpected(CoordinatorError{4, "All workers disconnected with " +
+                std::to_string(pending_pool.size()) + " tiles remaining"});
+        }
 
-        std::string task_id = crypto::generate_uuid();
-        size_t dispatched_workers = 0;
+        // --- Phase 2: Poll inflight workers for results ---
+        std::vector<std::string> to_remove;
+        for (auto& [worker_id, task] : inflight) {
+            if (task.completed) continue;
 
-        LOG_INFO(
-            "Coordinator",
-            "Dispatch wave " + std::to_string(wave_index) +
-                " pending_tiles=" + std::to_string(pending_tile_indices.size()) +
-                " candidate_workers=" + std::to_string(assignments.size())
-        );
-
-        for (const auto& assignment : assignments) {
-            auto worker_it = workers_.find(assignment.device_id);
+            auto worker_it = workers_.find(worker_id);
             if (worker_it == workers_.end()) {
+                to_remove.push_back(worker_id);
                 continue;
             }
 
-            std::vector<uint32_t> actual_tile_indices;
-            actual_tile_indices.reserve(assignment.assigned_tiles.size());
-            for (uint32_t relative_index : assignment.assigned_tiles) {
-                if (relative_index < pending_tile_indices.size()) {
-                    actual_tile_indices.push_back(pending_tile_indices[relative_index]);
+            // Check tile-level timeout
+            auto elapsed = std::chrono::steady_clock::now() - task.dispatched_at;
+            if (elapsed > TILE_TIMEOUT) {
+                LOG_WARNING("Coordinator", "Worker " + worker_id +
+                    " timed out (" + std::to_string(
+                        std::chrono::duration_cast<std::chrono::seconds>(elapsed).count()) +
+                    "s), requeuing " + std::to_string(task.tile_indices.size()) + " tiles");
+                for (uint32_t ti : task.tile_indices) {
+                    if (completed_tile_set.find(ti) == completed_tile_set.end()) {
+                        pending_pool.push_back(ti);
+                    }
                 }
-            }
-
-            if (actual_tile_indices.empty()) {
+                to_remove.push_back(worker_id);
+                scheduler_.unregister_device(worker_id);
+                workers_.erase(worker_it);
+                if (on_device_disconnected_) on_device_disconnected_(worker_id);
                 continue;
             }
 
-            TaskAssignmentMessage msg{};
-            std::strncpy(msg.task_id, task_id.c_str(), sizeof(msg.task_id) - 1);
-            std::strncpy(msg.model_name, model_name.c_str(), sizeof(msg.model_name) - 1);
-            msg.tile_count = static_cast<uint32_t>(actual_tile_indices.size());
+            auto& socket = worker_it->second.socket;
+            std::vector<uint8_t> header_buffer(Protocol::HEADER_SIZE);
+            auto recv_res = socket->receive_all(header_buffer.data(), header_buffer.size());
 
-            MessageHeader header{};
-            header.type = MessageType::MSG_TASK_ASSIGNMENT;
-            header.payload_length = sizeof(msg) + msg.tile_count * sizeof(TileInfo);
-
-            std::vector<uint8_t> payload(header.payload_length);
-            std::memcpy(payload.data(), &msg, sizeof(msg));
-
-            size_t offset = sizeof(msg);
-            for (uint32_t tile_idx : actual_tile_indices) {
-                const int tile_x = static_cast<int>(tile_idx % static_cast<uint32_t>(tiles_x));
-                const int tile_y = static_cast<int>(tile_idx / static_cast<uint32_t>(tiles_x));
-
-                const int x = tile_x * tile_size;
-                const int y = tile_y * tile_size;
-                const int w = std::min(tile_size, width - x);
-                const int h = std::min(tile_size, height - y);
-
-                TileInfo tile{};
-                tile.x = static_cast<uint32_t>(x);
-                tile.y = static_cast<uint32_t>(y);
-                tile.width = static_cast<uint32_t>(w);
-                tile.height = static_cast<uint32_t>(h);
-                tile.overlap = static_cast<uint32_t>(overlap);
-                std::memcpy(payload.data() + offset, &tile, sizeof(tile));
-                offset += sizeof(tile);
-            }
-
-            auto data = Protocol::serialize(header, payload.data());
-            auto send_assignment_result = worker_it->second.socket->send_all(data.data(), data.size());
-            if (!send_assignment_result.has_value()) {
-                LOG_ERROR(
-                    "Coordinator",
-                    "Failed to send task to worker " + assignment.device_id +
-                        ": " + send_assignment_result.error().message
-                );
-                scheduler_.unregister_device(assignment.device_id);
-                workers_.erase(assignment.device_id);
-                if (on_device_disconnected_) {
-                    on_device_disconnected_(assignment.device_id);
+            if (!recv_res.has_value()) {
+                const int err = recv_res.error().code;
+                const bool timeout_err = (err == EAGAIN || err == EWOULDBLOCK);
+                if (!timeout_err) {
+                    LOG_WARNING("Coordinator", "Worker " + worker_id +
+                        " disconnected: " + recv_res.error().message);
+                    for (uint32_t ti : task.tile_indices) {
+                        if (completed_tile_set.find(ti) == completed_tile_set.end()) {
+                            pending_pool.push_back(ti);
+                        }
+                    }
+                    to_remove.push_back(worker_id);
+                    scheduler_.unregister_device(worker_id);
+                    workers_.erase(worker_it);
+                    if (on_device_disconnected_) on_device_disconnected_(worker_id);
                 }
                 continue;
             }
 
-            size_t total_batch_size = 0;
-            std::vector<ImageTileMessage> tile_msgs;
-            tile_msgs.reserve(actual_tile_indices.size());
-            std::vector<std::vector<uint8_t>> tile_data_bufs;
-            tile_data_bufs.reserve(actual_tile_indices.size());
+            auto hdr = Protocol::parse_header(header_buffer.data(), header_buffer.size());
+            if (!hdr) continue;
 
-            for (uint32_t tile_idx : actual_tile_indices) {
-                const int tile_x = static_cast<int>(tile_idx % static_cast<uint32_t>(tiles_x));
-                const int tile_y = static_cast<int>(tile_idx / static_cast<uint32_t>(tiles_x));
-                const int x = tile_x * tile_size;
-                const int y = tile_y * tile_size;
-                const int w = std::min(tile_size, width - x);
-                const int h = std::min(tile_size, height - y);
+            worker_it->second.profile.last_heartbeat = std::chrono::steady_clock::now();
+            scheduler_.register_device(worker_it->second.profile);
 
-                size_t tile_data_size = static_cast<size_t>(w) * static_cast<size_t>(h) * static_cast<size_t>(channels);
-                std::vector<uint8_t> tile_data(tile_data_size);
-                for (int row = 0; row < h; ++row) {
-                    const int src_y = y + row;
-                    const int src_row_offset = (src_y * width + x) * channels;
-                    const int dst_row_offset = row * w * channels;
-                    std::memcpy(tile_data.data() + dst_row_offset,
-                                image_data.data() + src_row_offset,
-                                static_cast<size_t>(w * channels));
+            if (hdr->type == MessageType::MSG_TASK_RESULT) {
+                std::vector<uint8_t> payload(hdr->payload_length);
+                auto pay_res = socket->receive_all(payload.data(), payload.size());
+                if (!pay_res.has_value()) continue;
+
+                auto tiles = deserialize_results(payload);
+                LOG_INFO("Coordinator", "Received " + std::to_string(tiles.size()) +
+                         " tiles from worker " + worker_id);
+
+                for (const auto& pt : tiles) {
+                    const int cx = static_cast<int>(pt.tile_x) / tile_size;
+                    const int cy = static_cast<int>(pt.tile_y) / tile_size;
+                    if (cx >= 0 && cx < tiles_x && cy >= 0 && cy < tiles_y) {
+                        completed_tile_set.insert(static_cast<uint32_t>(cy * tiles_x + cx));
+                    }
                 }
+                all_results.insert(all_results.end(),
+                                   std::make_move_iterator(tiles.begin()),
+                                   std::make_move_iterator(tiles.end()));
 
-                ImageTileMessage tile_msg{};
-                std::strncpy(tile_msg.task_id, task_id.c_str(), sizeof(tile_msg.task_id) - 1);
-                tile_msg.tile_index = tile_idx;
-                tile_msg.tile_x = static_cast<uint32_t>(x);
-                tile_msg.tile_y = static_cast<uint32_t>(y);
-                tile_msg.width = static_cast<uint32_t>(w);
-                tile_msg.height = static_cast<uint32_t>(h);
-                tile_msg.channels = static_cast<uint8_t>(channels);
-                tile_msg.pixel_format = 0;
-                tile_msg.data_length = static_cast<uint32_t>(tile_data_size);
+                task.completed = true;
+                to_remove.push_back(worker_id);
 
-                total_batch_size += sizeof(tile_msg) + tile_data_size;
-                tile_msgs.push_back(tile_msg);
-                tile_data_bufs.push_back(std::move(tile_data));
-            }
-
-            std::vector<uint8_t> batch_payload(total_batch_size);
-            size_t batch_offset = 0;
-            for (size_t i = 0; i < tile_msgs.size(); ++i) {
-                std::memcpy(batch_payload.data() + batch_offset, &tile_msgs[i], sizeof(tile_msgs[i]));
-                batch_offset += sizeof(tile_msgs[i]);
-                std::memcpy(batch_payload.data() + batch_offset,
-                            tile_data_bufs[i].data(),
-                            tile_data_bufs[i].size());
-                batch_offset += tile_data_bufs[i].size();
-            }
-
-            MessageHeader batch_header{};
-            batch_header.type = MessageType::MSG_TILES_BATCH;
-            batch_header.payload_length = static_cast<uint32_t>(total_batch_size);
-            auto batch_msg = Protocol::serialize(batch_header, batch_payload.data());
-            auto send_batch_result = worker_it->second.socket->send_all(batch_msg.data(), batch_msg.size());
-            if (!send_batch_result.has_value()) {
-                LOG_ERROR(
-                    "Coordinator",
-                    "Failed to send tile batch to worker " + assignment.device_id +
-                        ": " + send_batch_result.error().message
-                );
-                scheduler_.unregister_device(assignment.device_id);
-                workers_.erase(assignment.device_id);
-                if (on_device_disconnected_) {
-                    on_device_disconnected_(assignment.device_id);
+                if (on_task_progress_ && total_tiles > 0) {
+                    on_task_progress_(std::clamp(
+                        static_cast<float>(completed_tile_set.size()) / total_tiles, 0.0f, 1.0f));
                 }
-                continue;
-            }
-
-            ActiveTask active_task;
-            active_task.task_id = task_id;
-            active_task.worker_id = assignment.device_id;
-            active_task.tile_indices = actual_tile_indices;
-            active_task.completed = false;
-            active_tasks_[task_id + "_" + assignment.device_id] = std::move(active_task);
-            dispatched_workers += 1;
-        }
-
-        if (dispatched_workers == 0) {
-            return CoordinatorError{4, "No active workers accepted the current dispatch wave"};
-        }
-
-        auto wave_results = collect_results(task_id, dispatched_workers, static_cast<int>(pending_tile_indices.size()));
-        if (!wave_results.has_value()) {
-            return CoordinatorError{4, "Failed to collect results: " + wave_results.error().message};
-        }
-
-        if (!wave_results->empty()) {
-            all_results.insert(
-                all_results.end(),
-                std::make_move_iterator(wave_results->begin()),
-                std::make_move_iterator(wave_results->end())
-            );
-        }
-
-        std::vector<uint32_t> completed_tile_indices;
-        completed_tile_indices.reserve(wave_results->size());
-        for (const auto& processed_tile : *wave_results) {
-            const int completed_x_index = static_cast<int>(processed_tile.tile_x) / tile_size;
-            const int completed_y_index = static_cast<int>(processed_tile.tile_y) / tile_size;
-            if (completed_x_index < 0 || completed_x_index >= tiles_x ||
-                completed_y_index < 0 || completed_y_index >= tiles_y) {
-                continue;
-            }
-            const uint32_t tile_index = static_cast<uint32_t>(completed_y_index * tiles_x + completed_x_index);
-            completed_tile_indices.push_back(tile_index);
-        }
-
-        std::sort(completed_tile_indices.begin(), completed_tile_indices.end());
-        completed_tile_indices.erase(std::unique(completed_tile_indices.begin(), completed_tile_indices.end()),
-                                     completed_tile_indices.end());
-
-        if (completed_tile_indices.empty()) {
-            return CoordinatorError{4, "No completed tiles reported in dispatch wave"};
-        }
-
-        pending_tile_indices.erase(
-            std::remove_if(
-                pending_tile_indices.begin(),
-                pending_tile_indices.end(),
-                [&](uint32_t tile_index) {
-                    return std::binary_search(completed_tile_indices.begin(),
-                                              completed_tile_indices.end(),
-                                              tile_index);
+            } else if (hdr->type == MessageType::MSG_TASK_ACCEPT) {
+                // Worker accepted — now it is safe to send the tile batch.
+                // The worker may have requested the model between reading the
+                // assignment and sending ACCEPT; that exchange is already done.
+                if (!task.batch_sent) {
+                    auto send_res = socket->send_all(
+                        task.pending_batch.data(), task.pending_batch.size());
+                    if (!send_res.has_value()) {
+                        LOG_WARNING("Coordinator", "Worker " + worker_id +
+                            " disconnected while sending tile batch: " +
+                            send_res.error().message);
+                        for (uint32_t ti : task.tile_indices) {
+                            if (completed_tile_set.find(ti) == completed_tile_set.end()) {
+                                pending_pool.push_back(ti);
+                            }
+                        }
+                        to_remove.push_back(worker_id);
+                        scheduler_.unregister_device(worker_id);
+                        workers_.erase(worker_it);
+                        if (on_device_disconnected_) on_device_disconnected_(worker_id);
+                        continue;
+                    }
+                    task.batch_sent = true;
                 }
-            ),
-            pending_tile_indices.end()
-        );
+            } else if (hdr->type == MessageType::MSG_MODEL_REQUEST) {
+                // Worker is fetching the model for this task. Serve it, then
+                // keep polling — the ACCEPT/batch/result will follow.
+                std::vector<uint8_t> mpayload(hdr->payload_length);
+                auto mpay_res = socket->receive_all(mpayload.data(), mpayload.size());
+                if (mpay_res.has_value()) {
+                    auto mr = handle_model_request(worker_it->second, mpayload);
+                    if (!mr.has_value()) {
+                        LOG_WARNING("Coordinator", "Model request from worker " +
+                            worker_id + " failed: " + mr.error().message);
+                    }
+                    worker_it->second.profile.last_heartbeat = std::chrono::steady_clock::now();
+                    scheduler_.register_device(worker_it->second.profile);
+                }
+            } else {
+                // Drain payload for non-result messages (progress, heartbeat, etc.)
+                if (hdr->payload_length > 0) {
+                    std::vector<uint8_t> drain(hdr->payload_length);
+                    (void)socket->receive_all(drain.data(), drain.size());                }
+            }
+        }
 
-        LOG_INFO(
-            "Coordinator",
-            "Dispatch wave " + std::to_string(wave_index) +
-                " completed_tiles=" + std::to_string(completed_tile_indices.size()) +
-                " remaining_tiles=" + std::to_string(pending_tile_indices.size())
-        );
+        for (const auto& wid : to_remove) {
+            inflight.erase(wid);
+        }
 
-        if (on_task_progress_ && total_tiles > 0) {
-            const int completed_tiles = total_tiles - static_cast<int>(pending_tile_indices.size());
-            const float overall_progress = static_cast<float>(completed_tiles) / static_cast<float>(total_tiles);
-            on_task_progress_(std::clamp(overall_progress, 0.0f, 1.0f));
+        // Avoid busy-spinning when all workers are inflight and nothing was received
+        bool any_inflight = !inflight.empty();
+        bool all_busy = any_inflight && pending_pool.empty();
+        if (all_busy || (!any_inflight && !pending_pool.empty() && workers_.empty())) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
     }
 
@@ -421,7 +518,7 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
 
     auto stitched = stitch_tiles(all_results, width, height, channels, scale_factor);
     if (!stitched.has_value()) {
-        return CoordinatorError{5, "Failed to stitch tiles: " + stitched.error().message};
+        return std::unexpected(CoordinatorError{5, "Failed to stitch tiles: " + stitched.error().message});
     }
 
     return stitched;
@@ -435,12 +532,15 @@ void Coordinator::accept_loop() {
     while (running_) {
         auto client = server_->accept();
         if (!client.has_value()) {
-            if (running_) {
+            // EAGAIN/ETIMEDOUT is the normal poll-timeout wake-up: loop back
+            // and re-check running_. Only log genuinely unexpected errors.
+            const int code = client.error().code;
+            if (running_ && code != EAGAIN && code != ETIMEDOUT) {
                 LOG_ERROR("Coordinator", "Accept failed: " + client.error().message);
             }
             continue;
         }
-        
+
         {
             std::lock_guard<std::mutex> lock(client_threads_mutex_);
             // Clean up finished threads
@@ -518,8 +618,7 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
             resp_header.payload_length = sizeof(resp);
             
             auto data = Protocol::serialize(resp_header, &resp);
-            conn.socket->send_all(data.data(), data.size());
-            return;
+            (void)conn.socket->send_all(data.data(), data.size());            return;
         }
         
         AuthResponse resp{};
@@ -532,8 +631,7 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
         resp_header.payload_length = sizeof(resp);
         
         auto data = Protocol::serialize(resp_header, &resp);
-        conn.socket->send_all(data.data(), data.size());
-        
+        (void)conn.socket->send_all(data.data(), data.size());        
         conn.authenticated = true;
         conn.profile.device_id = conn.device_id;
         conn.profile.device_name = "CLI-Worker";
@@ -548,6 +646,11 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
         conn.socket->set_timeout(5000);
         std::vector<uint8_t> profile_header_buffer(Protocol::HEADER_SIZE);
         auto profile_header_result = conn.socket->receive_all(profile_header_buffer.data(), profile_header_buffer.size());
+        if (!profile_header_result.has_value()) {
+            LOG_WARNING("Coordinator", "Worker " + conn.device_id +
+                " did not send DEVICE_PROFILE within timeout (engine benchmark too slow?): " +
+                profile_header_result.error().message);
+        }
         if (profile_header_result.has_value()) {
             auto profile_header = Protocol::parse_header(profile_header_buffer.data(), profile_header_buffer.size());
             if (profile_header && profile_header->type == MessageType::MSG_DEVICE_PROFILE) {
@@ -719,8 +822,7 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
     }
     else if (header->type == MessageType::MSG_CLIENT_SUBMIT) {
         std::vector<uint8_t> payload(header->payload_length);
-        conn.socket->receive_all(payload.data(), payload.size());
-        
+        (void)conn.socket->receive_all(payload.data(), payload.size());        
         ClientTaskSubmit* task = reinterpret_cast<ClientTaskSubmit*>(payload.data());
         
         uint32_t img_width = task->image_width;
@@ -732,8 +834,7 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
         uint32_t image_data_len = task->image_data_length;
         
         std::vector<uint8_t> image_data(image_data_len);
-        conn.socket->receive_all(image_data.data(), image_data_len);
-        
+        (void)conn.socket->receive_all(image_data.data(), image_data_len);        
         LOG_INFO("Coordinator", "Received client task: " + 
                  std::to_string(img_width) + "x" + std::to_string(img_height) +
                  " model=" + model_name);
@@ -808,6 +909,7 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
 }
 
 bool Coordinator::authenticate(WorkerConnection& conn, const std::string& received_key) {
+    (void)conn;  // 保留以备将来按连接审计/日志鉴权
     return received_key == auth_key_;
 }
 
@@ -835,33 +937,58 @@ void Coordinator::send_model_list(WorkerConnection& conn) {
     header.payload_length = static_cast<uint32_t>(payload_size);
 
     auto data = Protocol::serialize(header, payload.data());
-    conn.socket->send_all(data.data(), data.size());
-}
+    (void)conn.socket->send_all(data.data(), data.size());}
 
 void Coordinator::set_models_directory(const std::filesystem::path& dir) {
     model_manager_.set_models_directory(dir);
-    model_manager_.scan_models();
-}
-
-auto Coordinator::sync_models_with_worker(const std::string& device_id)
-    -> expected<void, CoordinatorError> {
-
-    auto it = workers_.find(device_id);
-    if (it == workers_.end()) {
-        return CoordinatorError{10, "Worker not found"};
-    }
-
-    send_model_list(it->second);
-    LOG_INFO("Coordinator", "Sent model list to worker " + device_id);
-    return {};
-}
+    (void)model_manager_.scan_models();}
 
 auto Coordinator::handle_model_request(WorkerConnection& conn,
                                         const std::vector<uint8_t>& payload)
     -> expected<void, CoordinatorError> {
 
+    // Helper: always send a ModelDataMessage frame so the worker's
+    // download_model() loop stays byte-aligned. A zero data_length signals EOF
+    // (or error) and breaks the loop on the worker side. Failing to reply
+    // would desync the protocol — the worker blocks waiting for a header and
+    // later reads unrelated bytes as a header ("Invalid message header").
+    auto send_model_data = [&](const std::string& model_name,
+                                uint8_t file_type, uint64_t offset,
+                                const uint8_t* data, size_t data_length)
+        -> expected<void, CoordinatorError> {
+        size_t response_size = sizeof(ModelDataMessage) + data_length;
+        std::vector<uint8_t> response(response_size);
+
+        ModelDataMessage* resp_msg = reinterpret_cast<ModelDataMessage*>(response.data());
+        std::memset(resp_msg, 0, sizeof(ModelDataMessage));
+        std::strncpy(resp_msg->model_name, model_name.c_str(), sizeof(resp_msg->model_name) - 1);
+        resp_msg->file_type = file_type;
+        resp_msg->file_offset = offset;
+        resp_msg->data_length = static_cast<uint32_t>(data_length);
+
+        if (data_length > 0 && data) {
+            std::memcpy(response.data() + sizeof(ModelDataMessage), data, data_length);
+        }
+
+        MessageHeader header{};
+        header.type = MessageType::MSG_MODEL_DATA;
+        header.payload_length = static_cast<uint32_t>(response_size);
+
+        auto frame = Protocol::serialize(header, response.data());
+        auto result = conn.socket->send_all(frame.data(), frame.size());
+        if (!result.has_value()) {
+            return std::unexpected(CoordinatorError{16, "Failed to send model data"});
+        }
+        return {};
+    };
+
     if (payload.size() < sizeof(ModelDataMessage)) {
-        return CoordinatorError{11, "Invalid model request payload"};
+        // Can't parse the request, but still reply with an empty frame to keep
+        // the worker from desyncing. Use empty model name / type 0.
+        auto sent = send_model_data("", 0, 0, nullptr, 0);
+        if (!sent.has_value()) {
+            return std::unexpected(sent.error());        }
+        return std::unexpected(CoordinatorError{11, "Invalid model request payload"});
     }
 
     const ModelDataMessage* request = reinterpret_cast<const ModelDataMessage*>(payload.data());
@@ -871,18 +998,22 @@ auto Coordinator::handle_model_request(WorkerConnection& conn,
 
     auto model = model_manager_.get_model(model_name);
     if (!model) {
-        return CoordinatorError{12, "Model not found: " + model_name};
+        // Reply with EOF so the worker breaks its download loop cleanly.
+        (void)send_model_data(model_name, file_type, offset, nullptr, 0);
+        return std::unexpected(CoordinatorError{12, "Model not found: " + model_name});
     }
 
     std::filesystem::path file_path = (file_type == 0) ? model->param_path : model->bin_path;
     if (!std::filesystem::exists(file_path)) {
-        return CoordinatorError{13, "Model file not found"};
+        (void)send_model_data(model_name, file_type, offset, nullptr, 0);
+        return std::unexpected(CoordinatorError{13, "Model file not found: " + file_path.string()});
     }
 
     const size_t CHUNK_SIZE = 65536;
     std::ifstream file(file_path, std::ios::binary);
     if (!file) {
-        return CoordinatorError{14, "Cannot open model file"};
+        (void)send_model_data(model_name, file_type, offset, nullptr, 0);
+        return std::unexpected(CoordinatorError{14, "Cannot open model file: " + file_path.string()});
     }
 
     file.seekg(static_cast<std::streamoff>(offset));
@@ -890,270 +1021,22 @@ auto Coordinator::handle_model_request(WorkerConnection& conn,
     file.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(buffer.size()));
     size_t bytes_read = file.gcount();
 
-    if (bytes_read <= 0) {
-        return CoordinatorError{15, "End of file reached"};
+    if (bytes_read == 0) {
+        // Clean EOF: send an empty frame (data_length=0).
+        auto sent = send_model_data(model_name, file_type, offset, nullptr, 0);
+        if (!sent.has_value()) {
+            return std::unexpected(sent.error());        }
+        return {};
     }
 
-    size_t response_size = sizeof(ModelDataMessage) + bytes_read;
-    std::vector<uint8_t> response(response_size);
-
-    ModelDataMessage* resp_msg = reinterpret_cast<ModelDataMessage*>(response.data());
-    std::strncpy(resp_msg->model_name, model_name.c_str(), sizeof(resp_msg->model_name) - 1);
-    resp_msg->file_type = file_type;
-    resp_msg->file_offset = offset;
-    resp_msg->data_length = static_cast<uint32_t>(bytes_read);
-
-    std::memcpy(response.data() + sizeof(ModelDataMessage), buffer.data(), bytes_read);
-
-    MessageHeader header{};
-    header.type = MessageType::MSG_MODEL_DATA;
-    header.payload_length = static_cast<uint32_t>(response_size);
-
-    auto data = Protocol::serialize(header, response.data());
-    auto result = conn.socket->send_all(data.data(), data.size());
-
-    if (!result.has_value()) {
-        return CoordinatorError{16, "Failed to send model data"};
-    }
+    auto sent = send_model_data(model_name, file_type, offset, buffer.data(), bytes_read);
+    if (!sent.has_value()) {
+        return std::unexpected(sent.error());    }
 
     LOG_INFO("Coordinator", "Sent model data chunk for " + model_name +
              " offset=" + std::to_string(offset) + " size=" + std::to_string(bytes_read));
 
     return {};
-}
-
-auto Coordinator::send_tile_data(const std::unique_ptr<TCPSocket>& socket,
-                                  const std::string& task_id,
-                                  uint32_t tile_index,
-                                  int x, int y, int width, int height,
-                                  int channels,
-                                  const std::vector<uint8_t>& image_data,
-                                  int img_width, int img_height)
-    -> expected<void, CoordinatorError> {
-
-    size_t tile_data_size = width * height * channels;
-    std::vector<uint8_t> tile_data;
-    tile_data.resize(tile_data_size);
-
-    for (int row = 0; row < height; ++row) {
-        int src_y = y + row;
-        int src_row_offset = (src_y * img_width + x) * channels;
-        int dst_row_offset = row * width * channels;
-        std::memcpy(tile_data.data() + dst_row_offset,
-                    image_data.data() + src_row_offset,
-                    width * channels);
-    }
-
-    size_t payload_size = sizeof(ImageTileMessage) + tile_data_size;
-    std::vector<uint8_t> payload(payload_size);
-
-    ImageTileMessage* msg = reinterpret_cast<ImageTileMessage*>(payload.data());
-    std::strncpy(msg->task_id, task_id.c_str(), sizeof(msg->task_id) - 1);
-    msg->tile_index = tile_index;
-    msg->tile_x = static_cast<uint32_t>(x);
-    msg->tile_y = static_cast<uint32_t>(y);
-    msg->width = static_cast<uint32_t>(width);
-    msg->height = static_cast<uint32_t>(height);
-    msg->channels = static_cast<uint8_t>(channels);
-    msg->pixel_format = 0;
-    msg->data_length = static_cast<uint32_t>(tile_data_size);
-
-    std::memcpy(payload.data() + sizeof(ImageTileMessage), tile_data.data(), tile_data_size);
-
-    MessageHeader header{};
-    header.type = MessageType::MSG_IMAGE_TILE;
-    header.payload_length = static_cast<uint32_t>(payload_size);
-
-    auto data = Protocol::serialize(header, payload.data());
-    auto result = socket->send_all(data.data(), data.size());
-
-    if (!result.has_value()) {
-        return CoordinatorError{6, "Failed to send tile data"};
-    }
-
-    return {};
-}
-
-auto Coordinator::collect_results(const std::string& task_id,
-                                   size_t num_workers,
-                                   int total_tiles)
-    -> expected<std::vector<ProcessedTile>, CoordinatorError> {
-
-    std::vector<ProcessedTile> all_results;
-    all_results.reserve(total_tiles);
-
-    std::chrono::seconds timeout(300);
-    auto start_time = std::chrono::steady_clock::now();
-
-    size_t completed_workers = 0;
-
-    while (completed_workers < num_workers && !task_cancelled_) {
-        auto elapsed = std::chrono::steady_clock::now() - start_time;
-        if (elapsed > timeout) {
-            return CoordinatorError{7, "Task timeout"};
-        }
-
-        for (auto& [key, active_task] : active_tasks_) {
-            if (active_task.completed || active_task.task_id != task_id) {
-                continue;
-            }
-
-            auto worker_it = workers_.find(active_task.worker_id);
-            if (worker_it == workers_.end()) {
-                active_task.completed = true;
-                completed_workers++;
-                continue;
-            }
-
-            std::vector<uint8_t> header_buffer(Protocol::HEADER_SIZE);
-            worker_it->second.socket->set_timeout(100);
-            auto result = worker_it->second.socket->receive_all(header_buffer.data(),
-                                                                 header_buffer.size());
-
-            if (!result.has_value()) {
-                const int error_code = result.error().code;
-                const bool timeout_error = (error_code == EAGAIN || error_code == EWOULDBLOCK);
-                if (!timeout_error) {
-                    LOG_WARNING(
-                        "Coordinator",
-                        "Worker disconnected while collecting results: " + active_task.worker_id +
-                            " reason=" + result.error().message
-                    );
-                    scheduler_.unregister_device(active_task.worker_id);
-                    workers_.erase(worker_it);
-                    active_task.completed = true;
-                    completed_workers++;
-                    if (on_device_disconnected_) {
-                        on_device_disconnected_(active_task.worker_id);
-                    }
-                }
-                continue;
-            }
-
-            auto header = Protocol::parse_header(header_buffer.data(), header_buffer.size());
-            if (!header) {
-                continue;
-            }
-
-            if (header->type == MessageType::MSG_TASK_RESULT) {
-                std::vector<uint8_t> payload(header->payload_length);
-                result = worker_it->second.socket->receive_all(payload.data(), payload.size());
-                if (!result.has_value()) {
-                    continue;
-                }
-
-                worker_it->second.profile.last_heartbeat = std::chrono::steady_clock::now();
-                scheduler_.register_device(worker_it->second.profile);
-
-                auto tiles = deserialize_results(payload);
-                all_results.insert(all_results.end(),
-                                   std::make_move_iterator(tiles.begin()),
-                                   std::make_move_iterator(tiles.end()));
-
-                active_task.completed = true;
-                completed_workers++;
-
-                LOG_INFO("Coordinator", "Received " + std::to_string(tiles.size()) +
-                         " tiles from worker " + active_task.worker_id);
-            } else if (header->type == MessageType::MSG_TASK_PROGRESS) {
-                std::vector<uint8_t> payload(header->payload_length);
-                auto progress_receive = worker_it->second.socket->receive_all(payload.data(), payload.size());
-                if (!progress_receive.has_value()) {
-                    continue;
-                }
-                worker_it->second.profile.last_heartbeat = std::chrono::steady_clock::now();
-                scheduler_.register_device(worker_it->second.profile);
-
-                struct ProgressMessage {
-                    char task_id[36];
-                    float progress;
-                };
-
-                if (payload.size() >= sizeof(ProgressMessage)) {
-                    const auto* progress_message = reinterpret_cast<const ProgressMessage*>(payload.data());
-                    const float progress = std::clamp(progress_message->progress, 0.0f, 1.0f);
-                    const int progress_percent = static_cast<int>(progress * 100.0f);
-                    LOG_DEBUG(
-                        "Coordinator",
-                        "Worker progress " + active_task.worker_id + " task=" +
-                            std::string(progress_message->task_id) +
-                            " progress=" + std::to_string(progress_percent) + "%"
-                    );
-                }
-            } else if (header->type == MessageType::MSG_TASK_ACCEPT) {
-                std::vector<uint8_t> payload(header->payload_length);
-                auto accept_receive = worker_it->second.socket->receive_all(payload.data(), payload.size());
-                if (!accept_receive.has_value()) {
-                    continue;
-                }
-
-                worker_it->second.profile.last_heartbeat = std::chrono::steady_clock::now();
-                scheduler_.register_device(worker_it->second.profile);
-
-                std::string accepted_task_id;
-                if (!payload.empty()) {
-                    const char* raw_task_id = reinterpret_cast<const char*>(payload.data());
-                    accepted_task_id.assign(raw_task_id, strnlen(raw_task_id, payload.size()));
-                }
-                LOG_INFO(
-                    "Coordinator",
-                    "Worker accepted task " +
-                        (accepted_task_id.empty() ? std::string("<unknown>") : accepted_task_id) +
-                        " worker=" + active_task.worker_id
-                );
-            } else if (header->type == MessageType::MSG_HEARTBEAT) {
-                worker_it->second.profile.last_heartbeat = std::chrono::steady_clock::now();
-                scheduler_.register_device(worker_it->second.profile);
-            } else if (header->type == MessageType::MSG_MODEL_REQUEST) {
-                std::vector<uint8_t> payload(header->payload_length);
-                auto request_receive = worker_it->second.socket->receive_all(payload.data(), payload.size());
-                if (!request_receive.has_value()) {
-                    LOG_WARNING(
-                        "Coordinator",
-                        "Failed to receive model request payload from worker " +
-                            active_task.worker_id + ": " + request_receive.error().message
-                    );
-                    continue;
-                }
-
-                auto model_request_result = handle_model_request(worker_it->second, payload);
-                if (!model_request_result.has_value()) {
-                    LOG_WARNING(
-                        "Coordinator",
-                        "Failed to serve model request for worker " + active_task.worker_id +
-                            ": " + model_request_result.error().message
-                    );
-                } else {
-                    worker_it->second.profile.last_heartbeat = std::chrono::steady_clock::now();
-                    scheduler_.register_device(worker_it->second.profile);
-                }
-            } else if (header->type == MessageType::MSG_DISCONNECT) {
-                LOG_WARNING("Coordinator", "Worker requested disconnect: " + active_task.worker_id);
-                scheduler_.unregister_device(active_task.worker_id);
-                workers_.erase(worker_it);
-                active_task.completed = true;
-                completed_workers++;
-                if (on_device_disconnected_) {
-                    on_device_disconnected_(active_task.worker_id);
-                }
-            } else {
-                if (header->payload_length > 0) {
-                    std::vector<uint8_t> ignored_payload(header->payload_length);
-                    worker_it->second.socket->receive_all(ignored_payload.data(), ignored_payload.size());
-                }
-                LOG_WARNING(
-                    "Coordinator",
-                    "Ignoring unexpected message type " +
-                        std::to_string(static_cast<int>(header->type)) +
-                        " from worker " + active_task.worker_id
-                );
-            }
-        }
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-
-    return all_results;
 }
 
 auto Coordinator::deserialize_results(const std::vector<uint8_t>& data)

@@ -2,7 +2,7 @@ target("crossscale-cli")
     set_kind("binary")
     
     add_deps("crossscale-core")
-    add_packages("ncnn", "libwebp", "stb", "nlohmann_json", "cxxopts", "qr-code-generator-cpp")
+    add_packages("ncnn", "libwebp", "glaze", "qr-code-generator-cpp")
     
     add_files(
         "src/main.cpp"

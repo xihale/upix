@@ -34,21 +34,7 @@ public:
     
     auto get_model(const std::string& name) const -> std::optional<ModelInfo>;
     auto has_model(const std::string& name) const -> bool;
-    
-    auto infer_metadata(const std::filesystem::path& param_path) 
-        -> expected<ModelInfo, ModelManagerError>;
-    
-    auto compute_hash(const std::filesystem::path& path) 
-        -> expected<std::string, ModelManagerError>;
-    
-    auto verify_model(const std::string& name) -> bool;
-    
-    auto import_model(const std::filesystem::path& param_path, 
-                      const std::filesystem::path& bin_path)
-        -> expected<ModelInfo, ModelManagerError>;
-    
-    auto delete_model(const std::string& name) -> bool;
-    
+
     auto models_directory() const -> const std::filesystem::path& { return models_dir_; }
     auto available_models() const -> const std::vector<ModelInfo>& { return models_; }
 

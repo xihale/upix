@@ -5,7 +5,6 @@
 #include <memory>
 #include <mutex>
 #include <queue>
-#include <condition_variable>
 #include "core/engine.hpp"
 
 namespace crossscale {
@@ -26,7 +25,6 @@ public:
     std::vector<std::unique_ptr<Engine>> engines_;
     std::queue<Engine*> available_;
     std::mutex mutex_;
-    std::condition_variable cv_;
 };
 
 } // namespace crossscale

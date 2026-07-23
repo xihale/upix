@@ -16,17 +16,6 @@ void Scheduler::unregister_device(const std::string& device_id) {
     normalize_weights();
 }
 
-void Scheduler::update_device_performance(const std::string& device_id, 
-                                           float actual_tiles_per_second) {
-    std::lock_guard<std::mutex> lock(devices_mutex_);
-    
-    auto it = devices_.find(device_id);
-    if (it != devices_.end()) {
-        it->second.tiles_per_second = actual_tiles_per_second;
-        normalize_weights();
-    }
-}
-
 auto Scheduler::assign_tiles(uint32_t total_tiles, const std::string& model_name)
     -> std::vector<TaskAssignment> {
     (void)model_name;
@@ -82,10 +71,13 @@ auto Scheduler::assign_tiles(uint32_t total_tiles, const std::string& model_name
             weighted_tiles = 1;
         }
 
-        const uint32_t queue_cap = profile.max_batch_size > 0
-            ? static_cast<uint32_t>(profile.max_batch_size)
-            : weighted_tiles;
-        uint32_t tiles_for_device = std::min({weighted_tiles, queue_cap, total_tiles - assigned_count});
+        // A device's share is its full weight-proportional slice of the task.
+        // max_batch_size is a throughput/queue-depth hint (how many tiles a
+        // worker processes in parallel), NOT a cap on a single task's tile
+        // count. Capping here fragments small jobs across extra
+        // ASSIGNMENT/ACCEPT/batch/result round-trips and races the dispatch
+        // loop. The worker processes all tiles in its assigned task.
+        uint32_t tiles_for_device = std::min(weighted_tiles, total_tiles - assigned_count);
         
         if (tiles_for_device == 0) continue;
         
@@ -108,31 +100,6 @@ auto Scheduler::assign_tiles(uint32_t total_tiles, const std::string& model_name
     }
     
     return assignments;
-}
-
-auto Scheduler::handle_device_failure(const std::string& device_id)
-    -> std::vector<uint32_t> {
-    
-    std::lock_guard<std::mutex> lock(devices_mutex_);
-    
-    std::vector<uint32_t> orphaned_tiles;
-    
-    devices_.erase(device_id);
-    normalize_weights();
-    
-    return orphaned_tiles;
-}
-
-auto Scheduler::get_device(const std::string& device_id) const 
-    -> std::optional<DeviceProfile> {
-    
-    std::lock_guard<std::mutex> lock(devices_mutex_);
-    
-    auto it = devices_.find(device_id);
-    if (it != devices_.end()) {
-        return it->second;
-    }
-    return std::nullopt;
 }
 
 auto Scheduler::get_all_devices() const -> std::vector<DeviceProfile> {

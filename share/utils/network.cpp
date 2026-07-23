@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
+#include <poll.h>
 #include <cstring>
 #include <random>
 #include <chrono>
@@ -24,6 +25,8 @@ TCPSocket::TCPSocket(TCPSocket&& other) noexcept
     : socket_(other.socket_)
     , peer_address_(std::move(other.peer_address_))
     , peer_port_(other.peer_port_) {
+    // Note: io_mutex_ is default-constructed (mutexes are non-movable).
+    // The moved-from socket is left in a closed state.
     other.socket_ = -1;
     other.peer_port_ = 0;
 }
@@ -31,6 +34,8 @@ TCPSocket::TCPSocket(TCPSocket&& other) noexcept
 TCPSocket& TCPSocket::operator=(TCPSocket&& other) noexcept {
     if (this != &other) {
         close();
+        // io_mutex_ intentionally not moved; lock other's mutex to read its state.
+        std::lock_guard<std::recursive_mutex> other_lock(other.io_mutex_);
         socket_ = other.socket_;
         peer_address_ = std::move(other.peer_address_);
         peer_port_ = other.peer_port_;
@@ -46,7 +51,7 @@ auto TCPSocket::connect(const std::string& host, uint16_t port)
     
     socket_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (socket_ < 0) {
-        return NetworkError{errno, "Failed to create socket"};
+        return std::unexpected(NetworkError{errno, "Failed to create socket"});
     }
 
     int flag = 1;
@@ -63,12 +68,12 @@ auto TCPSocket::connect(const std::string& host, uint16_t port)
     
     if (inet_pton(AF_INET, host.c_str(), &addr.sin_addr) <= 0) {
         close();
-        return NetworkError{errno, "Invalid address"};
+        return std::unexpected(NetworkError{errno, "Invalid address"});
     }
 
     if (::connect(socket_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         close();
-        return NetworkError{errno, "Connection failed"};
+        return std::unexpected(NetworkError{errno, "Connection failed"});
     }
 
     peer_address_ = host;
@@ -78,27 +83,28 @@ auto TCPSocket::connect(const std::string& host, uint16_t port)
 
 auto TCPSocket::send(const void* data, size_t size)
     -> expected<size_t, NetworkError> {
+    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     if (socket_ < 0) {
-        return NetworkError{EBADF, "Socket not connected"};
+        return std::unexpected(NetworkError{EBADF, "Socket not connected"});
     }
 
     ssize_t sent = ::send(socket_, data, size, MSG_NOSIGNAL);
     if (sent < 0) {
-        return NetworkError{errno, "Send failed"};
+        return std::unexpected(NetworkError{errno, "Send failed"});
     }
     return static_cast<size_t>(sent);
 }
 
 auto TCPSocket::send_all(const void* data, size_t size)
     -> expected<void, NetworkError> {
+    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     size_t total_sent = 0;
     const uint8_t* ptr = static_cast<const uint8_t*>(data);
 
     while (total_sent < size) {
         auto result = send(ptr + total_sent, size - total_sent);
         if (!result.has_value()) {
-            return result.error();
-        }
+            return std::unexpected(result.error());        }
         total_sent += result.value();
     }
     return {};
@@ -106,30 +112,31 @@ auto TCPSocket::send_all(const void* data, size_t size)
 
 auto TCPSocket::receive(void* buffer, size_t max_size)
     -> expected<size_t, NetworkError> {
+    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     if (socket_ < 0) {
-        return NetworkError{EBADF, "Socket not connected"};
+        return std::unexpected(NetworkError{EBADF, "Socket not connected"});
     }
 
     ssize_t received = ::recv(socket_, buffer, max_size, 0);
     if (received < 0) {
-        return NetworkError{errno, "Receive failed"};
+        return std::unexpected(NetworkError{errno, "Receive failed"});
     }
     if (received == 0) {
-        return NetworkError{ECONNRESET, "Connection closed"};
+        return std::unexpected(NetworkError{ECONNRESET, "Connection closed"});
     }
     return static_cast<size_t>(received);
 }
 
 auto TCPSocket::receive_all(void* buffer, size_t size)
     -> expected<void, NetworkError> {
+    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     size_t total_received = 0;
     uint8_t* ptr = static_cast<uint8_t*>(buffer);
 
     while (total_received < size) {
         auto result = receive(ptr + total_received, size - total_received);
         if (!result.has_value()) {
-            return result.error();
-        }
+            return std::unexpected(result.error());        }
         total_received += result.value();
     }
     return {};
@@ -155,6 +162,7 @@ void TCPSocket::set_buffer_size(size_t size) {
 }
 
 void TCPSocket::close() {
+    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     if (socket_ >= 0) {
         ::close(socket_);
         socket_ = -1;
@@ -187,7 +195,7 @@ auto TCPServer::listen(uint16_t port, int backlog)
 
     server_socket_ = ::socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket_ < 0) {
-        return NetworkError{errno, "Failed to create socket"};
+        return std::unexpected(NetworkError{errno, "Failed to create socket"});
     }
 
     int opt = 1;
@@ -200,12 +208,12 @@ auto TCPServer::listen(uint16_t port, int backlog)
 
     if (::bind(server_socket_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         stop();
-        return NetworkError{errno, "Bind failed"};
+        return std::unexpected(NetworkError{errno, "Bind failed"});
     }
 
     if (::listen(server_socket_, backlog) < 0) {
         stop();
-        return NetworkError{errno, "Listen failed"};
+        return std::unexpected(NetworkError{errno, "Listen failed"});
     }
 
     port_ = port;
@@ -215,17 +223,38 @@ auto TCPServer::listen(uint16_t port, int backlog)
 auto TCPServer::accept()
     -> expected<std::unique_ptr<TCPSocket>, NetworkError> {
     if (server_socket_ < 0) {
-        return NetworkError{EBADF, "Server not listening"};
+        return std::unexpected(NetworkError{EBADF, "Server not listening"});
+    }
+
+    // Poll with a 500ms timeout so the accept loop can wake up periodically
+    // and observe a shutdown (running_ == false). A bare ::accept() would
+    // block forever and close() from another thread does not reliably wake
+    // it on Linux, hanging the process on Ctrl+C.
+    pollfd pfd{};
+    pfd.fd = server_socket_;
+    pfd.events = POLLIN;
+    for (;;) {
+        const int pr = ::poll(&pfd, 1, 500);
+        if (pr < 0) {
+            if (errno == EINTR) continue;
+            return std::unexpected(NetworkError{errno, "Poll failed"});
+        }
+        if (pr == 0) {
+            // Timeout: no client. Signal the caller via EAGAIN so it can
+            // re-check the running flag and loop back if still alive.
+            return std::unexpected(NetworkError{EAGAIN, "Accept timed out"});
+        }
+        break;
     }
 
     sockaddr_in client_addr{};
     socklen_t addr_len = sizeof(client_addr);
-    
-    int client_socket = ::accept(server_socket_, 
-                                  reinterpret_cast<sockaddr*>(&client_addr), 
+
+    int client_socket = ::accept(server_socket_,
+                                  reinterpret_cast<sockaddr*>(&client_addr),
                                   &addr_len);
     if (client_socket < 0) {
-        return NetworkError{errno, "Accept failed"};
+        return std::unexpected(NetworkError{errno, "Accept failed"});
     }
 
     auto socket = std::make_unique<TCPSocket>();
@@ -284,21 +313,6 @@ std::vector<std::string> get_local_addresses() {
     return addresses;
 }
 
-bool is_port_available(uint16_t port) {
-    int sock = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (sock < 0) return false;
-    
-    sockaddr_in addr{};
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(port);
-    
-    bool available = (::bind(sock, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) == 0);
-    ::close(sock);
-    
-    return available;
-}
-
 std::string generate_auth_key(size_t length) {
     static const char chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
     
@@ -340,10 +354,6 @@ uint32_t crc32(const void* data, size_t size) {
     }
     
     return crc ^ 0xFFFFFFFF;
-}
-
-uint32_t crc32(const std::vector<uint8_t>& data) {
-    return crc32(data.data(), data.size());
 }
 
 } // namespace network_utils

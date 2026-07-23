@@ -47,16 +47,30 @@ public:
         Engine& engine,
         const TileConfig& config,
         std::function<void(const ProcessingProgress&)> progress_callback = {},
-        const std::atomic<bool>& cancel_flag = {}
+        const std::atomic<bool>& cancel_flag = {},
+        bool enable_alpha_bicubic = true
     ) -> expected<void, TileProcessorError>;
     
     static auto extract_tile(
         const float* image_data,
         int image_width,
-        int image_height,
         int channels,
         const TileRegion& region
     ) -> std::vector<float>;
+
+    // Extract tile from u8 data and convert to float per-tile (avoids whole-image conversion)
+    static auto extract_tile_u8(
+        const uint8_t* image_data,
+        int image_width,
+        int channels,
+        const TileRegion& region
+    ) -> std::vector<float>;
+
+    // Bicubic interpolation for a single-channel u8 image (used for alpha bypass)
+    static void bicubic_scale_u8(
+        const uint8_t* src, uint32_t src_w, uint32_t src_h,
+        uint8_t* dst, uint32_t dst_w, uint32_t dst_h
+    );
     
     auto blend_tile(
         const float* tile_data,

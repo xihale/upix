@@ -76,7 +76,7 @@ public:
         (void)height;
         (void)channels;
         (void)cancel_flag;
-        return EngineError{102, "u8 process path not supported"};
+        return std::unexpected(EngineError{102, "u8 process path not supported"});
     }
 
     // Process a batch of tiles. All tiles must have same width, height, channels.
@@ -91,7 +91,7 @@ public:
         const std::atomic<bool>& cancel_flag
     ) -> expected<void, EngineError> {
         if (inputs.size() != outputs.size()) {
-            return EngineError{100, "Batch input/output size mismatch"};
+            return std::unexpected(EngineError{100, "Batch input/output size mismatch"});
         }
         // Vulkan backend is not safe for concurrent submits from multiple async tasks.
         // Keep GPU batch execution serialized and let upper layers pipeline CPU prep.
@@ -135,6 +135,9 @@ public:
     
     virtual int get_scale_factor() const { return 2; }
 
+    // Get recommended tile size based on GPU VRAM (0 = not available)
+    virtual int get_recommended_tile_size() const { return 256; }
+
     // Get memory info: {total_mb, available_mb}
     virtual auto get_memory_info() const -> std::pair<size_t, size_t> {
         return {0, 0};
@@ -164,7 +167,7 @@ public:
         (void)config;
         (void)progress_callback;
         (void)cancel_flag;
-        return EngineError{200, "GPU tile pipeline not supported"};
+        return std::unexpected(EngineError{200, "GPU tile pipeline not supported"});
     }
 
     virtual auto process_tiles_gpu_u8(
@@ -187,7 +190,7 @@ public:
         (void)config;
         (void)progress_callback;
         (void)cancel_flag;
-        return EngineError{201, "GPU u8 tile pipeline not supported"};
+        return std::unexpected(EngineError{201, "GPU u8 tile pipeline not supported"});
     }
 
     virtual auto process_tiles_gpu_u8_queue(
@@ -196,7 +199,7 @@ public:
     ) -> expected<void, EngineError> {
         for (const auto& task : tasks) {
             if (task.regions == nullptr) {
-                return EngineError{202, "GPU u8 queue task has null regions"};
+                return std::unexpected(EngineError{202, "GPU u8 queue task has null regions"});
             }
             auto result = process_tiles_gpu_u8(
                 task.input_data,

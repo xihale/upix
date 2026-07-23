@@ -3,45 +3,32 @@
 #include <cstdint>
 #include <string>
 #include <chrono>
+#include <vector>
 
 namespace crossscale {
 
 enum class MessageType : uint16_t {
-    MSG_HANDSHAKE_REQUEST = 0x0001,
-    MSG_HANDSHAKE_RESPONSE = 0x0002,
     MSG_AUTH_REQUEST = 0x0003,
     MSG_AUTH_RESPONSE = 0x0004,
     MSG_DISCONNECT = 0x0005,
     MSG_HEARTBEAT = 0x0006,
-    MSG_HEARTBEAT_ACK = 0x0007,
-    
+
     MSG_DEVICE_PROFILE = 0x0100,
-    MSG_DEVICE_LIST = 0x0101,
-    MSG_DEVICE_JOIN = 0x0102,
-    MSG_DEVICE_LEAVE = 0x0103,
-    
+
     MSG_MODEL_LIST = 0x0200,
     MSG_MODEL_REQUEST = 0x0201,
     MSG_MODEL_DATA = 0x0202,
-    MSG_MODEL_SYNC_START = 0x0203,
-    MSG_MODEL_SYNC_COMPLETE = 0x0204,
-    
+
     MSG_TASK_ASSIGNMENT = 0x0300,
     MSG_TASK_ACCEPT = 0x0301,
-    MSG_TASK_REJECT = 0x0302,
     MSG_TASK_PROGRESS = 0x0303,
     MSG_TASK_RESULT = 0x0304,
-    MSG_TASK_CANCEL = 0x0305,
-    
-    MSG_IMAGE_INFO = 0x0400,
+
     MSG_IMAGE_TILE = 0x0401,
-    MSG_IMAGE_COMPLETE = 0x0402,
     MSG_TILES_BATCH = 0x0403,
-    
+
     MSG_CLIENT_SUBMIT = 0x0500,
     MSG_CLIENT_RESPONSE = 0x0501,
-    
-    MSG_ERROR = 0xFFFF,
 };
 
 struct MessageHeader {
@@ -50,19 +37,6 @@ struct MessageHeader {
     MessageType type;
     uint32_t payload_length;
     uint32_t checksum;
-};
-
-struct HandshakeRequest {
-    uint32_t protocol_version;
-    char device_name[64];
-    uint8_t device_type;
-};
-
-struct HandshakeResponse {
-    uint8_t accepted;
-    char rejection_reason[128];
-    char server_name[64];
-    uint16_t heartbeat_interval;
 };
 
 struct AuthRequest {
@@ -154,7 +128,6 @@ public:
         -> std::optional<MessageHeader>;
     
     static auto compute_checksum(const void* data, size_t size) -> uint32_t;
-    static bool verify_checksum(const uint8_t* data, size_t size, uint32_t expected);
 };
 
 }

@@ -1,7 +1,6 @@
 #include "engine_pool.hpp"
 #include "utils/logger.hpp"
 #include <stdexcept>
-#include <condition_variable>
 
 namespace crossscale {
 

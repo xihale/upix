@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Security fix: Restrict FileProvider to specific app-owned subdirectories
+         instead of exposing the entire external storage root (".").
+         This prevents other apps from accessing arbitrary files via the content provider. -->
+    <external-files-path name="models" path="Documents/models/" />
+    <external-files-path name="shared_images" path="Pictures/" />
+    <cache-path name="cache" path="." />
+    <files-path name="files" path="." />
+</paths>

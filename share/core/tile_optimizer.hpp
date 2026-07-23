@@ -86,8 +86,10 @@ auto TileSizeOptimizer::benchmark_tile_size(
         std::atomic<bool> cancel = false;
 
         auto bench_result = benchmark("tile_bench", [&]() {
-            engine.process(input.data(), output.data(),
-                          tile_size, tile_size, 3, cancel);
+            // fire-and-forget: benchmark measures timing only; on failure
+            // success stays false and the tile size is rejected below.
+            (void)engine.process(input.data(), output.data(),
+                                 tile_size, tile_size, 3, cancel);
         }, iterations, warmup);
 
         result.tiles_per_second = 1000.0f / static_cast<float>(bench_result.avg_time_ms);

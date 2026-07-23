@@ -90,7 +90,7 @@ auto MDNSBroadcaster::start(const std::string& service_name, uint16_t port,
         : crypto::sha256_hex(auth_key).substr(0, 16);
 
     if (service_name.empty() || port == 0) {
-        return MDNSError{1, "Invalid mDNS publish parameters"};
+        return std::unexpected(MDNSError{1, "Invalid mDNS publish parameters"});
     }
 
     if (impl_->running) {
@@ -111,7 +111,7 @@ auto MDNSBroadcaster::start(const std::string& service_name, uint16_t port,
 
 #ifdef __linux__
     if (!is_avahi_socket_available()) {
-        return MDNSError{5, "mDNS publish requires avahi-daemon, but daemon socket was not found"};
+        return std::unexpected(MDNSError{5, "mDNS publish requires avahi-daemon, but daemon socket was not found"});
     }
 
     const std::string port_string = std::to_string(port);
@@ -121,7 +121,7 @@ auto MDNSBroadcaster::start(const std::string& service_name, uint16_t port,
 
     pid_t child_pid = fork();
     if (child_pid < 0) {
-        return MDNSError{2, "Failed to create mDNS publisher process"};
+        return std::unexpected(MDNSError{2, "Failed to create mDNS publisher process"});
     }
 
     if (child_pid == 0) {
@@ -144,11 +144,11 @@ auto MDNSBroadcaster::start(const std::string& service_name, uint16_t port,
     int child_status = 0;
     pid_t child_state = waitpid(child_pid, &child_status, WNOHANG);
     if (child_state < 0) {
-        return MDNSError{6, "Failed to inspect mDNS publisher process: " + std::string(std::strerror(errno))};
+        return std::unexpected(MDNSError{6, "Failed to inspect mDNS publisher process: " + std::string(std::strerror(errno))});
     }
 
     if (child_state == child_pid) {
-        return MDNSError{3, summarize_publish_failure(child_status)};
+        return std::unexpected(MDNSError{3, summarize_publish_failure(child_status)});
     }
 
     impl_->process_id = child_pid;
@@ -156,7 +156,7 @@ auto MDNSBroadcaster::start(const std::string& service_name, uint16_t port,
     LOG_INFO("mDNS", "Published _crossscale._tcp on port " + std::to_string(port));
 #else
     LOG_WARNING("mDNS", "mDNS broadcasting not implemented on this platform");
-    return MDNSError{4, "mDNS broadcaster not implemented on this platform"};
+    return std::unexpected(MDNSError{4, "mDNS broadcaster not implemented on this platform"});
 #endif
 
     return {};
@@ -187,47 +187,6 @@ bool MDNSBroadcaster::is_running() const {
 #else
     return impl_->running;
 #endif
-}
-
-class MDNSDiscovery::Impl {
-public:
-    bool running = false;
-    std::vector<DiscoveredService> services;
-    std::function<void(const DiscoveredService&)> callback;
-};
-
-MDNSDiscovery::MDNSDiscovery() : impl_(std::make_unique<Impl>()) {}
-
-MDNSDiscovery::~MDNSDiscovery() {
-    stop();
-}
-
-auto MDNSDiscovery::start(std::function<void(const DiscoveredService&)> callback)
-    -> expected<void, MDNSError> {
-
-    LOG_INFO("mDNS", "Starting mDNS discovery");
-
-    impl_->callback = callback;
-    impl_->running = true;
-
-    LOG_WARNING("mDNS", "mDNS discovery not fully implemented on this platform");
-
-    return {};
-}
-
-void MDNSDiscovery::stop() {
-    if (impl_->running) {
-        LOG_INFO("mDNS", "Stopping mDNS discovery");
-        impl_->running = false;
-    }
-}
-
-bool MDNSDiscovery::is_running() const {
-    return impl_->running;
-}
-
-auto MDNSDiscovery::get_discovered_services() const -> std::vector<DiscoveredService> {
-    return impl_->services;
 }
 
 }

@@ -1,8 +1,9 @@
 #include "protocol.hpp"
 #include "coordinator.hpp"
 #include "utils/network.hpp"
+#include "utils/logger.hpp"
 #include <cstring>
-#include <nlohmann/json.hpp>
+#include <glaze/json.hpp>
 
 namespace crossscale {
 
@@ -61,38 +62,21 @@ auto Protocol::compute_checksum(const void* data, size_t size) -> uint32_t {
     return network_utils::crc32(data, size);
 }
 
-bool Protocol::verify_checksum(const uint8_t* data, size_t size, uint32_t expected) {
-    return compute_checksum(data, size) == expected;
-}
-
 auto ConnectionInfo::to_json() const -> std::string {
-    nlohmann::json j;
-    j["v"] = 1;
-    j["ip"] = ip;
-    j["port"] = port;
-    j["key"] = auth_key;
-    j["name"] = server_name;
-    j["model"] = current_model;
-    return j.dump();
+    std::string buf;
+    (void)glz::write_json(*this, buf); // POD 序列化不会失败
+    return buf;
 }
 
 auto ConnectionInfo::from_json(const std::string& json)
     -> expected<ConnectionInfo, CoordinatorError> {
-    
-    try {
-        auto j = nlohmann::json::parse(json);
-        
-        ConnectionInfo info;
-        info.ip = j.value("ip", "");
-        info.port = j.value("port", 0);
-        info.auth_key = j.value("key", "");
-        info.server_name = j.value("name", "");
-        info.current_model = j.value("model", "");
-        
-        return info;
-    } catch (const std::exception& e) {
-        return CoordinatorError{1, "Failed to parse connection info"};
+
+    ConnectionInfo info;
+    auto ec = glz::read_json(info, json);
+    if (ec) {
+        return std::unexpected(CoordinatorError{1, "Failed to parse connection info"});
     }
+    return info;
 }
 
 auto ConnectionInfo::to_short_string() const -> std::string {
@@ -106,7 +90,7 @@ auto ConnectionInfo::from_short_string(const std::string& str)
     auto hash_pos = str.find('#');
     
     if (colon_pos == std::string::npos || hash_pos == std::string::npos) {
-        return CoordinatorError{1, "Invalid connection string format"};
+        return std::unexpected(CoordinatorError{1, "Invalid connection string format"});
     }
     
     ConnectionInfo info;

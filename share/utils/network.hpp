@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <memory>
 #include <array>
+#include <mutex>
 #include "expected.hpp"
 
 namespace crossscale {
@@ -69,6 +70,9 @@ private:
     int socket_ = -1;
     std::string peer_address_;
     uint16_t peer_port_ = 0;
+    // Guards all socket I/O so that heartbeat and task threads can't interleave
+    // partial sends/receives and corrupt the framing protocol.
+    mutable std::recursive_mutex io_mutex_;
 };
 
 // TCP Server
@@ -106,16 +110,12 @@ private:
 namespace network_utils {
     // Get local IP addresses
     std::vector<std::string> get_local_addresses();
-    
-    // Check if port is available
-    bool is_port_available(uint16_t port);
-    
+
     // Generate random auth key
     std::string generate_auth_key(size_t length = 16);
-    
+
     // Simple CRC32
     uint32_t crc32(const void* data, size_t size);
-    uint32_t crc32(const std::vector<uint8_t>& data);
 }
 
 } // namespace crossscale

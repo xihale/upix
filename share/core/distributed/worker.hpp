@@ -64,11 +64,6 @@ public:
 private:
     void heartbeat_loop(std::chrono::seconds interval);
 
-    auto receive_tile_data(uint32_t& tile_x, uint32_t& tile_y,
-                           uint32_t& width, uint32_t& height,
-                           uint8_t& channels, std::vector<uint8_t>& data)
-        -> expected<void, WorkerError>;
-
     void send_progress_update(const std::string& task_id, float progress);
 
     auto serialize_processed_tiles(const std::vector<ProcessedTile>& tiles)

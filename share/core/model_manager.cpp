@@ -55,112 +55,26 @@ bool ModelManager::has_model(const std::string& name) const {
     return get_model(name).has_value();
 }
 
-auto ModelManager::infer_metadata(const std::filesystem::path& param_path)
-    -> expected<ModelInfo, ModelManagerError> {
-    return parse_param_file(param_path);
-}
-
-auto ModelManager::compute_hash(const std::filesystem::path& path)
-    -> expected<std::string, ModelManagerError> {
-    
-    if (!std::filesystem::exists(path)) {
-        return ModelManagerError{1, "File not found: " + path.string()};
-    }
-    
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        return ModelManagerError{2, "Cannot open file: " + path.string()};
-    }
-    
-    std::vector<uint8_t> buffer(8192);
-    std::vector<uint8_t> data;
-    
-    while (file) {
-        file.read(reinterpret_cast<char*>(buffer.data()), buffer.size());
-        data.insert(data.end(), buffer.begin(), buffer.begin() + file.gcount());
-    }
-    
-    uint32_t hash = 0;
-    for (uint8_t b : data) {
-        hash = hash * 31 + b;
-    }
-    
-    std::ostringstream oss;
-    oss << std::hex << hash;
-    return oss.str();
-}
-
-bool ModelManager::verify_model(const std::string& name) {
-    auto model = get_model(name);
-    if (!model) return false;
-    
-    return std::filesystem::exists(model->param_path) && 
-           std::filesystem::exists(model->bin_path);
-}
-
-auto ModelManager::import_model(const std::filesystem::path& param_path,
-                                 const std::filesystem::path& bin_path)
-    -> expected<ModelInfo, ModelManagerError> {
-    
-    if (!std::filesystem::exists(param_path)) {
-        return ModelManagerError{1, "Param file not found"};
-    }
-    if (!std::filesystem::exists(bin_path)) {
-        return ModelManagerError{1, "Bin file not found"};
-    }
-    
-    auto result = parse_param_file(param_path);
-    if (!result.has_value()) {
-        return result.error();
-    }
-    
-    auto info = result.value();
-    info.bin_path = bin_path;
-    info.total_size = std::filesystem::file_size(param_path) + std::filesystem::file_size(bin_path);
-    
-    if (!models_dir_.empty()) {
-        auto dest_param = models_dir_ / param_path.filename();
-        auto dest_bin = models_dir_ / bin_path.filename();
-        
-        std::filesystem::copy_file(param_path, dest_param, 
-                                    std::filesystem::copy_options::overwrite_existing);
-        std::filesystem::copy_file(bin_path, dest_bin,
-                                    std::filesystem::copy_options::overwrite_existing);
-        
-        info.param_path = dest_param;
-        info.bin_path = dest_bin;
-    }
-    
-    models_.push_back(info);
-    return info;
-}
-
-bool ModelManager::delete_model(const std::string& name) {
-    auto it = std::find_if(models_.begin(), models_.end(),
-        [&](const ModelInfo& m) { return m.name == name; });
-    
-    if (it == models_.end()) return false;
-    
-    std::filesystem::remove(it->param_path);
-    std::filesystem::remove(it->bin_path);
-    models_.erase(it);
-    
-    return true;
-}
-
 auto ModelManager::parse_param_file(const std::filesystem::path& path)
     -> expected<ModelInfo, ModelManagerError> {
     
     std::ifstream file(path);
     if (!file) {
-        return ModelManagerError{2, "Cannot open param file"};
+        return std::unexpected(ModelManagerError{2, "Cannot open param file"});
     }
     
     ModelInfo info;
-    // Construct model name as "parent_dir-param_stem", e.g., "Real-CUGAN-conservative-x2"
-    std::string parent_name = path.parent_path().stem().string();
+    // Construct model name. If the param file sits directly in the models
+    // directory (e.g. models/Real-ESRGANv3-anime-x2.param), the name is just
+    // the file stem. If it lives in a model-specific subdirectory
+    // (e.g. models/Real-ESRGANv3-anime/x2.param), the name is
+    // "parent_dir-param_stem" to disambiguate.
     std::string param_stem = path.stem().string();  // e.g., "x2", "x3"
-    info.name = parent_name + "-" + param_stem;
+    std::string parent_name = path.parent_path().stem().string();
+    const bool in_models_root =
+        std::filesystem::weakly_canonical(path.parent_path()) ==
+        std::filesystem::weakly_canonical(models_dir_);
+    info.name = in_models_root ? param_stem : (parent_name + "-" + param_stem);
     info.param_path = path;
     
     // Infer scale factor from param filename (x2 -> 2, x3 -> 3, etc.)

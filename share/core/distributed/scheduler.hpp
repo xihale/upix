@@ -5,8 +5,6 @@
 #include <unordered_map>
 #include <mutex>
 #include <chrono>
-#include <atomic>
-#include <optional>
 #include "core/engine.hpp"
 
 namespace crossscale {
@@ -36,7 +34,6 @@ struct Task {
     std::string task_id;
     std::string model_name;
     std::vector<uint32_t> tile_indices;
-    std::chrono::steady_clock::time_point deadline;
 };
 
 struct TaskAssignment {
@@ -60,26 +57,18 @@ class Scheduler {
 public:
     void register_device(const DeviceProfile& profile);
     void unregister_device(const std::string& device_id);
-    void update_device_performance(const std::string& device_id, float actual_tiles_per_second);
-    
+
     auto assign_tiles(uint32_t total_tiles, const std::string& model_name)
         -> std::vector<TaskAssignment>;
-    
-    auto handle_device_failure(const std::string& device_id)
-        -> std::vector<uint32_t>;
-    
-    auto get_device(const std::string& device_id) const -> std::optional<DeviceProfile>;
+
     auto get_all_devices() const -> std::vector<DeviceProfile>;
     auto device_count() const -> size_t;
-    
-    void set_task_timeout(std::chrono::seconds timeout) { task_timeout_ = timeout; }
 
 private:
     void normalize_weights();
-    
+
     std::unordered_map<std::string, DeviceProfile> devices_;
     mutable std::mutex devices_mutex_;
-    std::chrono::seconds task_timeout_{60};
 };
 
 }

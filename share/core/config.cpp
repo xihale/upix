@@ -4,6 +4,7 @@
 #include <sstream>
 #include <algorithm>
 #include <cctype>
+#include "glaze/glaze.hpp"
 
 namespace crossscale {
 
@@ -17,6 +18,27 @@ auto normalize_output_extension(const std::string& format) -> std::string {
 }
 
 } // namespace
+
+// On-disk shape for ProcessingConfig. Kept separate so the in-memory struct
+// can evolve (e.g. std::filesystem::path) without coupling to the JSON layout.
+// Lives in a named (non-anonymous) namespace: glaze's reflection requires the
+// type to have external linkage, which anonymous-namespace types lack.
+namespace detail {
+struct ConfigJson {
+    int tile_size = 256;
+    int tile_overlap = 16;
+    int batch_size = 1;
+    bool auto_tile_size = false;
+    int min_tile_size = 64;
+    int max_tile_size = 512;
+    size_t max_memory_mb = 0;
+    int num_threads = 0;
+    bool use_gpu = true;
+    std::string model_name;
+    std::string output_format;
+    int output_quality = 90;
+};
+} // namespace detail
 
 auto normalize_output_format(std::string format) -> std::string {
     std::string normalized;
@@ -60,81 +82,36 @@ auto resolve_output_path(
     return resolved;
 }
 
-// 简单的 JSON 解析辅助函数
-static std::string extract_json_string(const std::string& json, const std::string& key) {
-    std::string search = "\"" + key + "\"";
-    size_t pos = json.find(search);
-    if (pos == std::string::npos) return "";
-
-    pos = json.find(":", pos);
-    if (pos == std::string::npos) return "";
-
-    pos = json.find("\"", pos);
-    if (pos == std::string::npos) return "";
-
-    size_t end = json.find("\"", pos + 1);
-    if (end == std::string::npos) return "";
-
-    return json.substr(pos + 1, end - pos - 1);
-}
-
-static int extract_json_int(const std::string& json, const std::string& key, int default_val = 0) {
-    std::string search = "\"" + key + "\"";
-    size_t pos = json.find(search);
-    if (pos == std::string::npos) return default_val;
-
-    pos = json.find(":", pos);
-    if (pos == std::string::npos) return default_val;
-
-    while (pos < json.size() && (json[pos] == ':' || json[pos] == ' ')) ++pos;
-
-    std::string num_str;
-    while (pos < json.size() && (isdigit(json[pos]) || json[pos] == '-')) {
-        num_str += json[pos++];
-    }
-
-    return num_str.empty() ? default_val : std::stoi(num_str);
-}
-
-static bool extract_json_bool(const std::string& json, const std::string& key, bool default_val = false) {
-    std::string search = "\"" + key + "\"";
-    size_t pos = json.find(search);
-    if (pos == std::string::npos) return default_val;
-
-    pos = json.find(":", pos);
-    if (pos == std::string::npos) return default_val;
-
-    if (json.find("true", pos) != std::string::npos) return true;
-    if (json.find("false", pos) != std::string::npos) return false;
-
-    return default_val;
-}
-
 auto ProcessingConfig::load(const std::filesystem::path& path)
     -> expected<ProcessingConfig, std::string> {
 
     std::ifstream file(path);
     if (!file.is_open()) {
-        return "Cannot open config file: " + path.string();
+        return std::unexpected("Cannot open config file: " + path.string());
     }
 
     std::stringstream buffer;
     buffer << file.rdbuf();
     std::string json = buffer.str();
 
+    detail::ConfigJson parsed;
+    if (auto err = glz::read<glz::opts{.error_on_unknown_keys = false}>(parsed, json); err) {
+        return std::unexpected("Failed to parse config JSON: " + glz::format_error(err, json));
+    }
+
     ProcessingConfig config;
-    config.tile_size = extract_json_int(json, "tile_size", 256);
-    config.tile_overlap = extract_json_int(json, "tile_overlap", 16);
-    config.batch_size = extract_json_int(json, "batch_size", 1);
-    config.auto_tile_size = extract_json_bool(json, "auto_tile_size", false);
-    config.min_tile_size = extract_json_int(json, "min_tile_size", 64);
-    config.max_tile_size = extract_json_int(json, "max_tile_size", 512);
-    config.max_memory_mb = extract_json_int(json, "max_memory_mb", 0);
-    config.num_threads = extract_json_int(json, "num_threads", 0);
-    config.use_gpu = extract_json_bool(json, "use_gpu", true);
-    config.model_name = extract_json_string(json, "model_name");
-    config.output_quality = extract_json_int(json, "output_quality", 90);
-    config.output_format = normalize_output_format(extract_json_string(json, "output_format"));
+    config.tile_size = parsed.tile_size;
+    config.tile_overlap = parsed.tile_overlap;
+    config.batch_size = parsed.batch_size;
+    config.auto_tile_size = parsed.auto_tile_size;
+    config.min_tile_size = parsed.min_tile_size;
+    config.max_tile_size = parsed.max_tile_size;
+    config.max_memory_mb = parsed.max_memory_mb;
+    config.num_threads = parsed.num_threads;
+    config.use_gpu = parsed.use_gpu;
+    config.model_name = parsed.model_name;
+    config.output_quality = parsed.output_quality;
+    config.output_format = normalize_output_format(parsed.output_format);
 
     return config;
 }
@@ -142,28 +119,31 @@ auto ProcessingConfig::load(const std::filesystem::path& path)
 auto ProcessingConfig::save(const std::filesystem::path& path) const
     -> expected<void, std::string> {
 
-    std::ofstream file(path);
-    if (!file.is_open()) {
-        return "Cannot create config file: " + path.string();
+    detail::ConfigJson snapshot{
+        .tile_size = tile_size,
+        .tile_overlap = tile_overlap,
+        .batch_size = batch_size,
+        .auto_tile_size = auto_tile_size,
+        .min_tile_size = min_tile_size,
+        .max_tile_size = max_tile_size,
+        .max_memory_mb = max_memory_mb,
+        .num_threads = num_threads,
+        .use_gpu = use_gpu,
+        .model_name = model_name,
+        .output_format = normalize_output_format(output_format),
+        .output_quality = output_quality,
+    };
+
+    std::string json;
+    if (auto err = glz::write_json(snapshot, json); err) {
+        return std::unexpected(std::string{"Failed to serialize config JSON"});
     }
 
-    const std::string format_to_save = normalize_output_format(output_format);
-
-    file << "{\n"
-         << "  \"tile_size\": " << tile_size << ",\n"
-         << "  \"tile_overlap\": " << tile_overlap << ",\n"
-         << "  \"batch_size\": " << batch_size << ",\n"
-         << "  \"auto_tile_size\": " << (auto_tile_size ? "true" : "false") << ",\n"
-         << "  \"min_tile_size\": " << min_tile_size << ",\n"
-         << "  \"max_tile_size\": " << max_tile_size << ",\n"
-         << "  \"max_memory_mb\": " << max_memory_mb << ",\n"
-         << "  \"num_threads\": " << num_threads << ",\n"
-         << "  \"use_gpu\": " << (use_gpu ? "true" : "false") << ",\n"
-         << "  \"model_name\": \"" << model_name << "\",\n"
-         << "  \"output_quality\": " << output_quality << ",\n"
-         << "  \"output_format\": \"" << format_to_save << "\"\n"
-         << "}\n";
-
+    std::ofstream file(path);
+    if (!file.is_open()) {
+        return std::unexpected("Cannot create config file: " + path.string());
+    }
+    file << json;
     return {};
 }
 

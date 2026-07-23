@@ -73,6 +73,47 @@ float safe_parse_float(const std::string& str, const std::string& param_name) {
 // Maximum payload size for network messages (100 MB)
 static constexpr uint32_t MAX_NETWORK_PAYLOAD = 100 * 1024 * 1024;
 
+// Infer output format from file extension (for auto-detection)
+static std::string infer_format_from_extension(const std::string& path) {
+    auto dot = path.rfind('.');
+    if (dot == std::string::npos) return "";
+    std::string ext = path.substr(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    if (ext == "png") return "png";
+    if (ext == "jpg" || ext == "jpeg") return "jpg";
+    if (ext == "webp") return "webp";
+    return "";
+}
+
+// Format progress line for stderr:  45.2% [12/27 tiles, ETA 3.2s]
+static void print_progress_stderr(const crossscale::ProcessingProgress& prog,
+                                  std::chrono::steady_clock::time_point start_time) {
+    if (prog.total_tiles <= 0) return;
+
+    auto now = std::chrono::steady_clock::now();
+    double elapsed = std::chrono::duration<double>(now - start_time).count();
+    float pct = prog.percentage();
+
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(1) << pct << "%  ["
+        << prog.completed_tiles << "/" << prog.total_tiles << " tiles";
+
+    if (prog.completed_tiles > 0 && elapsed > 0.1) {
+        double tiles_per_sec = prog.completed_tiles / elapsed;
+        double remaining_tiles = prog.total_tiles - prog.completed_tiles;
+        double eta_sec = remaining_tiles / tiles_per_sec;
+        oss << ", " << std::setprecision(1) << tiles_per_sec << " tiles/s"
+            << ", ETA " << std::setprecision(1) << eta_sec << "s";
+    }
+
+    oss << "]";
+    std::cerr << "\r" << oss.str() << std::flush;
+
+    if (prog.completed_tiles >= prog.total_tiles) {
+        std::cerr << "\n";
+    }
+}
+
 auto convert_image_channels(const crossscale::Image& source, int target_channels)
     -> std::optional<crossscale::Image> {
     const int src_channels = source.channels();
@@ -203,13 +244,24 @@ auto normalize_channels_for_model(
 void print_usage() {
     std::cout << "CrossScale - Distributed Image Super-Resolution System\n\n"
               << "Usage:\n"
-              << "  crossscale process -i <input> -o <output> -m <model> [--output-quality <1-100>] [--output-format <png|jpg|jpeg|webp>]\n"
+              << "  crossscale -i <input> -o <output> [-m <model>] [options]\n"
+              << "  crossscale process -i <input> -o <output> -m <model> [options]\n"
               << "  crossscale server start -p <port> [-k <key>]\n"
               << "  crossscale server info -p <port> -k <key>\n"
               << "  crossscale worker connect <host>:<port> -k <key> [--recommended-weight <num>] [--queue-depth <num>] [--recommended-tile-size <num>]\n"
               << "  crossscale model list\n"
               << "  crossscale benchmark\n"
-              << "  crossscale --help\n";
+              << "  crossscale --help\n\n"
+              << "Options (process):\n"
+              << "  -i <path>           Input image or directory\n"
+              << "  -o <path>           Output image or directory\n"
+              << "  -m <name>           Model name (default: first available)\n"
+              << "  --tile-size <n>     Tile size (default: auto based on GPU VRAM)\n"
+              << "  --tile-overlap <n>  Tile overlap (default: 16)\n"
+              << "  --batch-size <n>    Batch size (default: 1)\n"
+              << "  --jobs <n>          Parallel workers for directory mode\n"
+              << "  --output-format <fmt>  Output format: png/jpg/jpeg/webp (default: auto from extension)\n"
+              << "  --output-quality <n>   Output quality 0-100 (default: 95)\n";
 }
 
 auto generate_qr_ascii(const std::string& text) -> std::string {
@@ -236,6 +288,34 @@ auto generate_qr_ascii(const std::string& text) -> std::string {
     return result;
 }
 
+// Prints the connection card shown to the user: all local IPv4 addresses
+// (first non-loopback one is used as the QR default), the auth key, and a QR
+// code carrying the JSON the Android app's JoinInviteParser.parseJsonInvite()
+// understands. Shared by `server start` and `server info` to stay in sync.
+void print_connection_card(uint16_t port, const std::string& key) {
+    auto addresses = crossscale::network_utils::get_local_addresses();
+    if (addresses.empty()) {
+        addresses.push_back("127.0.0.1");
+    }
+
+    std::cout << "\nConnection Information:\n";
+    for (size_t i = 0; i < addresses.size(); ++i) {
+        std::cout << "  IP: " << addresses[i];
+        if (i == 0) std::cout << "  (default for QR)";
+        std::cout << "\n";
+    }
+    std::cout << "  Port: " << port << "\n"
+              << "  Key: " << key << "\n\n"
+              << "QR Code (scan with Android app):\n\n";
+
+    const std::string json =
+        "{\"v\":1,\"ip\":\"" + addresses[0] +
+        "\",\"port\":" + std::to_string(port) +
+        ",\"key\":\"" + key + "\""
+        ",\"name\":\"CrossScale-Server\"}";
+    std::cout << generate_qr_ascii(json) << "\n";
+}
+
 int main(int argc, char* argv[]) {
     if (argc < 2) {
         print_usage();
@@ -252,7 +332,28 @@ int main(int argc, char* argv[]) {
         return 0;
     }
 
-    if (command == "process") {
+    // Implicit process command: if argv[1] is not a known subcommand and contains
+    // '-i' or '-o' flags, treat the entire invocation as 'crossscale process ...'
+    bool implicit_process = false;
+    if (command != "process" && command != "server" && command != "worker" &&
+        command != "model" && command != "benchmark" && command != "client" &&
+        command != "pair") {
+        // Check if any arg looks like a process flag
+        for (int i = 1; i < argc; ++i) {
+            std::string a = argv[i];
+            if (a == "-i" || a == "-o" || a == "-m") {
+                implicit_process = true;
+                break;
+            }
+        }
+        if (!implicit_process) {
+            LOG_ERROR("CLI", "Unknown command: " + command);
+            print_usage();
+            return 1;
+        }
+    }
+
+    if (command == "process" || implicit_process) {
         std::signal(SIGINT, signal_handler);
         std::signal(SIGTERM, signal_handler);
 
@@ -266,6 +367,7 @@ int main(int argc, char* argv[]) {
         int tile_size = 256;
         int tile_overlap = 16;
         bool auto_tile = false;
+        bool tile_size_explicit = false;  // Track if user explicitly set --tile-size
         int min_tile = 64;
         int max_tile = 512;
         int batch_size = 1;
@@ -278,7 +380,7 @@ int main(int argc, char* argv[]) {
             else if (arg == "-o" && i + 1 < argc) output_path = argv[++i];
             else if (arg == "-m" && i + 1 < argc) model_name = argv[++i];
             else if (arg == "--models" && i + 1 < argc) models_dir = argv[++i];
-            else if (arg == "--tile-size" && i + 1 < argc) tile_size = safe_parse_int<int>(argv[++i], "--tile-size", 16, 8192);
+            else if (arg == "--tile-size" && i + 1 < argc) { tile_size = safe_parse_int<int>(argv[++i], "--tile-size", 16, 8192); tile_size_explicit = true; }
             else if (arg == "--tile-overlap" && i + 1 < argc) tile_overlap = safe_parse_int<int>(argv[++i], "--tile-overlap", 0, 1024);
             else if (arg == "--batch-size" && i + 1 < argc) batch_size = safe_parse_int<int>(argv[++i], "--batch-size", 1, 64);
             else if (arg == "--auto-tile") auto_tile = true;
@@ -395,6 +497,15 @@ int main(int argc, char* argv[]) {
             }
             if (!cli_output_format.empty()) {
                 config.output_format = crossscale::normalize_output_format(cli_output_format);
+            } else {
+                // Auto-infer output format from first output file extension
+                if (!tasks.empty()) {
+                    std::string inferred = infer_format_from_extension(tasks[0].second);
+                    if (!inferred.empty()) {
+                        config.output_format = crossscale::normalize_output_format(inferred);
+                        LOG_INFO("Config", "Auto-detected output format: " + inferred);
+                    }
+                }
             }
             
             // Validate configuration
@@ -448,6 +559,8 @@ int main(int argc, char* argv[]) {
             if (const char* progress_env = std::getenv("CROSSSCALE_PROGRESS")) {
                 enable_progress_log = std::string(progress_env) == "1";
             }
+            // Track processing start time for ETA
+            auto batch_start_time = std::chrono::steady_clock::now();
             size_t gpu_submit_queue_max = 3;
             if (const char* queue_env = std::getenv("CROSSSCALE_GPU_SUBMIT_QUEUE")) {
                 try {
@@ -556,6 +669,8 @@ int main(int argc, char* argv[]) {
                     prepared.width, prepared.height, prepared.channels,
                     eng, tile_config,
                     [&](const crossscale::ProcessingProgress& prog) {
+                        // Always print progress to stderr
+                        print_progress_stderr(prog, batch_start_time);
                         if (enable_progress_log &&
                             prog.total_tiles > 0 &&
                             (prog.completed_tiles % 10 == 0 || prog.completed_tiles == prog.total_tiles)) {
@@ -636,6 +751,13 @@ int main(int argc, char* argv[]) {
                 
                 int scale = engine->get_scale_factor();
                 LOG_INFO("Engine", "Scale factor: " + std::to_string(scale) + "x");
+
+                // Auto tile size: use engine's VRAM-aware recommendation if not explicitly set
+                if (!tile_size_explicit && !auto_tile) {
+                    tile_size = engine->get_recommended_tile_size();
+                    config.tile_size = tile_size;
+                    LOG_INFO("Engine", "Auto-selected tile size: " + std::to_string(tile_size));
+                }
                 
                 size_t success_count = 0;
                 if (use_gpu && tasks.size() > 1) {
@@ -1165,6 +1287,12 @@ int main(int argc, char* argv[]) {
         int scale = engine->get_scale_factor();
         LOG_INFO("Engine", "Scale factor: " + std::to_string(scale) + "x");
 
+        // Auto tile size: use engine's VRAM-aware recommendation if not explicitly set
+        if (!tile_size_explicit && !auto_tile) {
+            tile_size = engine->get_recommended_tile_size();
+            LOG_INFO("Engine", "Auto-selected tile size: " + std::to_string(tile_size));
+        }
+
         int input_channels_before = image.channels();
         if (!normalize_channels_for_model(image, model_input_channels, input_path)) {
             return 1;
@@ -1200,6 +1328,13 @@ int main(int argc, char* argv[]) {
         }
         if (!cli_output_format.empty()) {
             config.output_format = crossscale::normalize_output_format(cli_output_format);
+        } else {
+            // Auto-infer output format from output file extension
+            std::string inferred = infer_format_from_extension(output_path);
+            if (!inferred.empty()) {
+                config.output_format = crossscale::normalize_output_format(inferred);
+                LOG_INFO("Config", "Auto-detected output format: " + inferred);
+            }
         }
 
         // 如果启用自动调优，运行基准测试选择最优 tile size
@@ -1255,11 +1390,14 @@ int main(int argc, char* argv[]) {
             enable_progress_log_single = std::string(progress_env) == "1";
         }
 
+        auto process_start_time = std::chrono::steady_clock::now();
         auto process_result = processor.process_image_u8(
             image.data(), output_image.data(),
             image.width(), image.height(), image.channels(),
             *engine, tile_config,
             [&](const crossscale::ProcessingProgress& progress) {
+                // Always print progress to stderr with ETA
+                print_progress_stderr(progress, process_start_time);
                 if (enable_progress_log_single && progress.total_tiles > 0) {
                     float pct = progress.percentage();
                     if (progress.completed_tiles % 10 == 0 ||
@@ -1323,6 +1461,7 @@ int main(int argc, char* argv[]) {
         auto result = crossscale::benchmark("test_iteration", []() {
             volatile int x = 0;
             for (int i = 0; i < 1000000; ++i) x += i;
+            (void)x;
         }, 10, 2);
         
         std::cout << "Benchmark: " << result.name << "\n"
@@ -1393,6 +1532,10 @@ int main(int argc, char* argv[]) {
 
             LOG_INFO("Server", "Coordinator running. Press Ctrl+C to stop.");
 
+            // Print the full connection card (IP + key + QR) right away so
+            // the user can scan it with the phone without a second command.
+            print_connection_card(port, key);
+
             std::optional<size_t> last_worker_count;
             while (g_running && coordinator->is_running()) {
                 const size_t worker_count = coordinator->device_count();
@@ -1400,7 +1543,9 @@ int main(int argc, char* argv[]) {
                     LOG_INFO("Server", "Connected workers: " + std::to_string(worker_count));
                     last_worker_count = worker_count;
                 }
-                std::this_thread::sleep_for(std::chrono::seconds(5));
+                // Short poll so Ctrl+C (sets g_running=false) is noticed within
+                // ~200ms instead of up to 5s.
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
             }
 
             LOG_INFO("Server", "Shutting down coordinator...");
@@ -1427,23 +1572,7 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
 
-            crossscale::ConnectionInfo conn_info;
-            auto addresses = crossscale::network_utils::get_local_addresses();
-            conn_info.ip = addresses.empty() ? "127.0.0.1" : addresses[0];
-            conn_info.port = port;
-            conn_info.auth_key = key;
-            conn_info.server_name = "CrossScale-Server";
-
-            std::string json = "{\"v\":1,\"ip\":\"" + conn_info.ip +
-                              "\",\"port\":" + std::to_string(conn_info.port) +
-                              ",\"key\":\"" + conn_info.auth_key + "\"}";
-
-            std::cout << "\nConnection Information:\n"
-                      << "  IP: " << conn_info.ip << "\n"
-                      << "  Port: " << conn_info.port << "\n"
-                      << "  Key: " << conn_info.auth_key << "\n\n"
-                      << "QR Code (scan with Android app):\n\n"
-                      << generate_qr_ascii(json) << "\n";
+            print_connection_card(port, key);
             return 0;
         }
 
@@ -1623,14 +1752,14 @@ int main(int argc, char* argv[]) {
         if (subcommand == "process") {
             std::string input_path, output_path, server_addr, auth_key;
             int tile_size = 256, tile_overlap = 16;
-            
+
             for (int i = 3; i < argc; ++i) {
                 std::string arg = argv[i];
                 if (arg == "-i" && i + 1 < argc) input_path = argv[++i];
                 else if (arg == "-o" && i + 1 < argc) output_path = argv[++i];
                 else if (arg == "-s" && i + 1 < argc) server_addr = argv[++i];
                 else if (arg == "-k" && i + 1 < argc) auth_key = argv[++i];
-                else if (arg == "--tile-size" && i + 1 < argc) tile_size = safe_parse_int<int>(argv[++i], "--tile-size", 16, 8192);
+                else if (arg == "--tile-size" && i + 1 < argc) { tile_size = safe_parse_int<int>(argv[++i], "--tile-size", 16, 8192); }
                 else if (arg == "--tile-overlap" && i + 1 < argc) tile_overlap = safe_parse_int<int>(argv[++i], "--tile-overlap", 0, 1024);
             }
             
@@ -1674,7 +1803,8 @@ int main(int argc, char* argv[]) {
             auth_header.payload_length = sizeof(auth_req);
             
             auto auth_data = crossscale::Protocol::serialize(auth_header, &auth_req);
-            socket.send_all(auth_data.data(), auth_data.size());
+            // fire-and-forget: the receive_all below detects any send-side failure.
+            (void)socket.send_all(auth_data.data(), auth_data.size());
             
             std::vector<uint8_t> resp_header_buf(crossscale::Protocol::HEADER_SIZE);
             auto auth_header_recv = socket.receive_all(resp_header_buf.data(), resp_header_buf.size());
@@ -1725,8 +1855,9 @@ int main(int argc, char* argv[]) {
             submit_header.payload_length = sizeof(task_submit);
             
             auto submit_header_data = crossscale::Protocol::serialize(submit_header, &task_submit);
-            socket.send_all(submit_header_data.data(), submit_header_data.size());
-            socket.send_all(image.data(), image.size());
+            // fire-and-forget: the receive_all below detects any send-side failure.
+            (void)socket.send_all(submit_header_data.data(), submit_header_data.size());
+            (void)socket.send_all(image.data(), image.size());
             
             // Receive result
             std::vector<uint8_t> result_header_buf(crossscale::Protocol::HEADER_SIZE);

@@ -65,7 +65,7 @@ auto Worker::connect(const std::string& host, uint16_t port, const std::string& 
     
     auto result = socket_->connect(host, port);
     if (!result.has_value()) {
-        return WorkerError{1, "Connection failed: " + result.error().message};
+        return std::unexpected(WorkerError{1, "Connection failed: " + result.error().message});
     }
     
     auth_key_ = auth_key;
@@ -92,7 +92,7 @@ void Worker::set_recommended_tile_size(int tile_size) {
 
 auto Worker::handshake(Engine& engine) -> expected<void, WorkerError> {
     if (!socket_) {
-        return WorkerError{2, "Not connected"};
+        return std::unexpected(WorkerError{2, "Not connected"});
     }
 
     // 发送认证请求
@@ -105,24 +105,24 @@ auto Worker::handshake(Engine& engine) -> expected<void, WorkerError> {
     auto auth_data = Protocol::serialize(auth_hdr, &auth_req);
     auto send_res = socket_->send_all(auth_data.data(), auth_data.size());
     if (!send_res.has_value()) {
-        return WorkerError{100, "Auth send failed: " + send_res.error().message};
+        return std::unexpected(WorkerError{100, "Auth send failed: " + send_res.error().message});
     }
 
     // 接收认证响应
     std::vector<uint8_t> hdr_buf(Protocol::HEADER_SIZE);
     auto hdr_recv = socket_->receive_all(hdr_buf.data(), hdr_buf.size());
     if (!hdr_recv.has_value()) {
-        return WorkerError{101, "Auth header recv failed: " + hdr_recv.error().message};
+        return std::unexpected(WorkerError{101, "Auth header recv failed: " + hdr_recv.error().message});
     }
     auto parsed_hdr = Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
     if (!parsed_hdr || parsed_hdr->type != MessageType::MSG_AUTH_RESPONSE) {
-        return WorkerError{102, "Unexpected message during auth"};
+        return std::unexpected(WorkerError{102, "Unexpected message during auth"});
     }
     std::vector<uint8_t> payload(parsed_hdr->payload_length);
-    socket_->receive_all(payload.data(), payload.size());
+    (void)socket_->receive_all(payload.data(), payload.size());
     auto* auth_resp = reinterpret_cast<AuthResponse*>(payload.data());
     if (!auth_resp->authenticated) {
-        return WorkerError{103, "Authentication rejected"};
+        return std::unexpected(WorkerError{103, "Authentication rejected"});
     }
     device_id_ = auth_resp->device_id;
 
@@ -174,7 +174,7 @@ bool Worker::is_connected() const {
 
 auto Worker::send_profile(const DeviceProfile& profile) -> expected<void, WorkerError> {
     if (!is_connected()) {
-        return WorkerError{2, "Not connected"};
+        return std::unexpected(WorkerError{2, "Not connected"});
     }
     
     DeviceProfileMessage msg;
@@ -195,7 +195,7 @@ auto Worker::send_profile(const DeviceProfile& profile) -> expected<void, Worker
     auto result = socket_->send_all(data.data(), data.size());
     
     if (!result.has_value()) {
-        return WorkerError{3, "Failed to send profile"};
+        return std::unexpected(WorkerError{3, "Failed to send profile"});
     }
     
     return {};
@@ -203,27 +203,39 @@ auto Worker::send_profile(const DeviceProfile& profile) -> expected<void, Worker
 
 auto Worker::receive_task() -> expected<Task, WorkerError> {
     if (!is_connected()) {
-        return WorkerError{2, "Not connected"};
+        return std::unexpected(WorkerError{2, "Not connected"});
     }
     
     std::vector<uint8_t> header_buffer(Protocol::HEADER_SIZE);
     auto result = socket_->receive_all(header_buffer.data(), header_buffer.size());
     
     if (!result.has_value()) {
-        return WorkerError{4, "Failed to receive task"};
+        return std::unexpected(WorkerError{4, "Failed to receive task"});
     }
     
     auto header = Protocol::parse_header(header_buffer.data(), header_buffer.size());
     if (!header) {
-        return WorkerError{5, "Invalid message header"};
+        // Dump the bytes we actually received so protocol desyncs are diagnosable.
+        std::string hex;
+        hex.reserve(Protocol::HEADER_SIZE * 3);
+        static const char* kHex = "0123456789ABCDEF";
+        for (size_t i = 0; i < Protocol::HEADER_SIZE; ++i) {
+            hex += kHex[(header_buffer[i] >> 4) & 0xF];
+            hex += kHex[header_buffer[i] & 0xF];
+            hex += ' ';
+        }
+        LOG_ERROR("Worker", "Invalid message header — first " +
+            std::to_string(Protocol::HEADER_SIZE) + " bytes: " + hex +
+            "(expected magic 0x53534358 \"XCSS\")");
+        return std::unexpected(WorkerError{5, "Invalid message header"});
     }
-    
+
     if (header->type == MessageType::MSG_TASK_ASSIGNMENT) {
         std::vector<uint8_t> payload(header->payload_length);
         result = socket_->receive_all(payload.data(), payload.size());
         
         if (!result.has_value()) {
-            return WorkerError{4, "Failed to receive task payload"};
+            return std::unexpected(WorkerError{4, "Failed to receive task payload"});
         }
         
         TaskAssignmentMessage* msg = reinterpret_cast<TaskAssignmentMessage*>(payload.data());
@@ -231,22 +243,46 @@ auto Worker::receive_task() -> expected<Task, WorkerError> {
         Task task;
         task.task_id = msg->task_id;
         task.model_name = msg->model_name;
-        
+
         size_t tile_info_offset = sizeof(TaskAssignmentMessage);
         for (uint32_t i = 0; i < msg->tile_count; ++i) {
             TileInfo* tile = reinterpret_cast<TileInfo*>(payload.data() + tile_info_offset + i * sizeof(TileInfo));
             (void)tile;
             task.tile_indices.push_back(i);
         }
-        
+
+        // Lazy model fetch: if the model files aren't present locally, pull them
+        // from the coordinator NOW — before we send TASK_ACCEPT. The
+        // coordinator's dispatch loop serves MSG_MODEL_REQUEST here (it has not
+        // sent the TILES_BATCH yet, since that only goes out after ACCEPT), so
+        // this exchange cannot collide with in-flight batch bytes. Doing the
+        // fetch here (rather than during connect-time sync_models) avoids the
+        // deadlock where no thread was reading the worker socket.
+        if (!task.model_name.empty() && !model_manager_.has_model(task.model_name)) {
+            LOG_INFO("Worker", "Task requires model " + task.model_name +
+                     " which is missing locally — fetching from coordinator");
+            auto param_dl = download_model(task.model_name, 0);
+            if (!param_dl.has_value()) {
+                return std::unexpected(WorkerError{10, "Failed to fetch model param " + task.model_name +
+                                      ": " + param_dl.error().message});
+            }
+            auto bin_dl = download_model(task.model_name, 1);
+            if (!bin_dl.has_value()) {
+                return std::unexpected(WorkerError{10, "Failed to fetch model bin " + task.model_name +
+                                      ": " + bin_dl.error().message});
+            }
+            (void)model_manager_.scan_models();
+            LOG_INFO("Worker", "Model " + task.model_name + " fetched and ready");
+        }
+
         if (on_task_received_) {
             on_task_received_(task);
         }
-        
+
         return task;
     }
-    
-    return WorkerError{6, "Unexpected message type"};
+
+    return std::unexpected(WorkerError{6, "Unexpected message type"});
 }
 
 auto Worker::execute_task(const Task& task, Engine& engine,
@@ -254,7 +290,7 @@ auto Worker::execute_task(const Task& task, Engine& engine,
     -> expected<std::vector<uint8_t>, WorkerError> {
     
     if (!is_connected()) {
-        return WorkerError{2, "Not connected"};
+        return std::unexpected(WorkerError{2, "Not connected"});
     }
     
     MessageHeader accept_header;
@@ -263,7 +299,7 @@ auto Worker::execute_task(const Task& task, Engine& engine,
     auto accept_data = Protocol::serialize(accept_header, task.task_id.c_str());
     auto result = socket_->send_all(accept_data.data(), accept_data.size());
     if (!result.has_value()) {
-        return WorkerError{8, "Failed to send task acceptance"};
+        return std::unexpected(WorkerError{8, "Failed to send task acceptance"});
     }
     
     if (engine.model_name() != task.model_name) {
@@ -276,8 +312,8 @@ auto Worker::execute_task(const Task& task, Engine& engine,
 
         auto load_result = engine.load_model(param_path, bin_path);
         if (!load_result.has_value()) {
-            return WorkerError{9, "Failed to load model: " + task.model_name +
-                                  " - " + load_result.error().message};
+            return std::unexpected(WorkerError{9, "Failed to load model: " + task.model_name +
+                                  " - " + load_result.error().message});
         }
     }
     
@@ -289,42 +325,42 @@ auto Worker::execute_task(const Task& task, Engine& engine,
     std::vector<uint8_t> header_buf(Protocol::HEADER_SIZE);
     auto hdr_res = socket_->receive_all(header_buf.data(), header_buf.size());
     if (!hdr_res.has_value()) {
-        return WorkerError{4, "Failed to receive batch header"};
+        return std::unexpected(WorkerError{4, "Failed to receive batch header"});
     }
     auto parsed_hdr = Protocol::parse_header(header_buf.data(), header_buf.size());
     if (!parsed_hdr || parsed_hdr->type != MessageType::MSG_TILES_BATCH) {
-        return WorkerError{6, "Expected TILES_BATCH message, got type " + std::to_string(parsed_hdr ? static_cast<int>(parsed_hdr->type) : 0)};
+        return std::unexpected(WorkerError{6, "Expected TILES_BATCH message, got type " + std::to_string(parsed_hdr ? static_cast<int>(parsed_hdr->type) : 0)});
     }
 
     std::vector<uint8_t> batch_payload;
     if (parsed_hdr->payload_length > MAX_NETWORK_PAYLOAD) {
-        return WorkerError{7, "Batch payload too large: " + std::to_string(parsed_hdr->payload_length) + " bytes"};
+        return std::unexpected(WorkerError{7, "Batch payload too large: " + std::to_string(parsed_hdr->payload_length) + " bytes"});
     }
     batch_payload.resize(parsed_hdr->payload_length);
     auto pay_res = socket_->receive_all(batch_payload.data(), batch_payload.size());
     if (!pay_res.has_value()) {
-        return WorkerError{4, "Failed to receive batch payload"};
+        return std::unexpected(WorkerError{4, "Failed to receive batch payload"});
     }
 
     size_t offset = 0;
     size_t tile_index = 0;
     while (offset < batch_payload.size()) {
         if (offset + sizeof(ImageTileMessage) > batch_payload.size()) {
-            return WorkerError{5, "Invalid batch: incomplete ImageTileMessage"};
+            return std::unexpected(WorkerError{5, "Invalid batch: incomplete ImageTileMessage"});
         }
         ImageTileMessage* tile_msg = reinterpret_cast<ImageTileMessage*>(batch_payload.data() + offset);
         offset += sizeof(ImageTileMessage);
 
         size_t data_size = tile_msg->data_length;
         if (offset + data_size > batch_payload.size()) {
-            return WorkerError{5, "Invalid batch: tile data overflow"};
+            return std::unexpected(WorkerError{5, "Invalid batch: tile data overflow"});
         }
         std::vector<uint8_t> tile_data(data_size);
         memcpy(tile_data.data(), batch_payload.data() + offset, data_size);
         offset += data_size;
 
         if (!running_) {
-            return WorkerError{7, "Task cancelled"};
+            return std::unexpected(WorkerError{7, "Task cancelled"});
         }
 
         uint32_t tile_x = tile_msg->tile_x;
@@ -349,7 +385,7 @@ auto Worker::execute_task(const Task& task, Engine& engine,
 
         if (!engine.process(input_float.data(), output_float.data(),
                            tile_width, tile_height, channels)) {
-            return WorkerError{10, "Engine processing failed for tile " + std::to_string(tile_index)};
+            return std::unexpected(WorkerError{10, "Engine processing failed for tile " + std::to_string(tile_index)});
         }
 
         // Convert back to uint8_t
@@ -387,55 +423,6 @@ auto Worker::execute_task(const Task& task, Engine& engine,
     return serialize_processed_tiles(processed_tiles);
 }
 
-auto Worker::receive_tile_data(uint32_t& tile_x, uint32_t& tile_y,
-                                uint32_t& width, uint32_t& height,
-                                uint8_t& channels, std::vector<uint8_t>& data)
-    -> expected<void, WorkerError> {
-
-    std::vector<uint8_t> header_buffer(Protocol::HEADER_SIZE);
-    auto result = socket_->receive_all(header_buffer.data(), header_buffer.size());
-    if (!result.has_value()) {
-        return WorkerError{4, "Failed to receive tile header"};
-    }
-
-    auto header = Protocol::parse_header(header_buffer.data(), header_buffer.size());
-    if (!header) {
-        return WorkerError{5, "Invalid tile message header"};
-    }
-
-    if (header->type != MessageType::MSG_IMAGE_TILE) {
-        return WorkerError{6, "Expected IMAGE_TILE message, got different type"};
-    }
-
-    if (header->payload_length < sizeof(ImageTileMessage)) {
-        return WorkerError{5, "Invalid tile message payload size"};
-    }
-
-    std::vector<uint8_t> payload(header->payload_length);
-    result = socket_->receive_all(payload.data(), payload.size());
-    if (!result.has_value()) {
-        return WorkerError{4, "Failed to receive tile payload"};
-    }
-
-    ImageTileMessage* tile_msg = reinterpret_cast<ImageTileMessage*>(payload.data());
-    tile_x = tile_msg->tile_x;
-    tile_y = tile_msg->tile_y;
-    width = tile_msg->width;
-    height = tile_msg->height;
-    channels = tile_msg->channels;
-
-    size_t data_offset = sizeof(ImageTileMessage);
-    size_t data_size = tile_msg->data_length;
-
-    if (payload.size() < data_offset + data_size) {
-        return WorkerError{5, "Tile data size mismatch"};
-    }
-
-    data.resize(data_size);
-    std::memcpy(data.data(), payload.data() + data_offset, data_size);
-
-    return {};
-}
 
 void Worker::send_progress_update(const std::string& task_id, float progress) {
     if (!socket_ || !socket_->is_connected()) {
@@ -456,7 +443,7 @@ void Worker::send_progress_update(const std::string& task_id, float progress) {
     header.payload_length = sizeof(msg);
 
     auto data = Protocol::serialize(header, &msg);
-    socket_->send_all(data.data(), data.size());
+    (void)socket_->send_all(data.data(), data.size());
 }
 
 auto Worker::serialize_processed_tiles(const std::vector<ProcessedTile>& tiles)
@@ -513,7 +500,7 @@ auto Worker::submit_results(const std::vector<uint8_t>& results)
     -> expected<void, WorkerError> {
     
     if (!is_connected()) {
-        return WorkerError{2, "Not connected"};
+        return std::unexpected(WorkerError{2, "Not connected"});
     }
     
     MessageHeader header;
@@ -524,7 +511,7 @@ auto Worker::submit_results(const std::vector<uint8_t>& results)
     auto result = socket_->send_all(data.data(), data.size());
     
     if (!result.has_value()) {
-        return WorkerError{8, "Failed to submit results"};
+        return std::unexpected(WorkerError{8, "Failed to submit results"});
     }
     
     return {};
@@ -573,71 +560,43 @@ void Worker::set_models_directory(const std::filesystem::path& dir) {
 
 auto Worker::sync_models() -> expected<void, WorkerError> {
     if (!is_connected()) {
-        return WorkerError{2, "Not connected"};
+        return std::unexpected(WorkerError{2, "Not connected"});
     }
 
-    LOG_INFO("Worker", "Waiting for model list from coordinator...");
+    LOG_INFO("Worker", "sync_models: waiting for model list from coordinator...");
 
     std::vector<uint8_t> header_buffer(Protocol::HEADER_SIZE);
     auto result = socket_->receive_all(header_buffer.data(), header_buffer.size());
     if (!result.has_value()) {
-        return WorkerError{11, "Failed to receive model list header"};
+        return std::unexpected(WorkerError{11, "Failed to receive model list header"});
     }
 
     auto header = Protocol::parse_header(header_buffer.data(), header_buffer.size());
     if (!header) {
-        return WorkerError{12, "Invalid model list header"};
+        return std::unexpected(WorkerError{12, "Invalid model list header"});
     }
 
     if (header->type != MessageType::MSG_MODEL_LIST) {
-        return WorkerError{13, "Expected MODEL_LIST message"};
+        return std::unexpected(WorkerError{13, "Expected MODEL_LIST message"});
     }
 
     std::vector<uint8_t> payload(header->payload_length);
     result = socket_->receive_all(payload.data(), payload.size());
     if (!result.has_value()) {
-        return WorkerError{14, "Failed to receive model list payload"};
+        return std::unexpected(WorkerError{14, "Failed to receive model list payload"});
     }
 
     ModelListMessage* msg = reinterpret_cast<ModelListMessage*>(payload.data());
     uint32_t model_count = msg->model_count;
 
-    LOG_INFO("Worker", "Received model list with " + std::to_string(model_count) + " models");
+    LOG_INFO("Worker", "Received model list with " + std::to_string(model_count) +
+             " models (will fetch on demand during tasks)");
 
-    size_t offset = sizeof(ModelListMessage);
-    for (uint32_t i = 0; i < model_count; ++i) {
-        if (offset + sizeof(ModelInfoMessage) > payload.size()) {
-            break;
-        }
-
-        ModelInfoMessage* info = reinterpret_cast<ModelInfoMessage*>(payload.data() + offset);
-        std::string model_name(info->name);
-        std::string model_hash(info->hash);
-
-        offset += sizeof(ModelInfoMessage);
-
-        if (model_manager_.has_model(model_name)) {
-            auto local_model = model_manager_.get_model(model_name);
-            if (local_model && local_model->hash == model_hash) {
-                LOG_INFO("Worker", "Model " + model_name + " is up to date");
-                continue;
-            }
-        }
-
-        LOG_INFO("Worker", "Requesting model: " + model_name);
-
-        auto download_result = download_model(model_name, 0);
-        if (!download_result.has_value()) {
-            LOG_WARNING("Worker", "Failed to download model " + model_name);
-        }
-
-        download_result = download_model(model_name, 1);
-        if (!download_result.has_value()) {
-            LOG_WARNING("Worker", "Failed to download model bin " + model_name);
-        }
-    }
-
-    model_manager_.scan_models();
+    // We deliberately do NOT download models here. At connect time no
+    // coordinator thread is reading our socket, so a MSG_MODEL_REQUEST would
+    // deadlock. Models are fetched lazily in receive_task() once a task is
+    // assigned — at that point the coordinator's dispatch loop serves requests.
+    (void)model_manager_.scan_models();
     LOG_INFO("Worker", "Model sync complete");
 
     return {};
@@ -648,13 +607,13 @@ auto Worker::download_model(const std::string& model_name, uint8_t file_type)
 
     // Validate model name to prevent path traversal
     if (model_name.empty() || model_name.size() > 256) {
-        return WorkerError{21, "Invalid model name length"};
+        return std::unexpected(WorkerError{21, "Invalid model name length"});
     }
     if (model_name.find("..") != std::string::npos ||
         model_name.find('/') != std::string::npos ||
         model_name.find('\\') != std::string::npos ||
         model_name.find('\0') != std::string::npos) {
-        return WorkerError{21, "Model name contains invalid characters: " + model_name};
+        return std::unexpected(WorkerError{21, "Model name contains invalid characters: " + model_name});
     }
 
     uint64_t offset = 0;
@@ -669,7 +628,7 @@ auto Worker::download_model(const std::string& model_name, uint8_t file_type)
     auto canonical_temp = std::filesystem::weakly_canonical(temp_path);
     auto canonical_dir = std::filesystem::weakly_canonical(models_dir);
     if (canonical_temp.string().find(canonical_dir.string()) != 0) {
-        return WorkerError{21, "Model path escapes models directory: " + model_name};
+        return std::unexpected(WorkerError{21, "Model path escapes models directory: " + model_name});
     }
 
     // Maximum model file size (500 MB)
@@ -690,32 +649,32 @@ auto Worker::download_model(const std::string& model_name, uint8_t file_type)
         auto req_data = Protocol::serialize(req_header, &request);
         auto send_result = socket_->send_all(req_data.data(), req_data.size());
         if (!send_result.has_value()) {
-            return WorkerError{15, "Failed to send model request"};
+            return std::unexpected(WorkerError{15, "Failed to send model request"});
         }
 
         std::vector<uint8_t> resp_header_buffer(Protocol::HEADER_SIZE);
         auto recv_result = socket_->receive_all(resp_header_buffer.data(), resp_header_buffer.size());
         if (!recv_result.has_value()) {
-            return WorkerError{16, "Failed to receive model data header"};
+            return std::unexpected(WorkerError{16, "Failed to receive model data header"});
         }
 
         auto resp_header = Protocol::parse_header(resp_header_buffer.data(), resp_header_buffer.size());
         if (!resp_header) {
-            return WorkerError{17, "Invalid model data header"};
+            return std::unexpected(WorkerError{17, "Invalid model data header"});
         }
 
         if (resp_header->type != MessageType::MSG_MODEL_DATA) {
-            return WorkerError{18, "Expected MODEL_DATA message"};
+            return std::unexpected(WorkerError{18, "Expected MODEL_DATA message"});
         }
 
         std::vector<uint8_t> resp_payload;
         if (resp_header->payload_length > MAX_NETWORK_PAYLOAD) {
-            return WorkerError{22, "Model data payload too large: " + std::to_string(resp_header->payload_length)};
+            return std::unexpected(WorkerError{22, "Model data payload too large: " + std::to_string(resp_header->payload_length)});
         }
         resp_payload.resize(resp_header->payload_length);
         recv_result = socket_->receive_all(resp_payload.data(), resp_payload.size());
         if (!recv_result.has_value()) {
-            return WorkerError{19, "Failed to receive model data payload"};
+            return std::unexpected(WorkerError{19, "Failed to receive model data payload"});
         }
 
         const ModelDataMessage* data_msg = reinterpret_cast<const ModelDataMessage*>(resp_payload.data());
@@ -728,12 +687,12 @@ auto Worker::download_model(const std::string& model_name, uint8_t file_type)
         // Validate data_length doesn't exceed payload
         size_t data_offset = sizeof(ModelDataMessage);
         if (data_offset + data_length > resp_payload.size()) {
-            return WorkerError{23, "Model data length exceeds payload size"};
+            return std::unexpected(WorkerError{23, "Model data length exceeds payload size"});
         }
 
         // Check total file size limit
         if (file_data.size() + data_length > MAX_MODEL_FILE_SIZE) {
-            return WorkerError{24, "Model file too large (>" + std::to_string(MAX_MODEL_FILE_SIZE / (1024*1024)) + " MB)"};
+            return std::unexpected(WorkerError{24, "Model file too large (>" + std::to_string(MAX_MODEL_FILE_SIZE / (1024*1024)) + " MB)"});
         }
 
         file_data.insert(file_data.end(), 
@@ -749,14 +708,12 @@ auto Worker::download_model(const std::string& model_name, uint8_t file_type)
 
     std::ofstream file(temp_path, std::ios::binary);
     if (!file) {
-        return WorkerError{20, "Cannot create temp file"};
+        return std::unexpected(WorkerError{20, "Cannot create temp file"});
     }
 
     file.write(reinterpret_cast<const char*>(file_data.data()), file_data.size());
     file.close();
 
-    std::filesystem::path final_path = model_manager_.models_directory() / 
-                                        (model_name + (file_type == 0 ? ".param" : ".bin"));
     std::filesystem::rename(temp_path, final_path);
 
     LOG_INFO("Worker", "Downloaded " + model_name + suffix + 
