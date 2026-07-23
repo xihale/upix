@@ -9,8 +9,6 @@
 #include "utils/logger.hpp"
 #include "utils/unix_socket.hpp"
 
-#include <chrono>
-#include <csignal>
 #include <cstring>
 #include <filesystem>
 #include <thread>
@@ -66,8 +64,6 @@ auto ServeDaemon::start(const std::string& socket_path,
                         ServeDevice device) -> int {
     device_ = device;
     socket_path_ = socket_path;
-    start_time_unix_ = std::chrono::duration_cast<std::chrono::seconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
 
     // ── Engine init (the ~330 ms cost amortized over all future requests) ──
     engine_ = create_ncnn_engine();
@@ -161,38 +157,23 @@ auto ServeDaemon::ensure_model_loaded(const std::string& model_name) -> int {
 }
 
 auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
-    // sock owns the fd; closed exactly once on return. Use sock->send_all/
-    // receive_all for all I/O.
+    // sock owns the fd; closed exactly once on return.
 
-    // ── 1. Send HELLO immediately ───────────────────────────────────────────
-    ServeHello hello = this->hello();
-    {
-        std::lock_guard<std::mutex> lk(engine_mutex_);
-        std::memset(hello.model_name, 0, sizeof(hello.model_name));
-        loaded_model_name_.copy(hello.model_name, sizeof(hello.model_name) - 1);
-    }
-    if (!send_via(*sock, MessageType::MSG_SERVE_HELLO, &hello, sizeof(hello))) return;
-
-    // ── 2. Read the request header ──────────────────────────────────────────
+    // ── 1. Read request header ──────────────────────────────────────────────
     std::vector<uint8_t> hdr_buf(Protocol::HEADER_SIZE);
     if (!sock->receive_all(hdr_buf.data(), hdr_buf.size())) return;
     auto parsed = Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
-    if (!parsed) return;
-
-    // Graceful stop request from a client (e.g. `crossscale serve stop`).
-    if (parsed->type == MessageType::MSG_SERVE_STOP) {
-        stop();
-        return;
-    }
-
-    if (parsed->type != MessageType::MSG_SERVE_REQUEST || parsed->payload_length < sizeof(ServeRequest)) {
-        ServeResponse r{}; r.ok = 0;
+    if (!parsed || parsed->type != MessageType::MSG_SERVE_REQUEST ||
+        parsed->payload_length < sizeof(ServeRequest)) {
+        // Malformed: send a minimal error response and bail.
+        ServeResponse r{};
+        r.ok = 0;
         std::strncpy(r.error, "expected MSG_SERVE_REQUEST", sizeof(r.error) - 1);
         send_via(*sock, MessageType::MSG_SERVE_RESPONSE, &r, sizeof(r));
         return;
     }
 
-    // ── 3. Read ServeRequest struct + image bytes ───────────────────────────
+    // ── 2. Read payload = [ServeRequest][image] contiguous ──────────────────
     std::vector<uint8_t> req_buf(parsed->payload_length);
     if (!sock->receive_all(req_buf.data(), req_buf.size())) return;
     ServeRequest req{};
@@ -200,21 +181,23 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
 
     if (req.img_length > MAX_SERVE_IMAGE_BYTES ||
         sizeof(ServeRequest) + req.img_length > req_buf.size()) {
-        ServeResponse r{}; r.ok = 0;
+        ServeResponse r{};
+        r.ok = 0;
         std::strncpy(r.error, "image too large", sizeof(r.error) - 1);
         send_via(*sock, MessageType::MSG_SERVE_RESPONSE, &r, sizeof(r));
         return;
     }
     const uint8_t* img_in = req_buf.data() + sizeof(ServeRequest);
 
-    // ── 4. Run inference under the engine lock (Vulkan serial constraint) ───
+    // ── 3. Inference under engine lock (Vulkan serial constraint) ───────────
     std::vector<uint8_t> out_bytes;
     int out_w = 0, out_h = 0, out_c = req.channels;
     std::string err_msg;
     {
         std::lock_guard<std::mutex> lk(engine_mutex_);
         if (ensure_model_loaded(req.model_name) != 0) {
-            ServeResponse r{}; r.ok = 0;
+            ServeResponse r{};
+            r.ok = 0;
             std::strncpy(r.error, "model load failed", sizeof(r.error) - 1);
             send_via(*sock, MessageType::MSG_SERVE_RESPONSE, &r, sizeof(r));
             return;
@@ -240,7 +223,7 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
         }
     }
 
-    // ── 5. Send response header (framed) + raw image bytes ──────────────────
+    // ── 4. Send response: payload = [ServeResponse][image] contiguous ───────
     ServeResponse resp{};
     if (err_msg.empty()) {
         resp.ok = 1;
@@ -252,10 +235,15 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
         resp.ok = 0;
         std::strncpy(resp.error, err_msg.c_str(), sizeof(resp.error) - 1);
     }
-    if (!send_via(*sock, MessageType::MSG_SERVE_RESPONSE, &resp, sizeof(resp))) return;
-    if (resp.ok && resp.img_length > 0) {
-        (void)sock->send_all(out_bytes.data(), out_bytes.size());
+
+    // Assemble contiguous payload so Protocol::serialize produces one frame.
+    size_t payload_len = sizeof(resp) + (resp.ok ? out_bytes.size() : 0);
+    std::vector<uint8_t> payload(payload_len);
+    std::memcpy(payload.data(), &resp, sizeof(resp));
+    if (resp.ok && !out_bytes.empty()) {
+        std::memcpy(payload.data() + sizeof(resp), out_bytes.data(), out_bytes.size());
     }
+    send_via(*sock, MessageType::MSG_SERVE_RESPONSE, payload.data(), payload.size());
 }
 
 auto ServeDaemon::run() -> void {
@@ -281,15 +269,6 @@ auto ServeDaemon::run() -> void {
 auto ServeDaemon::stop() -> void {
     stop_requested_.store(true);
     running_.store(false);
-}
-
-auto ServeDaemon::hello() const -> ServeHello {
-    ServeHello h{};
-    h.pid = static_cast<int32_t>(::getpid());
-    h.scale = engine_ ? engine_->get_scale_factor() : 0;
-    h.device = (device_ == ServeDevice::GPU) ? 1 : 0;
-    h.start_time_unix = start_time_unix_;
-    return h;
 }
 
 } // namespace crossscale

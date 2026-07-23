@@ -3,8 +3,8 @@
 // + model-load fixed cost (see docs/PERF_REPORT_REAL_IMAGES.md §4).
 //
 // Architecture: the daemon owns one Engine (initialized + model-loaded once).
-// It listens on a Unix domain socket. Each accepted connection: send HELLO,
-// read one ServeRequest + image bytes, run TileProcessor::process_image_u8
+// It listens on a Unix domain socket. Each accepted connection: read one
+// ServeRequest + image bytes, run TileProcessor::process_image_u8
 // (identical path to the single-file CLI branch, so output is byte-identical),
 // send ServeResponse + result bytes. Engine access is serialized by a mutex
 // because Vulkan does not support concurrent submits from multiple threads
@@ -27,8 +27,6 @@ class ModelManager;
 class UnixServer;
 class UnixSocket;
 class TileProcessor;
-
-struct ServeHello;
 
 enum class ServeDevice { CPU = 0, GPU = 1 };
 
@@ -59,9 +57,6 @@ public:
     // Request shutdown from any thread. Wakes the accept loop within ~500 ms.
     auto stop() -> void;
 
-    // Snapshot for logging: model name, scale, device, pid.
-    auto hello() const -> ServeHello;
-
 private:
     // Handle one client connection on its own thread. Takes ownership of the
     // socket; the fd is closed exactly once when sock is destroyed on return.
@@ -81,7 +76,6 @@ private:
     std::string socket_path_;
     std::string loaded_model_name_;
     ServeDevice device_ = ServeDevice::GPU;
-    int64_t start_time_unix_ = 0;
 };
 
 // Default socket path: $XDG_CACHE_HOME/crossscale/serve.sock or
