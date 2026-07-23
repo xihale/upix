@@ -137,3 +137,38 @@ done
 # 查看可用测试/探针
 ./build/linux/x86_64/release/crossscale-cli perf list-probes
 ```
+
+## 八、提升实验:并发多引擎提交(commit f102624)
+
+基线测试定位瓶颈为 `submit_and_wait()` 串行阻塞后,做了并发提交实验,**把 util 从 59% 提升到 96%**。
+
+### 瓶颈根因(已坐实)
+ncnn 的 `VkCompute` 只暴露阻塞式 `submit_and_wait()`(无独立 `submit()`/`wait()`),单引擎下 CPU 每录完一批 forward 就阻塞等 GPU 把队列跑空,期间无法预录下一批 —— 队列时常被打空,SM 喂不饱。
+
+同 `ncnn::Net` 多线程并发 `create_extractor()` 不安全(单 VulkanDevice 单 queue,作者已在 `engine.hpp:96-104` 注明踩过坑)。
+
+### 突破方法
+**N 个独立 `ncnn::Net` 实例(各自 VkCompute),N 个线程各调自己引擎的 `process()`。** 两个独立 submitter 的 `submit_and_wait()` 在共享 Vulkan queue 上被驱动重叠 —— 队列保持饱和。这是尊重 ncnn 线程模型的唯一可行路径。
+
+### 结果(tile 256,独立复现确认)
+
+| 并发引擎数 | tiles/s | util avg | util p50 | util peak | active_ratio | 功耗 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1(=基线) | 127 | 62% | 65% | 67% | 94% | 60 W |
+| **2(甜点)** | **192** | **96%** | **100%** | **100%** | 98% | 87 W |
+| 3 | 193 | 94% | 100% | 100% | 99% | — |
+| 4 | 192 | 94% | 100% | 100% | 99% | — |
+
+- **util 59% → 96%**(+37pt),**吞吐 +52%**(×1.52)
+- 并发 1 与原 `gpu-efficiency` 基线数值吻合(62% vs 59%),证明测量无偏
+- **并发 2 是最优**:3/4 不再增益,GPU 已算力饱和;每引擎是完整权重副本(显存翻倍),2 是受限设备的合理上限
+
+### 状态:实验性,perf 层
+实验仅在 perf 层(`share/perf/tests/gpu_concurrency.cpp`),**未触碰生产引擎 `share/core/`**。已验证可行,下一步可落地到 `process_tiles_gpu_u8_queue`(用 2 个内部引擎并发消费 tile 队列),需单独验证真实图片的输出正确性。
+
+复现:
+```bash
+./build/linux/x86_64/release/crossscale-cli perf gpu-concurrency \
+  --concurrency 2 --tile 256 --warmup 2s --duration 6s --sample-ms 50
+```
+
