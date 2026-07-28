@@ -1573,6 +1573,16 @@ public:
         }
         submit_budget = std::min(submit_budget, submit_budget_cap);
         submit_budget = std::max(submit_budget, static_cast<size_t>(16));
+        // KNOWN ISSUE: this queue path packs many tiles into one VkCompute command buffer
+        // (submit_budget >= 16). The blend shader does read-modify-write accumulation (dst += w*src,
+        // weight += w) on SHARED out_gpu_hwc/out_gpu_weight, so multiple blend dispatches per command
+        // buffer are a RAW/WAR hazard (ncnn inserts no barrier between dispatches). On affected GPUs
+        // this produces the same dark/black-region corruption fixed in process_tiles_gpu[_u8] by
+        // pinning tiles_per_submit=1. This fast path is currently selected only when
+        // supports_gpu_tile_pipeline_u8_queue() is true; on GPUs where it is NOT true (e.g. the
+        // tested Intel UHD), the corrected non-queue path runs instead. A proper fix here requires
+        // restructuring the scheduler to submit each tile's blend in its own command buffer, or
+        // redesigning the blend to avoid shared-buffer read-modify-write. Left as TODO.
         LOG_INFO("Engine", "GPU queue submit tuning: " + format_vulkan_runtime_snapshot(
             "queue_budget",
             -1,
@@ -2013,7 +2023,11 @@ public:
         progress.completed_tiles = 0;
 
         const size_t tiles_per_cmd = static_cast<size_t>(std::max(1, config.batch_size));
-        const size_t tiles_per_submit = tiles_per_cmd * 4;
+        // See the long comment in process_tiles_gpu_u8: blend accumulation is a read-modify-write
+        // on shared buffers, so multiple blend dispatches per VkCompute are a RAW/WAR hazard.
+        // Pin per-cmd tiles to 1 to serialize via the queue-submit barrier.
+        const size_t tiles_per_submit = 1;
+        (void)tiles_per_cmd;
         const size_t in_total_full = static_cast<size_t>(input_width) * input_height * channels;
         if (in_total_full > static_cast<size_t>(std::numeric_limits<int>::max())) {
             return std::unexpected(EngineError{205, "Input image too large for Vulkan tile pipeline"});
@@ -2488,7 +2502,18 @@ public:
         progress.completed_tiles = 0;
 
         const size_t tiles_per_cmd = static_cast<size_t>(std::max(1, config.batch_size));
-        const size_t tiles_per_submit = tiles_per_cmd * 4;
+        // Each tile's blend dispatch performs read-modify-write accumulation (dst += src*w,
+        // weight += w) into the SHARED out_gpu_hwc / out_gpu_weight buffers. Recording more
+        // than one such dispatch in a single VkCompute command buffer is a RAW/WAR hazard:
+        // ncnn's record_pipeline inserts no memory barrier between dispatches that read and
+        // write the same buffer, so later tiles read stale/partial data and their writes are
+        // lost — producing dark/black regions (confirmed for scale>=3 overlapping tiles).
+        // ncnn's VkCompute::barrier_readwrite is protected, so we cannot insert barriers from
+        // here. The correct, robust fix is to submit each tile in its OWN VkCompute so the
+        // implicit queue-submit barrier serializes the accumulations. batch_size therefore
+        // controls inference batching intent only; the per-cmd tile count is pinned to 1.
+        const size_t tiles_per_submit = 1;
+        (void)tiles_per_cmd;
         const size_t in_total_full = static_cast<size_t>(input_width) * input_height * channels;
         if (in_total_full > static_cast<size_t>(std::numeric_limits<int>::max())) {
             return std::unexpected(EngineError{205, "Input image too large for Vulkan tile pipeline"});
