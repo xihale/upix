@@ -4,22 +4,12 @@ target("crossscale-core")
     add_packages("ncnn", "libwebp", "libpng", "libjpeg", "glaze")
     add_includedirs(".", {public = true})
     
+    -- Auto-collect share sources, excluding platform-specific files handled below.
     add_files(
-        "core/ncnn_engine.cpp",
-        "core/tile_processor.cpp",
-        "core/model_manager.cpp",
-        "core/config.cpp",
-        "core/engine_pool.cpp",
-        "core/distributed/scheduler.cpp",
-        "core/distributed/worker.cpp",
-        "core/distributed/coordinator.cpp",
-        "core/distributed/protocol.cpp",
-        "utils/image.cpp",
-        "utils/network.cpp",
-        "utils/benchmark.cpp",
-        "utils/crypto.cpp",
-        "utils/mdns.cpp",
-        "core/serve/daemon.cpp"
+        "core/*.cpp",
+        "core/distributed/*.cpp",
+        "core/serve/*.cpp",
+        "utils/*.cpp|unix_socket.cpp|android_utils.cpp"
     )
 
     if is_plat("android") then
