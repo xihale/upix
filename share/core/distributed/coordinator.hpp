@@ -13,7 +13,6 @@
 #include <unordered_map>
 #include <mutex>
 #include <thread>
-#include <glaze/json.hpp>
 
 namespace crossscale {
 
