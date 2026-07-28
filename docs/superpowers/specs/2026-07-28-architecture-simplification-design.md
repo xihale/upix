@@ -248,6 +248,8 @@ cli/src/
 - **保留** Android `MDNSDiscovery.kt`（平台原生 NsdManager，`DeviceViewModel` 真调）。
 - **结果**：PC 只广播，Android 只发现，职责清晰，删掉自欺欺人的 C++ stub。
 
+> **Status (2026-07-28):** the C++ `MDNSDiscovery` stub was already removed in commit `8c11549`. Only `MDNSBroadcaster` (kept, as intended) and the Android `MDNSDiscovery.kt` remain. This section is now doc-only; no further code action.
+
 ### 4.3 `crypto::xor_encrypt` 删除
 
 明文 key 认证已是现状，`xor_encrypt`/`xor_decrypt`（`crypto.cpp:186-196`）是伪安全，

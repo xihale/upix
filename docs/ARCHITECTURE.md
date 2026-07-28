@@ -199,7 +199,7 @@ weight[i] = tps[i] / Σ tps[i]     （否则 1/N 均分）
 | 模块 | 职责 | 状态 |
 |------|------|------|
 | `network.{hpp,cpp}` | POSIX socket 薄封装（`TCPSocket`/`TCPServer`）+ `crc32` + 本地 IP/auth-key 生成 | 完整 |
-| `mdns.{hpp,cpp}` | 局域网服务发现。`MDNSBroadcaster` 用 avahi-publish-service 发 `_crossscale._tcp`（带 key 的 sha256 前 16 位）；`MDNSDiscovery` **未实现**，仅打 warning | **半实现**（广播 OK / 发现 stub） |
+| `mdns.{hpp,cpp}` | 局域网服务发现。`MDNSBroadcaster` 用 avahi-publish-service 发 `_crossscale._tcp`（带 key 的 sha256 前 16 位），PC 服务端在用。原 C++ `MDNSDiscovery` stub 已在 `8c11549` 删除（PC 端不发现，只广播）；发现侧由 Android `MDNSDiscovery.kt`（原生 NsdManager）承担 | 完整（PC 广播 / Android 发现，职责分离） |
 | `crypto.{hpp,cpp}` | sha256/md5/base64/uuid/random，用于 task_id/device_id 生成与 mDNS key hash | 完整 |
 
 ### 4.5 分布式调用链（典型 worker 模式）
@@ -317,7 +317,7 @@ com/crossscale/
 5. **Android 健壮性投入大**：checkpoint 断点续传、队列持久化、原子写、Zip Slip 防护、payload 上限、双探针输出校验。
 
 ### 技术债 / 可改进
-1. **`mdns` 发现侧未实现**（`MDNSDiscovery::start` 仅打 warning），README 描述的 mDNS 自动发现在 PC 服务端广播 OK，但 PC 端发现其他 coordinator 是 stub；Android 端用的是原生 NsdManager，与 PC 侧不共享代码。
+1. **`mdns` 发现侧职责分离**：PC 端只广播（`MDNSBroadcaster`，服务端在用），发现侧由 Android `MDNSDiscovery.kt`（原生 NsdManager）承担，PC 与 Android 不共享发现代码。原 C++ `MDNSDiscovery` stub 已在 `8c11549` 删除。
 2. **CLI `cxxopts` 是死依赖**：声明了却完全没用，手写解析。要么用起来要么删掉。
 3. **`Scheduler::handle_device_failure` 孤儿回收是空实现**，靠 coordinator 多波循环兜底，但单波内的部分失败可能延迟到下一波才重试。
 4. **协议层无链路加密**，明文 key 认证，仅适合可信局域网。`crypto::xor_encrypt` 曾形同虚设（已在 `8c11549` 删除）。

@@ -209,7 +209,7 @@ weight[i] = tps[i] / Σ tps[i]     （否则 1/N 均分）
 |------|------|------|
 | `network.{hpp,cpp}` | POSIX socket 薄封装（`TCPSocket`/`TCPServer`）+ `crc32` + 本地 IP/auth-key 生成 | 完整 |
 | `unix_socket.{hpp,cpp}` | AF_UNIX 封装，镜像 TCP API，仅 Linux/macOS 编译（见 §5） | 完整（新） |
-| `mdns.{hpp,cpp}` | 局域网服务发现。`MDNSBroadcaster` 用 avahi-publish-service 发 `_crossscale._tcp`；`MDNSDiscovery` **未实现**，仅打 warning | **半实现**（广播 OK / 发现 stub） |
+| `mdns.{hpp,cpp}` | 局域网服务发现。`MDNSBroadcaster` 用 avahi-publish-service 发 `_crossscale._tcp`，PC 服务端在用。原 C++ `MDNSDiscovery` stub 已在 `8c11549` 删除（PC 端只广播）；发现侧由 Android `MDNSDiscovery.kt`（原生 NsdManager）承担 | 完整（PC 广播 / Android 发现，职责分离） |
 | `crypto.{hpp,cpp}` | sha256/md5/base64/uuid/random，用于 task_id/device_id 生成与 mDNS key hash | 完整 |
 
 ### 3.5 分布式调用链（典型 worker 模式）
@@ -466,7 +466,7 @@ struct ServeResponse { int32_t ok; int32_t width, height, channels;
 
 ### 已确认的问题
 
-1. **`mdns` 发现侧未实现**（`MDNSDiscovery::start` 仅打 warning）。PC 服务端广播 OK，但 PC 端发现其他 coordinator 是 stub；Android 端用原生 NsdManager，与 PC 侧不共享代码。
+1. **`mdns` 发现侧职责分离**：PC 端只广播（`MDNSBroadcaster`，服务端在用），发现侧由 Android `MDNSDiscovery.kt`（原生 NsdManager）承担，PC 与 Android 不共享发现代码。原 C++ `MDNSDiscovery` stub 已在 `8c11549` 删除。
 
 2. **CLI `cxxopts` 是死依赖**（`cli/xmake.lua:5`）：声明了却完全没用，手写解析。应删或用起来。
 

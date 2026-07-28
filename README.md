@@ -96,11 +96,13 @@ Connect a worker (e.g., another machine or GPU-enabled local machine):
 ./crossscale-cli worker connect host:port -k mysecret
 ```
 
-Client-side offloading:
+Client-side offloading (distributed upscaling):
 
-```bash
-./crossscale-cli client process -i input.png -o output.png -s host:port -k mysecret
-```
+Distributed offloading is driven from the Android app, not the CLI. After
+`server start`, open the Android app, scan the QR from `server info` (or connect
+manually), and submit an image for distributed upscaling over the JNI bridge.
+The CLI's distributed roles are `server` (coordinator) and `worker`; there is no
+`client` subcommand.
 
 ### Benchmark
 
