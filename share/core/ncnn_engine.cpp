@@ -1572,17 +1572,17 @@ public:
             }
         }
         submit_budget = std::min(submit_budget, submit_budget_cap);
-        submit_budget = std::max(submit_budget, static_cast<size_t>(16));
-        // KNOWN ISSUE: this queue path packs many tiles into one VkCompute command buffer
-        // (submit_budget >= 16). The blend shader does read-modify-write accumulation (dst += w*src,
-        // weight += w) on SHARED out_gpu_hwc/out_gpu_weight, so multiple blend dispatches per command
-        // buffer are a RAW/WAR hazard (ncnn inserts no barrier between dispatches). On affected GPUs
-        // this produces the same dark/black-region corruption fixed in process_tiles_gpu[_u8] by
-        // pinning tiles_per_submit=1. This fast path is currently selected only when
-        // supports_gpu_tile_pipeline_u8_queue() is true; on GPUs where it is NOT true (e.g. the
-        // tested Intel UHD), the corrected non-queue path runs instead. A proper fix here requires
-        // restructuring the scheduler to submit each tile's blend in its own command buffer, or
-        // redesigning the blend to avoid shared-buffer read-modify-write. Left as TODO.
+        // Each tile's blend dispatch does read-modify-write accumulation (dst += w*src, weight += w)
+        // into SHARED out_gpu_hwc/out_gpu_weight. Packing more than one blend into a single VkCompute
+        // command buffer is a RAW/WAR hazard: ncnn's record_pipeline inserts no memory barrier
+        // between dispatches that read and write the same buffer, so later tiles lose their writes
+        // (producing the same dark/black-region corruption as the non-queue paths). ncnn's
+        // VkCompute::barrier_readwrite is protected and cannot be called from here. Pin submit_budget
+        // to 1 so each batch submits exactly one tile's blend, relying on the implicit queue-submit
+        // barrier to serialize accumulations. This sacrifices the multi-task pipeline parallelism the
+        // queue path was designed for, in exchange for correctness. See commit history for the
+        // empirical confirmation (one-tile-per-cmd -> mean 242 vs corrupted 139).
+        submit_budget = 1;
         LOG_INFO("Engine", "GPU queue submit tuning: " + format_vulkan_runtime_snapshot(
             "queue_budget",
             -1,
