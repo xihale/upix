@@ -9,6 +9,10 @@
 #include <command.h>
 #include <pipeline.h>
 #endif
+#include "ncnn_engine_impl.hpp"
+#if NCNN_VULKAN
+#include "vulkan_shaders.hpp"
+#endif
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -41,519 +45,17 @@ namespace {
 std::mutex g_vulkan_init_mutex;
 std::mutex g_vulkan_model_load_mutex;
 
-// RAII wrapper that returns blob/staging allocators to their device on scope
-// exit. Used by every Vulkan code path that acquires allocators for a tile pass.
-struct VkAllocGuard {
-    ncnn::VulkanDevice* dev = nullptr;
-    ncnn::VkAllocator* blob = nullptr;
-    ncnn::VkAllocator* staging = nullptr;
-    ~VkAllocGuard() {
-        if (dev != nullptr) {
-            if (blob) dev->reclaim_blob_allocator(blob);
-            if (staging) dev->reclaim_staging_allocator(staging);
-        }
-    }
-};
-
-constexpr const char* kHwcToChwComp = R"(
-#version 450
-
-#if NCNN_fp16_storage
-#extension GL_EXT_shader_16bit_storage: require
-#define sfp float16_t
-#else
-#define sfp float
-#endif
-
-layout (binding = 0) readonly buffer src_blob { float src_data[]; };
-layout (binding = 1) writeonly buffer dst_blob { sfp dst_data[]; };
-
-layout (push_constant) uniform parameter
-{
-    int w;
-    int h;
-    int channels;
-    int cstep;
-} p;
-
-void main()
-{
-    const int gx = int(gl_GlobalInvocationID.x);
-    const int gy = int(gl_GlobalInvocationID.y);
-    const int gz = int(gl_GlobalInvocationID.z);
-
-    if (gx >= p.w || gy >= p.h || gz >= p.channels)
-        return;
-
-    const int src_idx = (gy * p.w + gx) * p.channels + gz;
-    const int dst_idx = gz * p.cstep + gy * p.w + gx;
-    dst_data[dst_idx] = sfp(src_data[src_idx]);
-}
-)";
-
-constexpr const char* kHwcU8ToChwComp = R"(
-#version 450
-
-#if NCNN_fp16_storage
-#extension GL_EXT_shader_16bit_storage: require
-#define sfp float16_t
-#else
-#define sfp float
-#endif
-
-#if NCNN_int8_storage
-#extension GL_EXT_shader_8bit_storage: require
-#endif
-
-#if NCNN_int8_storage
-layout (binding = 0) readonly buffer src_blob { uint8_t src_data[]; };
-#else
-layout (binding = 0) readonly buffer src_blob { float src_data[]; };
-#endif
-layout (binding = 1) writeonly buffer dst_blob { sfp dst_data[]; };
-
-layout (push_constant) uniform parameter
-{
-    int w;
-    int h;
-    int channels;
-    int cstep;
-} p;
-
-void main()
-{
-    const int gx = int(gl_GlobalInvocationID.x);
-    const int gy = int(gl_GlobalInvocationID.y);
-    const int gz = int(gl_GlobalInvocationID.z);
-
-    if (gx >= p.w || gy >= p.h || gz >= p.channels)
-        return;
-
-    const int src_idx = (gy * p.w + gx) * p.channels + gz;
-    const int dst_idx = gz * p.cstep + gy * p.w + gx;
-#if NCNN_int8_storage
-    dst_data[dst_idx] = sfp(float(uint(src_data[src_idx])) * (1.0 / 255.0));
-#else
-    dst_data[dst_idx] = sfp(src_data[src_idx] * (1.0 / 255.0));
-#endif
-}
-)";
-
-constexpr const char* kHwcCropToChwComp = R"(
-#version 450
-
-#if NCNN_fp16_storage
-#extension GL_EXT_shader_16bit_storage: require
-#define sfp float16_t
-#else
-#define sfp float
-#endif
-
-layout (binding = 0) readonly buffer src_blob { float src_data[]; };
-layout (binding = 1) writeonly buffer dst_blob { sfp dst_data[]; };
-
-layout (push_constant) uniform parameter
-{
-    int src_w;
-    int src_h;
-    int channels;
-    int tile_x;
-    int tile_y;
-    int tile_w;
-    int tile_h;
-    int dst_cstep;
-} p;
-
-void main()
-{
-    const int gx = int(gl_GlobalInvocationID.x);
-    const int gy = int(gl_GlobalInvocationID.y);
-    const int gz = int(gl_GlobalInvocationID.z);
-    if (gx >= p.tile_w || gy >= p.tile_h || gz >= p.channels)
-        return;
-
-    int src_x = p.tile_x + gx;
-    int src_y = p.tile_y + gy;
-    src_x = abs(src_x);
-    src_y = abs(src_y);
-    src_x = (p.src_w - 1) - abs(src_x - (p.src_w - 1));
-    src_y = (p.src_h - 1) - abs(src_y - (p.src_h - 1));
-
-    const int src_idx = (src_y * p.src_w + src_x) * p.channels + gz;
-    const int dst_idx = gz * p.dst_cstep + gy * p.tile_w + gx;
-    dst_data[dst_idx] = sfp(src_data[src_idx]);
-}
-)";
-
-constexpr const char* kHwcCropU8ToChwComp = R"(
-#version 450
-
-#if NCNN_fp16_storage
-#extension GL_EXT_shader_16bit_storage: require
-#define sfp float16_t
-#else
-#define sfp float
-#endif
-
-#if NCNN_int8_storage
-#extension GL_EXT_shader_8bit_storage: require
-#endif
-
-#if NCNN_int8_storage
-layout (binding = 0) readonly buffer src_blob { uint8_t src_data[]; };
-#else
-layout (binding = 0) readonly buffer src_blob { float src_data[]; };
-#endif
-layout (binding = 1) writeonly buffer dst_blob { sfp dst_data[]; };
-
-layout (push_constant) uniform parameter
-{
-    int src_w;
-    int src_h;
-    int channels;
-    int tile_x;
-    int tile_y;
-    int tile_w;
-    int tile_h;
-    int dst_cstep;
-} p;
-
-void main()
-{
-    const int gx = int(gl_GlobalInvocationID.x);
-    const int gy = int(gl_GlobalInvocationID.y);
-    const int gz = int(gl_GlobalInvocationID.z);
-
-    if (gx >= p.tile_w || gy >= p.tile_h || gz >= p.channels)
-        return;
-
-    int src_x = p.tile_x + gx;
-    int src_y = p.tile_y + gy;
-    src_x = abs(src_x);
-    src_y = abs(src_y);
-    src_x = (p.src_w - 1) - abs(src_x - (p.src_w - 1));
-    src_y = (p.src_h - 1) - abs(src_y - (p.src_h - 1));
-
-    const int src_idx = (src_y * p.src_w + src_x) * p.channels + gz;
-    const int dst_idx = gz * p.dst_cstep + gy * p.tile_w + gx;
-#if NCNN_int8_storage
-    dst_data[dst_idx] = sfp(float(uint(src_data[src_idx])) * (1.0 / 255.0));
-#else
-    dst_data[dst_idx] = sfp(src_data[src_idx] * (1.0 / 255.0));
-#endif
-}
-)";
-
-constexpr const char* kChwToHwcComp = R"(
-#version 450
-
-#if NCNN_fp16_storage
-#extension GL_EXT_shader_16bit_storage: require
-#define sfp float16_t
-#else
-#define sfp float
-#endif
-
-layout (binding = 0) readonly buffer src_blob { sfp src_data[]; };
-layout (binding = 1) writeonly buffer dst_blob { float dst_data[]; };
-
-layout (push_constant) uniform parameter
-{
-    int w;
-    int h;
-    int channels;
-    int cstep;
-} p;
-
-void main()
-{
-    const int gx = int(gl_GlobalInvocationID.x);
-    const int gy = int(gl_GlobalInvocationID.y);
-    const int gz = int(gl_GlobalInvocationID.z);
-
-    if (gx >= p.w || gy >= p.h || gz >= p.channels)
-        return;
-
-    const int src_idx = gz * p.cstep + gy * p.w + gx;
-    const int dst_idx = (gy * p.w + gx) * p.channels + gz;
-    dst_data[dst_idx] = float(src_data[src_idx]);
-}
-)";
-
-constexpr const char* kChwToHwcU8Comp = R"(
-#version 450
-
-#if NCNN_fp16_storage
-#extension GL_EXT_shader_16bit_storage: require
-#define sfp float16_t
-#else
-#define sfp float
-#endif
-
-#if NCNN_int8_storage
-#extension GL_EXT_shader_8bit_storage: require
-#endif
-
-layout (binding = 0) readonly buffer src_blob { sfp src_data[]; };
-#if NCNN_int8_storage
-layout (binding = 1) writeonly buffer dst_blob { uint8_t dst_data[]; };
-#else
-layout (binding = 1) writeonly buffer dst_blob { float dst_data[]; };
-#endif
-
-layout (push_constant) uniform parameter
-{
-    int w;
-    int h;
-    int channels;
-    int cstep;
-} p;
-
-void main()
-{
-    const int gx = int(gl_GlobalInvocationID.x);
-    const int gy = int(gl_GlobalInvocationID.y);
-    const int gz = int(gl_GlobalInvocationID.z);
-
-    if (gx >= p.w || gy >= p.h || gz >= p.channels)
-        return;
-
-    const int src_idx = gz * p.cstep + gy * p.w + gx;
-    const int dst_idx = (gy * p.w + gx) * p.channels + gz;
-    const float v = clamp(float(src_data[src_idx]) * 255.0, 0.0, 255.0);
-#if NCNN_int8_storage
-    const uint v32 = clamp(uint(floor(v + 0.5)), 0u, 255u);
-    dst_data[dst_idx] = uint8_t(v32);
-#else
-    dst_data[dst_idx] = v;
-#endif
-}
-)";
-
-constexpr const char* kHwcFloatToU8Comp = R"(
-#version 450
-
-#if NCNN_int8_storage
-#extension GL_EXT_shader_8bit_storage: require
-#endif
-
-layout (binding = 0) readonly buffer src_blob { float src_data[]; };
-#if NCNN_int8_storage
-layout (binding = 1) writeonly buffer dst_blob { uint8_t dst_data[]; };
-#else
-layout (binding = 1) writeonly buffer dst_blob { float dst_data[]; };
-#endif
-
-layout (push_constant) uniform parameter
-{
-    int total;
-} p;
-
-void main()
-{
-    const int gx = int(gl_GlobalInvocationID.x);
-    if (gx >= p.total)
-        return;
-
-    const float v = clamp(src_data[gx] * 255.0, 0.0, 255.0);
-#if NCNN_int8_storage
-    const uint v32 = clamp(uint(floor(v + 0.5)), 0u, 255u);
-    dst_data[gx] = uint8_t(v32);
-#else
-    dst_data[gx] = v;
-#endif
-}
-)";
-
-constexpr const char* kClearComp = R"(
-#version 450
-
-layout (binding = 0) writeonly buffer dst_blob { float dst_data[]; };
-
-layout (push_constant) uniform parameter
-{
-    int total;
-} p;
-
-void main()
-{
-    const int gx = int(gl_GlobalInvocationID.x);
-    if (gx >= p.total)
-        return;
-    dst_data[gx] = 0.0;
-}
-)";
-
-constexpr const char* kBlendTileComp = R"(
-#version 450
-
-#if NCNN_fp16_storage
-#extension GL_EXT_shader_16bit_storage: require
-#define sfp float16_t
-#else
-#define sfp float
-#endif
-
-layout (binding = 0) readonly buffer src_blob { sfp src_data[]; };
-layout (binding = 1) buffer dst_blob { float dst_data[]; };
-layout (binding = 2) buffer weight_blob { float weight_data[]; };
-
-layout (push_constant) uniform parameter
-{
-    int tile_w;
-    int tile_h;
-    int channels;
-    int out_w;
-    int out_h;
-    int out_x;
-    int out_y;
-    int overlap;
-    int src_w;
-    int src_h;
-    int src_offset_x;
-    int src_offset_y;
-    int src_cstep;
-} p;
-
-float blend_weight(int pos, int size, int overlap, int tile_start, int full_size)
-{
-    const int effective_overlap = min(overlap, size);
-    if (effective_overlap <= 0)
-        return 1.0;
-    float w = 1.0;
-    if (tile_start > 0 && pos < effective_overlap)
-        w = float(pos + 1) / float(effective_overlap);
-    else if (tile_start + size < full_size && pos >= size - effective_overlap)
-        w = float(size - pos) / float(effective_overlap);
-    return w * w;
-}
-
-void main()
-{
-    const int gx = int(gl_GlobalInvocationID.x);
-    const int gy = int(gl_GlobalInvocationID.y);
-    const int gz = int(gl_GlobalInvocationID.z);
-
-    if (gx >= p.tile_w || gy >= p.tile_h || gz >= p.channels)
-        return;
-
-    const int out_px = p.out_x + gx;
-    const int out_py = p.out_y + gy;
-    if (out_px < 0 || out_px >= p.out_w || out_py < 0 || out_py >= p.out_h)
-        return;
-
-    const float wx = blend_weight(gx, p.tile_w, p.overlap, p.out_x, p.out_w);
-    const float wy = blend_weight(gy, p.tile_h, p.overlap, p.out_y, p.out_h);
-    const float w = wx * wy;
-
-    const int src_x = p.src_offset_x + gx;
-    const int src_y = p.src_offset_y + gy;
-    if (src_x < 0 || src_x >= p.src_w || src_y < 0 || src_y >= p.src_h)
-        return;
-
-    const int src_xy_idx = src_y * p.src_w + src_x;
-    const int src_idx = gz * p.src_cstep + src_xy_idx;
-    const int dst_idx = (out_py * p.out_w + out_px) * p.channels + gz;
-    dst_data[dst_idx] += float(src_data[src_idx]) * w;
-    if (gz == 0) {
-        const int weight_idx = out_py * p.out_w + out_px;
-        weight_data[weight_idx] += w;
-    }
-}
-)";
-
-constexpr const char* kNormalizeByWeightComp = R"(
-#version 450
-
-layout (binding = 0) buffer dst_blob { float dst_data[]; };
-layout (binding = 1) readonly buffer weight_blob { float weight_data[]; };
-
-layout (push_constant) uniform parameter
-{
-    int total_pixels;
-    int channels;
-} p;
-
-void main()
-{
-    const int gx = int(gl_GlobalInvocationID.x);
-    const int gz = int(gl_GlobalInvocationID.z);
-    if (gx >= p.total_pixels || gz >= p.channels)
-        return;
-
-    const float w = weight_data[gx];
-    const int dst_idx = gx * p.channels + gz;
-    if (w <= 1e-6) {
-        dst_data[dst_idx] = 0.0;
-        return;
-    }
-
-    const float inv_w = 1.0 / w;
-    dst_data[dst_idx] = dst_data[dst_idx] * inv_w;
-}
-)";
-
-constexpr const char* kNormalizeQuantizeByWeightComp = R"(
-#version 450
-
-#if NCNN_int8_storage
-#extension GL_EXT_shader_8bit_storage: require
-#endif
-
-layout (binding = 0) readonly buffer src_blob { float src_data[]; };
-layout (binding = 1) readonly buffer weight_blob { float weight_data[]; };
-#if NCNN_int8_storage
-layout (binding = 2) writeonly buffer dst_blob { uint8_t dst_data[]; };
-#else
-layout (binding = 2) writeonly buffer dst_blob { float dst_data[]; };
-#endif
-
-layout (push_constant) uniform parameter
-{
-    int total_pixels;
-    int channels;
-} p;
-
-void main()
-{
-    const int gx = int(gl_GlobalInvocationID.x);
-    const int gz = int(gl_GlobalInvocationID.z);
-    if (gx >= p.total_pixels || gz >= p.channels)
-        return;
-
-    const float w = weight_data[gx];
-    const int dst_idx = gx * p.channels + gz;
-    if (w <= 1e-6) {
-#if NCNN_int8_storage
-        dst_data[dst_idx] = uint8_t(0u);
-#else
-        dst_data[dst_idx] = 0.0;
-#endif
-        return;
-    }
-
-    const float inv_w = 1.0 / w;
-    const float normalized = src_data[dst_idx] * inv_w;
-    const float v = clamp(normalized * 255.0, 0.0, 255.0);
-#if NCNN_int8_storage
-    const uint v32 = clamp(uint(floor(v + 0.5)), 0u, 255u);
-    dst_data[dst_idx] = uint8_t(v32);
-#else
-    dst_data[dst_idx] = v;
-#endif
-}
-)";
-
 } // namespace
 #endif
 
-class NCNNEngineImpl : public Engine {
-public:
-    NCNNEngineImpl() : net_(std::make_unique<ncnn::Net>()) {}
-    ~NCNNEngineImpl() override { unload_model(); }
+// Class declaration lives in ncnn_engine_impl.hpp; only out-of-line member
+// function definitions below.
 
-    auto initialize(DeviceType preferred) 
-        -> expected<void, EngineError> override {
+NCNNEngineImpl::NCNNEngineImpl() : net_(std::make_unique<ncnn::Net>()) {}
+NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
+
+    auto NCNNEngineImpl::initialize(DeviceType preferred)
+        -> expected<void, EngineError> {
         
         if (preferred == DeviceType::GPU_VULKAN) {
             if (try_init_vulkan()) {
@@ -571,7 +73,7 @@ public:
         return {};
     }
     
-    auto list_devices() -> std::vector<DeviceCapability> override {
+    auto NCNNEngineImpl::list_devices() -> std::vector<DeviceCapability> {
         std::vector<DeviceCapability> devices;
         
         DeviceCapability cpu;
@@ -598,8 +100,8 @@ public:
         return devices;
     }
     
-    auto load_model(const std::string& param_path, const std::string& bin_path)
-        -> expected<void, EngineError> override {
+    auto NCNNEngineImpl::load_model(const std::string& param_path, const std::string& bin_path)
+        -> expected<void, EngineError> {
         
         if (!initialized_) {
             return std::unexpected(EngineError{1, "Engine not initialized"});
@@ -768,9 +270,9 @@ public:
         return {};
     }
     
-    auto process(const float* input, float* output, int width, int height, int channels,
+    auto NCNNEngineImpl::process(const float* input, float* output, int width, int height, int channels,
                  const std::atomic<bool>& cancel_flag)
-        -> expected<void, EngineError> override {
+        -> expected<void, EngineError> {
         
         if (!initialized_) {
             return std::unexpected(EngineError{1, "Engine not initialized"});
@@ -902,9 +404,9 @@ public:
         return {};
     }
 
-    auto process_u8(const uint8_t* input, uint8_t* output, int width, int height, int channels,
+    auto NCNNEngineImpl::process_u8(const uint8_t* input, uint8_t* output, int width, int height, int channels,
                     const std::atomic<bool>& cancel_flag)
-        -> expected<void, EngineError> override {
+        -> expected<void, EngineError> {
         if (!initialized_) {
             return std::unexpected(EngineError{1, "Engine not initialized"});
         }
@@ -1178,14 +680,14 @@ public:
         return {};
     }
 
-    auto process_batch(
+    auto NCNNEngineImpl::process_batch(
         const std::vector<const float*>& inputs,
         const std::vector<float*>& outputs,
         int width,
         int height,
         int channels,
         const std::atomic<bool>& cancel_flag
-    ) -> expected<void, EngineError> override {
+    ) -> expected<void, EngineError> {
 #if NCNN_VULKAN
         if (current_device_ == DeviceType::GPU_VULKAN && vkdev_ != nullptr && gpu_layout_pipeline_ready_) {
             if (inputs.size() != outputs.size()) {
@@ -1210,7 +712,7 @@ public:
 
             ncnn::VkAllocator* blob_vkallocator = vkdev_->acquire_blob_allocator();
             ncnn::VkAllocator* staging_vkallocator = vkdev_->acquire_staging_allocator();
-            VkAllocGuard alloc_guard{vkdev_, blob_vkallocator, staging_vkallocator};
+            detail::VkAllocGuard alloc_guard{vkdev_, blob_vkallocator, staging_vkallocator};
 
             ncnn::Option opt = net_->opt;
             opt.blob_vkallocator = blob_vkallocator;
@@ -1331,7 +833,7 @@ public:
         return Engine::process_batch(inputs, outputs, width, height, channels, cancel_flag);
     }
 
-    bool supports_gpu_tile_pipeline() const override {
+    bool NCNNEngineImpl::supports_gpu_tile_pipeline() const {
 #if NCNN_VULKAN
         return current_device_ == DeviceType::GPU_VULKAN &&
                vkdev_ != nullptr &&
@@ -1342,7 +844,7 @@ public:
 #endif
     }
 
-    bool supports_gpu_tile_pipeline_u8() const override {
+    bool NCNNEngineImpl::supports_gpu_tile_pipeline_u8() const {
 #if NCNN_VULKAN
         return current_device_ == DeviceType::GPU_VULKAN &&
                vkdev_ != nullptr &&
@@ -1353,7 +855,7 @@ public:
 #endif
     }
 
-    bool supports_gpu_tile_pipeline_u8_queue() const override {
+    bool NCNNEngineImpl::supports_gpu_tile_pipeline_u8_queue() const {
 #if NCNN_VULKAN
         return supports_gpu_tile_pipeline_u8() &&
                gpu_crop_u8_pipeline_ready_ &&
@@ -1363,10 +865,10 @@ public:
 #endif
     }
 
-    auto process_tiles_gpu_u8_queue(
+    auto NCNNEngineImpl::process_tiles_gpu_u8_queue(
         const std::vector<GPUTileTaskU8>& tasks,
         const std::atomic<bool>& cancel_flag
-    ) -> expected<void, EngineError> override {
+    ) -> expected<void, EngineError> {
 #if NCNN_VULKAN
         if (tasks.empty()) {
             return {};
@@ -1380,7 +882,7 @@ public:
 
         ncnn::VkAllocator* blob_vkallocator = vkdev_->acquire_blob_allocator();
         ncnn::VkAllocator* staging_vkallocator = vkdev_->acquire_staging_allocator();
-        VkAllocGuard alloc_guard{vkdev_, blob_vkallocator, staging_vkallocator};
+        detail::VkAllocGuard alloc_guard{vkdev_, blob_vkallocator, staging_vkallocator};
 
         ncnn::Option opt = net_->opt;
         opt.blob_vkallocator = blob_vkallocator;
@@ -1951,7 +1453,7 @@ public:
 #endif
     }
 
-    auto process_tiles_gpu(
+    auto NCNNEngineImpl::process_tiles_gpu(
         const float* input_data,
         float* output_data,
         int input_width,
@@ -1961,7 +1463,7 @@ public:
         const TileConfig& config,
         std::function<void(const ProcessingProgress&)> progress_callback,
         const std::atomic<bool>& cancel_flag
-    ) -> expected<void, EngineError> override {
+    ) -> expected<void, EngineError> {
 #if NCNN_VULKAN
         if (!supports_gpu_tile_pipeline()) {
             return std::unexpected(EngineError{201, "GPU tile pipeline not available"});
@@ -1983,7 +1485,7 @@ public:
 
         ncnn::VkAllocator* blob_vkallocator = vkdev_->acquire_blob_allocator();
         ncnn::VkAllocator* staging_vkallocator = vkdev_->acquire_staging_allocator();
-        VkAllocGuard alloc_guard{vkdev_, blob_vkallocator, staging_vkallocator};
+        detail::VkAllocGuard alloc_guard{vkdev_, blob_vkallocator, staging_vkallocator};
 
         ncnn::Option opt = net_->opt;
         opt.blob_vkallocator = blob_vkallocator;
@@ -2428,7 +1930,7 @@ public:
 #endif
     }
 
-    auto process_tiles_gpu_u8(
+    auto NCNNEngineImpl::process_tiles_gpu_u8(
         const uint8_t* input_data,
         uint8_t* output_data,
         int input_width,
@@ -2438,7 +1940,7 @@ public:
         const TileConfig& config,
         std::function<void(const ProcessingProgress&)> progress_callback,
         const std::atomic<bool>& cancel_flag
-    ) -> expected<void, EngineError> override {
+    ) -> expected<void, EngineError> {
 #if NCNN_VULKAN
         if (!supports_gpu_tile_pipeline_u8()) {
             return std::unexpected(EngineError{201, "GPU u8 tile pipeline not available"});
@@ -2460,7 +1962,7 @@ public:
 
         ncnn::VkAllocator* blob_vkallocator = vkdev_->acquire_blob_allocator();
         ncnn::VkAllocator* staging_vkallocator = vkdev_->acquire_staging_allocator();
-        VkAllocGuard alloc_guard{vkdev_, blob_vkallocator, staging_vkallocator};
+        detail::VkAllocGuard alloc_guard{vkdev_, blob_vkallocator, staging_vkallocator};
 
         ncnn::Option opt = net_->opt;
         opt.blob_vkallocator = blob_vkallocator;
@@ -2952,7 +2454,7 @@ public:
     }
 
 
-    auto benchmark(int test_tile_size) -> float override {
+    auto NCNNEngineImpl::benchmark(int test_tile_size) -> float {
         if (!initialized_ || !model_loaded_) return 0.0f;
         
         std::vector<float> input(static_cast<size_t>(test_tile_size) * test_tile_size * 3, 0.5f);
@@ -2968,7 +2470,7 @@ public:
         return 1000.0f / static_cast<float>(result.avg_time_ms);
     }
     
-    void unload_model() override {
+    void NCNNEngineImpl::unload_model() {
         if (net_) {
             net_->clear();
         }
@@ -2994,16 +2496,16 @@ public:
         model_name_.clear();
     }
     
-    DeviceType current_device() const override { return current_device_; }
-    bool is_initialized() const override { return initialized_; }
-    std::string model_name() const override { return model_name_; }
-    int get_scale_factor() const override { return scale_factor_; }
+    DeviceType NCNNEngineImpl::current_device() const { return current_device_; }
+    bool NCNNEngineImpl::is_initialized() const { return initialized_; }
+    std::string NCNNEngineImpl::model_name() const { return model_name_; }
+    int NCNNEngineImpl::get_scale_factor() const { return scale_factor_; }
 
-    void set_scale_factor(int scale) override {
+    void NCNNEngineImpl::set_scale_factor(int scale) {
         if (scale > 0) scale_factor_ = scale;
     }
 
-    auto get_memory_info() const -> std::pair<size_t, size_t> override {
+    auto NCNNEngineImpl::get_memory_info() const -> std::pair<size_t, size_t> {
 #if defined(__linux__)
         struct sysinfo info;
         if (sysinfo(&info) == 0) {
@@ -3036,7 +2538,7 @@ public:
         return {0, 0};
     }
 
-    int get_recommended_tile_size() const override {
+    int NCNNEngineImpl::get_recommended_tile_size() const {
         if (current_device_ != DeviceType::GPU_VULKAN) {
             return 128;  // CPU: small tiles to limit memory on mobile
         }
@@ -3079,16 +2581,15 @@ public:
 #endif
     }
 
-private:
-    auto format_vulkan_runtime_snapshot(
+    auto NCNNEngineImpl::format_vulkan_runtime_snapshot(
         std::string_view stage,
-        int width = -1,
-        int height = -1,
-        int channels = -1,
-        size_t submit_budget = 0,
-        size_t submit_budget_cap = 0,
-        size_t submit_memory_budget_mb = 0,
-        double avg_tile_pixels = -1.0
+        int width,
+        int height,
+        int channels,
+        size_t submit_budget,
+        size_t submit_budget_cap,
+        size_t submit_memory_budget_mb,
+        double avg_tile_pixels
     ) const -> std::string {
         std::ostringstream stream;
         stream << "stage=" << stage
@@ -3134,7 +2635,7 @@ private:
         return stream.str();
     }
 
-    bool init_gpu_layout_pipelines() {
+    bool NCNNEngineImpl::init_gpu_layout_pipelines() {
         if (vkdev_ == nullptr) {
             return false;
         }
@@ -3150,31 +2651,31 @@ private:
         {
             std::lock_guard<std::mutex> lock(spirv_mutex);
             if (spirv_hwc_to_chw.empty()) {
-                if (ncnn::compile_spirv_module(kHwcToChwComp, net_->opt, spirv_hwc_to_chw) != 0) {
+                if (ncnn::compile_spirv_module(detail::kHwcToChwComp, net_->opt, spirv_hwc_to_chw) != 0) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan HWC->CHW shader");
                     return false;
                 }
             }
             if (spirv_chw_to_hwc.empty()) {
-                if (ncnn::compile_spirv_module(kChwToHwcComp, net_->opt, spirv_chw_to_hwc) != 0) {
+                if (ncnn::compile_spirv_module(detail::kChwToHwcComp, net_->opt, spirv_chw_to_hwc) != 0) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan CHW->HWC shader");
                     return false;
                 }
             }
             if (spirv_hwc_u8_to_chw.empty()) {
-                if (ncnn::compile_spirv_module(kHwcU8ToChwComp, net_->opt, spirv_hwc_u8_to_chw) != 0) {
+                if (ncnn::compile_spirv_module(detail::kHwcU8ToChwComp, net_->opt, spirv_hwc_u8_to_chw) != 0) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan HWC-u8->CHW shader");
                     u8_shader_ready = false;
                 }
             }
             if (spirv_chw_to_hwc_u8.empty()) {
-                if (ncnn::compile_spirv_module(kChwToHwcU8Comp, net_->opt, spirv_chw_to_hwc_u8) != 0) {
+                if (ncnn::compile_spirv_module(detail::kChwToHwcU8Comp, net_->opt, spirv_chw_to_hwc_u8) != 0) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan CHW->HWC-u8 shader");
                     u8_shader_ready = false;
                 }
             }
             if (spirv_hwc_to_u8.empty()) {
-                if (ncnn::compile_spirv_module(kHwcFloatToU8Comp, net_->opt, spirv_hwc_to_u8) != 0) {
+                if (ncnn::compile_spirv_module(detail::kHwcFloatToU8Comp, net_->opt, spirv_hwc_to_u8) != 0) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan HWC-float->u8 shader");
                     u8_shader_ready = false;
                 }
@@ -3240,7 +2741,7 @@ private:
         return true;
     }
 
-    bool init_gpu_crop_pipeline() {
+    bool NCNNEngineImpl::init_gpu_crop_pipeline() {
         if (vkdev_ == nullptr) {
             return false;
         }
@@ -3253,13 +2754,13 @@ private:
         {
             std::lock_guard<std::mutex> lock(spirv_mutex);
             if (spirv_crop.empty()) {
-                if (ncnn::compile_spirv_module(kHwcCropToChwComp, net_->opt, spirv_crop) != 0) {
+                if (ncnn::compile_spirv_module(detail::kHwcCropToChwComp, net_->opt, spirv_crop) != 0) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan HWC crop shader");
                     return false;
                 }
             }
             if (spirv_crop_u8.empty()) {
-                if (ncnn::compile_spirv_module(kHwcCropU8ToChwComp, net_->opt, spirv_crop_u8) != 0) {
+                if (ncnn::compile_spirv_module(detail::kHwcCropU8ToChwComp, net_->opt, spirv_crop_u8) != 0) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan HWC-u8 crop shader");
                     crop_u8_ready = false;
                 }
@@ -3287,7 +2788,7 @@ private:
         return true;
     }
 
-    bool init_gpu_tile_pipelines() {
+    bool NCNNEngineImpl::init_gpu_tile_pipelines() {
         if (vkdev_ == nullptr) {
             return false;
         }
@@ -3301,25 +2802,25 @@ private:
         {
             std::lock_guard<std::mutex> lock(spirv_mutex);
             if (spirv_clear.empty()) {
-                if (ncnn::compile_spirv_module(kClearComp, net_->opt, spirv_clear) != 0) {
+                if (ncnn::compile_spirv_module(detail::kClearComp, net_->opt, spirv_clear) != 0) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan clear shader");
                     return false;
                 }
             }
             if (spirv_blend.empty()) {
-                if (ncnn::compile_spirv_module(kBlendTileComp, net_->opt, spirv_blend) != 0) {
+                if (ncnn::compile_spirv_module(detail::kBlendTileComp, net_->opt, spirv_blend) != 0) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan blend shader");
                     return false;
                 }
             }
             if (spirv_normalize.empty()) {
-                if (ncnn::compile_spirv_module(kNormalizeByWeightComp, net_->opt, spirv_normalize) != 0) {
+                if (ncnn::compile_spirv_module(detail::kNormalizeByWeightComp, net_->opt, spirv_normalize) != 0) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan normalize shader");
                     return false;
                 }
             }
             if (spirv_normalize_quantize.empty()) {
-                if (ncnn::compile_spirv_module(kNormalizeQuantizeByWeightComp, net_->opt, spirv_normalize_quantize) != 0) {
+                if (ncnn::compile_spirv_module(detail::kNormalizeQuantizeByWeightComp, net_->opt, spirv_normalize_quantize) != 0) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan normalize+quantize shader");
                     return false;
                 }
@@ -3367,7 +2868,7 @@ private:
         return true;
     }
 
-    auto process_vulkan_with_gpu_layout(
+    auto NCNNEngineImpl::process_vulkan_with_gpu_layout(
         const float* input,
         float* output,
         int width,
@@ -3399,7 +2900,7 @@ private:
 
         ncnn::VkAllocator* blob_vkallocator = vkdev_->acquire_blob_allocator();
         ncnn::VkAllocator* staging_vkallocator = vkdev_->acquire_staging_allocator();
-        VkAllocGuard alloc_guard{vkdev_, blob_vkallocator, staging_vkallocator};
+        detail::VkAllocGuard alloc_guard{vkdev_, blob_vkallocator, staging_vkallocator};
 
         ncnn::Option opt = net_->opt;
         opt.blob_vkallocator = blob_vkallocator;
@@ -3526,7 +3027,7 @@ private:
         return {};
     }
 
-    auto process_vulkan_with_gpu_layout_u8(
+    auto NCNNEngineImpl::process_vulkan_with_gpu_layout_u8(
         const uint8_t* input,
         uint8_t* output,
         int width,
@@ -3560,7 +3061,7 @@ private:
 
         ncnn::VkAllocator* blob_vkallocator = vkdev_->acquire_blob_allocator();
         ncnn::VkAllocator* staging_vkallocator = vkdev_->acquire_staging_allocator();
-        VkAllocGuard alloc_guard{vkdev_, blob_vkallocator, staging_vkallocator};
+        detail::VkAllocGuard alloc_guard{vkdev_, blob_vkallocator, staging_vkallocator};
 
         ncnn::Option opt = net_->opt;
         opt.blob_vkallocator = blob_vkallocator;
@@ -3698,7 +3199,7 @@ private:
         return {};
     }
 
-    bool try_init_vulkan() {
+    bool NCNNEngineImpl::try_init_vulkan() {
 #if NCNN_VULKAN
         int max_attempts = 6;
         if (const char* retries_env = std::getenv("CROSSSCALE_GPU_INIT_RETRIES")) {
@@ -3786,7 +3287,7 @@ private:
         return false;
     }
     
-    void detect_model_info(const std::string& param_path) {
+    void NCNNEngineImpl::detect_model_info(const std::string& param_path) {
         // Parse param file to detect input/output shapes
         std::ifstream file(param_path);
         if (!file.is_open()) {
@@ -3852,38 +3353,10 @@ private:
             input_channels_ = input_channels;
         }
         
-        LOG_INFO("Engine", "Detected input: " + std::to_string(input_width) + "x" + 
-                 std::to_string(input_height) + "x" + std::to_string(input_channels_) + 
+        LOG_INFO("Engine", "Detected input: " + std::to_string(input_width) + "x" +
+                 std::to_string(input_height) + "x" + std::to_string(input_channels_) +
                  ", scale: " + std::to_string(scale_factor_));
     }
-    
-    std::unique_ptr<ncnn::Net> net_;
-#if NCNN_VULKAN
-    ncnn::VulkanDevice* vkdev_ = nullptr;
-    std::unique_ptr<ncnn::Pipeline> preproc_hwc_to_chw_;
-    std::unique_ptr<ncnn::Pipeline> preproc_hwc_u8_to_chw_;
-    std::unique_ptr<ncnn::Pipeline> preproc_hwc_crop_to_chw_;
-    std::unique_ptr<ncnn::Pipeline> preproc_hwc_crop_u8_to_chw_;
-    std::unique_ptr<ncnn::Pipeline> postproc_chw_to_hwc_;
-    std::unique_ptr<ncnn::Pipeline> postproc_chw_to_hwc_u8_;
-    std::unique_ptr<ncnn::Pipeline> quantize_hwc_to_u8_;
-    std::unique_ptr<ncnn::Pipeline> clear_output_pipeline_;
-    std::unique_ptr<ncnn::Pipeline> blend_tile_pipeline_;
-    std::unique_ptr<ncnn::Pipeline> normalize_output_pipeline_;
-    std::unique_ptr<ncnn::Pipeline> normalize_quantize_output_pipeline_;
-    bool gpu_layout_pipeline_ready_ = false;
-    bool gpu_layout_u8_pipeline_ready_ = false;
-    bool gpu_crop_pipeline_ready_ = false;
-    bool gpu_crop_u8_pipeline_ready_ = false;
-    bool gpu_tile_pipeline_ready_ = false;
-#endif
-    DeviceType current_device_ = DeviceType::CPU;
-    bool initialized_ = false;
-    bool model_loaded_ = false;
-    std::string model_name_;
-    int scale_factor_ = 2;
-    int input_channels_ = 3;
-};
 
 std::unique_ptr<Engine> create_ncnn_engine() {
     return std::make_unique<NCNNEngineImpl>();
