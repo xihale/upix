@@ -1,0 +1,128 @@
+package com.crossscale.viewmodel
+
+import com.crossscale.data.repository.PersistedQueueItem
+import com.crossscale.data.repository.ProcessingCheckpoint
+import com.crossscale.data.repository.ProcessingQueueSnapshot
+import com.crossscale.data.repository.failedPendingCount
+
+// Pure mappers extracted from ProcessingViewModel. No state, no I/O.
+// internal = visible to the :app module only (UI/data layers do not call these).
+
+internal fun ProcessingQueueItemSummary.matchesBatchConfiguration(
+    source: String,
+    modelName: String,
+    distributedMode: Boolean,
+    outputDirectoryUri: String?,
+    overwriteOriginal: Boolean,
+    backupOriginal: Boolean,
+    processNestedFolders: Boolean
+): Boolean {
+    return this.source == source &&
+        this.modelName == modelName &&
+        this.distributedMode == distributedMode &&
+        this.outputDirectoryUri == outputDirectoryUri &&
+        this.overwriteOriginal == overwriteOriginal &&
+        this.backupOriginal == backupOriginal &&
+        this.processNestedFolders == processNestedFolders
+}
+
+internal fun ProcessingUiState.toQueueSnapshot(): ProcessingQueueSnapshot {
+    return ProcessingQueueSnapshot(
+        items = queueItems.map { queueItem ->
+            queueItem.toPersistedQueueItem()
+        },
+        isQueueRunning = isQueueRunning
+    )
+}
+
+internal fun ProcessingQueueItemSummary.toPersistedQueueItem(): PersistedQueueItem {
+    return PersistedQueueItem(
+        id = id,
+        source = source,
+        modelName = modelName,
+        distributedMode = distributedMode,
+        retryFailedOnly = retryFailedOnly,
+        outputDirectoryUri = outputDirectoryUri,
+        overwriteOriginal = overwriteOriginal,
+        backupOriginal = backupOriginal,
+        createdAtEpochMs = createdAtEpochMs,
+        expectedItems = expectedItems,
+        status = status,
+        attempts = attempts,
+        lastErrorMessage = lastErrorMessage,
+        lastOutputUri = lastOutputUri
+    )
+}
+
+internal fun PersistedQueueItem.toUiQueueItem(): ProcessingQueueItemSummary {
+    return ProcessingQueueItemSummary(
+        id = id,
+        source = source,
+        modelName = modelName,
+        distributedMode = distributedMode,
+        retryFailedOnly = retryFailedOnly,
+        outputDirectoryUri = outputDirectoryUri,
+        overwriteOriginal = overwriteOriginal,
+        backupOriginal = backupOriginal,
+        createdAtEpochMs = createdAtEpochMs,
+        expectedItems = expectedItems,
+        status = status,
+        attempts = attempts,
+        lastErrorMessage = lastErrorMessage,
+        lastOutputUri = lastOutputUri
+    )
+}
+
+internal fun ProcessingCheckpoint.toUiSummary(): ProcessingCheckpointSummary {
+    val pendingCount = pendingItems.size.coerceAtLeast(0)
+    val failedCount = failedPendingCount().coerceAtLeast(0)
+    val deferredCount = (pendingCount - failedCount).coerceAtLeast(0)
+    val completedCount = completedItems.coerceAtLeast(0)
+    val totalCount = maxOf(totalItems, completedCount + pendingCount)
+    val failureByUri = failureDetails.associateBy { detail -> detail.uri }
+    val pendingItemDetails = pendingItems
+        .map { pendingItem ->
+            val failure = failureByUri[pendingItem.uri]
+            val displayName = pendingItem.displayName.ifBlank {
+                pendingItem.uri.substringAfterLast('/', pendingItem.uri)
+            }
+            ProcessingCheckpointItemSummary(
+                uri = pendingItem.uri,
+                displayName = displayName,
+                attempts = maxOf(
+                    pendingItem.attempts,
+                    failure?.attempts ?: 0
+                ),
+                isFailed = failure != null,
+                lastErrorMessage = failure?.errorMessage
+            )
+        }
+        .sortedWith(
+            compareByDescending<ProcessingCheckpointItemSummary> { item -> item.isFailed }
+                .thenByDescending { item -> item.attempts }
+                .thenBy { item -> item.displayName.lowercase() }
+                .thenBy { item -> item.uri }
+        )
+    val checkpointStatus = when {
+        pendingCount <= 0 && failedCount <= 0 -> "已完成"
+        failedCount > 0 -> "可继续（含失败项）"
+        else -> "可继续"
+    }
+    return ProcessingCheckpointSummary(
+        taskId = taskId,
+        source = source,
+        modelName = modelName,
+        distributedMode = distributedMode,
+        outputDirectory = outputDirectory,
+        outputDirectoryUri = outputDirectoryUri,
+        updatedAtEpochMs = updatedAtEpochMs,
+        totalItems = totalCount,
+        completedItems = completedCount.coerceAtMost(totalCount),
+        pendingItems = pendingCount,
+        failedItems = failedCount,
+        deferredItems = deferredCount,
+        statusLabel = checkpointStatus,
+        lastErrorMessage = lastErrorMessage,
+        pendingItemDetails = pendingItemDetails
+    )
+}

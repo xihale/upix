@@ -45,72 +45,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-data class ProcessingUiState(
-    val task: ProcessingTask? = null,
-    val isProcessing: Boolean = false,
-    val canResume: Boolean = false,
-    val checkpointSummary: ProcessingCheckpointSummary? = null,
-    val canRetryFailedOnly: Boolean = false,
-    val expectedTotalItems: Int? = null,
-    val isEstimatingInputCount: Boolean = false,
-    val queueItems: List<ProcessingQueueItemSummary> = emptyList(),
-    val isQueueRunning: Boolean = false
-)
-
-data class ProcessingQueueItemSummary(
-    val id: String,
-    val source: String,
-    val modelName: String,
-    val distributedMode: Boolean,
-    val retryFailedOnly: Boolean = false,
-    val outputDirectoryUri: String? = null,
-    val overwriteOriginal: Boolean = false,
-    val backupOriginal: Boolean = true,
-    val processNestedFolders: Boolean = true,
-    val createdAtEpochMs: Long,
-    val expectedItems: Int? = null,
-    val status: PersistedQueueItemStatus = PersistedQueueItemStatus.PENDING,
-    val attempts: Int = 0,
-    val lastErrorMessage: String? = null,
-    val lastOutputUri: String? = null
-)
-
-data class ProcessingCheckpointSummary(
-    val taskId: String,
-    val source: String,
-    val modelName: String,
-    val distributedMode: Boolean,
-    val outputDirectory: String,
-    val outputDirectoryUri: String?,
-    val updatedAtEpochMs: Long,
-    val totalItems: Int,
-    val completedItems: Int,
-    val pendingItems: Int,
-    val failedItems: Int,
-    val deferredItems: Int,
-    val statusLabel: String,
-    val lastErrorMessage: String?,
-    val pendingItemDetails: List<ProcessingCheckpointItemSummary> = emptyList()
-)
-
-data class ProcessingCheckpointItemSummary(
-    val uri: String,
-    val displayName: String,
-    val attempts: Int,
-    val isFailed: Boolean,
-    val lastErrorMessage: String?
-)
-
-private data class ProcessingRunSetup(
-    val allImages: List<ResolvedImageInput>,
-    val runImages: List<ResolvedImageInput>,
-    val pendingImages: List<ResolvedImageInput>,
-    val completedItems: Int,
-    val totalItems: Int,
-    val outputDirectory: BatchOutputDirectory,
-    val failureDetails: MutableMap<String, ProcessingFailureDetail>
-)
-
 class ProcessingViewModel(
     private val logRepository: LogRepository,
     private val modelRepository: ModelProvider,
@@ -127,9 +61,29 @@ class ProcessingViewModel(
     private val _uiState = MutableStateFlow(ProcessingUiState())
     val uiState: StateFlow<ProcessingUiState> = _uiState.asStateFlow()
 
+    private val backupRestore = BackupRestoreManager(
+        inputSourceRepository = inputSourceRepository,
+        batchOutputRepository = batchOutputRepository,
+        logRepository = logRepository,
+        scope = viewModelScope,
+        ioDispatcher = ioDispatcher
+    )
+
+    private val inputCountEstimator = InputCountEstimator(
+        inputSourceRepository = inputSourceRepository,
+        scope = viewModelScope,
+        ioDispatcher = ioDispatcher,
+        onEstimatingStarted = {
+            _uiState.update { state -> state.copy(isEstimatingInputCount = true) }
+        },
+        onResult = { expectedTotal, estimating ->
+            _uiState.update { state ->
+                state.copy(expectedTotalItems = expectedTotal, isEstimatingInputCount = estimating)
+            }
+        }
+    )
+
     private var processingJob: Job? = null
-    private var previewCountJob: Job? = null
-    private var previewRequestId: Long = 0L
     private var activeQueueItemId: String? = null
 
     init {
@@ -304,24 +258,6 @@ class ProcessingViewModel(
 
         estimateQueuedBatchExpectedItems(queueItem.id, normalizedImagePath)
         return queueItem.id
-    }
-
-    private fun ProcessingQueueItemSummary.matchesBatchConfiguration(
-        source: String,
-        modelName: String,
-        distributedMode: Boolean,
-        outputDirectoryUri: String?,
-        overwriteOriginal: Boolean,
-        backupOriginal: Boolean,
-        processNestedFolders: Boolean
-    ): Boolean {
-        return this.source == source &&
-            this.modelName == modelName &&
-            this.distributedMode == distributedMode &&
-            this.outputDirectoryUri == outputDirectoryUri &&
-            this.overwriteOriginal == overwriteOriginal &&
-            this.backupOriginal == backupOriginal &&
-            this.processNestedFolders == processNestedFolders
     }
 
     private fun estimateQueuedBatchExpectedItems(
@@ -622,47 +558,8 @@ class ProcessingViewModel(
         }
     }
 
-    fun refreshExpectedTotal(imagePath: String?) {
-        val normalizedImagePath = imagePath?.trim().orEmpty()
-        previewRequestId += 1
-        val requestId = previewRequestId
-        previewCountJob?.cancel()
-
-        if (normalizedImagePath.isBlank()) {
-            _uiState.update { state ->
-                state.copy(
-                    expectedTotalItems = null,
-                    isEstimatingInputCount = false
-                )
-            }
-            return
-        }
-
-        _uiState.update { state ->
-            state.copy(isEstimatingInputCount = true)
-        }
-
-        previewCountJob = viewModelScope.launch {
-            val expectedTotal = withContext(ioDispatcher) {
-                val totalImages =
-                    inputSourceRepository.resolveImageInputs(source = normalizedImagePath, nested = true).size
-                if (totalImages <= 0) {
-                    null
-                } else {
-                    totalImages
-                }
-            }
-            if (!isActive || requestId != previewRequestId) {
-                return@launch
-            }
-            _uiState.update { state ->
-                state.copy(
-                    expectedTotalItems = expectedTotal,
-                    isEstimatingInputCount = false
-                )
-            }
-        }
-    }
+    fun refreshExpectedTotal(imagePath: String?) =
+        inputCountEstimator.refreshExpectedTotal(imagePath)
 
     fun resumeLastProcessing() {
         if (processingJob?.isActive == true) {
@@ -802,37 +699,11 @@ class ProcessingViewModel(
         logRepository.info("ProcessingViewModel", "Discarded processing checkpoint")
     }
 
-    suspend fun hasBackupFor(imagePath: String, nested: Boolean): Boolean = withContext(ioDispatcher) {
-        val inputs = inputSourceRepository.resolveImageInputs(source = imagePath, nested = nested)
-        inputs.any { input ->
-            batchOutputRepository.hasBackup(input)
-        }
-    }
+    suspend fun hasBackupFor(imagePath: String, nested: Boolean) =
+        backupRestore.hasBackupFor(imagePath, nested)
 
-    fun restoreBackup(imagePath: String, nested: Boolean, onComplete: (Int, Int) -> Unit) {
-        viewModelScope.launch {
-            var restored = 0
-            var failed = 0
-            withContext(ioDispatcher) {
-                val inputs = inputSourceRepository.resolveImageInputs(source = imagePath, nested = nested)
-                for (input in inputs) {
-                    if (batchOutputRepository.hasBackup(input)) {
-                        batchOutputRepository.restoreBackup(input).fold(
-                            onSuccess = { restored++ },
-                            onFailure = {
-                                failed++
-                                logRepository.error("ProcessingViewModel", "Failed to restore backup for ${input.displayName}: ${it.message}")
-                            }
-                        )
-                    }
-                }
-            }
-            if (restored > 0 || failed > 0) {
-                logRepository.info("ProcessingViewModel", "Restore completed. Restored: $restored, Failed: $failed")
-            }
-            onComplete(restored, failed)
-        }
-    }
+    fun restoreBackup(imagePath: String, nested: Boolean, onComplete: (Int, Int) -> Unit) =
+        backupRestore.restoreBackup(imagePath, nested, onComplete)
 
     private fun startProcessingInternal(
         imagePath: String,
@@ -1908,107 +1779,6 @@ class ProcessingViewModel(
         return (completedItems.toFloat() / totalItems.toFloat()).coerceIn(0.0f, 1.0f)
     }
 
-    private fun ProcessingUiState.toQueueSnapshot(): ProcessingQueueSnapshot {
-        return ProcessingQueueSnapshot(
-            items = queueItems.map { queueItem ->
-                queueItem.toPersistedQueueItem()
-            },
-            isQueueRunning = isQueueRunning
-        )
-    }
-
-    private fun ProcessingQueueItemSummary.toPersistedQueueItem(): PersistedQueueItem {
-        return PersistedQueueItem(
-            id = id,
-            source = source,
-            modelName = modelName,
-            distributedMode = distributedMode,
-            retryFailedOnly = retryFailedOnly,
-            outputDirectoryUri = outputDirectoryUri,
-            overwriteOriginal = overwriteOriginal,
-            backupOriginal = backupOriginal,
-            createdAtEpochMs = createdAtEpochMs,
-            expectedItems = expectedItems,
-            status = status,
-            attempts = attempts,
-            lastErrorMessage = lastErrorMessage,
-            lastOutputUri = lastOutputUri
-        )
-    }
-
-    private fun PersistedQueueItem.toUiQueueItem(): ProcessingQueueItemSummary {
-        return ProcessingQueueItemSummary(
-            id = id,
-            source = source,
-            modelName = modelName,
-            distributedMode = distributedMode,
-            retryFailedOnly = retryFailedOnly,
-            outputDirectoryUri = outputDirectoryUri,
-            overwriteOriginal = overwriteOriginal,
-            backupOriginal = backupOriginal,
-            createdAtEpochMs = createdAtEpochMs,
-            expectedItems = expectedItems,
-            status = status,
-            attempts = attempts,
-            lastErrorMessage = lastErrorMessage,
-            lastOutputUri = lastOutputUri
-        )
-    }
-
-    private fun ProcessingCheckpoint.toUiSummary(): ProcessingCheckpointSummary {
-        val pendingCount = pendingItems.size.coerceAtLeast(0)
-        val failedCount = failedPendingCount().coerceAtLeast(0)
-        val deferredCount = (pendingCount - failedCount).coerceAtLeast(0)
-        val completedCount = completedItems.coerceAtLeast(0)
-        val totalCount = maxOf(totalItems, completedCount + pendingCount)
-        val failureByUri = failureDetails.associateBy { detail -> detail.uri }
-        val pendingItemDetails = pendingItems
-            .map { pendingItem ->
-                val failure = failureByUri[pendingItem.uri]
-                val displayName = pendingItem.displayName.ifBlank {
-                    pendingItem.uri.substringAfterLast('/', pendingItem.uri)
-                }
-                ProcessingCheckpointItemSummary(
-                    uri = pendingItem.uri,
-                    displayName = displayName,
-                    attempts = maxOf(
-                        pendingItem.attempts,
-                        failure?.attempts ?: 0
-                    ),
-                    isFailed = failure != null,
-                    lastErrorMessage = failure?.errorMessage
-                )
-            }
-            .sortedWith(
-                compareByDescending<ProcessingCheckpointItemSummary> { item -> item.isFailed }
-                    .thenByDescending { item -> item.attempts }
-                    .thenBy { item -> item.displayName.lowercase() }
-                    .thenBy { item -> item.uri }
-            )
-        val checkpointStatus = when {
-            pendingCount <= 0 && failedCount <= 0 -> "已完成"
-            failedCount > 0 -> "可继续（含失败项）"
-            else -> "可继续"
-        }
-        return ProcessingCheckpointSummary(
-            taskId = taskId,
-            source = source,
-            modelName = modelName,
-            distributedMode = distributedMode,
-            outputDirectory = outputDirectory,
-            outputDirectoryUri = outputDirectoryUri,
-            updatedAtEpochMs = updatedAtEpochMs,
-            totalItems = totalCount,
-            completedItems = completedCount.coerceAtMost(totalCount),
-            pendingItems = pendingCount,
-            failedItems = failedCount,
-            deferredItems = deferredCount,
-            statusLabel = checkpointStatus,
-            lastErrorMessage = lastErrorMessage,
-            pendingItemDetails = pendingItemDetails
-        )
-    }
-
     private fun updateDeviceThroughputSample(
         distributedRemoteEnabled: Boolean,
         elapsedMs: Long,
@@ -2063,7 +1833,7 @@ class ProcessingViewModel(
     }
 
     override fun onCleared() {
-        previewCountJob?.cancel()
+        inputCountEstimator.cancel()
         super.onCleared()
     }
 
