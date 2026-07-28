@@ -75,16 +75,6 @@ struct Worker {
     int recommended_tile_size = 0;
 };
 
-// `client process`.
-struct Client {
-    std::string input_path;
-    std::string output_path;
-    std::string server_addr;        // <host>:<port>
-    std::string auth_key;
-    int tile_size = 256;
-    int tile_overlap = 16;
-};
-
 // `serve {start, stop}`.
 struct Serve {
     std::string subcommand;         // start / stop (default start)

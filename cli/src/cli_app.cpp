@@ -156,20 +156,6 @@ auto build_app() -> std::unique_ptr<CLI::App> {
         ->check(CLI::Range(0, 8192));
     wconnect->callback([] { g_exit_code = cmd_worker(worker_args); });
 
-    // ── client ──────────────────────────────────────────────────────────────
-    static args::Client client_args;
-    auto* client = app->add_subcommand("client", "One-shot client to a running coordinator");
-    auto* cproc = client->add_subcommand("process", "Send an image for remote upscale");
-    cproc->add_option("-i", client_args.input_path, "Input image")->required();
-    cproc->add_option("-o", client_args.output_path, "Output image")->required();
-    cproc->add_option("-s", client_args.server_addr, "<host>:<port>")->required();
-    cproc->add_option("-k", client_args.auth_key, "Auth key")->required();
-    cproc->add_option("--tile-size", client_args.tile_size, "Tile size")
-        ->check(tile_range)->capture_default_str();
-    cproc->add_option("--tile-overlap", client_args.tile_overlap, "Tile overlap")
-        ->check(CLI::Range(0, 1024))->capture_default_str();
-    cproc->callback([] { g_exit_code = cmd_client(client_args); });
-
     // ── serve ───────────────────────────────────────────────────────────────
     // Flags are shared by start/stop. We register them on each nested
     // subcommand (binding the same field twice is fine) so `serve start --cpu`

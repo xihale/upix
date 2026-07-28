@@ -21,7 +21,6 @@ namespace args { struct Benchmark; }
 namespace args { struct Perf;      }
 namespace args { struct Server;    }
 namespace args { struct Worker;    }
-namespace args { struct Client;    }
 namespace args { struct Serve;     }
 namespace args { struct Completion;}
 
@@ -31,6 +30,5 @@ int cmd_benchmark(const args::Benchmark& a);
 int cmd_perf(const args::Perf& a);
 int cmd_server(const args::Server& a);
 int cmd_worker(const args::Worker& a);
-int cmd_client(const args::Client& a);
 int cmd_serve(const args::Serve& a);
 int cmd_completion(const args::Completion& a);

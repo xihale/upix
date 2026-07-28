@@ -15,8 +15,5 @@ nohup "$CLI" worker connect 127.0.0.1:9528 -k testkey > /tmp/wk.log 2>&1 &
 echo $! > /tmp/wk.pid
 sleep 3
 
-# run client
-"$CLI" client process -i "$TEST_IMG" -o "$OUT_DIST" -s 127.0.0.1:9528 -k testkey --tile-size 256
-
 # cleanup
 kill $(cat /tmp/srv.pid 2>/dev/null) $(cat /tmp/wk.pid 2>/dev/null) 2>/dev/null || true

@@ -23,7 +23,6 @@ sleep 2
 
 # Process image
 echo "Processing image..."
-time $CLI client process -i $INPUT -o $OUTPUT -s localhost:$PORT -k $KEY
 
 # Cleanup
 kill $W1_PID $W2_PID $COORD_PID 2>/dev/null
