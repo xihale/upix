@@ -9,6 +9,7 @@
 // member-variable destruction (in the .cpp that owns the definitions).
 
 #include "engine.hpp"
+#include <platform.h> // defines NCNN_VULKAN, needed by the member guards below
 #include <memory>
 #include <mutex>
 #include <string>
