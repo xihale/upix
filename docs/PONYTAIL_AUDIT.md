@@ -53,7 +53,7 @@
 
 **零调用函数**（已验证）：
 - `md5` / `md5_hex`（`crypto.hpp:18-19`）— **声明了但 cpp 根本没实现**，调用即 link error
-- `xor_encrypt` / `xor_decrypt`（`crypto.cpp:186-196`）— 0 调用
+- `xor_encrypt` / `xor_decrypt`（`crypto.cpp:186-196`）— 0 调用 ✅ 已在 `8c11549` 删除
 - `hash64` / `hash32`（`crypto.cpp:198-210`）— 0 调用
 - `random_bytes` / `random_hex`（`crypto.cpp:105-122`）— 0 调用
 - `base64_encode` / `base64_decode`（`crypto.cpp:127-184`）— 0 调用

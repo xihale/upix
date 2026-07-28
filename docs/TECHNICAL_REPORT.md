@@ -179,7 +179,7 @@ auto_tile_size=true 时：
 - 客户端卸载（0x0500~）：`CLIENT_SUBMIT/RESPONSE`
 - **本地 serve 守护进程（0x0601~，独立段，见 §5）**：`SERVE_REQUEST/RESPONSE`
 
-**认证**：明文 key 比对（`AuthRequest.auth_key[64]`），无链路加密。`crypto::xor_encrypt` 存在但未用于传输。key 默认随机生成或用户 `-k` 指定。
+**认证**：明文 key 比对（`AuthRequest.auth_key[64]`），无链路加密。`crypto::xor_encrypt` 曾存在但未用于传输（已在 `8c11549` 删除）。key 默认随机生成或用户 `-k` 指定。
 
 **配对短串**：`ConnectionInfo` 可序列化为 `ip:port#key`，QR 码即此串。
 
@@ -472,7 +472,7 @@ struct ServeResponse { int32_t ok; int32_t width, height, channels;
 
 3. **`Scheduler::handle_device_failure` 孤儿回收是空实现**，靠 coordinator 多波循环兜底，单波内部分失败可能延迟到下一波才重试。
 
-4. **协议层无链路加密**，明文 key 认证，仅适合可信局域网。`crypto::xor_encrypt` 形同虚设。
+4. **协议层无链路加密**，明文 key 认证，仅适合可信局域网。`crypto::xor_encrypt` 曾形同虚设（已在 `8c11549` 删除）。
 
 5. **`MessageHandler.kt` 是占位**，未充分使用。
 

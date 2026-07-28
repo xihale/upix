@@ -170,7 +170,7 @@ auto_tile_size=true 时：
 - 图像分块（0x0400~）：`IMAGE_INFO`、`TILES_BATCH`
 - 客户端卸载（0x0500~）：`CLIENT_SUBMIT/RESPONSE`
 
-**认证**：明文 key 比对（`AuthRequest.auth_key[64]`），无链路加密。`crypto::xor_encrypt` 存在但未用于传输。key 默认随机生成或用户 `-k` 指定。
+**认证**：明文 key 比对（`AuthRequest.auth_key[64]`），无链路加密。`crypto::xor_encrypt` 曾存在但未用于传输（已在 `8c11549` 删除）。key 默认随机生成或用户 `-k` 指定。
 
 **配对短串**：`ConnectionInfo` 可序列化为 `ip:port#key`，QR 码即此串。
 
@@ -320,7 +320,7 @@ com/crossscale/
 1. **`mdns` 发现侧未实现**（`MDNSDiscovery::start` 仅打 warning），README 描述的 mDNS 自动发现在 PC 服务端广播 OK，但 PC 端发现其他 coordinator 是 stub；Android 端用的是原生 NsdManager，与 PC 侧不共享代码。
 2. **CLI `cxxopts` 是死依赖**：声明了却完全没用，手写解析。要么用起来要么删掉。
 3. **`Scheduler::handle_device_failure` 孤儿回收是空实现**，靠 coordinator 多波循环兜底，但单波内的部分失败可能延迟到下一波才重试。
-4. **协议层无链路加密**，明文 key 认证，仅适合可信局域网。`crypto::xor_encrypt` 形同虚设。
+4. **协议层无链路加密**，明文 key 认证，仅适合可信局域网。`crypto::xor_encrypt` 曾形同虚设（已在 `8c11549` 删除）。
 5. **`MessageHandler.kt` 是占位**，未充分使用。
 6. **`ProcessingViewModel` 2141 行偏重**，可考虑拆分。
 7. **`share/xmake.lua` 的源文件列表是手写枚举**（`share/xmake.lua:7-24`），新增 `.cpp` 需手动同步；Android 的 CMake 也是手写枚举 11 个文件——两处列表需保持一致，易漂移。

@@ -253,6 +253,8 @@ cli/src/
 明文 key 认证已是现状，`xor_encrypt`/`xor_decrypt`（`crypto.cpp:186-196`）是伪安全，
 0 调用。删除。（注：§2.1 的 crypto 死函数清理已涵盖此项，此处单独登记强调。）
 
+> **Status (2026-07-28):** already executed in commit `8c11549`. `crypto.{hpp,cpp}` now expose only `sha256_hex` and `generate_uuid`. Doc-only reconciliation in this layer.
+
 ### 4.4 协议格式不动
 
 15B 帧头 + CRC32 保持。理由见 §0.3 非目标。仅做：
