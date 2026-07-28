@@ -37,6 +37,14 @@ auto send_via(UnixSocket& sock, MessageType type, const void* payload, size_t le
     return sock.send_all(buf.data(), buf.size()).has_value();
 }
 
+// Send a simple error response for serve requests
+auto send_serve_error(UnixSocket& sock, const char* message) -> void {
+    ServeResponse r{};
+    r.ok = 0;
+    std::strncpy(r.error, message, sizeof(r.error) - 1);
+    send_via(sock, MessageType::MSG_SERVE_RESPONSE, &r, sizeof(r));
+}
+
 } // namespace
 
 auto default_serve_socket_path() -> std::string {
@@ -166,10 +174,7 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     if (!parsed || parsed->type != MessageType::MSG_SERVE_REQUEST ||
         parsed->payload_length < sizeof(ServeRequest)) {
         // Malformed: send a minimal error response and bail.
-        ServeResponse r{};
-        r.ok = 0;
-        std::strncpy(r.error, "expected MSG_SERVE_REQUEST", sizeof(r.error) - 1);
-        send_via(*sock, MessageType::MSG_SERVE_RESPONSE, &r, sizeof(r));
+        send_serve_error(*sock, "expected MSG_SERVE_REQUEST");
         return;
     }
 
@@ -179,12 +184,10 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     ServeRequest req{};
     std::memcpy(&req, req_buf.data(), sizeof(ServeRequest));
 
-    if (req.img_length > MAX_SERVE_IMAGE_BYTES ||
-        sizeof(ServeRequest) + req.img_length > req_buf.size()) {
-        ServeResponse r{};
-        r.ok = 0;
-        std::strncpy(r.error, "image too large", sizeof(r.error) - 1);
-        send_via(*sock, MessageType::MSG_SERVE_RESPONSE, &r, sizeof(r));
+    // Validate image size
+    const size_t expected_size = sizeof(ServeRequest) + req.img_length;
+    if (req.img_length > MAX_SERVE_IMAGE_BYTES || req_buf.size() < expected_size) {
+        send_serve_error(*sock, "image too large");
         return;
     }
     const uint8_t* img_in = req_buf.data() + sizeof(ServeRequest);
@@ -196,17 +199,13 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     {
         std::lock_guard<std::mutex> lk(engine_mutex_);
         if (ensure_model_loaded(req.model_name) != 0) {
-            ServeResponse r{};
-            r.ok = 0;
-            std::strncpy(r.error, "model load failed", sizeof(r.error) - 1);
-            send_via(*sock, MessageType::MSG_SERVE_RESPONSE, &r, sizeof(r));
+            send_serve_error(*sock, "model load failed");
             return;
         }
         int scale = engine_->get_scale_factor();
         out_w = req.width * scale;
         out_h = req.height * scale;
         out_bytes.resize(static_cast<size_t>(out_w) * out_h * out_c);
-
         TileConfig tc;
         tc.tile_size = req.tile_size;
         tc.overlap = req.tile_overlap;

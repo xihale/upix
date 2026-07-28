@@ -18,7 +18,11 @@
 namespace crossscale {
 
 // 获取系统可用内存 (MB)
-static size_t get_available_memory_mb() {
+// `inline` (not `static`): this header is included by multiple translation
+// units in the CLI binary (cmd_process.cpp + process_batch.cpp). A `static`
+// free function would silently give each TU its own private copy; `inline`
+// yields a single shared definition (ODR-safe) with identical behavior.
+inline size_t get_available_memory_mb() {
 #if defined(__linux__)
     struct sysinfo info;
     if (sysinfo(&info) == 0) {
@@ -44,7 +48,10 @@ static size_t get_available_memory_mb() {
     return 1024; // 默认 1GB
 }
 
-auto TileSizeOptimizer::calculate_tile_memory(
+// Member-function definitions below are `inline` because this header is
+// included by multiple TUs in the CLI binary. `inline` only relaxes the
+// one-definition rule; the generated code is unchanged.
+inline auto TileSizeOptimizer::calculate_tile_memory(
     int tile_size,
     int channels,
     int scale_factor,
@@ -66,7 +73,7 @@ auto TileSizeOptimizer::calculate_tile_memory(
            / (1024 * 1024);
 }
 
-auto TileSizeOptimizer::benchmark_tile_size(
+inline auto TileSizeOptimizer::benchmark_tile_size(
     Engine& engine,
     int tile_size,
     int iterations,
@@ -110,7 +117,7 @@ auto TileSizeOptimizer::benchmark_tile_size(
     return result;
 }
 
-auto TileSizeOptimizer::profile_device(Engine& engine) -> DevicePerformanceProfile {
+inline auto TileSizeOptimizer::profile_device(Engine& engine) -> DevicePerformanceProfile {
     DevicePerformanceProfile profile;
     profile.device_type = engine.current_device();
     profile.device_name = engine.model_name();
@@ -121,7 +128,7 @@ auto TileSizeOptimizer::profile_device(Engine& engine) -> DevicePerformanceProfi
     return profile;
 }
 
-auto TileSizeOptimizer::estimate_tile_size(
+inline auto TileSizeOptimizer::estimate_tile_size(
     const DevicePerformanceProfile& device,
     const ModelConstraints& model
 ) const -> int {
@@ -146,7 +153,7 @@ auto TileSizeOptimizer::estimate_tile_size(
     return 64; // 最小安全值
 }
 
-auto TileSizeOptimizer::find_optimal_tile_size(
+inline auto TileSizeOptimizer::find_optimal_tile_size(
     Engine& engine,
     const ModelConstraints& model,
     const ProcessingConfig& config,
