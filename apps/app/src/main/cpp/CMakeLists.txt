@@ -112,23 +112,41 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/../../../../../share/core/distributed
 )
 
-# Source files from shared core
+# Source files from shared core — auto-collected. Mirrors share/xmake.lua.
+# Note: file(GLOB) requires re-running CMake configure when files are added/removed.
+set(SHARE_DIR ${CMAKE_SOURCE_DIR}/../../../../../share)
+
+file(GLOB SHARE_CORE_SRCS
+    ${SHARE_DIR}/core/*.cpp
+    ${SHARE_DIR}/core/distributed/*.cpp
+)
+file(GLOB SHARE_UTILS_SRCS
+    ${SHARE_DIR}/utils/*.cpp
+)
+# Exclude platform-specific files handled below.
+list(FILTER SHARE_UTILS_SRCS EXCLUDE REGEX "unix_socket\\.cpp$")
+list(FILTER SHARE_UTILS_SRCS EXCLUDE REGEX "android_utils\\.cpp$")
+# Exclude ncnn engine sources: handled conditionally below (real vs stub).
+list(FILTER SHARE_CORE_SRCS EXCLUDE REGEX "core/ncnn_engine\\.cpp$")
+list(FILTER SHARE_CORE_SRCS EXCLUDE REGEX "core/tile_processor\\.cpp$")
+# Exclude files Android does not use (zero references in apps/app/src/main/cpp):
+# coordinator.cpp (Android is worker/client only), engine_pool.cpp (no pool mgmt),
+# mdns.cpp (no mDNS discovery on Android — also has __linux__-only code paths).
+# This preserves the prior hand-maintained list's behavior.
+list(FILTER SHARE_CORE_SRCS EXCLUDE REGEX "core/distributed/coordinator\\.cpp$")
+list(FILTER SHARE_CORE_SRCS EXCLUDE REGEX "core/engine_pool\\.cpp$")
+list(FILTER SHARE_UTILS_SRCS EXCLUDE REGEX "utils/mdns\\.cpp$")
+
 set(SHARED_SOURCES
-    ${CMAKE_SOURCE_DIR}/../../../../../share/core/config.cpp
-    ${CMAKE_SOURCE_DIR}/../../../../../share/core/model_manager.cpp
-    ${CMAKE_SOURCE_DIR}/../../../../../share/core/distributed/protocol.cpp
-    ${CMAKE_SOURCE_DIR}/../../../../../share/core/distributed/scheduler.cpp
-    ${CMAKE_SOURCE_DIR}/../../../../../share/core/distributed/worker.cpp
-    ${CMAKE_SOURCE_DIR}/../../../../../share/utils/image.cpp
-    ${CMAKE_SOURCE_DIR}/../../../../../share/utils/benchmark.cpp
-    ${CMAKE_SOURCE_DIR}/../../../../../share/utils/network.cpp
-    ${CMAKE_SOURCE_DIR}/../../../../../share/utils/crypto.cpp
+    ${SHARE_CORE_SRCS}
+    ${SHARE_UTILS_SRCS}
 )
 
+# ncnn engine: real impl when CROSSSCALE_USE_NCNN, stub otherwise.
 if(CROSSSCALE_USE_NCNN)
     list(APPEND SHARED_SOURCES
-        ${CMAKE_SOURCE_DIR}/../../../../../share/core/ncnn_engine.cpp
-        ${CMAKE_SOURCE_DIR}/../../../../../share/core/tile_processor.cpp
+        ${SHARE_DIR}/core/ncnn_engine.cpp
+        ${SHARE_DIR}/core/tile_processor.cpp
     )
 else()
     list(APPEND SHARED_SOURCES
