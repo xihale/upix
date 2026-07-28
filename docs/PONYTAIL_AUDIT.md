@@ -11,10 +11,10 @@
 | # | 目标 | 标签 | 估计省行 |
 |---|------|------|---------|
 | 1 | `crypto.cpp` 死函数（md5/xor/hash64/base64/random/file_hash 等） | delete | ~150 |
-| 2 | CLI `client` 子命令死分支 | delete | ~175 |
+| 2 | CLI `client` 子命令死分支 | delete | ~175 ✅ 已在 `7853738`/`daa6d29` 删除 |
 | 3 | `logger` 未用 setter/级别/文件分支 | delete | ~120 |
 | 4 | `TileSizeOptimizer` 投机部分（`estimate_tile_size` + `DevicePerformanceProfile` 大半） | yagni | ~100 |
-| 5 | `MDNSDiscovery` C++ stub 类 | delete | ~80 |
+| 5 | `MDNSDiscovery` C++ stub 类 | delete | ~80 ✅ 已在 `8c11549` 删除 |
 | 6 | `ModelManager` 死方法（compute_hash/verify_model/import_model/delete_model/infer_metadata） | delete | ~90 |
 | 7 | `ncnn_engine.hpp` 死壳头文件 + `Engine::get_memory_info` | delete | ~65 |
 | 8 | `expected.hpp` → C++23 `std::expected` | stdlib | ~60 |
@@ -62,11 +62,13 @@
 
 **替代：** 无。删完后 crypto.cpp 从 243 行砍到约 90 行。
 
-### 2. `MDNSDiscovery` C++ stub 类 [delete] ~省 80 行
+### 2. `MDNSDiscovery` C++ stub 类 [delete] ~省 80 行 ✅ 已在 `8c11549` 删除
 
 `share/utils/mdns.cpp:205-231` + `mdns.hpp:39-54`。`MDNSDiscovery::start` 只打 `LOG_WARNING("not fully implemented")` 返回成功。**已验证：C++ 侧 0 外部调用**。Android 端用的是 Kotlin `MDNSDiscovery.kt`（基于 NsdManager），不共享此代码。
 
 **替代：** 无。保留 `MDNSBroadcaster`（`main.cpp:1498` 真用）。
+
+> **状态 (2026-07-28)：** 该 C++ stub 已在 commit `8c11549` 删除。当前 `share/utils/mdns.{hpp,cpp}` 仅保留 `MDNSBroadcaster`（PC 服务端广播，`cmd_server.cpp` 真用），Android 侧 `MDNSDiscovery.kt` 独立保留。本项已闭环。
 
 ### 3. `ModelManager` 一半方法是死代码 [delete] ~省 90 行
 

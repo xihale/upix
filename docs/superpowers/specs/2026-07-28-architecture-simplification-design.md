@@ -25,7 +25,7 @@ CrossScale 经过多轮功能迭代（Android app、分布式、GPU 优化、ser
   至今未执行。
 - **构建漂移**：`share/` 源文件在 `share/xmake.lua` 和 `apps/.../CMakeLists.txt`
   两处手写枚举，新增 `.cpp` 需手动同步。
-- **伪实现**：`MDNSDiscovery` C++ stub（只打 warning）、`crypto::xor_encrypt`（形同虚设）。
+- **伪实现**（✅ 已在 `8c11549` 解决）：~~`MDNSDiscovery` C++ stub（只打 warning）、`crypto::xor_encrypt`（形同虚设）~~。当前 C++ 仅保留 `MDNSBroadcaster`，crypto 仅保留 `sha256_hex`/`generate_uuid`。
 - **自造轮子**：`expected.hpp` 手写 Result（C++23 有 `std::expected`）、
   `config.cpp` 手写 JSON 扫描（已依赖 glaze）。
 - **死依赖**：cxxopts（CLI 已改用 CLI11）、Ktor×3（零 import）。
@@ -63,7 +63,7 @@ CrossScale 经过多轮功能迭代（Android app、分布式、GPU 优化、ser
                 │ cmd_process.cpp 1211行 → 3 文件
                 │ 纯结构重组，不改逻辑
 ─────────────────────────────────────────────────────────
-§3 协议/角色精简│ 删 CLI client 子命令(185行) + mDNS C++ stub(80行) + xor_encrypt
+§3 协议/角色精简│ 删 CLI client 子命令(185行) + mDNS C++ stub(80行) + xor_encrypt  ✅ 全部已执行
 (中风险,产品决策)│ serve/coordinator 保持独立（评估结论，见 §4.5）
                 │ 协议格式不动
 ─────────────────────────────────────────────────────────
