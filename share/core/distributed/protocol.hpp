@@ -24,7 +24,6 @@ enum class MessageType : uint16_t {
     MSG_TASK_PROGRESS = 0x0303,
     MSG_TASK_RESULT = 0x0304,
 
-    MSG_IMAGE_TILE = 0x0401,
     MSG_TILES_BATCH = 0x0403,
 
     MSG_CLIENT_SUBMIT = 0x0500,
