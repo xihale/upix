@@ -74,83 +74,69 @@ CrossScale 经过多轮功能迭代（Android app、分布式、GPU 优化、ser
 
 | 层 | 净减行 | 删依赖 | 风险 | 可独立交付 |
 |---|---|---|---|---|
-| §1 | ~1420 | cxxopts + ktor×3 | 零 | ✅ |
+| §1 | ~240 | cxxopts + ktor×3 | 零 | ✅ |
 | §2 | 0（重组） | 0 | 中 | ✅ |
 | §3 | ~280 | 0 | 中 | ✅ |
-| §4 | ~280 | 0 | 低 | ✅ |
-| **合计** | **~1980** | **4** | | |
+| §4 | ~150 | 0 | 低 | ✅ |
+| **合计** | **~670** | **4** | | |
+
+> 注：§1/§4 原估算（~1700行）基于过时的 `PONYTAIL_AUDIT.md`，经 2026-07-28 实测核查后
+> 大幅下调——多数死代码、`expected.hpp`、`config.cpp` 手写 JSON 等早已清理。
+> 本设计的**主体价值在第2层（大文件拆分）**，而非行数削减。
 
 ---
 
 ## 2. 第1层：外壳清理（零风险纯删）
 
-执行 `docs/PONYTAIL_AUDIT.md` 的全部 26 项 + 构建统一 + CLI 重构收尾。
-无设计成本，直接落地。
+> **⚠️ 重要修正（2026-07-28 核查）**：原设计引用的 `PONYTAIL_AUDIT.md` 基于旧版本代码，
+> 经逐项核查当前 HEAD `d5c8605`，audit 列出的多数死代码**早已删除**：
+> - `crypto.cpp` 已瘦身至 3 个函数（全在用），无 md5/xor/hash64/base64/random/file_hash。
+> - `ModelManager` 接口已无 compute_hash/verify/import/delete 等方法。
+> - `ncnn_engine.hpp` 死壳已删。
+> - `expected.hpp` 已是 `std::expected` 别名（13 行）。
+> - `config.cpp` 已用 glaze（非手写 JSON）。
+> - `MessageHandler.kt`、`JoinInvite.parseLegacyInvite` 已删。
+> - `MessageType` 死枚举从 12 个降到 1 个（`MSG_IMAGE_TILE`）。
+> - audit 标注的 `set_models_directory`、`Scheduler::unregister_device`、
+>   `Engine::get_memory_info` **实际都在用，绝不能删**（audit 事实错误）。
+>
+> 因此第1层范围大幅缩减为下面**已实测确认**的少量残留项。
 
-### 2.1 C++ 死代码删除（~930 行）
+### 2.1 C++ 残留死代码删除（~90 行）
 
-| 删除目标 | 位置 | 行数 | 验证依据 |
+| 删除目标 | 位置 | 行数 | 验证依据（HEAD `d5c8605` 实测） |
 |---|---|---|---|
-| `crypto.cpp` 死函数（md5/xor/hash64/base64/random/file_hash 等） | `share/utils/crypto.cpp` | ~150 | 仅 `sha256_hex`+`generate_uuid` 在用 |
-| `ModelManager` 死方法（compute_hash/verify/import/delete/infer_metadata/set_dir） | `share/core/model_manager.cpp` | ~90 | 仅 scan/get/has/parse 在用 |
-| `ConnectionInfo` 四序列化方法 + `generate_connection_info` | `protocol.cpp:68-118` + `coordinator.hpp:35-38` | ~50 | main.cpp 手拼 JSON |
-| `ncnn_engine.hpp` 死壳头文件 | `share/core/ncnn_engine.hpp` | ~65 | 仅自己 include，类名零引用 |
-| `MessageType` 12 个未用枚举 + 2 个 struct | `protocol.hpp:9-45,55-66` | ~25 | grep 验证（执行时复核 `MSG_IMAGE_TILE` 等边界项） |
-| `Scheduler` 死方法/字段（handle_device_failure/set_task_timeout/unregister/update/get_device/Task.deadline） | `scheduler.{hpp,cpp}` | ~25 | assign_tiles 保留 |
-| `benchmark.cpp` PerfStats/compute_stats + BenchmarkResult 多余字段 | `benchmark.{hpp,cpp}` | ~30 | 仅 avg_time_ms 在用 |
-| `logger` 未用配置（set_level/set_output_file/set_android_callback/CRITICAL/文件分支） | `logger.hpp` | ~120 | 永远不走 |
-| `EnginePool::cv_` 死成员 | `engine_pool.hpp:29` | 1 | 从不 wait |
-| `network_utils::is_port_available` + `crc32(vector)` 重载 | `network.cpp` | ~17 | 0 调用 |
-| `worker.cpp` connect() 构造未发出的 auth_req | `worker.cpp:74-78` | ~5 | handshake 重构造 |
-| `tile_optimizer.hpp` estimate_tile_size | `tile_optimizer.hpp:122-145` | ~25 | 被 find_optimal 绕过 |
-| `DevicePerformanceProfile` 死字段（除 available_memory_mb 外全删） | `config.hpp:63-81` | ~15 | 永远空/0 |
-| `expected.hpp` → C++23 `std::expected`（执行见 §4.1，此处登记） | `share/utils/expected.hpp` | ~60 | CLI 是 C++23 |
+| `MSG_IMAGE_TILE`(0x0401) 死枚举 | `protocol.hpp:27` | 1 | grep 全仓 0 使用（`MSG_TILES_BATCH` 在用） |
+| `ConnectionInfo` 整个 struct + glz::meta + 4 方法 | `coordinator.hpp:29-58` + `protocol.cpp:65-101` | ~50 | 整个 struct 0 外部使用，4 方法仅定义无调用，glz::meta 也无人直接用 |
+| `logger.hpp` set_level/set_output_file/set_android_callback + CRITICAL + 文件分支 | `logger.hpp` | ~120 | 0 调用（grep 实测） |
+| `PerfStats`/`compute_stats` + BenchmarkResult 多余字段 | `benchmark.{hpp,cpp}` | ~30 | 0 调用（仅 avg_time_ms 在用） |
 
-### 2.2 Android Kotlin 死代码删除（~60 行）
-
-| 删除目标 | 位置 | 行数 |
-|---|---|---|
-| `MessageHandler.kt` 死类 + AppContainer 注册 | `network/MessageHandler.kt` + `AppContainer.kt:15,29` | ~15 |
-| `JoinInvite.parseLegacyInvite`（无生产来源） | `network/JoinInvite.kt:72-84` | ~13 |
-| `ProcessingViewModel` 嵌套死函数 clearCheckpoint | `ProcessingViewModel.kt:799-815` | ~16 |
-| `failureNames*` 三函数合一 | `ProcessingViewModel.kt:1902-1921` | ~15（shrink） |
-
-### 2.3 死依赖删除
+### 2.2 死依赖删除
 
 | 依赖 | 位置 | 影响 |
 |---|---|---|
-| `cxxopts` | `xmake.lua:38` + `cli/xmake.lua:5` | CLI 已用 CLI11，零引用 |
-| Ktor ×3（ktor-client-android/core/cio 3.4.0） | `apps/app/build.gradle.kts:150-152` | 零 import，省大量 transitive |
+| `cxxopts` | `xmake.lua` + `cli/xmake.lua` | CLI 已用 CLI11，零引用（待复核 cli/xmake.lua 是否仍声明） |
+| Ktor ×3（ktor-client-android/core/cio） | `apps/app/build.gradle.kts` | 零 import（待复核是否仍在依赖列表） |
 
-### 2.4 构建系统统一（消除两处手写枚举漂移）
+### 2.3 构建系统统一（消除两处手写枚举漂移）
 
-**问题**：`share/` 的 `.cpp` 在 `share/xmake.lua:7-24`（PC）和
-`apps/app/src/main/cpp/CMakeLists.txt`（Android，11 个文件）两处手写枚举。
+**问题**：`share/` 的 `.cpp` 在 `share/xmake.lua`（PC）和
+`apps/app/src/main/cpp/CMakeLists.txt`（Android）两处手写枚举。
 
 **方案**：自动收集。
 
 - **PC (xmake.lua)**：`os.files("core/**/*.cpp", "utils/**/*.cpp")` 自动 glob，
   配合平台门控（`unix_socket.cpp` 仅 linux/macosx；`android_utils.cpp` 仅 android）。
-  xmake 原生支持。
-- **Android (CMakeLists.txt)**：`file(GLOB ...)` 收集 share 源文件，
-  `CROSSSCALE_USE_NCNN` 开关决定 ncnn_engine vs stub。
+- **Android (CMakeLists.txt)**：`file(GLOB ...)` 收集 share 源文件。
 
-**已知约束**：`file(GLOB)` 在 CMake 中新增/删除文件后需重新 configure（可接受）。
-新增 `.cpp` 不再需要改构建脚本，彻底消除漂移。
+**已知约束**：`file(GLOB)` 新增/删除文件后需重新 configure（可接受）。
 
-### 2.5 CLI 重构收尾
-
-未提交的 CLI 重构（main.cpp 2449 行 → CLI11 + 9 个 cmd_*.cpp）收尾提交：
-- 确认 `cd cli && xmake` 编译通过。
-- 删除残留的 `safe_parse_int/float`（CLI11 自带验证器替代）。
-- `cmd_process.cpp` 仍有 1211 行（§2.4 再拆）。
-
-### 2.6 第1层验收标准
+### 2.4 第1层验收标准
 
 - `cd cli && xmake` 通过，`crossscale process`/`serve`/`server`/`worker` 行为不变。
 - `cd apps && ./gradlew assembleDebug` 通过。
 - 对一组测试图，超分输出 md5 与重构前一致。
-- 净减 ~1420 行，cxxopts/ktor 从依赖列表消失。
+- cxxopts/ktor 从依赖列表消失；share 源文件用 glob 收集。
 
 ---
 
@@ -305,60 +291,31 @@ cli/src/
 
 ---
 
-## 5. 第4层：抽象收敛（标准库替换 + 重复消除）
+## 5. 第4层：抽象收敛（去重 + 砍投机旋钮）
 
-### 5.1 标准库替换
+> **⚠️ 重要修正（2026-07-28 核查）**：原设计的两项主要工作已完成：
+> - `expected.hpp` 已是 `std::expected` 别名（13 行），无需替换。
+> - `config.cpp` 已用 glaze（`glz::read`/`glz::write_json`），无需替换。
+>
+> 第4层范围缩减为下面已实测确认的残留项。
 
-| 自造 | 替换为 | 省行 | 说明 |
-|---|---|---|---|
-| `expected.hpp`（60 行手写 Result） | `std::expected` | ~60 | CLI 是 C++23。JNI C++17 路径用 `#if __has_include(<expected>)` 区分，或保留 polyfill 仅给 Android |
-| `config.cpp` 手写 JSON（48 行扫描） | `glaze`（已依赖） | ~40 | `glz::read<json>`/`glz::write<json>`。load 28→8 行，save 26→10 行 |
-
-### 5.2 配置字段清理
-
-- `DevicePerformanceProfile` 死字段（tile_benchmarks/performance_score/optimal_tile_size）：
-  §2.1 已删，仅留 `available_memory_mb`。
-- `ModelConstraints`（memory_multiplier/min/max_tile_size）：删，没人填。
-- `ProcessingConfig`：保留但瘦身后约 8 个字段。
-
-### 5.3 引擎初始化序列去重
+### 5.1 引擎初始化序列去重
 
 serve daemon `start()` 和 worker `connect()` 各有一套"create_ncnn_engine → initialize →
-scan_models → load_model"的 ~50 行序列。抽自由函数：
+scan_models → load_model"序列。抽自由函数复用（具体省行数待实现时实测）。
 
-```cpp
-// share/core/engine_setup.hpp
-namespace crossscale {
-struct EngineSetupResult { int error_code; std::string message; };
-auto init_and_load(Engine& engine, ModelManager& mgr,
-                   const std::string& models_dir,
-                   const std::string& model_name,
-                   DeviceType device) -> EngineSetupResult;
-}
-```
-
-省 ~50 行去重，且集中了错误码语义（2=init 失败，3=扫描失败，…）。
-
-### 5.4 GPU 调参环境变量收敛
+### 5.2 GPU 调参环境变量收敛
 
 CLI 有 5 个 `CROSSSCALE_GPU_SUBMIT_QUEUE*` env（每个 getenv→stoul→catch→clamp 样板，
-`cli/src/cmd_process.cpp` 内），无文档、用户无从得知。
+在 `cmd_process.cpp` 内），无文档、用户无从得知。
 
 **决策**：删所有 env 读取，硬编码合理默认（queue depth = `clamp(hw_concurrency, 2, 4)`），
-动态批逻辑退化为固定。省 ~95 行。激进重设授权下，投机性调参旋钮直接砍。
+动态批逻辑退化为固定。省 ~95 行（待实测确认）。
 
-### 5.5 Android Kotlin 抽象收敛
+### 5.3 第4层验收标准
 
-- Navigation ~40 回调透传：提取 `HomeCallbacks` 数据类（audit #19，~50 行）。
-- `ProcessingViewModel` 的 `failureNames*` 三函数合一：§2.2 已含。
-- `ProcessingRepositoryContracts` 7 接口：**保留**（每个都有测试 fake 实现，真解耦）。
-
-### 5.6 第4层验收标准
-
-- `expected.hpp` 删除后，PC CLI 编译通过且 `std::expected` 生效。
-- `config.cpp` 改用 glaze 后，配置文件读写 round-trip 一致。
 - `EngineSetup` 抽出后，serve 与 worker 的初始化路径行为不变。
-- 删 GPU env 后，目录模式批量处理性能不退化（benchmark 对比）。
+- 删 GPU env 后，目录模式批量处理性能不退化（perf 框架 benchmark 对比）。
 
 ---
 
