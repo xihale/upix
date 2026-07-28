@@ -26,38 +26,6 @@ struct CoordinatorError {
     std::string message;
 };
 
-struct ConnectionInfo {
-    int version = 1;
-    std::string ip;
-    uint16_t port{};
-    std::string auth_key;
-    std::string server_name;
-    std::string current_model;
-
-    auto to_json() const -> std::string;
-    static auto from_json(const std::string& json) -> expected<ConnectionInfo, CoordinatorError>;
-    auto to_short_string() const -> std::string;
-    static auto from_short_string(const std::string& str) -> expected<ConnectionInfo, CoordinatorError>;
-};
-
-} // namespace crossscale
-
-// JSON key 映射：保持与 Android JoinInvite 解析一致的历史字段名
-template <>
-struct glz::meta<crossscale::ConnectionInfo> {
-    using T = crossscale::ConnectionInfo;
-    static constexpr auto value = glz::object(
-        "v", &T::version,
-        "ip", &T::ip,
-        "port", &T::port,
-        "key", &T::auth_key,
-        "name", &T::server_name,
-        "model", &T::current_model
-    );
-};
-
-namespace crossscale {
-
 struct WorkerConnection {
     std::unique_ptr<TCPSocket> socket;
     DeviceProfile profile;
