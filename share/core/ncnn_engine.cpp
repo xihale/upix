@@ -2974,6 +2974,10 @@ public:
     std::string model_name() const override { return model_name_; }
     int get_scale_factor() const override { return scale_factor_; }
 
+    void set_scale_factor(int scale) override {
+        if (scale > 0) scale_factor_ = scale;
+    }
+
     auto get_memory_info() const -> std::pair<size_t, size_t> override {
 #if defined(__linux__)
         struct sysinfo info;

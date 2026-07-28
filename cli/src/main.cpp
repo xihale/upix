@@ -882,6 +882,9 @@ int main(int argc, char* argv[]) {
                     LOG_ERROR("Engine", "Failed to load model: " + load_result.error().message);
                     return 1;
                 }
+                // Override engine's heuristic scale detection with the
+                // authoritative value parsed from the model filename.
+                engine->set_scale_factor(selected_model->scale_factor);
                 LOG_INFO("Engine", "Model loaded successfully");
                 
                 int scale = engine->get_scale_factor();
@@ -1416,6 +1419,9 @@ int main(int argc, char* argv[]) {
             LOG_ERROR("Engine", "Failed to load model: " + load_result.error().message);
             return 1;
         }
+        // Override engine's heuristic scale detection with the
+        // authoritative value parsed from the model filename.
+        engine->set_scale_factor(selected_model->scale_factor);
 
         LOG_INFO("Engine", "Model loaded successfully");
 

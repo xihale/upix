@@ -135,6 +135,13 @@ public:
     
     virtual int get_scale_factor() const { return 2; }
 
+    // Override the scale factor detected from the param file. The authoritative
+    // source is the model filename (parsed by model_manager, e.g. "x4" -> 4),
+    // which is more reliable than the engine's heuristic scan of the param
+    // content (which mishandles multi-stage Interp and case sensitivity).
+    // Called after load_model(). No-op for engines without a mutable scale.
+    virtual void set_scale_factor(int /*scale*/) {}
+
     // Get recommended tile size based on GPU VRAM (0 = not available)
     virtual int get_recommended_tile_size() const { return 256; }
 
