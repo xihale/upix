@@ -161,10 +161,14 @@ namespace {
         Image img(width, height, channels);
         
         while (cinfo.output_scanline < cinfo.output_height) {
+            // Capture the row index BEFORE the call: jpeg_read_scanlines
+            // increments output_scanline, so using it afterward writes every
+            // row one position too far (buffer overflow past the image).
+            const int row_index = cinfo.output_scanline;
             JSAMPLE* row = new JSAMPLE[width * channels];
             JSAMPARRAY buffer = &row;
             jpeg_read_scanlines(&cinfo, buffer, 1);
-            std::memcpy(img.data() + cinfo.output_scanline * width * channels, row, width * channels);
+            std::memcpy(img.data() + row_index * width * channels, row, width * channels);
             delete[] row;
         }
         
