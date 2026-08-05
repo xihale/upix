@@ -1,8 +1,15 @@
 #include "utils/crypto_sodium.hpp"
+#include "core/distributed/identity.hpp"
+#include "utils/crypto.hpp"
 #include <sodium.h>
+#include <algorithm>
+#include <array>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+using namespace crossscale;  // NOLINT
 using namespace crossscale::sodium;
 
 // 断言宏:即使 NDEBUG 仍生效,保证检查执行并打印失败位置。
@@ -54,6 +61,61 @@ int main() {
     auto tampered = secretbox_open(key, sealed.data(), sealed.size());
     CHECK(!tampered.has_value());
     std::printf("OK secretbox tamper reject\n");
+
+    // 5. IdentityKey load_or_create 幂等
+    namespace fs = std::filesystem;
+    fs::path tmp = fs::temp_directory_path() / "cs_test_identity";
+    fs::remove(tmp);
+    {
+        auto id1 = IdentityKey::load_or_create(tmp);
+        auto id2 = IdentityKey::load_or_create(tmp);
+        CHECK(id1.public_key() == id2.public_key());  // 同一文件 -> 同一公钥
+    }
+    // 验签往返
+    {
+        auto id = IdentityKey::load_or_create(tmp);
+        const char m[] = "id test";
+        auto sig = id.sign((const uint8_t*)m, sizeof(m)-1);
+        CHECK(ed25519_verify(id.public_key(), sig,
+                             (const uint8_t*)m, sizeof(m)-1));
+    }
+    fs::remove(tmp);
+    std::printf("OK identity load_or_create + sign\n");
+
+    // 6. fingerprint 稳定 + 格式 + base64 往返
+    std::array<uint8_t,32> pk{}; pk[0] = 0xAB; pk[1] = 0xCD;
+    auto fp = fingerprint(pk);
+    CHECK(fp.size() == 16);
+    // fingerprint 是 sha256 前 8 字节 hex 大写;sha256_hex 返回小写,需转大写比较
+    std::string lower = crypto::sha256_hex(
+        std::string((const char*)pk.data(), 32)).substr(0, 16);
+    std::transform(lower.begin(), lower.end(), lower.begin(),
+                   [](unsigned char c){ return std::toupper(c); });
+    CHECK(fp == lower);
+    auto b64 = base64_encode(pk.data(), 32);
+    auto dec = base64_decode(b64);
+    CHECK(dec.has_value());
+    CHECK(dec->size() == 32);
+    CHECK(std::memcmp(dec->data(), pk.data(), 32) == 0);
+    std::printf("OK fingerprint + base64 roundtrip\n");
+
+    // 7. TrustStore add/contains/save/load
+    fs::path ts_path = fs::temp_directory_path() / "cs_test_trust";
+    fs::remove(ts_path);
+    {
+        auto ts = TrustStore::load(ts_path);
+        CHECK(!ts.contains(pk));
+        ts.add(pk);
+        CHECK(ts.contains(pk));
+        ts.save();
+    }
+    {
+        auto ts2 = TrustStore::load(ts_path);
+        CHECK(ts2.contains(pk));
+        CHECK(ts2.size() == 1);
+    }
+    fs::remove(ts_path);
+    std::printf("OK truststore add/contains/save/load\n");
 
     std::printf("ALL CRYPTO TESTS PASSED\n");
     return 0;
