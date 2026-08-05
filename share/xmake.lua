@@ -1,7 +1,7 @@
 target("crossscale-core")
     set_kind("static")
     
-    add_packages("ncnn", "libwebp", "libpng", "libjpeg", "glaze")
+    add_packages("ncnn", "libwebp", "libpng", "libjpeg", "glaze", "libsodium")
     add_includedirs(".", {public = true})
     
     -- Auto-collect share sources, excluding platform-specific files handled below.

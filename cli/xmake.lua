@@ -2,7 +2,7 @@ target("crossscale-cli")
     set_kind("binary")
     
     add_deps("crossscale-core", "crossscale-perf")
-    add_packages("ncnn", "libwebp", "glaze", "qr-code-generator-cpp", "cli11")
+    add_packages("ncnn", "libwebp", "glaze", "qr-code-generator-cpp", "cli11", "libsodium")
 
     add_files(
         "src/main.cpp",
@@ -23,3 +23,10 @@ target("crossscale-cli")
         local bindir = path.join(target:installdir(), "bin")
         os.cp("$(projectdir)/models", bindir)
     end)
+
+target("test_crypto")
+    set_kind("binary")
+    add_deps("crossscale-core")
+    add_packages("libsodium")
+    add_files("$(projectdir)/scripts/test_crypto.cpp")
+    set_targetdir("$(projectdir)/cli/build")

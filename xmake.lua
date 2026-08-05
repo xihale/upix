@@ -37,5 +37,6 @@ add_requires("libjpeg")
 add_requires("glaze")
 add_requires("qr-code-generator-cpp")
 add_requires("cli11")
+add_requires("libsodium")
 
 includes("share", "share/perf", "cli")
