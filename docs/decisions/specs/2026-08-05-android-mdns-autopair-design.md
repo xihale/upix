@@ -1,193 +1,415 @@
-# Android ↔ PC mDNS 自动配对 + 连接 UX 打磨设计
+# Android ↔ PC 端到端加密 + mDNS 自动配对设计
 
 - **日期**: 2026-08-05
 - **状态**: 设计已确认,待实现
-- **范围**: 安卓端 + PC mDNS 广播;不动 scheduler / JNI / 协议帧 / serve daemon
+- **范围**: PC CLI + 安卓端 + 共享 C++ 协议层;引入端到端加密与身份认证,替换明文 auth_key
+- **前置决策**: 全程加密 / libsodium / 文件&Keystore 原生存储 / 硬迁移(不兼容 v1)
+- **不动**: serve daemon(AF_UNIX 本地)、scheduler、ncnn engine、UI 主屏结构
 
 ## 1. 背景与问题
 
-当前 Android↔PC 联动代码骨架完整(QR/mDNS/手动三种入口、auth 握手、Android 作 client 与 worker 两种角色均通),但 mDNS 自动配对链路存在两处断点,连接 UX 缺少状态反馈:
+当前 Android↔PC 联动骨架完整(QR/mDNS/手动三入口、auth 握手、Android 作 client 与 worker 两角色),但:
 
 | # | 问题 | 位置 |
 |---|---|---|
-| 1 | PC 只在 mDNS TXT 里发 `auth_key_hash`(sha256 前 16 位),只能校验不能认证 | `share/utils/mdns.cpp:120,137` |
-| 2 | Android `MDNSDiscovery` 完全不读 TXT,发现只拿到 host:port,首次配对必须扫码或手输 key | `apps/.../network/MDNSDiscovery.kt:51-60` |
-| 3 | `DeviceStatus` 只有 `DISCOVERED/CONNECTED/OFFLINE`,连接中无表示,失败只 log 不反馈 | `apps/.../data/model/DeviceProfile.kt:22-26` |
-| 4 | `DeviceCard` 二元状态(连/断),不区分已配对/新发现,无进度、无错误提示 | `apps/.../ui/components/DeviceCard.kt:88-98` |
+| 1 | 明文 auth_key 直接走 TCP(`AuthRequest.auth_key[64]`),无链路加密 | `share/core/distributed/protocol.hpp:46-48`, `worker.cpp:99-109` |
+| 2 | PC 只在 mDNS TXT 发 `auth_key_hash`(sha256 前 16 位),只能校验不能认证;Android 完全不读 TXT | `share/utils/mdns.cpp:120,137`, `MDNSDiscovery.kt:51-60` |
+| 3 | 首次配对必须扫码或手输 key,mDNS 无法自动配对 | `DeviceViewModel.kt:196-202` |
+| 4 | `DeviceStatus` 只有 `DISCOVERED/CONNECTED/OFFLINE`,连接中无表示,失败只 log 不反馈 | `data/model/DeviceProfile.kt:22-26` |
+| 5 | `DeviceCard` 二元状态,不区分已配对/新发现,无进度、无错误提示 | `ui/components/DeviceCard.kt:88-98` |
+
+本设计**一并**解决加密(1)与自动配对(2-5)。
 
 ## 2. 目标与非目标
 
 ### 目标
-- 局域网内 Android 自动发现 PC 并**一键连接**(无需扫码或手输 key)
-- 设备卡区分「已配对」「新发现带 key」「新发现无 key」三种,动作行相应变化
-- 连接过程可视化(连接中状态),失败给可操作的错误提示
-- PC 端 TXT 向后兼容(旧 Android 仍可读 hash,新 Android 读 full key)
+- 端到端加密:握手用 X25519 ECDH + Ed25519 签名,数据流用 `crypto_secretbox`(XSalsa20-Poly1305)
+- 身份认证:PC/Android 各持持久 Ed25519 身份密钥对,TOFU 信任模型
+- mDNS 自动发现 + 指纹确认:Android 发现 PC → 用户看一眼指纹确认 → 自动配对,无需扫码
+- 加密覆盖全部 TCP 消息(AUTH/PROFILE/TASK/TILES/CLIENT_SUBMIT 等均加密)
+- 设备卡区分「已配对」「新发现」三种状态,动作行相应变化,连接中可视化,失败给可操作提示
+- 三入口统一改为基于身份公钥:QR / mDNS / 手动
 
 ### 非目标(本次不做)
-- scheduler 重试 / worker 掉线恢复(属「断线重连」方向)
-- 链接加密(明文 key 通过明文 TCP 传输已是现状,威胁模型为可信局域网)
-- Android 当 coordinator(改动过大,不在本次范围)
-- serve daemon 联动(PC 本地 Unix socket,与 Android 无关)
-- 改 `ConnectionDialog` / `QRScannerScreen` / `CoordinatorClient` / JNI / 协议帧
+- scheduler 重试 / worker 掉线恢复(「断线重连」方向另行处理)
+- Android 当 coordinator
+- serve daemon 加密(AF_UNIX 本地,无需求)
+- 兼容旧版 v1 协议(硬迁移;见 §3 决策 4)
+- PC 跨平台 mDNS 广播(仍仅 Linux/avahi;非 Linux 平台走 QR/手动)
 
 ## 3. 关键决策
 
-| 决策点 | 选择 | 理由 |
-|---|---|---|
-| 密钥传播 | mDNS TXT 明文发完整 `auth_key`,保留 `auth_key_hash` 兼容 | 明文 key 本就明文 TCP 传输,不降低安全等级;最简单 |
-| 首次配对时机 | 用户点「一键连接」成功后才 `savePairing`,**不**静默自动配对 | 避免静默信任陌生广播;与 QR 路径(`connectByQrPayload:123`)一致 |
-| 已配对重连 | 维持现状,`attemptAutoConnect` 只对已存 key 静默重连 | 不扩大自动行为范围 |
-| 连接中状态 | `DeviceStatus` 加 `CONNECTING` 枚举值 | 比「独立 connectingDeviceIds set」更简单,UI 单一数据源 |
-| 发现的 key 存储 | `DeviceProfile.discoveredAuthKey: String?`(临时,UI 用) | 正式配对仍走 `PairingRepository`,职责不混 |
-| 错误反馈 | `DeviceUiState.connectionError: String?` + Snackbar | 一次性、展示即清,不持久化 |
-| 配对徽章数据源 | ViewModel 构建 `DeviceUiState` 时查 `PairingRepository.getAuthKey` | 不污染 `DeviceProfile` 持久模型 |
+| # | 决策点 | 选择 | 理由 |
+|---|---|---|---|
+| 1 | 对称加密原语 | `crypto_secretbox`(XSalsa20-Poly1305),**非** AES-GCM | libsodium 默认原语,零硬件依赖;`crypto_aead_aes256gcm` 在无 AES-NI/ARMv8 Crypto 的 CPU 上不可用 |
+| 2 | 密钥协商 | X25519 ECDH(ephemeral) + Ed25519 签名(身份) | libsodium 原生支持,握手两轮、相互签名(Noise 风格) |
+| 3 | 信任模型 | TOFU + 指纹确认 | 首次连接用户看一眼 PC 指纹确认,之后自动;PC 身份变更检测指纹不符 → 重弹确认(防 MITM) |
+| 4 | v1 兼容 | **硬迁移**,删除 `AuthRequest.auth_key`,协议升 v2 | 局域网自部署、非公开分发;双协议并存代码复杂度不值 |
+| 5 | 指纹格式 | sha256(身份公钥) 前 8 字节 hex,如 `ABCD1234EF567890` | 16 字符足够防碰撞,人眼可读,易在 UI/QR/控制台对照 |
+| 6 | 身份密钥存储 | PC:`~/.crossscale/identity`(0600,Ed25519 seed 32B);Android:`EncryptedSharedPreferences`(已用于 PairingRepository) | 文件/Keystore 原生,无需硬件背书;Android 走既有 MasterKey 路径 |
+| 7 | 信任白名单 | PC:`~/.crossscale/trusted_clients`(每行一个 base64 客户端身份公钥);Android:`PairingRepository` 存 PC 身份公钥(替代 auth_key) | 双向 TOFU:PC 记得哪些 Android 连过,Android 记得哪些 PC 信任过 |
+| 8 | 加密包装位置 | `Protocol::serialize/parse` 层新增 `EncryptedSession` 包装;所有 socket send/recv 经它 | 单点接入,worker/coordinator 的读写代码不感知加密细节 |
+| 9 | 首次配对时机 | 用户在 Android 指纹确认对话框点「信任并连接」后才写信任白名单 | 不静默信任陌生广播 |
+| 10 | 已配对重连 | 维持现状自动重连逻辑,改用身份公钥识别 | 不扩大自动行为范围 |
 
-## 4. 架构
+## 4. 协议
 
-### 4.1 数据流(改动后)
+### 4.1 MessageType 改动(`share/core/distributed/protocol.hpp`)
 
-```
-PC mdns.cpp                Android MDNSDiscovery.kt
-─────────────              ────────────────────────
-TXT: version=1             onServiceResolved
-      role=coordinator       host = hostAddress
-      auth_key=<full>   ◀──  port = port
-      auth_key_hash=<16>     key  = getAttribute("auth_key")  [新]
-                              │
-                              ▼
-                            DeviceViewModel.onServiceFound
-                              DeviceProfile(
-                                discoveredAuthKey = service.key,  [新]
-                                status = DISCOVERED)
-                              │
-              ┌───────────────┼─────────────────┐
-              ▼               ▼                 ▼
-        attemptAutoConnect  (等待用户)      connectDiscoveredWithKey [新]
-        (仅已配对,静默)     DeviceCard 显示   用 discoveredAuthKey 直连
-                           「一键连接」      成功→savePairing+CONNECTED
-                                            失败→markFailed+回退手动对话框
+```cpp
+// 新增
+MSG_KEY_HELLO     = 0x0007,  // C→S / S→C:交换 ephemeral + identity 公钥
+MSG_AUTH_PROOF    = 0x0008,  // C→S:Ed25519 签名(用会话密钥加密)
+
+// 复用现有码点,但 payload 改变(加 trusted 字段,见 §6.2)
+MSG_AUTH_RESPONSE = 0x0004,  // S→C:{ authenticated, device_id, trusted }(加密)
+                             //   trusted=0 首次(需 Android 端 TOFU),trusted=1 已在白名单
+MSG_DISCONNECT    = 0x0005,  // payload 不变(加密)
+MSG_HEARTBEAT     = 0x0006,  // payload 不变(加密)
 ```
 
-### 4.2 状态机(DeviceStatus)
+`MSG_AUTH_REQUEST = 0x0003` **删除**(v2 不再有明文 key)。
+
+### 4.2 帧格式:v2 加密帧
+
+握手完成后,所有 `Protocol::serialize` 产生的明文帧被 `EncryptedSession` 包装:
 
 ```
-                  ┌──────────────────────────────────────┐
-                  ▼                                      │
-DISCOVERED ──connect──▶ CONNECTING ──成功──▶ CONNECTED   │
-    ▲                       │                            │
-    │                       失败                         │
-    └───────────────────────┘                            │
-                  markFailed                             │
-                                                         │
+[ MessageHeader(15B, type=原类型, payload_length=密文长度) ]
+[ nonce(24B) ]
+[ ciphertext(原 payload + 16B Poly1305 MAC) ]
+```
+
+- header 本身明文(对端需读 type 决定是否解密);header.checksum 仍存**明文 payload 的 CRC32**(便于错误诊断)
+- nonce 由 `crypto_secretbox` 要求的 24B 随机生成;通信双方各维护计数器防重放(本次先不做严格防重放,nonce 随机已够;留 TODO)
+- 握手阶段的 `MSG_KEY_HELLO` 不加密(公钥本就公开);`MSG_AUTH_PROOF`/`MSG_AUTH_RESPONSE` 起进入加密
+
+### 4.3 握手时序(3 报文相互签名)
+
+```
+C (Android/CLI worker)                     S (PC Coordinator)
+─────────────────────                      ────────────────────
+生成 c_eph = X25519 keypair                 生成 s_eph = X25519 keypair
+c_id = 持久 Ed25519 身份                     s_id = 持久 Ed25519 身份
+
+MSG_KEY_HELLO {                            MSG_KEY_HELLO {
+  c_eph_pub[32],                             s_eph_pub[32],
+  c_id_pub[32]                               s_id_pub[32],
+}                                            s_sig[64] = Ed25519_sign(s_id_priv,
+                                              SHA256(c_eph||c_id||s_eph||s_id))
+                                          }
+                    ◀────────────────
+校验 s_sig 用 s_id_pub
+派生 session_key = X25519(c_eph, s_eph)
+c_sig = Ed25519_sign(c_id_priv, SHA256(transcript))
+
+MSG_AUTH_PROOF {                           ─▶  解密校验 c_sig 用 c_id_pub
+  c_sig[64]                                    查 c_id_pub 是否在 trusted_clients
+} (secretbox 加密)                              ├ 在 → trusted=1
+                                                └ 不在 → trusted=0(首次)
+                                              派生同样的 session_key(c_eph, s_eph)
+
+                     MSG_AUTH_RESPONSE {
+                       authenticated,         校验 c_sig
+                       device_id[36],         ├ 过 → authenticated=1
+                       trusted                └ 不过 → 0,断开
+                     } (secretbox 加密)
+
+握手完成,后续所有帧 secretbox 加密
+```
+
+- `authenticated=1, trusted=0`:认证通过(签名有效)但 PC 之前没见过这个 Android → Android 端弹「PC 指纹 ABCD1234,信任?」(PC 指纹从 mDNS TXT 或 QR 取,与 s_id_pub 校验一致才信任)
+- Android 用户确认信任 → 写 `PairingRepository` 存 s_id_pub → 重连时 PC 已把 c_id_pub 加入白名单 → trusted=1
+
+## 5. 架构
+
+### 5.1 模块划分(C++ 侧新增)
+
+```
+share/
+├── core/
+│   └── distributed/
+│       ├── crypto_session.{hpp,cpp}   ← 新:EncryptedSession(secretbox 包装/解包)
+│       ├── identity.{hpp,cpp}         ← 新:IdentityKey(Ed25519 load/generate/sign/verify)
+│       └── protocol.{hpp,cpp}         ← 改:MSG_KEY_HELLO/AUTH_PROOF,删 MSG_AUTH_REQUEST
+└── utils/
+    ├── crypto.cpp                     ← 改:删 sha256_hex 之外的 auth_key 用途;新增 fingerprint()
+    └── crypto_sodium.{hpp,cpp}        ← 新:libsodium 初始化 + 薄封装(X25519/Ed25519/secretbox)
+```
+
+`crypto_session` 是加密的**唯一接入点**。`Worker::handshake` / `Coordinator` 的连接处理改为:
+
+```cpp
+// 发送:明文帧 → serialize → EncryptedSession::seal → socket->send_all
+// 接收:socket->receive_all(header) → read nonce → receive ciphertext → EncryptedSession::open → parse
+```
+
+握手前(发/收 MSG_KEY_HELLO)不加密;握手完成调 `session.activate(session_key)` 后才 seal/open。
+
+### 5.2 数据流(改动后)
+
+```
+PC 启动(server start)
+  ├─ 加载或生成 ~/.crossscale/identity (Ed25519)
+  ├─ 启 Coordinator(身份密钥注入,不再有 auth_key)
+  ├─ mDNS TXT: version=2, role=coordinator,
+  │            id_fingerprint=<sha256(s_id_pub)[0:8] hex>,
+  │            id_pubkey=<base64(s_id_pub)>           ← 新(供 Android 比对)
+  └─ QR/connection card: 含 fp + pk
+
+Android 发现
+  ├─ MDNSDiscovery 读 TXT → DiscoveredService(fingerprint, identityPubKey)
+  ├─ DeviceViewModel:onServiceFound
+  │    DeviceProfile(discoveredFingerprint, discoveredPubKey, status=DISCOVERED)
+  │    ┌─ 已在 PairingRepository(存过 s_id_pub)→ attemptAutoConnect(静默)
+  │    └─ 未配对 → DeviceCard 显示「发现,指纹 ABCD1234,一键连接」
+  └─ 用户点「一键连接」
+       ├─ 弹「PC 指纹 ABCD1234,信任并连接?」(指纹取 mDNS TXT 与 QR 一致才显示绿勾)
+       ├─ 确认 → NativeWorker.connect(host, port, identityPubKey)
+       │         (JNI 内部:加载 Android 身份 → ECDH 握手 → 加密 worker session)
+       ├─ 成功 → PairingRepository.saveTrustedPC(host, port, s_id_pub) + CONNECTED
+       └─ 失败 → markFailed + connectionError + 回退手动对话框
+```
+
+### 5.3 DeviceStatus 状态机
+
+```
+DISCOVERED ──connect──▶ CONNECTING ──成功──▶ CONNECTED
+    ▲                       │
+    │                       失败
+    └───────────────────────┘
+
 CONNECTED ──disconnect──▶ OFFLINE ──rediscover──▶ DISCOVERED
 ```
 
-## 5. 详细改动
+加 `CONNECTING` 枚举值。
 
-### 5.1 PC: `share/utils/mdns.cpp`
+## 6. 详细改动
 
-- `Impl` 加字段 `std::string auth_key;`(line 67-76 区域)
-- `start()` 签名不变(已收 `auth_key` 参数),内部:
-  - 计算 hash 时同时保留入参 `auth_key` 到 `impl_->auth_key`
-  - 去重判断(line 96-101)纳入 `auth_key == impl_->auth_key`
-  - TXT 列表(line 117-137)在现有三项后加 `auth_key_txt = "auth_key=" + auth_key`,作为 `execlp` 的额外参数
+### 6.1 新增 C++ 模块
 
-### 5.2 Android: `apps/.../network/MDNSDiscovery.kt`
+#### `share/utils/crypto_sodium.{hpp,cpp}`
+- `SodiumInit()` — 进程级 `sodium_init()`,幂等
+- `X25519Keypair` / `Ed25519Keypair` 结构 + `generate_*()` / `load_*()` / `save_*()`
+- `x25519_shared_secret(my_priv, peer_pub) -> [32]`
+- `ed25519_sign(priv, msg) -> [64]` / `ed25519_verify(pub, sig, msg) -> bool`
+- `secretbox_seal(key, plaintext) -> {nonce[24], ciphertext}` / `secretbox_open(key, nonce, ciphertext) -> optional<plaintext>`
 
-- `DiscoveredService` data class(line 9-13)加 `val key: String? = null`
-- `onServiceResolved`(line 51-60):
-  ```kotlin
-  val key = runCatching { resolvedInfo.getAttribute("auth_key") }.getOrNull()
-  val discoveredService = DiscoveredService(
-      name = resolvedInfo.serviceName,
-      host = hostAddress,
-      port = resolvedInfo.port,
-      key = key
-  )
-  ```
-  (`NsdServiceInfo.getAttribute(String): String?` 是 API 21+ 标准方法,无需新依赖)
+#### `share/core/distributed/identity.{hpp,cpp}`
+- `class IdentityKey` — 持久 Ed25519 身份
+  - `load_or_create(path)` — PC 路径 `~/.crossscale/identity`;Android 通过 JNI 传 app 内部存储路径
+  - `public_key() -> [32]`, `sign(msg) -> [64]`, `verify(pub, sig, msg) -> bool`
+- `fingerprint(pubkey) -> string` — sha256 前 8 字节 hex 大写
+- `class TrustStore` — PC 信任白名单
+  - `load(path)`, `add(pubkey)`, `contains(pubkey) -> bool`, `save()`
+  - PC 路径 `~/.crossscale/trusted_clients`
 
-### 5.3 Android: `apps/.../data/model/DeviceProfile.kt`
+#### `share/core/distributed/crypto_session.{hpp,cpp}`
+- `class EncryptedSession`
+  - `bool active()`, `void activate(const SessionKey&)`
+  - `seal(const MessageHeader&, const void* plaintext_payload) -> vector<uint8_t>` — 产出完整 wire bytes(header 改写 payload_length + 追加 nonce + 密文)
+  - `open(const uint8_t* wire, size_t) -> optional<pair<MessageHeader, vector<uint8_t>>>` — 校验 MAC,返回明文 header + 明文 payload
 
-- `enum class DeviceStatus`(line 22-26):加 `CONNECTING`
-- `data class DeviceProfile`(line 3-15):加 `val discoveredAuthKey: String? = null`
+### 6.2 改 `share/core/distributed/protocol.hpp`
 
-### 5.4 Android: `apps/.../data/repository/DeviceRepository.kt`
+- 删 `MSG_AUTH_REQUEST = 0x0003`
+- 加 `MSG_KEY_HELLO = 0x0007`,`MSG_AUTH_PROOF = 0x0008`
+- 删 `struct AuthRequest`(明文 key);`struct AuthResponse` 加 `uint8_t trusted` 字段(改 layout,反正 v2 不兼容 v1)
+- 加 `struct KeyHelloMessage { uint8_t eph_pub[32]; uint8_t id_pub[32]; uint8_t sig[64]; }`(sig 在 S→C 时填,C→S 留空)
+- 加 `struct AuthProofMessage { uint8_t sig[64]; }`
+- `MessageHeader.version` 升 2
 
-- 新增 `fun markConnecting(deviceId: String)`:把该 device 置 `CONNECTING`,保留其它字段
-- 新增 `fun markFailed(deviceId: String)`:把该 device 置回 `DISCOVERED`
-- `updateDiscoveredDevices`(line 35-89):合并时若已存 device 状态为 `CONNECTING` 或 `CONNECTED`,不被新发现覆盖(保留进度/连接);若已存有 `discoveredAuthKey` 也保留不丢
+### 6.3 改 `share/core/distributed/worker.cpp`
 
-### 5.5 Android: `apps/.../viewmodel/DeviceViewModel.kt`
+- `connect()` 签名:`(host, port, peer_identity_pubkey)` 替代 `(host, port, auth_key)`;内部加载本地 `IdentityKey`
+- `handshake()` 重写为 §4.3 时序:发 KEY_HELLO → 收 KEY_HELLO 验签 → 派生 session_key → 发 AUTH_PROOF(加密)→ 收 AUTH_RESPONSE(加密)
+- 握手后所有 send/recv 经 `EncryptedSession::seal/open`
+- `MSG_HEARTBEAT` / `MSG_DEVICE_PROFILE` 发送路径改走加密
 
-- `startDiscovery` 的 `onServiceFound`(line 77-91):构造 `DeviceProfile` 时传 `discoveredAuthKey = service.key`
-- 新增 `fun connectDiscoveredWithKey(deviceId: String)`:
-  - 查 device 的 `discoveredAuthKey`,空则回退 `connectDevice`
-  - `markConnecting` → `connectToCoordinator(ip, port, key)` → 成功:`savePairing` + `addManualDevice`;失败:`markFailed` + 设 `connectionError` + 回退 `_showManualConnectDialog=true`
-- `connectDevice`(line 151-203)、`connectByQrPayload`(line 114-130)、`connectManual`(line 132-149)各连接调用点包裹 `markConnecting/markFailed`,失败时设 `connectionError`
-- `DeviceUiState`(line 26-32)加 `val connectionError: String? = null`;`combine` 流纳入一个 `_connectionError: MutableStateFlow<String?>`;新增 `fun clearConnectionError()` 清空(Snackbar 展示后调)
-- 构建 `devices` 时为每个 device 计算并附 `isPaired`(查 `pairingRepository.getAuthKey(ip,port) != null`);方式:`DeviceUiState` 新增 `val pairedDeviceIds: Set<String>`,不污染 `DeviceProfile` 持久模型
+### 6.4 改 `share/core/distributed/coordinator.cpp` + `coordinator_admin.cpp`
 
-### 5.6 Android: `apps/.../ui/components/DeviceCard.kt`
+- `Coordinator::start(port, identity)` — 参数从 `auth_key` 改 `IdentityKey&`
+- 连接处理(`handle_connection` line ~170-260)重写:收 KEY_HELLO → 发 KEY_HELLO 验签 → 派生 session_key → 收 AUTH_PROOF → 验签 → 查 TrustStore → 发 AUTH_RESPONSE
+- `authenticate(conn, pubkey)` 替代 `authenticate(conn, auth_key)` — 验签而非比字符串
+- 后续 client submit / worker task 全程加密
 
-`DeviceCard` 签名(line 20-25)加 `paired: Boolean`。`onConnect` 回调复用现有的——ViewModel 在 `connectDevice` 内部根据 device 是否有 `discoveredAuthKey` 分流(有则走 `connectDiscoveredWithKey` 路径,无则弹手动对话框),减少 UI 层新回调。
+### 6.5 改 `share/utils/mdns.cpp`
 
-动作行(line 88-98)从二元改四态:
+- `MDNSBroadcaster::start(service_name, port, identity_pubkey, fingerprint)` 替代 `(name, port, auth_key)`
+- TXT:`version=2`,`role=coordinator`,`id_fingerprint=<8B hex>`,`id_pubkey=<base64 32B>`
+- 删 `auth_key_hash` TXT
 
-| 状态 | UI |
-|---|---|
-| `CONNECTED` | 「断开」按钮(同今) |
-| `CONNECTING` | 禁用按钮 + 小 `CircularProgressIndicator` + 「连接中…」 |
-| `DISCOVERED` + 有 `discoveredAuthKey` | 「一键连接」填充按钮(`onConnect` 复用,ViewModel 分流到 `connectDiscoveredWithKey`) |
-| `DISCOVERED` + 无 key | 「连接」按钮(弹手动对话框,同今) |
+### 6.6 改 `cli/src/cmd_server.cpp` + `common.cpp`
 
-顶部加配对徽章:`paired` 为真时显示「已配对」小 `AssistChip`/文本标签。
+- `cmd_server`:启动时 `IdentityKey::load_or_create("~/.crossscale/identity")`,传给 Coordinator 和 mDNSBroadcaster
+- `print_connection_card`:QR payload 改 v2 JSON:`{"v":2,"ip":..,"port":..,"fp":"ABCD1234..","pk":"<base64>"}`
+- 控制台卡片显示指纹行(`PC 指纹: ABCD1234EF567890`)
+- 删 auth_key 自动生成逻辑(line 30-33)
 
-### 5.7 Android: `apps/.../ui/screens/DevicesScreen.kt`
+### 6.7 改 `cli/src/cmd_worker.cpp`
 
-- `DevicesScreen` 签名加 `onClearConnectionError: () -> Unit`(line 29-39 区域)
-- 包一层 `SnackbarHost`:`state.connectionError != null` 时 `SnackbarHostState.showSnackbar(message, actionLabel="忽略")`,展示后调 `onClearConnectionError`
-- 发现中文案(line 65-69)从「发现中…」改为「正在搜索局域网内的 CrossScale 服务…」
-- 透传 `paired` 到 `DeviceCard`
+- `worker connect host:port` 不再要 `-k key`;改为读本地 identity 自动 ECDH
+- 可选 `--trust-fingerprint <FP>` 命令行参数(CLI worker 也走指纹确认,无交互时用此参数)
 
-## 6. 测试策略
+### 6.8 改 `cli/xmake.lua` + `apps/app/src/main/cpp/CMakeLists.txt`
 
-无新增单测框架(项目现以 instrumented test 为主)。验证靠:
+- PC xmake:`add_packages(..., "libsodium")`(xrepo 有官方包)
+- Android CMake:用**预编译静态库**方案——从 libsodium 官方 release(stallshop/libsodium)下载 `libsodium-x.x.x-android-arm64.tar.gz` 等,解压取 `libsodium.a` 放 `apps/app/src/main/cpp/jniLibs/<abi>/`;`CMakeLists.txt` 加 `find_library(SODIUM libsodium PATHS ${CMAKE_SOURCE_DIR}/jniLibs/${ANDROID_ABI})` + `target_link_libraries(..., ${SODIUM})`;支持 abiFilters 里的所有 ABI(arm64-v8a 必需,armeabi-v7a/x86/x86_64 按需)
+- 两端编译定义 `CROSSSCALE_PROTOCOL_V2`
 
-- **PC 端单元验证**:`mdns.cpp` 改动小,用现有 `xmake build` 编译 + 手动跑 `cli server start`,用 `avahi-browse -r _crossscale._tcp` 确认 TXT 含 `auth_key=`
-- **Android 构建**:`cd apps && ./gradlew assembleDebug` 通过
-- **端到端手测**(真机 + PC 同局域网):
-  1. PC `xmake run crossscale server start` → 确认 QR/TXT
-  2. Android 开 app → 开始发现 → 设备卡出现且带「一键连接」
-  3. 点「一键连接」→ 状态 `CONNECTING` → 成功 `CONNECTED` + 出现「已配对」徽章
-  4. 杀 PC → Android `OFFLINE`;重启 PC → 再发现 → 自动重连(已配对路径)
-  5. 模拟 key 错误(改 PC key 不重启广播)→ Snackbar 显示错误,回退手动对话框
-- **回归**:QR 扫码、手动连接、本地 device 流程不受影响
+### 6.9 改 `apps/app/src/main/cpp/jni_bridge.cpp`
 
-## 7. 风险与缓解
+- `NCNNEngine.nativeProcessImageDistributed` 签名:`authKey: String` → `peerPubkey: String`(base64);内部走加密
+- `NativeWorker.nativeConnect(host, port, peerPubkey)` 替代 `authKey`
+- 新增 `nativeLoadIdentity(identityPath): Boolean`(启动时加载 Android 身份,或懒加载)
+
+### 6.10 改 Android Kotlin
+
+#### `network/MDNSDiscovery.kt`
+- `DiscoveredService` 加 `fingerprint: String?`,`identityPubKey: String?`
+- `onServiceResolved`:`getAttribute("id_fingerprint")`,`getAttribute("id_pubkey")`
+
+#### `network/JoinInvite.kt`
+- `JoinInvite`:`authKey: String` → `fingerprint: String?`,`identityPubKey: String`
+- 解析 v2 JSON(`fp`,`pk`);v1 JSON(`key`)丢弃并报「请用新版 PC」
+
+#### `network/CoordinatorClient.kt`
+- `connect(host, port, peerPubkey)` 替代 `authKey`
+- `RemoteEndpoint.authKey` → `peerPubKey`
+
+#### `data/repository/PairingRepository.kt`
+- `savePairing(host, port, authKey)` → `saveTrustedPC(host, port, identityPubKey, fingerprint)`
+- `getAuthKey` → `getTrustedPC(host, port): TrustedPC?`(含 pubkey + fingerprint)
+- `isPaired(host, port): Boolean`
+
+#### `data/model/DeviceProfile.kt`
+- `enum DeviceStatus` 加 `CONNECTING`
+- `DeviceProfile` 加 `discoveredFingerprint: String? = null`,`discoveredPubKey: String? = null`
+
+#### `data/repository/DeviceRepository.kt`
+- 加 `markConnecting(deviceId)`,`markFailed(deviceId)`
+- `updateDiscoveredDevices` 保留 `CONNECTING/CONNECTED` 不被覆盖,保留 `discoveredFingerprint/PubKey`
+
+#### `viewmodel/DeviceViewModel.kt`
+- `onServiceFound` 传 fingerprint + pubkey 进 DeviceProfile
+- 新增 `connectDiscoveredWithKey(deviceId)`(用 discoveredPubKey 直连)
+- 新增 `confirmTrustAndConnect(deviceId, confirmedFingerprint)` — 用户确认指纹后调用
+- 所有连接调用点包裹 `markConnecting/markFailed`,失败设 `connectionError`
+- `DeviceUiState` 加 `connectionError: String?`,`pairedDeviceIds: Set<String>`
+
+#### `ui/components/DeviceCard.kt`
+- 签名加 `paired: Boolean`
+- 动作行四态:`CONNECTED`/`CONNECTING`(进度圈)/`DISCOVERED+pubkey`(一键连接)/`DISCOVERED+无pubkey`(手动)
+- 顶部加配对徽章 + 指纹显示(`指纹: ABCD1234`)
+
+#### `ui/components/FingerprintConfirmDialog.kt`(新)
+- 「PC 指纹 `ABCD1234EF567890`,信任并连接?」+ 确认/取消
+- 确认调 `confirmTrustAndConnect`
+
+#### `ui/screens/DevicesScreen.kt`
+- 加 `SnackbarHost` 展示 `connectionError`
+- 发现中文案「正在搜索局域网内的 CrossScale 服务…」
+- 透传 paired / 指纹到 DeviceCard;挂载 FingerprintConfirmDialog
+
+## 7. 测试策略
+
+### 7.1 单元测试(C++ 侧,新增)
+- `crypto_sodium`:X25519 双向派生一致(KAT 向量)、Ed25519 sign/verify、secretbox seal/open 往返
+- `crypto_session`:seal→open 往返、篡改密文 MAC 失败、nonce 长度
+- `identity`:load_or_create 幂等、fingerprint 稳定
+- `TrustStore`:add/contains/save/load 往返
+- 放 `share/tests/`(若无可加 xmake test target)
+
+### 7.2 编译验证
+- PC:`cd cli && xmake`(确认 libsodium 链接)
+- Android:`cd apps && ./gradlew assembleDebug`(确认 jniLibs + CMake)
+
+### 7.3 端到端手测
+1. PC `xmake run crossscale server start` → 确认控制台显示指纹 + QR v2 + mDNS TXT 含 `id_fingerprint`/`id_pubkey`
+2. `avahi-browse -r _crossscale._tcp` → 确认 TXT 字段
+3. Android 开 app → 开始发现 → 设备卡出现「指纹 ABCD1234,一键连接」
+4. 点一键连接 → FingerprintConfirmDialog → 确认 → CONNECTING → CONNECTED + 「已配对」徽章
+5. 杀 PC → Android OFFLINE;重启 PC(同一 identity 文件)→ 自动重连(trusted=1)
+6. 删 PC identity 文件重启(模拟换机)→ Android 检测指纹不符 → 重弹确认
+7. CLI worker `crossscale worker connect host:port --trust-fingerprint ABCD...` → 连上
+8. Wireshark 抓包:除握手头两条公钥外,后续全部不可读
+
+### 7.4 回归
+- QR 扫码(v2 payload)、手动连接(输指纹/pubkey)、本地 device 流程不受影响
+- serve daemon 命令不受影响
+
+## 8. 风险与缓解
 
 | 风险 | 缓解 |
 |---|---|
-| `getAttribute` 在个别 OEM ROM 行为不一 | 已用 `runCatching` 兜底,null 时退化为「无 key,弹手动对话框」,与现状一致 |
-| TXT 明文 key 被同网段他人嗅探 | 明文 key 本就明文 TCP 传输,不引入新风险;文档已界定可信局域网模型 |
-| `CONNECTING` 状态卡死(网络 hang) | 后续「断线重连」方向会加超时;本次连接调用本身沿用 `CoordinatorClient.connect` 的既有 socket 超时 |
-| `updateDiscoveredDevices` 保留逻辑破坏既有合并 | 只在状态为 `CONNECTING/CONNECTED` 时跳过覆盖,`DISCOVERED/OFFLINE` 走原逻辑 |
+| libsodium Android jniLibs 集成繁琐 | 优先用 xmake 交叉编译产出 `.a`;失败回退官方预编译包;CMake 加 ABI 检测 |
+| Ed25519/X25519 自实现风险 | 不自实现,全部走 libsodium |
+| 中间人篡改 mDNS TXT 的 pubkey | Android 端:指纹来自 mDNS TXT,但与 QR 交叉比对时取 QR 为准(扫码是带外);纯 mDNS 首次配对依赖用户肉眼核对指纹(与 SSH TOFU 同模型) |
+| v2 不兼容旧版 Android | 局域网自部署,文档说明需同步升级;Protocol version=2 旧版直接拒连并报清晰错误 |
+| `EncryptedSession` 单点包装漏改某条 send/recv 路径 | 加编译期检查:`TCPSocket::send_all` 在 `EncryptedSession::active()` 后被直接调用 → 编译警告(用 `[[deprecated]]` 标记裸 send 或 code review 清点) |
+| nonce 随机碰撞(理论) | 24B 随机空间,单会话消息量远不到碰撞阈值;留 TODO 后续加计数器防重放 |
+| 身份密钥文件权限泄漏 | 创建即 `chmod 0600`;Android 走 app 私有存储 + EncryptedSharedPreferences |
 
-## 8. 不验证的事项
+## 9. 不验证的事项
 
 - Android 当 coordinator(非目标)
-- scheduler/worker 失败恢复(非目标)
-- 链接加密(非目标)
-- `DATA_FLOW.md` 调度循环描述过时(独立文档问题,另行处理)
+- scheduler/worker 失败恢复(非目标,「断线重连」方向)
+- serve daemon 加密(非目标,本地 AF_UNIX)
+- 严格防重放(nonce 计数器)— 留 TODO
+- PC 跨平台 mDNS(仍 Linux/avahi)
 
-## 9. 受影响文件清单
+## 10. 受影响文件清单
 
-| 文件 | 改动类型 |
+### 新增源文件(4 组,7 文件)
+| 文件 | 内容 |
 |---|---|
-| `share/utils/mdns.cpp` | TXT 加 `auth_key`,Impl 加字段 |
-| `apps/.../network/MDNSDiscovery.kt` | 读 TXT,`DiscoveredService.key` |
-| `apps/.../data/model/DeviceProfile.kt` | `CONNECTING` 枚举,`discoveredAuthKey` 字段 |
-| `apps/.../data/repository/DeviceRepository.kt` | `markConnecting/markFailed`,合并保留逻辑 |
-| `apps/.../viewmodel/DeviceViewModel.kt` | `connectDiscoveredWithKey`,状态包裹,`connectionError`,`pairedDeviceIds` |
-| `apps/.../ui/components/DeviceCard.kt` | 四态动作行 + 配对徽章 |
-| `apps/.../ui/screens/DevicesScreen.kt` | Snackbar + 文案 + paired 透传 |
+| `share/utils/crypto_sodium.hpp` + `.cpp` | libsodium 薄封装 |
+| `share/core/distributed/identity.hpp` + `.cpp` | IdentityKey + TrustStore + fingerprint |
+| `share/core/distributed/crypto_session.hpp` + `.cpp` | EncryptedSession(secretbox 包装) |
+| `apps/app/src/main/java/com/crossscale/ui/components/FingerprintConfirmDialog.kt` | 指纹确认对话框 |
+
+### 新增二进制
+| 文件 | 说明 |
+|---|---|
+| `apps/app/src/main/cpp/jniLibs/<abi>/libsodium.a` | 每个 ABI 一份(arm64-v8a 必需,余按 abiFilters) |
+
+### 改 C++ / 构建(11)
+| 文件 | 改动 |
+|---|---|
+| `share/core/distributed/protocol.hpp` | 删 MSG_AUTH_REQUEST/AuthRequest,加 MSG_KEY_HELLO/AUTH_PROOF,AuthResponse 加 trusted,version=2 |
+| `share/core/distributed/worker.cpp` | connect 签名换 pubkey,handshake 重写,读写走 EncryptedSession |
+| `share/core/distributed/coordinator.cpp` | start 取 identity,handle_connection 重写握手,认证改验签 |
+| `share/core/distributed/coordinator_admin.cpp` | authenticate(conn, pubkey) 验签 |
+| `share/utils/mdns.cpp` | TXT 改 id_fingerprint/id_pubkey,start 签名换 |
+| `share/utils/crypto.cpp` | 删 auth_key 相关;fingerprint() 归入 identity 模块则此处仅留 sha256_hex/uuid |
+| `cli/src/cmd_server.cpp` | 身份加载,调用改 identity |
+| `cli/src/common.cpp` | QR v2 + connection card 指纹 |
+| `cli/src/cmd_worker.cpp` | 删 -k,加 --trust-fingerprint |
+| `cli/xmake.lua` | add libsodium |
+| `apps/app/src/main/cpp/CMakeLists.txt` | jniLibs libsodium find_library + CROSSSCALE_PROTOCOL_V2 |
+| `apps/app/src/main/cpp/jni_bridge.cpp` | nativeProcessImageDistributed/nativeConnect 签名换 pubkey,nativeLoadIdentity |
+
+### 改 Android Kotlin(9)
+| 文件 | 改动 |
+|---|---|
+| `network/MDNSDiscovery.kt` | 读 id_fingerprint/id_pubkey TXT |
+| `network/JoinInvite.kt` | v2 JSON(fp/pk),删 authKey |
+| `network/CoordinatorClient.kt` | connect 用 peerPubkey |
+| `data/repository/PairingRepository.kt` | 存 identityPubKey+fingerprint,删 authKey |
+| `data/model/DeviceProfile.kt` | CONNECTING,discoveredFingerprint/PubKey |
+| `data/repository/DeviceRepository.kt` | markConnecting/markFailed,合并保留 |
+| `viewmodel/DeviceViewModel.kt` | connectDiscoveredWithKey,confirmTrustAndConnect,状态包裹,connectionError,pairedDeviceIds |
+| `ui/components/DeviceCard.kt` | 四态动作行 + 配对徽章 + 指纹 |
+| `ui/screens/DevicesScreen.kt` | SnackbarHost,文案,paired 透传,FingerprintConfirmDialog 挂载 |
+
+## 11. 实现顺序建议
+
+1. **C++ 加密地基**:`crypto_sodium` → `identity` → `crypto_session` + 单测
+2. **协议层**:`protocol.hpp` v2 结构 + `EncryptedSession` 接入 `Protocol::serialize` 路径
+3. **PC 握手**:`worker.cpp` + `coordinator.cpp` 重写,本地 CLI worker↔server 自测
+4. **mDNS + QR**:`mdns.cpp` TXT + `cmd_server`/`common.cpp` 卡片
+5. **Android JNI**:身份加载 + `jni_bridge.cpp` 签名改造 + libsodium 集成
+6. **Android Kotlin**:`PairingRepository` → `MDNSDiscovery` → `CoordinatorClient` → `DeviceViewModel` → UI
+7. **端到端手测**:按 §7.3 全流程
+
+每步可独立编译验证,降低集成风险。
