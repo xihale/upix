@@ -1,5 +1,6 @@
 #include "utils/crypto_sodium.hpp"
 #include "core/distributed/identity.hpp"
+#include "core/distributed/crypto_session.hpp"
 #include "utils/crypto.hpp"
 #include <sodium.h>
 #include <algorithm>
@@ -116,6 +117,35 @@ int main() {
     }
     fs::remove(ts_path);
     std::printf("OK truststore add/contains/save/load\n");
+
+    // 8. EncryptedSession seal/open 往返
+    {
+        EncryptedSession s;
+        EncryptedSession::SessionKey k{};
+        for (auto& b : k) b = 0x42;
+        s.activate(k);
+
+        MessageHeader hdr;
+        hdr.type = MessageType::MSG_HEARTBEAT;
+        std::vector<uint8_t> payload(64);
+        for (size_t i = 0; i < payload.size(); ++i) payload[i] = (uint8_t)i;
+        hdr.payload_length = (uint32_t)payload.size();
+
+        auto wire = s.seal(hdr, payload.data());
+        CHECK(wire.size() == 15 + 24 + 64 + 16);
+
+        auto opened = s.open(wire.data(), wire.size());
+        CHECK(opened.has_value());
+        CHECK(opened->first.type == MessageType::MSG_HEARTBEAT);
+        CHECK(opened->first.payload_length == 64);
+        CHECK(opened->second.size() == 64);
+        CHECK(std::memcmp(opened->second.data(), payload.data(), 64) == 0);
+
+        // 篡改密文应失败(flip a ciphertext byte at offset 15+24+5 = 44)
+        wire[44] ^= 0xFF;
+        CHECK(!s.open(wire.data(), wire.size()));
+        printf("OK encrypted session seal/open + tamper reject\n");
+    }
 
     std::printf("ALL CRYPTO TESTS PASSED\n");
     return 0;
