@@ -16,6 +16,7 @@ public:
     using SessionKey = std::array<uint8_t, 32>;
 
     EncryptedSession() = default;
+    ~EncryptedSession();
 
     auto active() const -> bool { return active_; }
 
@@ -25,11 +26,11 @@ public:
     // seal: 输入明文 header + payload,输出完整 wire bytes。
     // wire = [MessageHeader(15B,type 不变,payload_length 改为 nonce+ct 长度)]
     //        [nonce(24B)][ciphertext(payload_len + 16 MAC)]
-    auto seal(const MessageHeader& header, const void* plaintext_payload)
+    auto seal(const MessageHeader& header, const void* plaintext_payload) const
         -> std::vector<uint8_t>;
 
     // open: 输入完整 wire,返回 {明文 header, 明文 payload}。MAC 失败返回 nullopt。
-    auto open(const uint8_t* wire, size_t wire_len)
+    auto open(const uint8_t* wire, size_t wire_len) const
         -> std::optional<std::pair<MessageHeader, std::vector<uint8_t>>>;
 
 private:

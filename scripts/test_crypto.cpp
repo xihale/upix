@@ -147,6 +147,48 @@ int main() {
         printf("OK encrypted session seal/open + tamper reject\n");
     }
 
+    // 9. EncryptedSession empty payload round-trip (MSG_HEARTBEAT-style)
+    {
+        EncryptedSession s;
+        EncryptedSession::SessionKey k{};
+        for (auto& b : k) b = 0x42;
+        s.activate(k);
+        MessageHeader hdr;
+        hdr.type = MessageType::MSG_HEARTBEAT;
+        hdr.payload_length = 0;
+        auto wire = s.seal(hdr, nullptr);
+        CHECK(wire.size() == 15 + 24 + 0 + 16);  // 55
+        auto opened = s.open(wire.data(), wire.size());
+        CHECK(opened.has_value());
+        CHECK(opened->first.payload_length == 0);
+        CHECK(opened->second.empty());
+        printf("OK encrypted session empty payload\n");
+    }
+
+    // 10. open rejects too-short / tampered wire
+    {
+        EncryptedSession s;
+        EncryptedSession::SessionKey k{};
+        s.activate(k);
+        // too short (< 15)
+        uint8_t tiny[10] = {};
+        CHECK(!s.open(tiny, sizeof(tiny)));
+        // header-only with bogus payload_length
+        std::vector<uint8_t> bogus(15 + 24 + 16, 0);  // min-size but all-zero nonce+ct
+        // parse_header needs magic; set it so we get past header parse to MAC fail
+        // magic = 0x53534358 little-endian
+        bogus[0]=0x58; bogus[1]=0x43; bogus[2]=0x53; bogus[3]=0x53;
+        bogus[4]=2;  // version
+        // type=0x0006 (HEARTBEAT) little-endian
+        bogus[5]=0x06; bogus[6]=0x00;
+        // payload_length = 40 (24+16) little-endian
+        bogus[7]=40; bogus[8]=0; bogus[9]=0; bogus[10]=0;
+        // checksum = 0
+        // bytes 15.. end are all zero nonce+ct → MAC will fail
+        CHECK(!s.open(bogus.data(), bogus.size()));
+        printf("OK encrypted session rejects short/bogus wire\n");
+    }
+
     std::printf("ALL CRYPTO TESTS PASSED\n");
     return 0;
 }

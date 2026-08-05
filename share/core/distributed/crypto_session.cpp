@@ -1,13 +1,18 @@
 #include "crypto_session.hpp"
 #include "utils/crypto_sodium.hpp"
-#include <cassert>
+#include <sodium.h>
 #include <cstring>
+#include <stdexcept>
 
 namespace crossscale {
 
 void EncryptedSession::activate(const SessionKey& key) {
     key_ = key;
     active_ = true;
+}
+
+EncryptedSession::~EncryptedSession() {
+    sodium_memzero(&key_, sizeof(key_));
 }
 
 namespace {
@@ -18,16 +23,17 @@ inline void put_u16(uint8_t* p, uint16_t v) {
 }
 
 auto EncryptedSession::seal(const MessageHeader& header,
-                            const void* plaintext_payload) -> std::vector<uint8_t> {
-    assert(active_ && "seal before activate");
+                            const void* plaintext_payload) const -> std::vector<uint8_t> {
+    if (!active_) throw std::runtime_error("EncryptedSession::seal before activate");
     const uint32_t pt_len = header.payload_length;
     const size_t nonce_len = 24;  // crypto_box_NONCEBYTES == crypto_secretbox_NONCEBYTES
     const size_t ct_len = pt_len + 16;  // crypto_secretbox_MACBYTES
 
-    // 修改后的 header:payload_length 改为 nonce+ct 长度,checksum 保留明文 CRC(诊断用)
+    // 修改后的 header:payload_length 改为 nonce+ct 长度,checksum 置 0
+    // (明文 CRC 会泄露信息,且 Poly1305 MAC 已提供强完整性校验)
     MessageHeader out_hdr = header;
     out_hdr.payload_length = static_cast<uint32_t>(nonce_len + ct_len);
-    out_hdr.checksum = Protocol::compute_checksum(plaintext_payload, pt_len);
+    out_hdr.checksum = 0;
 
     // 手工 pack 15B header(小端,与 parse_header 读取顺序一致)
     std::vector<uint8_t> wire(Protocol::HEADER_SIZE);
@@ -44,9 +50,9 @@ auto EncryptedSession::seal(const MessageHeader& header,
     return wire;
 }
 
-auto EncryptedSession::open(const uint8_t* wire, size_t wire_len)
+auto EncryptedSession::open(const uint8_t* wire, size_t wire_len) const
     -> std::optional<std::pair<MessageHeader, std::vector<uint8_t>>> {
-    assert(active_ && "open before activate");
+    if (!active_) return std::nullopt;
     if (wire_len < Protocol::HEADER_SIZE) return std::nullopt;
 
     auto hdr = Protocol::parse_header(wire, Protocol::HEADER_SIZE);
