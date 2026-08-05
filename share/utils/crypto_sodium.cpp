@@ -20,12 +20,21 @@ auto x25519_keygen() -> X25519Keypair {
 auto x25519_shared(const std::array<uint8_t, 32>& my_private,
                    const std::array<uint8_t, 32>& peer_public)
     -> std::array<uint8_t, 32> {
-    std::array<uint8_t, 32> shared;
-    if (crypto_scalarmult_curve25519(shared.data(), my_private.data(),
+    std::array<uint8_t, 32> raw;
+    if (crypto_scalarmult_curve25519(raw.data(), my_private.data(),
                                      peer_public.data()) != 0) {
-        throw std::runtime_error("X25519 scalarmult failed");
+        throw std::runtime_error("x25519 scalarmult failed (low-order point?)");
     }
-    return shared;
+    // raw X25519 共享点不可直接用作对称密钥 (libsodium guidance),
+    // 经 BLAKE2b (带 domain separator 的 personalization) 硬化为 32 字节密钥。
+    std::array<uint8_t, 32> hardened;
+    static const char ctx[] = "crossscale-ecdh-v1";
+    crypto_generichash_blake2b(
+        hardened.data(), 32,
+        raw.data(), 32,
+        reinterpret_cast<const unsigned char*>(ctx), sizeof(ctx) - 1);
+    sodium_memzero(raw.data(), raw.size());
+    return hardened;
 }
 
 auto ed25519_keygen() -> Ed25519Keypair {

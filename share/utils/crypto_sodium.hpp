@@ -17,6 +17,8 @@ struct X25519Keypair {
     std::array<uint8_t, 32> private_key;
 };
 auto x25519_keygen() -> X25519Keypair;
+// 派生会话密钥:raw X25519 共享点经 BLAKE2b (带 domain separator) 硬化,
+// 返回值可直接作为 secretbox 的对称密钥使用。
 auto x25519_shared(const std::array<uint8_t, 32>& my_private,
                    const std::array<uint8_t, 32>& peer_public)
     -> std::array<uint8_t, 32>;
