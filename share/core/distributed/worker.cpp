@@ -2,6 +2,7 @@
 #include "utils/logger.hpp"
 #include "utils/network.hpp"
 #include "utils/crypto.hpp"
+#include "utils/crypto_sodium.hpp"
 #include <thread>
 #include <cstring>
 #include <algorithm>
@@ -58,22 +59,22 @@ Worker::~Worker() {
     disconnect();
 }
 
-auto Worker::connect(const std::string& host, uint16_t port, const std::string& auth_key)
+auto Worker::connect(const std::string& host, uint16_t port,
+                     const std::array<uint8_t, 32>& peer_identity_pubkey,
+                     IdentityKey& local_identity)
     -> expected<void, WorkerError> {
-    
+
     socket_ = std::make_unique<TCPSocket>();
-    
+
     auto result = socket_->connect(host, port);
     if (!result.has_value()) {
         return std::unexpected(WorkerError{1, "Connection failed: " + result.error().message});
     }
-    
-    auth_key_ = auth_key;
+
+    peer_id_pub_ = peer_identity_pubkey;
+    local_identity_ = &local_identity;
     running_ = true;
-    
-    AuthRequest auth_req;
-    std::strncpy(auth_req.auth_key, auth_key.c_str(), sizeof(auth_req.auth_key) - 1);
-    
+
     LOG_INFO("Worker", "Connected to " + host + ":" + std::to_string(port));
     return {};
 }
@@ -94,39 +95,117 @@ auto Worker::handshake(Engine& engine) -> expected<void, WorkerError> {
     if (!socket_) {
         return std::unexpected(WorkerError{2, "Not connected"});
     }
-
-    // 发送认证请求
-    AuthRequest auth_req;
-    std::strncpy(auth_req.auth_key, auth_key_.c_str(), sizeof(auth_req.auth_key) - 1);
-    
-    MessageHeader auth_hdr;
-    auth_hdr.type = MessageType::MSG_AUTH_REQUEST;
-    auth_hdr.payload_length = sizeof(auth_req);
-    auto auth_data = Protocol::serialize(auth_hdr, &auth_req);
-    auto send_res = socket_->send_all(auth_data.data(), auth_data.size());
-    if (!send_res.has_value()) {
-        return std::unexpected(WorkerError{100, "Auth send failed: " + send_res.error().message});
+    if (!local_identity_) {
+        return std::unexpected(WorkerError{2, "No local identity configured"});
     }
 
-    // 接收认证响应
-    std::vector<uint8_t> hdr_buf(Protocol::HEADER_SIZE);
-    auto hdr_recv = socket_->receive_all(hdr_buf.data(), hdr_buf.size());
-    if (!hdr_recv.has_value()) {
-        return std::unexpected(WorkerError{101, "Auth header recv failed: " + hdr_recv.error().message});
+    sodium::init();
+
+    // ── (1) Generate ephemeral X25519 keypair, send KEY_HELLO (plaintext) ──
+    auto eph = sodium::x25519_keygen();
+    const auto c_eph_pub = eph.public_key;
+    const auto c_id_pub = local_identity_->public_key();
+
+    KeyHelloMessage c_hello{};
+    std::memcpy(c_hello.eph_pub, c_eph_pub.data(), 32);
+    std::memcpy(c_hello.id_pub, c_id_pub.data(), 32);
+    std::memset(c_hello.sig, 0, 64);  // client's hello carries no signature
+
+    {
+        MessageHeader hh{};
+        hh.type = MessageType::MSG_KEY_HELLO;
+        hh.payload_length = sizeof(c_hello);
+        auto wire = Protocol::serialize(hh, &c_hello);
+        auto send_res = socket_->send_all(wire.data(), wire.size());
+        if (!send_res.has_value()) {
+            return std::unexpected(WorkerError{100, "KEY_HELLO send failed: " + send_res.error().message});
+        }
     }
-    auto parsed_hdr = Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
-    if (!parsed_hdr || parsed_hdr->type != MessageType::MSG_AUTH_RESPONSE) {
-        return std::unexpected(WorkerError{102, "Unexpected message during auth"});
+
+    // ── (2) Receive server KEY_HELLO with its signature ──
+    KeyHelloMessage s_hello{};
+    {
+        std::vector<uint8_t> hdr_buf(Protocol::HEADER_SIZE);
+        auto hdr_recv = socket_->receive_all(hdr_buf.data(), hdr_buf.size());
+        if (!hdr_recv.has_value()) {
+            return std::unexpected(WorkerError{101, "KEY_HELLO header recv failed: " + hdr_recv.error().message});
+        }
+        auto parsed_hdr = Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
+        if (!parsed_hdr || parsed_hdr->type != MessageType::MSG_KEY_HELLO ||
+            parsed_hdr->payload_length != sizeof(s_hello)) {
+            return std::unexpected(WorkerError{102, "Unexpected message during handshake"});
+        }
+        std::vector<uint8_t> payload(parsed_hdr->payload_length);
+        auto pay_recv = socket_->receive_all(payload.data(), payload.size());
+        if (!pay_recv.has_value()) {
+            return std::unexpected(WorkerError{101, "KEY_HELLO payload recv failed: " + pay_recv.error().message});
+        }
+        std::memcpy(&s_hello, payload.data(), sizeof(s_hello));
     }
-    std::vector<uint8_t> payload(parsed_hdr->payload_length);
-    (void)socket_->receive_all(payload.data(), payload.size());
-    auto* auth_resp = reinterpret_cast<AuthResponse*>(payload.data());
+
+    // ── (3) Build transcript c_eph||c_id||s_eph||s_id (128 bytes) ──
+    // Both sides MUST construct this identical byte sequence.
+    std::array<uint8_t, 128> transcript{};
+    std::memcpy(transcript.data() + 0,   c_hello.eph_pub, 32);
+    std::memcpy(transcript.data() + 32,  c_hello.id_pub,  32);
+    std::memcpy(transcript.data() + 64,  s_hello.eph_pub, 32);
+    std::memcpy(transcript.data() + 96,  s_hello.id_pub,  32);
+
+    // ── (4) MITM check: server's identity pubkey must match the one we expect ──
+    const std::array<uint8_t, 32> s_id_pub_arr = [&] {
+        std::array<uint8_t, 32> a{};
+        std::memcpy(a.data(), s_hello.id_pub, 32);
+        return a;
+    }();
+    if (s_id_pub_arr != peer_id_pub_) {
+        return std::unexpected(WorkerError{104, "Server identity pubkey mismatch (possible MITM)"});
+    }
+
+    // ── (5) Verify server signature over the transcript ──
+    std::array<uint8_t, 64> s_sig_arr{};
+    std::memcpy(s_sig_arr.data(), s_hello.sig, 64);
+    if (!sodium::ed25519_verify(s_id_pub_arr, s_sig_arr, transcript.data(), transcript.size())) {
+        return std::unexpected(WorkerError{105, "Server handshake signature verification failed"});
+    }
+
+    // ── (6) Derive session key and activate EncryptedSession ──
+    std::array<uint8_t, 32> s_eph_pub_arr{};
+    std::memcpy(s_eph_pub_arr.data(), s_hello.eph_pub, 32);
+    auto session_key = sodium::x25519_shared(eph.private_key, s_eph_pub_arr);
+    session_.activate(session_key);
+
+    // ── (7) Sign the same transcript with our identity, send AUTH_PROOF (encrypted) ──
+    auto c_sig = local_identity_->sign(transcript.data(), transcript.size());
+    AuthProofMessage proof{};
+    std::memcpy(proof.sig, c_sig.data(), 64);
+    {
+        auto send_res = send_encrypted(MessageType::MSG_AUTH_PROOF, &proof, sizeof(proof));
+        if (!send_res.has_value()) {
+            return std::unexpected(send_res.error());
+        }
+    }
+
+    // ── (8) Receive AUTH_RESPONSE (encrypted) ──
+    auto resp_frame = recv_encrypted();
+    if (!resp_frame.has_value()) {
+        return std::unexpected(resp_frame.error());
+    }
+    auto& [resp_hdr, resp_payload] = *resp_frame;
+    if (resp_hdr.type != MessageType::MSG_AUTH_RESPONSE ||
+        resp_payload.size() < sizeof(AuthResponse)) {
+        return std::unexpected(WorkerError{103, "Authentication rejected"});
+    }
+    const auto* auth_resp = reinterpret_cast<const AuthResponse*>(resp_payload.data());
     if (!auth_resp->authenticated) {
         return std::unexpected(WorkerError{103, "Authentication rejected"});
     }
     device_id_ = auth_resp->device_id;
+    peer_trusted_ = (auth_resp->trusted != 0);
 
-    // 发送设备档案
+    LOG_INFO("Worker", "Encrypted handshake complete (device_id=" + device_id_ +
+             ", peer_trusted=" + (peer_trusted_ ? "1" : "0") + ")");
+
+    // ── (9) Build and send the device profile (encrypted) ──
     DeviceProfile profile;
     profile.device_id = device_id_;
     profile.device_name = "CLI-Worker";
@@ -148,19 +227,83 @@ auto Worker::handshake(Engine& engine) -> expected<void, WorkerError> {
     return send_profile(profile);
 }
 
+// ── Encrypted-frame helpers ──────────────────────────────────────────────────
+// After handshake() activates session_, every wire frame is a secretbox
+// ciphertext. These two helpers concentrate the seal/open boilerplate so the
+// individual message handlers don't repeat header-read + parse + open logic.
+
+auto Worker::send_encrypted(MessageType type, const void* payload, size_t len)
+    -> expected<void, WorkerError> {
+    MessageHeader header{};
+    header.type = type;
+    header.payload_length = static_cast<uint32_t>(len);
+    auto wire = session_.seal(header, payload);
+    auto res = socket_->send_all(wire.data(), wire.size());
+    if (!res.has_value()) {
+        return std::unexpected(WorkerError{3, "Encrypted send failed: " + res.error().message});
+    }
+    return {};
+}
+
+auto Worker::recv_encrypted()
+    -> expected<std::pair<MessageHeader, std::vector<uint8_t>>, WorkerError> {
+    std::vector<uint8_t> hdr_buf(Protocol::HEADER_SIZE);
+    auto hdr_recv = socket_->receive_all(hdr_buf.data(), hdr_buf.size());
+    if (!hdr_recv.has_value()) {
+        return std::unexpected(WorkerError{4, "Header recv failed: " + hdr_recv.error().message});
+    }
+    auto parsed = Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
+    if (!parsed) {
+        std::string hex;
+        hex.reserve(Protocol::HEADER_SIZE * 3);
+        static const char* kHex = "0123456789ABCDEF";
+        for (size_t i = 0; i < Protocol::HEADER_SIZE; ++i) {
+            hex += kHex[(hdr_buf[i] >> 4) & 0xF];
+            hex += kHex[hdr_buf[i] & 0xF];
+            hex += ' ';
+        }
+        LOG_ERROR("Worker", "Invalid message header — first " +
+            std::to_string(Protocol::HEADER_SIZE) + " bytes: " + hex +
+            "(expected magic 0x53534358 \"XCSS\")");
+        return std::unexpected(WorkerError{5, "Invalid message header"});
+    }
+    if (parsed->payload_length > MAX_NETWORK_PAYLOAD) {
+        return std::unexpected(WorkerError{7, "Payload too large"});
+    }
+    std::vector<uint8_t> wire(Protocol::HEADER_SIZE + parsed->payload_length);
+    std::memcpy(wire.data(), hdr_buf.data(), Protocol::HEADER_SIZE);
+    if (parsed->payload_length > 0) {
+        auto pay_recv = socket_->receive_all(wire.data() + Protocol::HEADER_SIZE, parsed->payload_length);
+        if (!pay_recv.has_value()) {
+            return std::unexpected(WorkerError{4, "Payload recv failed: " + pay_recv.error().message});
+        }
+    }
+    auto opened = session_.open(wire.data(), wire.size());
+    if (!opened) {
+        return std::unexpected(WorkerError{5, "Encrypted frame MAC failed or session inactive"});
+    }
+    return std::move(*opened);
+}
+
 void Worker::disconnect() {
     running_ = false;
     stop_heartbeat();
-    
+
     if (socket_) {
-        if (socket_->is_connected()) {
-            MessageHeader header;
-            header.type = MessageType::MSG_DISCONNECT;
-            header.payload_length = 0;
-            auto data = Protocol::serialize(header, nullptr);
-            auto send_result = socket_->send_all(data.data(), data.size());
-            if (!send_result.has_value()) {
-                LOG_WARNING("Worker", "Failed to notify coordinator before disconnect: " + send_result.error().message);
+        if (socket_->is_connected() && session_.active()) {
+            // Best-effort encrypted DISCONNECT. Failures are logged but never
+            // block teardown.
+            try {
+                MessageHeader header;
+                header.type = MessageType::MSG_DISCONNECT;
+                header.payload_length = 0;
+                auto data = session_.seal(header, nullptr);
+                auto send_result = socket_->send_all(data.data(), data.size());
+                if (!send_result.has_value()) {
+                    LOG_WARNING("Worker", "Failed to notify coordinator before disconnect: " + send_result.error().message);
+                }
+            } catch (const std::exception& e) {
+                LOG_WARNING("Worker", std::string("Could not send encrypted DISCONNECT: ") + e.what());
             }
         }
         socket_->close();
@@ -176,7 +319,7 @@ auto Worker::send_profile(const DeviceProfile& profile) -> expected<void, Worker
     if (!is_connected()) {
         return std::unexpected(WorkerError{2, "Not connected"});
     }
-    
+
     DeviceProfileMessage msg;
     std::strncpy(msg.device_id, profile.device_id.c_str(), sizeof(msg.device_id) - 1);
     std::strncpy(msg.device_name, profile.device_name.c_str(), sizeof(msg.device_name) - 1);
@@ -186,60 +329,24 @@ auto Worker::send_profile(const DeviceProfile& profile) -> expected<void, Worker
     msg.max_batch_size = profile.max_batch_size;
     std::strncpy(msg.ip_address, profile.ip_address.c_str(), sizeof(msg.ip_address) - 1);
     msg.port = profile.port;
-    
-    MessageHeader header;
-    header.type = MessageType::MSG_DEVICE_PROFILE;
-    header.payload_length = sizeof(msg);
-    
-    auto data = Protocol::serialize(header, &msg);
-    auto result = socket_->send_all(data.data(), data.size());
-    
-    if (!result.has_value()) {
-        return std::unexpected(WorkerError{3, "Failed to send profile"});
-    }
-    
-    return {};
+
+    return send_encrypted(MessageType::MSG_DEVICE_PROFILE, &msg, sizeof(msg));
 }
 
 auto Worker::receive_task() -> expected<Task, WorkerError> {
     if (!is_connected()) {
         return std::unexpected(WorkerError{2, "Not connected"});
     }
-    
-    std::vector<uint8_t> header_buffer(Protocol::HEADER_SIZE);
-    auto result = socket_->receive_all(header_buffer.data(), header_buffer.size());
-    
-    if (!result.has_value()) {
-        return std::unexpected(WorkerError{4, "Failed to receive task"});
-    }
-    
-    auto header = Protocol::parse_header(header_buffer.data(), header_buffer.size());
-    if (!header) {
-        // Dump the bytes we actually received so protocol desyncs are diagnosable.
-        std::string hex;
-        hex.reserve(Protocol::HEADER_SIZE * 3);
-        static const char* kHex = "0123456789ABCDEF";
-        for (size_t i = 0; i < Protocol::HEADER_SIZE; ++i) {
-            hex += kHex[(header_buffer[i] >> 4) & 0xF];
-            hex += kHex[header_buffer[i] & 0xF];
-            hex += ' ';
-        }
-        LOG_ERROR("Worker", "Invalid message header — first " +
-            std::to_string(Protocol::HEADER_SIZE) + " bytes: " + hex +
-            "(expected magic 0x53534358 \"XCSS\")");
-        return std::unexpected(WorkerError{5, "Invalid message header"});
-    }
 
-    if (header->type == MessageType::MSG_TASK_ASSIGNMENT) {
-        std::vector<uint8_t> payload(header->payload_length);
-        result = socket_->receive_all(payload.data(), payload.size());
-        
-        if (!result.has_value()) {
-            return std::unexpected(WorkerError{4, "Failed to receive task payload"});
-        }
-        
+    auto frame = recv_encrypted();
+    if (!frame.has_value()) {
+        return std::unexpected(frame.error());
+    }
+    auto& [header, payload] = *frame;
+
+    if (header.type == MessageType::MSG_TASK_ASSIGNMENT) {
         TaskAssignmentMessage* msg = reinterpret_cast<TaskAssignmentMessage*>(payload.data());
-        
+
         Task task;
         task.task_id = msg->task_id;
         task.model_name = msg->model_name;
@@ -288,20 +395,20 @@ auto Worker::receive_task() -> expected<Task, WorkerError> {
 auto Worker::execute_task(const Task& task, Engine& engine,
                             std::function<void(float)> progress_callback)
     -> expected<std::vector<uint8_t>, WorkerError> {
-    
+
     if (!is_connected()) {
         return std::unexpected(WorkerError{2, "Not connected"});
     }
-    
-    MessageHeader accept_header;
-    accept_header.type = MessageType::MSG_TASK_ACCEPT;
-    accept_header.payload_length = static_cast<uint32_t>(task.task_id.size() + 1);
-    auto accept_data = Protocol::serialize(accept_header, task.task_id.c_str());
-    auto result = socket_->send_all(accept_data.data(), accept_data.size());
-    if (!result.has_value()) {
+
+    // Send TASK_ACCEPT (encrypted). Payload: task_id + NUL terminator (same
+    // wire shape as the old plaintext path).
+    const std::string accept_payload = task.task_id + '\0';
+    auto accept_res = send_encrypted(MessageType::MSG_TASK_ACCEPT,
+                                     accept_payload.data(), accept_payload.size());
+    if (!accept_res.has_value()) {
         return std::unexpected(WorkerError{8, "Failed to send task acceptance"});
     }
-    
+
     if (engine.model_name() != task.model_name) {
         std::filesystem::path models_dir = model_manager_.models_directory();
         if (models_dir.empty()) {
@@ -316,30 +423,20 @@ auto Worker::execute_task(const Task& task, Engine& engine,
                                   " - " + load_result.error().message});
         }
     }
-    
+
     int scale_factor = engine.get_scale_factor();
     std::vector<ProcessedTile> processed_tiles;
     processed_tiles.reserve(task.tile_indices.size());
 
-    // Receive batch of tiles in a single network message
-    std::vector<uint8_t> header_buf(Protocol::HEADER_SIZE);
-    auto hdr_res = socket_->receive_all(header_buf.data(), header_buf.size());
-    if (!hdr_res.has_value()) {
-        return std::unexpected(WorkerError{4, "Failed to receive batch header"});
+    // Receive batch of tiles in a single encrypted message
+    auto batch_frame = recv_encrypted();
+    if (!batch_frame.has_value()) {
+        return std::unexpected(WorkerError{4, "Failed to receive batch: " + batch_frame.error().message});
     }
-    auto parsed_hdr = Protocol::parse_header(header_buf.data(), header_buf.size());
-    if (!parsed_hdr || parsed_hdr->type != MessageType::MSG_TILES_BATCH) {
-        return std::unexpected(WorkerError{6, "Expected TILES_BATCH message, got type " + std::to_string(parsed_hdr ? static_cast<int>(parsed_hdr->type) : 0)});
-    }
-
-    std::vector<uint8_t> batch_payload;
-    if (parsed_hdr->payload_length > MAX_NETWORK_PAYLOAD) {
-        return std::unexpected(WorkerError{7, "Batch payload too large: " + std::to_string(parsed_hdr->payload_length) + " bytes"});
-    }
-    batch_payload.resize(parsed_hdr->payload_length);
-    auto pay_res = socket_->receive_all(batch_payload.data(), batch_payload.size());
-    if (!pay_res.has_value()) {
-        return std::unexpected(WorkerError{4, "Failed to receive batch payload"});
+    auto& [batch_hdr, batch_payload] = *batch_frame;
+    if (batch_hdr.type != MessageType::MSG_TILES_BATCH) {
+        return std::unexpected(WorkerError{6, "Expected TILES_BATCH message, got type " +
+                               std::to_string(static_cast<int>(batch_hdr.type))});
     }
 
     size_t offset = 0;
@@ -425,7 +522,7 @@ auto Worker::execute_task(const Task& task, Engine& engine,
 
 
 void Worker::send_progress_update(const std::string& task_id, float progress) {
-    if (!socket_ || !socket_->is_connected()) {
+    if (!socket_ || !socket_->is_connected() || !session_.active()) {
         return;
     }
 
@@ -438,12 +535,7 @@ void Worker::send_progress_update(const std::string& task_id, float progress) {
     std::strncpy(msg.task_id, task_id.c_str(), sizeof(msg.task_id) - 1);
     msg.progress = progress;
 
-    MessageHeader header;
-    header.type = MessageType::MSG_TASK_PROGRESS;
-    header.payload_length = sizeof(msg);
-
-    auto data = Protocol::serialize(header, &msg);
-    (void)socket_->send_all(data.data(), data.size());
+    (void)send_encrypted(MessageType::MSG_TASK_PROGRESS, &msg, sizeof(msg));
 }
 
 auto Worker::serialize_processed_tiles(const std::vector<ProcessedTile>& tiles)
@@ -498,23 +590,12 @@ auto Worker::serialize_processed_tiles(const std::vector<ProcessedTile>& tiles)
 
 auto Worker::submit_results(const std::vector<uint8_t>& results)
     -> expected<void, WorkerError> {
-    
+
     if (!is_connected()) {
         return std::unexpected(WorkerError{2, "Not connected"});
     }
-    
-    MessageHeader header;
-    header.type = MessageType::MSG_TASK_RESULT;
-    header.payload_length = static_cast<uint32_t>(results.size());
-    
-    auto data = Protocol::serialize(header, results.data());
-    auto result = socket_->send_all(data.data(), data.size());
-    
-    if (!result.has_value()) {
-        return std::unexpected(WorkerError{8, "Failed to submit results"});
-    }
-    
-    return {};
+
+    return send_encrypted(MessageType::MSG_TASK_RESULT, results.data(), results.size());
 }
 
 void Worker::start_heartbeat(std::chrono::seconds interval) {
@@ -536,19 +617,14 @@ void Worker::stop_heartbeat() {
 
 void Worker::heartbeat_loop(std::chrono::seconds interval) {
     while (heartbeat_running_ && running_) {
-        if (socket_ && socket_->is_connected()) {
-            MessageHeader header;
-            header.type = MessageType::MSG_HEARTBEAT;
-            header.payload_length = 0;
-            
-            auto data = Protocol::serialize(header, nullptr);
-            auto send_result = socket_->send_all(data.data(), data.size());
-            if (!send_result.has_value()) {
-                LOG_WARNING("Worker", "Heartbeat send failed: " + send_result.error().message);
+        if (socket_ && socket_->is_connected() && session_.active()) {
+            auto res = send_encrypted(MessageType::MSG_HEARTBEAT, nullptr, 0);
+            if (!res.has_value()) {
+                LOG_WARNING("Worker", "Heartbeat send failed: " + res.error().message);
                 break;
             }
         }
-        
+
         std::this_thread::sleep_for(interval);
     }
     heartbeat_running_ = false;
@@ -565,25 +641,17 @@ auto Worker::sync_models() -> expected<void, WorkerError> {
 
     LOG_INFO("Worker", "sync_models: waiting for model list from coordinator...");
 
-    std::vector<uint8_t> header_buffer(Protocol::HEADER_SIZE);
-    auto result = socket_->receive_all(header_buffer.data(), header_buffer.size());
-    if (!result.has_value()) {
-        return std::unexpected(WorkerError{11, "Failed to receive model list header"});
+    auto frame = recv_encrypted();
+    if (!frame.has_value()) {
+        return std::unexpected(WorkerError{11, "Failed to receive model list: " + frame.error().message});
     }
+    auto& [header, payload] = *frame;
 
-    auto header = Protocol::parse_header(header_buffer.data(), header_buffer.size());
-    if (!header) {
-        return std::unexpected(WorkerError{12, "Invalid model list header"});
-    }
-
-    if (header->type != MessageType::MSG_MODEL_LIST) {
+    if (header.type != MessageType::MSG_MODEL_LIST) {
         return std::unexpected(WorkerError{13, "Expected MODEL_LIST message"});
     }
-
-    std::vector<uint8_t> payload(header->payload_length);
-    result = socket_->receive_all(payload.data(), payload.size());
-    if (!result.has_value()) {
-        return std::unexpected(WorkerError{14, "Failed to receive model list payload"});
+    if (payload.size() < sizeof(ModelListMessage)) {
+        return std::unexpected(WorkerError{14, "Model list payload too small"});
     }
 
     ModelListMessage* msg = reinterpret_cast<ModelListMessage*>(payload.data());
@@ -642,39 +710,22 @@ auto Worker::download_model(const std::string& model_name, uint8_t file_type)
         request.file_offset = offset;
         request.data_length = 0;
 
-        MessageHeader req_header;
-        req_header.type = MessageType::MSG_MODEL_REQUEST;
-        req_header.payload_length = sizeof(request);
-
-        auto req_data = Protocol::serialize(req_header, &request);
-        auto send_result = socket_->send_all(req_data.data(), req_data.size());
+        auto send_result = send_encrypted(MessageType::MSG_MODEL_REQUEST, &request, sizeof(request));
         if (!send_result.has_value()) {
             return std::unexpected(WorkerError{15, "Failed to send model request"});
         }
 
-        std::vector<uint8_t> resp_header_buffer(Protocol::HEADER_SIZE);
-        auto recv_result = socket_->receive_all(resp_header_buffer.data(), resp_header_buffer.size());
-        if (!recv_result.has_value()) {
-            return std::unexpected(WorkerError{16, "Failed to receive model data header"});
+        auto frame = recv_encrypted();
+        if (!frame.has_value()) {
+            return std::unexpected(WorkerError{16, "Failed to receive model data: " + frame.error().message});
         }
+        auto& [resp_header, resp_payload] = *frame;
 
-        auto resp_header = Protocol::parse_header(resp_header_buffer.data(), resp_header_buffer.size());
-        if (!resp_header) {
-            return std::unexpected(WorkerError{17, "Invalid model data header"});
-        }
-
-        if (resp_header->type != MessageType::MSG_MODEL_DATA) {
+        if (resp_header.type != MessageType::MSG_MODEL_DATA) {
             return std::unexpected(WorkerError{18, "Expected MODEL_DATA message"});
         }
-
-        std::vector<uint8_t> resp_payload;
-        if (resp_header->payload_length > MAX_NETWORK_PAYLOAD) {
-            return std::unexpected(WorkerError{22, "Model data payload too large: " + std::to_string(resp_header->payload_length)});
-        }
-        resp_payload.resize(resp_header->payload_length);
-        recv_result = socket_->receive_all(resp_payload.data(), resp_payload.size());
-        if (!recv_result.has_value()) {
-            return std::unexpected(WorkerError{19, "Failed to receive model data payload"});
+        if (resp_payload.size() < sizeof(ModelDataMessage)) {
+            return std::unexpected(WorkerError{17, "Invalid model data payload"});
         }
 
         const ModelDataMessage* data_msg = reinterpret_cast<const ModelDataMessage*>(resp_payload.data());
@@ -695,7 +746,7 @@ auto Worker::download_model(const std::string& model_name, uint8_t file_type)
             return std::unexpected(WorkerError{24, "Model file too large (>" + std::to_string(MAX_MODEL_FILE_SIZE / (1024*1024)) + " MB)"});
         }
 
-        file_data.insert(file_data.end(), 
+        file_data.insert(file_data.end(),
                          resp_payload.data() + data_offset,
                          resp_payload.data() + data_offset + data_length);
 

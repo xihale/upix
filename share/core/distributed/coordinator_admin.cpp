@@ -6,11 +6,6 @@
 
 namespace crossscale {
 
-bool Coordinator::authenticate(WorkerConnection& conn, const std::string& received_key) {
-    (void)conn;  // 保留以备将来按连接审计/日志鉴权
-    return received_key == auth_key_;
-}
-
 void Coordinator::send_model_list(WorkerConnection& conn) {
     auto models = model_manager_.available_models();
 
@@ -30,12 +25,9 @@ void Coordinator::send_model_list(WorkerConnection& conn) {
         offset += sizeof(ModelInfoMessage);
     }
 
-    MessageHeader header{};
-    header.type = MessageType::MSG_MODEL_LIST;
-    header.payload_length = static_cast<uint32_t>(payload_size);
-
-    auto data = Protocol::serialize(header, payload.data());
-    (void)conn.socket->send_all(data.data(), data.size());}
+    // Sent through the worker's encrypted session (activated by run_handshake).
+    (void)send_encrypted(conn, MessageType::MSG_MODEL_LIST, payload.data(), payload_size);
+}
 
 void Coordinator::set_models_directory(const std::filesystem::path& dir) {
     model_manager_.set_models_directory(dir);
@@ -68,13 +60,8 @@ auto Coordinator::handle_model_request(WorkerConnection& conn,
             std::memcpy(response.data() + sizeof(ModelDataMessage), data, data_length);
         }
 
-        MessageHeader header{};
-        header.type = MessageType::MSG_MODEL_DATA;
-        header.payload_length = static_cast<uint32_t>(response_size);
-
-        auto frame = Protocol::serialize(header, response.data());
-        auto result = conn.socket->send_all(frame.data(), frame.size());
-        if (!result.has_value()) {
+        // Model data is streamed over the worker's encrypted session.
+        if (!send_encrypted(conn, MessageType::MSG_MODEL_DATA, response.data(), response_size)) {
             return std::unexpected(CoordinatorError{16, "Failed to send model data"});
         }
         return {};

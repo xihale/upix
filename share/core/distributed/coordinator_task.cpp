@@ -12,6 +12,10 @@
 
 namespace crossscale {
 
+// Maximum payload size for network messages (100 MB). Mirrors the constant in
+// coordinator.cpp; duplicated because it is a translation-unit-local guard.
+static constexpr uint32_t MAX_NETWORK_PAYLOAD = 100 * 1024 * 1024;
+
 auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
                                    int width, int height, int channels,
                                    const std::string& model_name,
@@ -125,9 +129,11 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
             offset += sizeof(ti);
         }
 
-        auto data = Protocol::serialize(header, payload.data());
-        auto send_res = conn.socket->send_all(data.data(), data.size());
-        if (!send_res.has_value()) return 0;
+        // Send the task assignment over the worker's encrypted session.
+        if (!send_encrypted(conn, MessageType::MSG_TASK_ASSIGNMENT,
+                            payload.data(), payload.size())) {
+            return 0;
+        }
 
         // Build and send tile pixel data batch
         size_t total_batch_size = 0;
@@ -174,22 +180,20 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
             batch_offset += tile_data_bufs[i].size();
         }
 
-        MessageHeader batch_header{};
-        batch_header.type = MessageType::MSG_TILES_BATCH;
-        batch_header.payload_length = static_cast<uint32_t>(total_batch_size);
         // IMPORTANT: do NOT send the tile batch yet. It is held back until the
         // worker accepts the task — see the dispatch loop. This lets the worker
         // request the model (MSG_MODEL_REQUEST) between ACCEPT and the batch
         // without the batch bytes colliding with the model-request exchange.
-        auto batch_msg = Protocol::serialize(batch_header, batch_payload.data());
-
+        // We stash the PLAINTEXT batch payload here and seal it at send time
+        // (sealing now would bind us to a header that recv_encrypted rebuilds
+        // anyway, but more importantly the nonce must be unique per seal call).
         ActiveTask at;
         at.task_id = task_id;
         at.worker_id = worker_id;
         at.tile_indices = tiles;
         at.completed = false;
         at.dispatched_at = std::chrono::steady_clock::now();
-        at.pending_batch = std::move(batch_msg);
+        at.pending_batch = std::move(batch_payload);
         at.batch_sent = false;
         inflight[worker_id] = std::move(at);
 
@@ -311,6 +315,9 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
             }
 
             auto& socket = worker_it->second.socket;
+            // Read the encrypted header directly (not via recv_encrypted) so we
+            // can distinguish a poll-timeout (EAGAIN → keep polling) from a
+            // genuine disconnect / MAC failure (→ drop worker).
             std::vector<uint8_t> header_buffer(Protocol::HEADER_SIZE);
             auto recv_res = socket->receive_all(header_buffer.data(), header_buffer.size());
 
@@ -333,17 +340,46 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
                 continue;
             }
 
-            auto hdr = Protocol::parse_header(header_buffer.data(), header_buffer.size());
-            if (!hdr) continue;
+            auto parsed_hdr = Protocol::parse_header(header_buffer.data(), header_buffer.size());
+            if (!parsed_hdr || parsed_hdr->payload_length > MAX_NETWORK_PAYLOAD) {
+                LOG_WARNING("Coordinator", "Worker " + worker_id + " sent malformed frame header");
+                to_remove.push_back(worker_id);
+                scheduler_.unregister_device(worker_id);
+                workers_.erase(worker_it);
+                if (on_device_disconnected_) on_device_disconnected_(worker_id);
+                continue;
+            }
+
+            // Read the (nonce+ciphertext) body and open it.
+            std::vector<uint8_t> wire(Protocol::HEADER_SIZE + parsed_hdr->payload_length);
+            std::memcpy(wire.data(), header_buffer.data(), Protocol::HEADER_SIZE);
+            if (parsed_hdr->payload_length > 0) {
+                auto pay_res = socket->receive_all(wire.data() + Protocol::HEADER_SIZE,
+                                                   parsed_hdr->payload_length);
+                if (!pay_res.has_value()) {
+                    LOG_WARNING("Coordinator", "Worker " + worker_id + " frame body read failed");
+                    to_remove.push_back(worker_id);
+                    scheduler_.unregister_device(worker_id);
+                    workers_.erase(worker_it);
+                    if (on_device_disconnected_) on_device_disconnected_(worker_id);
+                    continue;
+                }
+            }
+            auto opened = worker_it->second.session.open(wire.data(), wire.size());
+            if (!opened) {
+                LOG_WARNING("Coordinator", "Worker " + worker_id + " encrypted frame MAC failed");
+                to_remove.push_back(worker_id);
+                scheduler_.unregister_device(worker_id);
+                workers_.erase(worker_it);
+                if (on_device_disconnected_) on_device_disconnected_(worker_id);
+                continue;
+            }
+            auto& [hdr, payload] = *opened;
 
             worker_it->second.profile.last_heartbeat = std::chrono::steady_clock::now();
             scheduler_.register_device(worker_it->second.profile);
 
-            if (hdr->type == MessageType::MSG_TASK_RESULT) {
-                std::vector<uint8_t> payload(hdr->payload_length);
-                auto pay_res = socket->receive_all(payload.data(), payload.size());
-                if (!pay_res.has_value()) continue;
-
+            if (hdr.type == MessageType::MSG_TASK_RESULT) {
                 auto tiles = deserialize_results(payload);
                 LOG_INFO("Coordinator", "Received " + std::to_string(tiles.size()) +
                          " tiles from worker " + worker_id);
@@ -366,17 +402,17 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
                     on_task_progress_(std::clamp(
                         static_cast<float>(completed_tile_set.size()) / total_tiles, 0.0f, 1.0f));
                 }
-            } else if (hdr->type == MessageType::MSG_TASK_ACCEPT) {
+            } else if (hdr.type == MessageType::MSG_TASK_ACCEPT) {
                 // Worker accepted — now it is safe to send the tile batch.
                 // The worker may have requested the model between reading the
                 // assignment and sending ACCEPT; that exchange is already done.
                 if (!task.batch_sent) {
-                    auto send_res = socket->send_all(
+                    bool sent_ok = send_encrypted(worker_it->second,
+                        MessageType::MSG_TILES_BATCH,
                         task.pending_batch.data(), task.pending_batch.size());
-                    if (!send_res.has_value()) {
+                    if (!sent_ok) {
                         LOG_WARNING("Coordinator", "Worker " + worker_id +
-                            " disconnected while sending tile batch: " +
-                            send_res.error().message);
+                            " disconnected while sending tile batch");
                         for (uint32_t ti : task.tile_indices) {
                             if (completed_tile_set.find(ti) == completed_tile_set.end()) {
                                 pending_pool.push_back(ti);
@@ -390,25 +426,19 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
                     }
                     task.batch_sent = true;
                 }
-            } else if (hdr->type == MessageType::MSG_MODEL_REQUEST) {
+            } else if (hdr.type == MessageType::MSG_MODEL_REQUEST) {
                 // Worker is fetching the model for this task. Serve it, then
                 // keep polling — the ACCEPT/batch/result will follow.
-                std::vector<uint8_t> mpayload(hdr->payload_length);
-                auto mpay_res = socket->receive_all(mpayload.data(), mpayload.size());
-                if (mpay_res.has_value()) {
-                    auto mr = handle_model_request(worker_it->second, mpayload);
-                    if (!mr.has_value()) {
-                        LOG_WARNING("Coordinator", "Model request from worker " +
-                            worker_id + " failed: " + mr.error().message);
-                    }
-                    worker_it->second.profile.last_heartbeat = std::chrono::steady_clock::now();
-                    scheduler_.register_device(worker_it->second.profile);
+                auto mr = handle_model_request(worker_it->second, payload);
+                if (!mr.has_value()) {
+                    LOG_WARNING("Coordinator", "Model request from worker " +
+                        worker_id + " failed: " + mr.error().message);
                 }
+                worker_it->second.profile.last_heartbeat = std::chrono::steady_clock::now();
+                scheduler_.register_device(worker_it->second.profile);
             } else {
-                // Drain payload for non-result messages (progress, heartbeat, etc.)
-                if (hdr->payload_length > 0) {
-                    std::vector<uint8_t> drain(hdr->payload_length);
-                    (void)socket->receive_all(drain.data(), drain.size());                }
+                // Non-result messages (progress, heartbeat, etc.): payload is
+                // already drained — recv_encrypted returned it in full.
             }
         }
 

@@ -2,9 +2,13 @@
 
 #include "scheduler.hpp"
 #include "protocol.hpp"
+#include "crypto_session.hpp"
+#include "identity.hpp"
 #include "core/model_manager.hpp"
 #include "core/config.hpp"
 #include "utils/expected.hpp"
+#include <array>
+#include <optional>
 #include <string>
 #include <memory>
 #include <vector>
@@ -13,6 +17,7 @@
 #include <unordered_map>
 #include <mutex>
 #include <thread>
+#include <filesystem>
 
 namespace crossscale {
 
@@ -30,6 +35,13 @@ struct WorkerConnection {
     DeviceProfile profile;
     std::string device_id;
     bool authenticated = false;
+    // Activated after the ECDH+signature handshake completes. All worker
+    // frames after KEY_HELLO travel through this session.
+    EncryptedSession session;
+    // The worker's long-term Ed25519 pubkey, learned during the handshake and
+    // used for TrustStore lookup (TOFU / known-peer flagging).
+    std::array<uint8_t, 32> peer_id_pub{};
+    bool peer_trusted = false;
 };
 
 struct ActiveTask {
@@ -51,7 +63,10 @@ public:
     Coordinator();
     ~Coordinator();
 
-    auto start(uint16_t port, const std::string& auth_key = "")
+    // Drops the plaintext auth_key. The coordinator's long-term Ed25519
+    // identity is used to sign the ECDH handshake transcript, and the
+    // TrustStore is consulted to flag known vs. first-time (TOFU) workers.
+    auto start(uint16_t port, IdentityKey& identity)
         -> expected<void, CoordinatorError>;
 
     void stop();
@@ -78,16 +93,31 @@ public:
 
     void set_models_directory(const std::filesystem::path& dir);
 
+    // Where to load/save the TrustStore of known worker identity pubkeys.
+    // Must be called before start() to take effect.
+    void set_trust_store_path(const std::filesystem::path& path);
+
 private:
     void accept_loop();
     void handle_client(std::unique_ptr<TCPSocket> socket);
-    void process_messages(WorkerConnection& conn);
 
-    bool authenticate(WorkerConnection& conn, const std::string& received_key);
+    // Run the server side of the ECDH+signature handshake on conn. On success
+    // conn.session is active and conn.peer_* are populated; returns false on
+    // any crypto/socket failure (the caller drops the connection).
+    bool run_handshake(WorkerConnection& conn);
+
     void send_model_list(WorkerConnection& conn);
 
     auto handle_model_request(WorkerConnection& conn, const std::vector<uint8_t>& payload)
         -> expected<void, CoordinatorError>;
+
+    // Encrypted-frame helpers — mirror Worker's. Send/open a single secretbox
+    // frame on conn.session. No-op-safe: seal throws if session is inactive, so
+    // these are only valid after run_handshake() succeeds.
+    auto send_encrypted(WorkerConnection& conn, MessageType type,
+                        const void* payload, size_t len) -> bool;
+    auto recv_encrypted(WorkerConnection& conn)
+        -> std::optional<std::pair<MessageHeader, std::vector<uint8_t>>>;
 
     auto deserialize_results(const std::vector<uint8_t>& data)
         -> std::vector<ProcessedTile>;
@@ -108,7 +138,13 @@ private:
 
     ModelManager model_manager_;
 
-    std::string auth_key_;
+    IdentityKey* identity_ = nullptr;
+    std::filesystem::path trust_store_path_;
+    // Lazily loaded in start(); empty until a path is set. A valid trust store
+    // means "only listed peers are trusted"; missing file is treated as empty
+    // (TOFU for everyone, flagged untrusted).
+    std::optional<TrustStore> trust_store_;
+
     std::string server_name_;
     uint16_t port_ = 0;
     std::atomic<bool> running_{false};

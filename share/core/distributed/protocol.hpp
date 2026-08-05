@@ -8,7 +8,11 @@
 namespace crossscale {
 
 enum class MessageType : uint16_t {
-    MSG_AUTH_REQUEST = 0x0003,
+    // Encrypted handshake: see worker.cpp / coordinator.cpp for the sequence.
+    // KEY_HELLO is plaintext (carries ephemeral + identity pubkeys + S→C sig);
+    // AUTH_PROOF and everything after it travel inside EncryptedSession.
+    MSG_KEY_HELLO = 0x0007,
+    MSG_AUTH_PROOF = 0x0008,
     MSG_AUTH_RESPONSE = 0x0004,
     MSG_DISCONNECT = 0x0005,
     MSG_HEARTBEAT = 0x0006,
@@ -37,19 +41,30 @@ enum class MessageType : uint16_t {
 
 struct MessageHeader {
     uint32_t magic = 0x53534358;
-    uint8_t version = 1;
+    uint8_t version = 2;
     MessageType type;
     uint32_t payload_length;
     uint32_t checksum;
 };
 
-struct AuthRequest {
-    char auth_key[64];
+// First handshake message (plaintext). Sent by both client (sig zeroed) and
+// server (sig = Ed25519 detached over the transcript c_eph||c_id||s_eph||s_id).
+struct KeyHelloMessage {
+    uint8_t eph_pub[32];
+    uint8_t id_pub[32];
+    uint8_t sig[64];
+};
+
+// Second handshake message (encrypted, inside EncryptedSession).
+// Client's Ed25519 detached signature over the same transcript.
+struct AuthProofMessage {
+    uint8_t sig[64];
 };
 
 struct AuthResponse {
     uint8_t authenticated;
     char device_id[36];
+    uint8_t trusted;  // 0 = first-time (TOFU pending), 1 = already in TrustStore
 };
 
 struct DeviceProfileMessage {
@@ -147,7 +162,7 @@ struct ServeResponse {
 class Protocol {
 public:
     static constexpr uint32_t MAGIC = 0x53534358;
-    static constexpr uint8_t VERSION = 1;
+    static constexpr uint8_t VERSION = 2;
     static constexpr size_t HEADER_SIZE = 15;
     
     static auto serialize(const MessageHeader& header, const void* payload) 

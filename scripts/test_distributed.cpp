@@ -1,25 +1,44 @@
 #include "core/distributed/coordinator.hpp"
+#include "core/distributed/identity.hpp"
 #include "core/config.hpp"
 #include "utils/image.hpp"
 #include "utils/logger.hpp"
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <filesystem>
 
 int main() {
     using namespace crossscale;
 
-    // Connect to coordinator
-    Coordinator coordinator;
+    // This script is an end-to-end distributed upscale test: it starts a
+    // coordinator, waits for a worker to connect (the worker must be launched
+    // separately via `crossscale worker connect`), and dispatches an image.
+    //
+    // NOTE: after the v2 encrypted-handshake refactor (protocol.hpp v2), the
+    // worker↔coordinator link requires an Ed25519 IdentityKey on both sides.
+    // The coordinator's identity is created here; the worker (launched
+    // separately) must be told this coordinator's identity pubkey so it can
+    // detect MITM during the handshake. Full E2E is exercised manually in
+    // Task 8; this script still drives the coordinator half of that flow.
+    //
+    // A full handshake requires an Engine (ncnn) which this script does not
+    // construct — it only verifies the coordinator starts and accepts TCP
+    // connections. Without a separately-launched worker no handshake occurs.
 
-    // Start coordinator (this is the server)
-    auto start_result = coordinator.start(9527, "test123");
+    auto identity = IdentityKey::load_or_create("/tmp/crossscale_test_coordinator.id");
+
+    Coordinator coordinator;
+    coordinator.set_trust_store_path("/tmp/crossscale_test_trust.txt");
+
+    auto start_result = coordinator.start(9527, identity);
     if (!start_result.has_value()) {
         LOG_ERROR("Test", "Failed to start coordinator: " + start_result.error().message);
         return 1;
     }
 
-    LOG_INFO("Test", "Coordinator started, waiting for workers...");
+    LOG_INFO("Test", "Coordinator started (identity fingerprint " +
+             fingerprint(identity.public_key()) + "), waiting for workers...");
     std::this_thread::sleep_for(std::chrono::seconds(3));
 
     // Load test image

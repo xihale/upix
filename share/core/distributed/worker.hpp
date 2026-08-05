@@ -2,8 +2,12 @@
 
 #include "protocol.hpp"
 #include "scheduler.hpp"
+#include "crypto_session.hpp"
+#include "identity.hpp"
 #include "core/model_manager.hpp"
 #include "utils/expected.hpp"
+#include <array>
+#include <cstdint>
 #include <string>
 #include <vector>
 #include <memory>
@@ -27,7 +31,13 @@ public:
     Worker();
     ~Worker();
 
-    auto connect(const std::string& host, uint16_t port, const std::string& auth_key)
+    // Drops the plaintext auth_key. The caller supplies the coordinator's
+    // long-term Ed25519 identity pubkey (used to detect MITM during the
+    // signature handshake) and this worker's own IdentityKey (signs the
+    // transcript).
+    auto connect(const std::string& host, uint16_t port,
+                 const std::array<uint8_t, 32>& peer_identity_pubkey,
+                 IdentityKey& local_identity)
         -> expected<void, WorkerError>;
 
     auto handshake(Engine& engine) -> expected<void, WorkerError>;
@@ -72,12 +82,29 @@ private:
     auto download_model(const std::string& model_name, uint8_t file_type)
         -> expected<void, WorkerError>;
 
+    // Send a single encrypted frame (header.type + payload) over session_.
+    // Returns false on socket failure. seal() throws if session is inactive —
+    // callers must only use this after handshake() activates the session.
+    auto send_encrypted(MessageType type, const void* payload, size_t len)
+        -> expected<void, WorkerError>;
+
+    // Receive a single encrypted frame and open it. Returns the plaintext
+    // header + payload, or an error if the socket read fails, the header is
+    // malformed, or the MAC fails. nullopt-equivalent errors carry code 5/6.
+    auto recv_encrypted()
+        -> expected<std::pair<MessageHeader, std::vector<uint8_t>>, WorkerError>;
+
     std::unique_ptr<TCPSocket> socket_;
     std::string device_id_;
-    std::string auth_key_;
     std::atomic<bool> running_{false};
     std::atomic<bool> heartbeat_running_{false};
     std::thread heartbeat_thread_;
+
+    // Encrypted handshake state.
+    EncryptedSession session_;
+    IdentityKey* local_identity_ = nullptr;
+    std::array<uint8_t, 32> peer_id_pub_{};
+    bool peer_trusted_ = false;
 
     float recommended_weight_override_ = 0.0f;
     size_t queue_depth_override_ = 0;
