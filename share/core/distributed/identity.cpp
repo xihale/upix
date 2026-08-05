@@ -1,9 +1,11 @@
 #include "identity.hpp"
 #include "utils/crypto.hpp"  // sha256_hex
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cstring>
 #include <fstream>
+#include <sodium.h>
 #include <stdexcept>
 
 namespace crossscale {
@@ -61,8 +63,7 @@ auto IdentityKey::sign(const uint8_t* msg, size_t len) const
 }
 
 IdentityKey::~IdentityKey() {
-    sodium::Ed25519Keypair zero{};
-    kp_ = zero;  // best-effort zero
+    sodium_memzero(&kp_, sizeof(kp_));
 }
 
 auto TrustStore::load(const std::filesystem::path& file) -> TrustStore {
@@ -139,13 +140,12 @@ auto base64_encode(const uint8_t* data, size_t len) -> std::string {
 }
 
 auto base64_decode(std::string_view s) -> std::optional<std::vector<uint8_t>> {
-    static int8_t rev[256];
-    static bool inited = false;
-    if (!inited) {
-        std::fill(std::begin(rev), std::end(rev), int8_t(-1));
-        for (int i = 0; i < 64; ++i) rev[(unsigned char)B64[i]] = int8_t(i);
-        inited = true;
-    }
+    static const std::array<int8_t,256> rev = []{
+        std::array<int8_t,256> t;
+        t.fill((int8_t)-1);
+        for (int i = 0; i < 64; ++i) t[(unsigned char)B64[i]] = (int8_t)i;
+        return t;
+    }();
     std::vector<uint8_t> out;
     out.reserve(s.size() * 3 / 4);
     uint32_t acc = 0;
