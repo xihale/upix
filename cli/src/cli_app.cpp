@@ -135,11 +135,9 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     auto* server = app->add_subcommand("server", "Start or query the coordination server");
     auto* sstart = server->add_subcommand("start", "Start the coordinator + mDNS broadcast");
     sstart->add_option("-p", server_args.port, "Port")->capture_default_str();
-    sstart->add_option("-k", server_args.key, "Auth key (default: auto-generated)");
     sstart->callback([] { g_exit_code = cmd_server(server_args); server_args.subcommand = "start"; });
     auto* sinfo = server->add_subcommand("info", "Print the connection card (IP/QR/key)");
     sinfo->add_option("-p", server_args.port, "Port")->capture_default_str();
-    sinfo->add_option("-k", server_args.key, "Auth key")->required();
     sinfo->callback([] { g_exit_code = cmd_server(server_args); server_args.subcommand = "info"; });
 
     // ── worker ──────────────────────────────────────────────────────────────
@@ -147,7 +145,9 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     auto* worker = app->add_subcommand("worker", "Connect as a worker to a coordinator");
     auto* wconnect = worker->add_subcommand("connect", "Connect to <host>:<port>");
     wconnect->add_option("host_port", worker_args.host_port, "<host>:<port>")->required();
-    wconnect->add_option("-k", worker_args.key, "Auth key")->required();
+    wconnect->add_option("--peer-pubkey", worker_args.peer_pubkey,
+                         "Coordinator identity pubkey (base64, from mDNS or QR)")
+        ->required();
     wconnect->add_option("--recommended-weight", worker_args.recommended_weight, "Recommended weight");
     wconnect->add_option("--queue-depth", worker_args.queue_depth, "Queue depth (1-1024)")
         ->check(CLI::Range((size_t)1, (size_t)1024));

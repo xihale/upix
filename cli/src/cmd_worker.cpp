@@ -2,8 +2,10 @@
 //
 // Connects to a coordinator, handshakes, syncs models, then loops receiving
 // tasks. On disconnect it reconnects with exponential backoff (capped at 12s).
+#include <array>
 #include <chrono>
 #include <csignal>
+#include <cstring>
 #include <filesystem>
 #include <memory>
 #include <thread>
@@ -14,6 +16,7 @@
 #include "utils/logger.hpp"
 #include "core/engine.hpp"
 #include "core/distributed/worker.hpp"
+#include "core/distributed/identity.hpp"
 
 namespace {
 
@@ -57,6 +60,20 @@ int cmd_worker(const args::Worker& a) {
         LOG_INFO("Worker", "Using manual recommended tile size: " + std::to_string(a.recommended_tile_size));
     }
 
+    auto local_identity = crossscale::IdentityKey::load_or_create(
+        crossscale::default_identity_path());
+    LOG_INFO("Worker", "Local identity fingerprint: " +
+             crossscale::fingerprint(local_identity.public_key()));
+
+    auto peer_pk_bytes = crossscale::base64_decode(a.peer_pubkey);
+    if (!peer_pk_bytes || peer_pk_bytes->size() != 32) {
+        LOG_ERROR("Worker", "Invalid --peer-pubkey (expected 32-byte base64)");
+        return 1;
+    }
+    std::array<uint8_t, 32> peer_pk{};
+    std::memcpy(peer_pk.data(), peer_pk_bytes->data(), 32);
+    LOG_INFO("Worker", "Coordinator fingerprint: " + crossscale::fingerprint(peer_pk));
+
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
@@ -67,7 +84,7 @@ int cmd_worker(const args::Worker& a) {
         worker->set_queue_depth(a.queue_depth);
         worker->set_recommended_tile_size(a.recommended_tile_size);
 
-        auto conn_result = worker->connect(host, port, a.key);
+        auto conn_result = worker->connect(host, port, peer_pk, local_identity);
         if (!conn_result.has_value()) {
             LOG_ERROR("Worker", "Failed to connect: " + conn_result.error().message);
             if (!g_running) break;

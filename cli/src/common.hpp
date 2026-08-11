@@ -5,8 +5,10 @@
 // without dragging in unrelated subcommand logic.
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <string>
 
@@ -60,7 +62,8 @@ auto normalize_channels_for_model(crossscale::Image& image,
 auto generate_qr_ascii(const std::string& text) -> std::string;
 
 // Print the connection card shown to the user: all local IPv4 addresses
-// (first non-loopback one is used as the QR default), the auth key, and a QR
-// code carrying the JSON the Android app's JoinInviteParser.parseJsonInvite()
-// understands. Shared by `server start` and `server info` to stay in sync.
-void print_connection_card(uint16_t port, const std::string& key);
+// (first non-loopback one is used as the QR default), the identity fingerprint,
+// and a QR code carrying the JSON the Android app's JoinInviteParser.parseJsonInvite()
+// understands (v2: fingerprint + base64 pubkey). Shared by `server start` and
+// `server info` to stay in sync.
+void print_connection_card(uint16_t port, const std::array<uint8_t, 32>& identity_pubkey);

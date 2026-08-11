@@ -14,32 +14,31 @@
 #include "args.hpp"
 #include "cli_app.hpp"
 #include "common.hpp"
-#include "utils/crypto.hpp"
 #include "utils/logger.hpp"
 #include "utils/mdns.hpp"
 #include "core/distributed/coordinator.hpp"
+#include "core/distributed/identity.hpp"
 
 int cmd_server(const args::Server& a) {
     if (a.subcommand == "info") {
-        // -k required() enforced by cli_app.cpp; just print the card.
-        print_connection_card(a.port, a.key);
+        auto identity = crossscale::IdentityKey::load_or_create(
+            crossscale::default_identity_path());
+        print_connection_card(a.port, identity.public_key());
         return 0;
     }
 
     // ── start ───────────────────────────────────────────────────────────────
-    std::string key = a.key;
-    if (key.empty()) {
-        key = crossscale::crypto::generate_uuid().substr(0, 16);
-    }
-
-    LOG_INFO("Server", "Starting coordinator on port " + std::to_string(a.port));
-    LOG_INFO("Server", "Auth key: " + key);
+    auto identity = crossscale::IdentityKey::load_or_create(
+        crossscale::default_identity_path());
+    LOG_INFO("Server", "PC identity fingerprint: " +
+              crossscale::fingerprint(identity.public_key()));
 
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
     auto coordinator = std::make_unique<crossscale::Coordinator>();
     coordinator->set_models_directory("./models");
+    coordinator->set_trust_store_path(crossscale::default_trust_path());
     coordinator->on_device_connected() = [](const crossscale::DeviceProfile& profile) {
         LOG_INFO(
             "Server",
@@ -62,23 +61,21 @@ int cmd_server(const args::Server& a) {
         LOG_INFO("Server", "Task progress: " + std::to_string(pct) + "%");
     };
 
-    auto start_result = coordinator->start(a.port, key);
+    auto start_result = coordinator->start(a.port, identity);
     if (!start_result.has_value()) {
         LOG_ERROR("Server", "Failed to start coordinator: " + start_result.error().message);
         return 1;
     }
 
     crossscale::MDNSBroadcaster mdns_broadcaster;
-    const auto mdns_result = mdns_broadcaster.start("CrossScale-PC", a.port, key);
+    const auto mdns_result = mdns_broadcaster.start("CrossScale-PC", a.port, identity.public_key());
     if (!mdns_result.has_value()) {
         LOG_WARNING("Server", "mDNS publish unavailable: " + mdns_result.error().message);
     }
 
     LOG_INFO("Server", "Coordinator running. Press Ctrl+C to stop.");
 
-    // Print the full connection card (IP + key + QR) right away so the user
-    // can scan it with the phone without a second command.
-    print_connection_card(a.port, key);
+    print_connection_card(a.port, identity.public_key());
 
     std::optional<size_t> last_worker_count;
     while (g_running && coordinator->is_running()) {
@@ -87,8 +84,6 @@ int cmd_server(const args::Server& a) {
             LOG_INFO("Server", "Connected workers: " + std::to_string(worker_count));
             last_worker_count = worker_count;
         }
-        // Short poll so Ctrl+C (sets g_running=false) is noticed within ~200ms
-        // instead of up to 5s.
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 

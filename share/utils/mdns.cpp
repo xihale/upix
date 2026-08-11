@@ -1,6 +1,6 @@
 #include "mdns.hpp"
 #include "logger.hpp"
-#include "crypto.hpp"
+#include "core/distributed/identity.hpp"
 #include <chrono>
 #include <cstring>
 #include <filesystem>
@@ -69,7 +69,7 @@ public:
     bool running = false;
     std::string service_name;
     uint16_t port = 0;
-    std::string auth_key_hash;
+    std::array<uint8_t, 32> identity_pubkey{};
 #ifdef __linux__
     pid_t process_id = -1;
 #endif
@@ -82,12 +82,8 @@ MDNSBroadcaster::~MDNSBroadcaster() {
 }
 
 auto MDNSBroadcaster::start(const std::string& service_name, uint16_t port,
-                            const std::string& auth_key)
+                            const std::array<uint8_t, 32>& identity_pubkey)
     -> expected<void, MDNSError> {
-
-    const std::string auth_key_hash = auth_key.empty()
-        ? "none"
-        : crypto::sha256_hex(auth_key).substr(0, 16);
 
     if (service_name.empty() || port == 0) {
         return std::unexpected(MDNSError{1, "Invalid mDNS publish parameters"});
@@ -96,7 +92,7 @@ auto MDNSBroadcaster::start(const std::string& service_name, uint16_t port,
     if (impl_->running) {
         if (impl_->service_name == service_name &&
             impl_->port == port &&
-            impl_->auth_key_hash == auth_key_hash) {
+            impl_->identity_pubkey == identity_pubkey) {
             return {};
         }
 
@@ -107,7 +103,7 @@ auto MDNSBroadcaster::start(const std::string& service_name, uint16_t port,
 
     impl_->service_name = service_name;
     impl_->port = port;
-    impl_->auth_key_hash = auth_key_hash;
+    impl_->identity_pubkey = identity_pubkey;
 
 #ifdef __linux__
     if (!is_avahi_socket_available()) {
@@ -115,9 +111,10 @@ auto MDNSBroadcaster::start(const std::string& service_name, uint16_t port,
     }
 
     const std::string port_string = std::to_string(port);
-    const std::string version_txt = "version=1";
+    const std::string version_txt = "version=2";
     const std::string role_txt = "role=coordinator";
-    const std::string auth_key_hash_txt = "auth_key_hash=" + auth_key_hash;
+    const std::string fp_txt = "id_fingerprint=" + fingerprint(identity_pubkey);
+    const std::string pk_txt = "id_pubkey=" + base64_encode(identity_pubkey.data(), 32);
 
     pid_t child_pid = fork();
     if (child_pid < 0) {
@@ -134,7 +131,8 @@ auto MDNSBroadcaster::start(const std::string& service_name, uint16_t port,
             port_string.c_str(),
             version_txt.c_str(),
             role_txt.c_str(),
-            auth_key_hash_txt.c_str(),
+            fp_txt.c_str(),
+            pk_txt.c_str(),
             static_cast<char*>(nullptr)
         );
         _exit(127);

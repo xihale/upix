@@ -12,6 +12,7 @@
 
 #include "utils/logger.hpp"
 #include "utils/network.hpp"
+#include "core/distributed/identity.hpp"
 #include "core/tile_processor.hpp"  // ProcessingProgress
 #include "core/serve/daemon.hpp"    // ServeDaemon (forward-declared in header)
 
@@ -222,11 +223,14 @@ auto generate_qr_ascii(const std::string& text) -> std::string {
     return result;
 }
 
-void print_connection_card(uint16_t port, const std::string& key) {
+void print_connection_card(uint16_t port, const std::array<uint8_t, 32>& identity_pubkey) {
     auto addresses = crossscale::network_utils::get_local_addresses();
     if (addresses.empty()) {
         addresses.push_back("127.0.0.1");
     }
+
+    const std::string fp = crossscale::fingerprint(identity_pubkey);
+    const std::string pk_b64 = crossscale::base64_encode(identity_pubkey.data(), 32);
 
     std::cout << "\nConnection Information:\n";
     for (size_t i = 0; i < addresses.size(); ++i) {
@@ -235,13 +239,15 @@ void print_connection_card(uint16_t port, const std::string& key) {
         std::cout << "\n";
     }
     std::cout << "  Port: " << port << "\n"
-              << "  Key: " << key << "\n\n"
+              << "  Fingerprint: " << fp << "\n\n"
               << "QR Code (scan with Android app):\n\n";
 
+    // v2 JSON: carries fingerprint + identity pubkey. Android rejects v1.
     const std::string json =
-        "{\"v\":1,\"ip\":\"" + addresses[0] +
+        "{\"v\":2,\"ip\":\"" + addresses[0] +
         "\",\"port\":" + std::to_string(port) +
-        ",\"key\":\"" + key + "\""
+        ",\"fp\":\"" + fp + "\""
+        ",\"pk\":\"" + pk_b64 + "\""
         ",\"name\":\"CrossScale-Server\"}";
     std::cout << generate_qr_ascii(json) << "\n";
 }

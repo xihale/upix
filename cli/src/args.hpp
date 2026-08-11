@@ -63,13 +63,12 @@ struct Perf {
 struct Server {
     std::string subcommand;         // start / info
     uint16_t port = 9527;
-    std::string key;                // empty = auto-generate (start) / required (info)
 };
 
 // `worker connect <host>:<port>`.
 struct Worker {
     std::string host_port;          // positional: <host>:<port>
-    std::string key;
+    std::string peer_pubkey;        // base64 coordinator identity pubkey (required)
     float recommended_weight = 0.0f;
     size_t queue_depth = 0;
     int recommended_tile_size = 0;

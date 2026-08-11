@@ -3,6 +3,7 @@
 #include "utils/crypto_sodium.hpp"
 #include <array>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -53,5 +54,16 @@ auto fingerprint(const std::array<uint8_t, 32>& pubkey) -> std::string;
 // base64 编解码(32 字节公钥 <-> 字符串,供存储/QR/TXT 用)
 auto base64_encode(const uint8_t* data, size_t len) -> std::string;
 auto base64_decode(std::string_view s) -> std::optional<std::vector<uint8_t>>;
+
+// Default on-disk locations for the long-term identity and trust whitelist.
+// Used by the CLI; Android stores these via its own app-private paths.
+inline auto default_identity_path() -> std::filesystem::path {
+    const char* home = std::getenv("HOME");
+    return std::filesystem::path(home ? home : ".") / ".crossscale" / "identity";
+}
+inline auto default_trust_path() -> std::filesystem::path {
+    const char* home = std::getenv("HOME");
+    return std::filesystem::path(home ? home : ".") / ".crossscale" / "trusted_clients";
+}
 
 } // namespace crossscale

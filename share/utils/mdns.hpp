@@ -1,8 +1,9 @@
 #pragma once
 
-#include <string>
+#include <array>
 #include <cstdint>
 #include <memory>
+#include <string>
 #include "utils/expected.hpp"
 
 namespace crossscale {
@@ -17,7 +18,8 @@ public:
     MDNSBroadcaster();
     ~MDNSBroadcaster();
 
-    auto start(const std::string& service_name, uint16_t port, const std::string& auth_key)
+    auto start(const std::string& service_name, uint16_t port,
+               const std::array<uint8_t, 32>& identity_pubkey)
         -> expected<void, MDNSError>;
     void stop();
     bool is_running() const;
