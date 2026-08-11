@@ -12,6 +12,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontFamily
 import com.crossscale.data.model.DeviceProfile
 import com.crossscale.data.model.DeviceStatus
 import com.crossscale.ui.theme.BorderlessTokens
@@ -55,6 +56,13 @@ fun DeviceCard(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        if (!device.discoveredFingerprint.isNullOrBlank()) {
+            Text(
+                text = "指纹: ${device.discoveredFingerprint}",
+                style = MaterialTheme.typography.labelSmall,
+                fontFamily = FontFamily.Monospace
+            )
+        }
         Text(
             text = "类型: ${device.type} · 权重: $weightLabel · 吞吐: $tpsLabel",
             style = MaterialTheme.typography.bodyMedium
@@ -86,13 +94,17 @@ fun DeviceCard(
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing)) {
-            if (device.status == DeviceStatus.CONNECTED) {
-                OutlinedButton(onClick = { onDisconnect(device.deviceId) }) {
-                    Text("断开")
+            when (device.status) {
+                DeviceStatus.CONNECTED -> {
+                    OutlinedButton(onClick = { onDisconnect(device.deviceId) }) { Text("断开") }
                 }
-            } else {
-                Button(onClick = { onConnect(device.deviceId) }) {
-                    Text("连接")
+                DeviceStatus.CONNECTING -> {
+                    Button(onClick = {}, enabled = false) { Text("连接中…") }
+                }
+                else -> {
+                    Button(onClick = { onConnect(device.deviceId) }) {
+                        Text(if (!device.discoveredPubKey.isNullOrBlank()) "一键连接" else "连接")
+                    }
                 }
             }
         }

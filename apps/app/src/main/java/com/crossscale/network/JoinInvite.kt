@@ -12,7 +12,8 @@ import kotlinx.serialization.json.jsonObject
 data class JoinInvite(
     val host: String,
     val port: Int,
-    val authKey: String
+    val fingerprint: String?,
+    val identityPubKey: String  // base64; empty if absent
 )
 
 object JoinInviteParser {
@@ -40,6 +41,11 @@ object JoinInviteParser {
     private fun parseJsonInvite(rawJson: String): JoinInvite? {
         return runCatching {
             val json = Json.parseToJsonElement(rawJson).jsonObject
+            val version = json.readInt("v") ?: 1
+            if (version < 2) {
+                // v1 (plaintext key) is no longer supported.
+                return null
+            }
             val host = json.readString("ip")
                 .ifBlank { json.readString("host") }
                 .trim()
@@ -50,22 +56,26 @@ object JoinInviteParser {
             if (port !in 1..65535) {
                 return null
             }
-            val authKey = json.readString("key")
-                .ifBlank { json.readString("auth_key") }
+            val fp = json.readString("fp")
+                .ifBlank { json.readString("fingerprint") }
                 .trim()
-            JoinInvite(host = host, port = port, authKey = authKey)
+                .ifBlank { null }
+            val pk = json.readString("pk")
+                .ifBlank { json.readString("pubkey") }
+                .trim()
+            JoinInvite(host = host, port = port, fingerprint = fp, identityPubKey = pk)
         }.getOrNull()
     }
 
+    // parseShortInvite: host:port format (no key fragment needed anymore)
     private fun parseShortInvite(value: String): JoinInvite? {
-        val hashIndex = value.indexOf('#')
-        if (hashIndex <= 0) {
-            return null
-        }
-        val hostPort = value.substring(0, hashIndex).trim()
-        val authKey = value.substring(hashIndex + 1).trim()
-        val portSplit = splitHostPort(hostPort) ?: return null
-        return JoinInvite(host = portSplit.first, port = portSplit.second, authKey = authKey)
+        val portSplit = splitHostPort(value) ?: return null
+        return JoinInvite(
+            host = portSplit.first,
+            port = portSplit.second,
+            fingerprint = null,
+            identityPubKey = ""
+        )
     }
 
     private fun parseUriInvite(uriRaw: String): JoinInvite? {
@@ -87,8 +97,9 @@ object JoinInviteParser {
         if (port !in 1..65535) {
             return null
         }
-        val authKey = params["key"].orEmpty().trim()
-        return JoinInvite(host = host, port = port, authKey = authKey)
+        val pk = params["pk"].orEmpty().trim()
+        val fp = params["fp"]?.trim()?.ifBlank { null }
+        return JoinInvite(host = host, port = port, fingerprint = fp, identityPubKey = pk)
     }
 
     private fun splitHostPort(value: String): Pair<String, Int>? {

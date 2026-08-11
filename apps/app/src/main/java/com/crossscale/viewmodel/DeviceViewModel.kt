@@ -10,9 +10,10 @@ import com.crossscale.data.model.DeviceType
 import com.crossscale.data.repository.DeviceRepository
 import com.crossscale.data.repository.LogRepository
 import com.crossscale.data.repository.PairingRepository
+import com.crossscale.data.repository.TrustedPC
 import com.crossscale.network.CoordinatorClient
-import com.crossscale.network.MDNSDiscovery
 import com.crossscale.network.JoinInviteParser
+import com.crossscale.network.MDNSDiscovery
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -28,7 +29,9 @@ data class DeviceUiState(
     val isDiscovering: Boolean = false,
     val showManualConnectDialog: Boolean = false,
     val manualConnectHost: String = "",
-    val manualConnectPort: String = "9527"
+    val manualConnectPort: String = "9527",
+    val pendingFingerprintConfirm: DeviceProfile? = null,
+    val connectionError: String? = null
 )
 
 class DeviceViewModel(
@@ -42,6 +45,8 @@ class DeviceViewModel(
     private val _showManualConnectDialog = MutableStateFlow(false)
     private val _manualConnectHost = MutableStateFlow("")
     private val _manualConnectPort = MutableStateFlow("9527")
+    private val _pendingFingerprintConfirm = MutableStateFlow<DeviceProfile?>(null)
+    private val _connectionError = MutableStateFlow<String?>(null)
     private var discoveryJob: Job? = null
     private val autoConnectingTargets = mutableSetOf<String>()
 
@@ -50,14 +55,19 @@ class DeviceViewModel(
         _isDiscovering,
         _showManualConnectDialog,
         _manualConnectHost,
-        _manualConnectPort
-    ) { devices, isDiscovering, showDialog, manualConnectHost, manualConnectPort ->
+        _manualConnectPort,
+        _pendingFingerprintConfirm,
+        _connectionError
+    ) { values ->
+        @Suppress("UNCHECKED_CAST")
         DeviceUiState(
-            devices = devices,
-            isDiscovering = isDiscovering,
-            showManualConnectDialog = showDialog,
-            manualConnectHost = manualConnectHost,
-            manualConnectPort = manualConnectPort
+            devices = values[0] as List<DeviceProfile>,
+            isDiscovering = values[1] as Boolean,
+            showManualConnectDialog = values[2] as Boolean,
+            manualConnectHost = values[3] as String,
+            manualConnectPort = values[4] as String,
+            pendingFingerprintConfirm = values[5] as DeviceProfile?,
+            connectionError = values[6] as String?
         )
     }.stateIn(
         scope = viewModelScope,
@@ -84,7 +94,9 @@ class DeviceViewModel(
                         maxBatchSize = 1,
                         weight = 0.0f,
                         ipAddress = service.host,
-                        port = service.port
+                        port = service.port,
+                        discoveredFingerprint = service.fingerprint,
+                        discoveredPubKey = service.identityPubKey
                     )
                     deviceRepository.updateDiscoveredDevices(listOf(discovered))
                     attemptAutoConnect(discovered)
@@ -114,92 +126,133 @@ class DeviceViewModel(
     fun connectByQrPayload(rawPayload: String) {
         val invite = JoinInviteParser.parse(rawPayload)
         if (invite == null) {
-            logRepository.error("DeviceViewModel", "Invalid QR payload: $rawPayload")
+            _connectionError.value = "无效或过期的二维码（请确认 PC 已升级到加密版本）"
+            logRepository.error("DeviceViewModel", "Invalid/legacy QR payload")
+            return
+        }
+        if (invite.identityPubKey.isBlank()) {
+            _connectionError.value = "二维码缺少 PC 公钥"
             return
         }
         viewModelScope.launch {
-            val connected = connectToCoordinator(invite.host, invite.port, invite.authKey)
+            deviceRepository.markConnecting("${invite.host}:${invite.port}")
+            val connected = connectToCoordinator(invite.host, invite.port, invite.identityPubKey)
             if (connected) {
-                pairingRepository.savePairing(invite.host, invite.port, invite.authKey)
-                deviceRepository.addManualDevice(invite.host, invite.port, invite.authKey)
-                logRepository.info("DeviceViewModel", "Connected from QR invite to ${invite.host}:${invite.port}")
+                pairingRepository.saveTrustedPC(
+                    invite.host, invite.port,
+                    TrustedPC(invite.identityPubKey, invite.fingerprint ?: "")
+                )
+                deviceRepository.addManualDevice(
+                    invite.host, invite.port, invite.identityPubKey, invite.fingerprint
+                )
+                logRepository.info("DeviceViewModel", "Connected from v2 QR to ${invite.host}:${invite.port}")
             } else {
-                logRepository.error("DeviceViewModel", "QR invite connect failed: ${invite.host}:${invite.port}")
+                deviceRepository.markFailed("${invite.host}:${invite.port}")
+                _connectionError.value = "扫码连接失败"
             }
         }
     }
 
-    fun connectManual(host: String, portText: String, authKey: String) {
+    fun connectManual(host: String, portText: String, peerPubKeyB64: String) {
         val port = portText.toIntOrNull()
         if (host.isBlank() || port == null) {
             logRepository.error("DeviceViewModel", "Invalid manual address: $host:$portText")
             return
         }
         val normalizedHost = host.trim()
-        val normalizedAuthKey = authKey.trim()
+        val normalizedPeerPubKey = peerPubKeyB64.trim()
         viewModelScope.launch {
-            val connected = connectToCoordinator(normalizedHost, port, normalizedAuthKey)
+            deviceRepository.markConnecting("$normalizedHost:$port")
+            val connected = connectToCoordinator(normalizedHost, port, normalizedPeerPubKey)
             if (connected) {
-                pairingRepository.savePairing(normalizedHost, port, normalizedAuthKey)
-                deviceRepository.addManualDevice(normalizedHost, port, normalizedAuthKey)
+                pairingRepository.saveTrustedPC(
+                    normalizedHost, port,
+                    TrustedPC(normalizedPeerPubKey, "")
+                )
+                deviceRepository.addManualDevice(normalizedHost, port, normalizedPeerPubKey)
             } else {
+                deviceRepository.markFailed("$normalizedHost:$port")
+                _connectionError.value = "连接失败，请检查 PC 是否在线"
                 logRepository.error("DeviceViewModel", "Coordinator connect failed: $normalizedHost:$port")
             }
         }
     }
 
     fun connectDevice(deviceId: String) {
-        val target = uiState.value.devices.firstOrNull { it.deviceId == deviceId }
-        if (target == null) {
+        val target = uiState.value.devices.firstOrNull { it.deviceId == deviceId } ?: run {
             logRepository.error("DeviceViewModel", "Unknown device: $deviceId")
             return
         }
-
         if (deviceRepository.isLocalDevice(deviceId)) {
             deviceRepository.connectDevice(deviceId)
-            logRepository.info("DeviceViewModel", "Local client connected")
             return
         }
-
         if (coordinatorClient.isConnectedTo(target.ipAddress, target.port)) {
             deviceRepository.connectDevice(deviceId)
             return
         }
-
-        val pairedAuthKey = pairingRepository.getAuthKey(target.ipAddress, target.port)
-        if (!pairedAuthKey.isNullOrBlank()) {
+        val trusted = pairingRepository.getTrustedPC(target.ipAddress, target.port)
+        // If trusted AND pubkey matches (or undiscovered), connect silently.
+        if (trusted != null &&
+            (target.discoveredPubKey.isNullOrBlank() || target.discoveredPubKey == trusted.identityPubKey)) {
             viewModelScope.launch {
-                val connected = connectToCoordinator(target.ipAddress, target.port, pairedAuthKey)
-                if (connected) {
-                    deviceRepository.addManualDevice(target.ipAddress, target.port, pairedAuthKey)
-                    logRepository.info(
-                        "DeviceViewModel",
-                        "Reconnected paired PC ${target.ipAddress}:${target.port}"
+                deviceRepository.markConnecting(deviceId)
+                val ok = connectToCoordinator(target.ipAddress, target.port, trusted.identityPubKey)
+                if (ok) {
+                    deviceRepository.addManualDevice(
+                        target.ipAddress, target.port, trusted.identityPubKey, trusted.fingerprint
                     )
-                    return@launch
+                } else {
+                    deviceRepository.markFailed(deviceId)
+                    _connectionError.value = "连接失败，请检查 PC 是否在线"
                 }
-                logRepository.warning(
-                    "DeviceViewModel",
-                    "Paired reconnect failed for ${target.ipAddress}:${target.port}; opening manual pairing"
-                )
-                _manualConnectHost.value = target.ipAddress
-                _manualConnectPort.value = target.port.toString()
-                _showManualConnectDialog.value = true
-                logRepository.info(
-                    "DeviceViewModel",
-                    "Pairing required for discovered device ${target.ipAddress}:${target.port}; awaiting manual auth key"
-                )
             }
             return
         }
-
+        // Not trusted. If we have a discovered pubkey, ask the user to confirm the fingerprint.
+        if (!target.discoveredPubKey.isNullOrBlank()) {
+            _pendingFingerprintConfirm.value = target
+            return
+        }
+        // No pubkey available — fall back to manual entry.
         _manualConnectHost.value = target.ipAddress
         _manualConnectPort.value = target.port.toString()
         _showManualConnectDialog.value = true
-        logRepository.info(
-            "DeviceViewModel",
-            "Pairing required for discovered device ${target.ipAddress}:${target.port}; awaiting manual auth key"
-        )
+    }
+
+    fun confirmTrustAndConnect(deviceId: String) {
+        val target = _pendingFingerprintConfirm.value ?: return
+        _pendingFingerprintConfirm.value = null
+        val pk = target.discoveredPubKey
+        if (pk.isNullOrBlank()) {
+            _connectionError.value = "缺少 PC 公钥，无法配对"
+            return
+        }
+        viewModelScope.launch {
+            deviceRepository.markConnecting(deviceId)
+            val ok = connectToCoordinator(target.ipAddress, target.port, pk)
+            if (ok) {
+                pairingRepository.saveTrustedPC(
+                    target.ipAddress, target.port,
+                    TrustedPC(pk, target.discoveredFingerprint ?: "")
+                )
+                deviceRepository.addManualDevice(
+                    target.ipAddress, target.port, pk, target.discoveredFingerprint
+                )
+                logRepository.info("DeviceViewModel", "Trusted + connected to ${target.ipAddress}:${target.port}")
+            } else {
+                deviceRepository.markFailed(deviceId)
+                _connectionError.value = "连接失败，请检查 PC 是否在线"
+            }
+        }
+    }
+
+    fun cancelFingerprintConfirm() {
+        _pendingFingerprintConfirm.value = null
+    }
+
+    fun clearConnectionError() {
+        _connectionError.value = null
     }
 
     fun disconnectDevice(deviceId: String) {
@@ -254,18 +307,27 @@ class DeviceViewModel(
 
         viewModelScope.launch {
             try {
-                val authKey = pairingRepository.getAuthKey(device.ipAddress, device.port)
-                if (authKey.isNullOrBlank()) {
+                val trusted = pairingRepository.getTrustedPC(device.ipAddress, device.port)
+                if (trusted == null) return@launch
+                // MITM guard: if mDNS advertised a pubkey, it must match the stored one.
+                if (!device.discoveredPubKey.isNullOrBlank() &&
+                    device.discoveredPubKey != trusted.identityPubKey) {
+                    logRepository.warning(
+                        "DeviceViewModel",
+                        "Pubkey mismatch for ${device.ipAddress}:${device.port} — possible MITM, ignoring stored pairing"
+                    )
+                    _connectionError.value = "PC 身份已变更，请重新确认指纹"
                     return@launch
                 }
-
-                val connected = connectToCoordinator(device.ipAddress, device.port, authKey)
+                deviceRepository.markConnecting(deviceId)
+                val connected = connectToCoordinator(device.ipAddress, device.port, trusted.identityPubKey)
                 if (connected) {
-                    deviceRepository.addManualDevice(device.ipAddress, device.port, authKey)
-                    logRepository.info(
-                        "DeviceViewModel",
-                        "Auto-connected paired PC ${device.ipAddress}:${device.port}"
+                    deviceRepository.addManualDevice(
+                        device.ipAddress, device.port, trusted.identityPubKey, trusted.fingerprint
                     )
+                    logRepository.info("DeviceViewModel", "Auto-connected trusted PC ${device.ipAddress}:${device.port}")
+                } else {
+                    deviceRepository.markFailed(deviceId)
                 }
             } finally {
                 autoConnectingTargets.remove(deviceId)
@@ -276,10 +338,10 @@ class DeviceViewModel(
     private suspend fun connectToCoordinator(
         host: String,
         port: Int,
-        authKey: String
+        peerPubKeyB64: String
     ): Boolean {
         return withContext(Dispatchers.IO) {
-            coordinatorClient.connect(host, port, authKey)
+            coordinatorClient.connect(host, port, peerPubKeyB64)
         }
     }
 

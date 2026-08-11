@@ -3,6 +3,7 @@ package com.crossscale.ui.screens
 import androidx.camera.core.ExperimentalGetImage
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -14,12 +15,14 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import com.crossscale.ui.components.ConnectionDialog
 import com.crossscale.ui.components.DeviceCard
+import com.crossscale.ui.components.FingerprintConfirmDialog
 import com.crossscale.ui.scanner.QRScannerScreen
 import com.crossscale.ui.theme.BorderlessTokens
 import com.crossscale.viewmodel.DeviceUiState
@@ -35,7 +38,10 @@ fun DevicesScreen(
     onAdjustDeviceWeight: (String, Float) -> Unit,
     onShowManualConnectDialog: (Boolean) -> Unit,
     onManualConnect: (String, String, String) -> Unit,
-    onConnectByQr: (String) -> Unit
+    onConnectByQr: (String) -> Unit,
+    onConfirmTrust: (String) -> Unit,
+    onCancelFingerprintConfirm: () -> Unit,
+    onClearConnectionError: () -> Unit
 ) {
     val showQrScanner = remember { mutableStateOf(false) }
 
@@ -57,6 +63,17 @@ fun DevicesScreen(
                 ),
             verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionSpacing)
         ) {
+            state.connectionError?.let { err ->
+                Row(horizontalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing)) {
+                    Text(
+                        text = err,
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.weight(1f)
+                    )
+                    TextButton(onClick = onClearConnectionError) { Text("忽略") }
+                }
+            }
             Text(
                 text = "连接控制",
                 style = MaterialTheme.typography.titleMedium,
@@ -136,4 +153,13 @@ fun DevicesScreen(
         onDismiss = { onShowManualConnectDialog(false) },
         onConnect = onManualConnect
     )
+
+    state.pendingFingerprintConfirm?.let { device ->
+        FingerprintConfirmDialog(
+            deviceName = device.deviceName,
+            fingerprint = device.discoveredFingerprint ?: "未知",
+            onConfirm = { onConfirmTrust(device.deviceId) },
+            onDismiss = onCancelFingerprintConfirm
+        )
+    }
 }

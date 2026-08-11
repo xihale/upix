@@ -56,10 +56,10 @@ class DeviceRepository(
                     continue
                 }
                 val existing = remoteById[device.deviceId]
-                val status = if (existing != null && existing.status == DeviceStatus.CONNECTED) {
-                    DeviceStatus.CONNECTED
-                } else {
-                    DeviceStatus.DISCOVERED
+                val status = when (existing?.status) {
+                    DeviceStatus.CONNECTED -> DeviceStatus.CONNECTED
+                    DeviceStatus.CONNECTING -> DeviceStatus.CONNECTING
+                    else -> DeviceStatus.DISCOVERED
                 }
                 val inferredWeight = inferRecommendedWeight(device)
                 val resolvedWeight = manualWeightOverrides[device.deviceId]
@@ -79,6 +79,8 @@ class DeviceRepository(
                     recommendedTileSize = resolvedTileSize,
                     maxBatchSize = resolvedQueueDepth,
                     weight = resolvedWeight,
+                    discoveredFingerprint = device.discoveredFingerprint ?: existing?.discoveredFingerprint,
+                    discoveredPubKey = device.discoveredPubKey ?: existing?.discoveredPubKey,
                     lastSeenEpochMillis = System.currentTimeMillis()
                 )
             }
@@ -101,11 +103,31 @@ class DeviceRepository(
         logRepository.info("DeviceRepository", "Device connected: $deviceId")
     }
 
-    fun addManualDevice(host: String, port: Int, authKey: String) {
-        val normalizedAuthKey = authKey.trim()
-        if (normalizedAuthKey.isBlank()) {
-            logRepository.warning("DeviceRepository", "Manual connection without auth key for $host:$port")
+    fun markConnecting(deviceId: String) {
+        _devices.update { current ->
+            current.map { device ->
+                if (device.deviceId == deviceId) {
+                    device.copy(status = DeviceStatus.CONNECTING, lastSeenEpochMillis = System.currentTimeMillis())
+                } else {
+                    device
+                }
+            }
         }
+    }
+
+    fun markFailed(deviceId: String) {
+        _devices.update { current ->
+            current.map { device ->
+                if (device.deviceId == deviceId) {
+                    device.copy(status = DeviceStatus.DISCOVERED, lastSeenEpochMillis = System.currentTimeMillis())
+                } else {
+                    device
+                }
+            }
+        }
+    }
+
+    fun addManualDevice(host: String, port: Int, peerPubKeyB64: String, fingerprint: String? = null) {
         val deviceId = "$host:$port"
         val templateDevice = DeviceProfile(
             deviceId = deviceId,
@@ -117,7 +139,9 @@ class DeviceRepository(
             weight = DEFAULT_PC_DEDICATED_WEIGHT,
             ipAddress = host,
             port = port,
-            status = DeviceStatus.CONNECTED
+            status = DeviceStatus.CONNECTED,
+            discoveredFingerprint = fingerprint,
+            discoveredPubKey = peerPubKeyB64
         )
         val resolvedWeight = manualWeightOverrides[deviceId] ?: inferRecommendedWeight(templateDevice)
         val resolvedQueueDepth = inferRecommendedQueueDepth(templateDevice)
@@ -140,6 +164,8 @@ class DeviceRepository(
                             } else {
                                 resolvedTileSize
                             },
+                            discoveredFingerprint = fingerprint ?: existing.discoveredFingerprint,
+                            discoveredPubKey = peerPubKeyB64.ifBlank { existing.discoveredPubKey ?: "" },
                             lastSeenEpochMillis = System.currentTimeMillis()
                         )
                     } else {
@@ -157,7 +183,9 @@ class DeviceRepository(
                     weight = resolvedWeight,
                     ipAddress = host,
                     port = port,
-                    status = DeviceStatus.CONNECTED
+                    status = DeviceStatus.CONNECTED,
+                    discoveredFingerprint = fingerprint,
+                    discoveredPubKey = peerPubKeyB64
                 )
             }
         }

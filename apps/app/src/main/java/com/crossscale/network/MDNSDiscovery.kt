@@ -9,7 +9,9 @@ import android.util.Log
 data class DiscoveredService(
     val name: String,
     val host: String,
-    val port: Int
+    val port: Int,
+    val fingerprint: String? = null,
+    val identityPubKey: String? = null
 )
 
 class MDNSDiscovery(
@@ -50,10 +52,15 @@ class MDNSDiscovery(
 
                     override fun onServiceResolved(resolvedInfo: NsdServiceInfo) {
                         val hostAddress = resolvedInfo.host?.hostAddress ?: return
+                        val attrs = resolvedInfo.attributes  // Map<String, ByteArray>
+                        val fingerprint = attrs["id_fingerprint"]?.let { String(it) }
+                        val pubKey = attrs["id_pubkey"]?.let { String(it) }
                         val discoveredService = DiscoveredService(
                             name = resolvedInfo.serviceName,
                             host = hostAddress,
-                            port = resolvedInfo.port
+                            port = resolvedInfo.port,
+                            fingerprint = fingerprint,
+                            identityPubKey = pubKey
                         )
                         resolvedServicesByName[resolvedInfo.serviceName] = discoveredService
                         onServiceFound(discoveredService)

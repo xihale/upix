@@ -29,13 +29,13 @@ fun ConnectionDialog(
 
     var host by remember { mutableStateOf(initialHost) }
     var port by remember { mutableStateOf(initialPort) }
-    var authKey by remember { mutableStateOf("") }
+    var peerPubKey by remember { mutableStateOf("") }
 
     LaunchedEffect(show, initialHost, initialPort) {
         if (show) {
             host = initialHost
             port = initialPort
-            authKey = ""
+            peerPubKey = ""
         }
     }
 
@@ -57,17 +57,17 @@ fun ConnectionDialog(
                     label = { Text("Port") }
                 )
                 OutlinedTextField(
-                    value = authKey,
-                    onValueChange = { authKey = it },
+                    value = peerPubKey,
+                    onValueChange = { peerPubKey = it },
                     singleLine = true,
-                    label = { Text("Auth Key") }
+                    label = { Text("PC 公钥 (base64)") }
                 )
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    onConnect(host, port, authKey)
+                    onConnect(host, port, peerPubKey)
                     onDismiss()
                 }
             ) {

@@ -4,13 +4,17 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import org.json.JSONObject
+
+data class TrustedPC(
+    val identityPubKey: String,
+    val fingerprint: String
+)
 
 class PairingRepository(
     context: Context,
     private val logRepository: LogRepository
 ) {
-    // Security fix: Use EncryptedSharedPreferences to protect auth keys at rest.
-    // This encrypts the stored data using the Android Keystore-backed MasterKey.
     private val prefs: SharedPreferences = run {
         val masterKey = MasterKey.Builder(context.applicationContext)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
@@ -24,23 +28,29 @@ class PairingRepository(
         )
     }
 
-    fun savePairing(host: String, port: Int, authKey: String) {
+    fun saveTrustedPC(host: String, port: Int, pc: TrustedPC) {
         val normalizedHost = host.trim()
-        val normalizedKey = authKey.trim()
-        if (normalizedHost.isBlank() || port !in 1..65535 || normalizedKey.isBlank()) {
-            return
-        }
-        prefs.edit().putString(keyFor(normalizedHost, port), normalizedKey).apply()
-        logRepository.info("PairingRepository", "Saved pairing for $normalizedHost:$port")
+        if (normalizedHost.isBlank() || port !in 1..65535 || pc.identityPubKey.isBlank()) return
+        val blob = JSONObject().apply {
+            put("pk", pc.identityPubKey)
+            put("fp", pc.fingerprint)
+        }.toString()
+        prefs.edit().putString(keyFor(normalizedHost, port), blob).apply()
+        logRepository.info("PairingRepository", "Saved trusted PC $normalizedHost:$port (fp=${pc.fingerprint})")
     }
 
-    fun getAuthKey(host: String, port: Int): String? {
+    fun getTrustedPC(host: String, port: Int): TrustedPC? {
         val normalizedHost = host.trim()
-        if (normalizedHost.isBlank() || port !in 1..65535) {
-            return null
-        }
-        return prefs.getString(keyFor(normalizedHost, port), null)?.takeIf { it.isNotBlank() }
+        if (normalizedHost.isBlank() || port !in 1..65535) return null
+        val blob = prefs.getString(keyFor(normalizedHost, port), null) ?: return null
+        return runCatching {
+            val obj = JSONObject(blob)
+            val pk = obj.optString("pk")
+            if (pk.isBlank()) null else TrustedPC(identityPubKey = pk, fingerprint = obj.optString("fp"))
+        }.getOrNull()
     }
+
+    fun isPaired(host: String, port: Int): Boolean = getTrustedPC(host, port) != null
 
     private fun keyFor(host: String, port: Int): String = "paired:$host:$port"
 

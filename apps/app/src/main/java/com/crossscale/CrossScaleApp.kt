@@ -360,6 +360,9 @@ fun CrossScaleApp(container: AppContainer) {
             onShowManualConnectDialog = deviceViewModel::showManualConnectDialog,
             onManualConnect = deviceViewModel::connectManual,
             onConnectByQr = deviceViewModel::connectByQrPayload,
+            onConfirmTrust = deviceViewModel::confirmTrustAndConnect,
+            onCancelFingerprintConfirm = deviceViewModel::cancelFingerprintConfirm,
+            onClearConnectionError = deviceViewModel::clearConnectionError,
             onClearLogs = logRepository::clear,
             onOpenModelRelease = {
                 val releaseUri = Uri.parse(MODEL_RELEASE_URL)
