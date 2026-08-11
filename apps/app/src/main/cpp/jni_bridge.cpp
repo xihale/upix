@@ -245,6 +245,83 @@ auto run_client_handshake(
     return session;
 }
 
+// ── 新连接配对流程: CONNECT_REQUEST/RESPONSE(握手后立即调用) ──────────────────
+// PC 协调器在 ECDH 握手成功后读取下一个加密帧并预期它是 CONNECT_REQUEST。
+// 可信 peer 自动批准, 首次 peer 阻塞在 PC 侧 stdin [y/n] 提示。返回 true 表示
+// approved=1; 此时 session 已按 response.stream_encrypted 设定 stream_plaintext。
+// 失败返回 false 并设置 error_msg(approved=0 / 网络 / MAC / 协议错误)。
+auto perform_connect_request(
+    crossscale::TCPSocket& socket,
+    crossscale::EncryptedSession& session,
+    const std::string& device_name,
+    const std::string& own_fingerprint,
+    bool wants_encrypted_stream,
+    std::string& error_msg
+) -> bool {
+    error_msg.clear();
+
+    // (1) 构造 ClientConnectRequest: 设备名 + 自己的指纹 + 加密意愿。
+    crossscale::ClientConnectRequest req{};
+    std::memset(req.device_name, 0, sizeof(req.device_name));
+    std::strncpy(req.device_name, device_name.c_str(), sizeof(req.device_name) - 1);
+    std::memset(req.fingerprint, 0, sizeof(req.fingerprint));
+    std::strncpy(req.fingerprint, own_fingerprint.c_str(), sizeof(req.fingerprint) - 1);
+    req.wants_encrypted_stream = wants_encrypted_stream ? 1 : 0;
+
+    crossscale::MessageHeader req_hdr{};
+    req_hdr.type = crossscale::MessageType::MSG_CLIENT_CONNECT_REQUEST;
+    req_hdr.payload_length = sizeof(req);
+    auto req_wire = session.seal(req_hdr, &req);
+    if (!socket.send_all(req_wire.data(), req_wire.size()).has_value()) {
+        error_msg = "CONNECT_REQUEST send failed";
+        return false;
+    }
+
+    // (2) 接收加密的 CONNECT_RESPONSE 并解析。
+    std::vector<uint8_t> hdr_buf(crossscale::Protocol::HEADER_SIZE);
+    if (!socket.receive_all(hdr_buf.data(), hdr_buf.size()).has_value()) {
+        error_msg = "CONNECT_RESPONSE header recv failed";
+        return false;
+    }
+    auto parsed = crossscale::Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
+    if (!parsed) {
+        error_msg = "CONNECT_RESPONSE header invalid";
+        return false;
+    }
+    if (parsed->payload_length > MAX_PAYLOAD_LENGTH) {
+        error_msg = "CONNECT_RESPONSE payload too large";
+        return false;
+    }
+    std::vector<uint8_t> wire(crossscale::Protocol::HEADER_SIZE + parsed->payload_length);
+    std::memcpy(wire.data(), hdr_buf.data(), crossscale::Protocol::HEADER_SIZE);
+    if (parsed->payload_length > 0) {
+        if (!socket.receive_all(wire.data() + crossscale::Protocol::HEADER_SIZE,
+                                parsed->payload_length).has_value()) {
+            error_msg = "CONNECT_RESPONSE payload recv failed";
+            return false;
+        }
+    }
+    auto opened = session.open(wire.data(), wire.size());
+    if (!opened) {
+        error_msg = "CONNECT_RESPONSE MAC failed";
+        return false;
+    }
+    auto& [resp_hdr, resp_payload] = *opened;
+    if (resp_hdr.type != crossscale::MessageType::MSG_CLIENT_CONNECT_RESPONSE ||
+        resp_payload.size() < sizeof(crossscale::ClientConnectResponse)) {
+        error_msg = "unexpected response during pairing";
+        return false;
+    }
+    const auto* resp = reinterpret_cast<const crossscale::ClientConnectResponse*>(resp_payload.data());
+    if (resp->approved == 0) {
+        error_msg = "PC denied the connection";
+        return false;
+    }
+    // 按 PC 协商后的最终流加密模式设定 session(min(pc, mobile))。
+    session.set_stream_plaintext(resp->stream_encrypted == 0);
+    return true;
+}
+
 class AndroidWorkerSession {
 public:
     ~AndroidWorkerSession() {
@@ -660,6 +737,7 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
     jstring host,
     jint port,
     jstring peer_pubkey_b64,
+    jboolean wants_encrypted_stream,
     jstring model_name,
     jint tile_size,
     jint tile_overlap,
@@ -769,6 +847,18 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
     auto session = run_client_handshake(socket, peer_pk, *g_identity, handshake_error);
     if (!session.has_value()) {
         set_jni_last_error("Distributed handshake failed: " + handshake_error);
+        return nullptr;
+    }
+
+    // 握手成功后立即进行 CONNECT_REQUEST/RESPONSE 配对。PC 协调器在握手后会读取
+    // 下一个加密帧并预期它是 CONNECT_REQUEST(可信 peer 自动批准, 首次 peer 阻塞
+    // 在 stdin [y/n])。批准后 PC 才接受角色帧(MSG_CLIENT_SUBMIT)。
+    const std::string own_fp = crossscale::fingerprint(g_identity->public_key());
+    std::string pairing_error;
+    if (!perform_connect_request(
+            socket, *session, "CrossScale-Android", own_fp,
+            wants_encrypted_stream == JNI_TRUE, pairing_error)) {
+        set_jni_last_error("Distributed pairing failed: " + pairing_error);
         return nullptr;
     }
 
@@ -951,6 +1041,92 @@ Java_com_crossscale_native_NCNNEngine_nativeRelease(
     auto* engine = reinterpret_cast<Engine*>(engine_ptr);
     delete engine;
     LOGI("Engine released");
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_crossscale_native_NativeWorker_nativeRequestConnection(
+    JNIEnv* env,
+    jobject thiz,
+    jstring host,
+    jint port,
+    jstring peer_pubkey_b64,
+    jboolean wants_encrypted_stream
+) {
+    (void)thiz;
+    clear_jni_last_error();
+
+    if (host == nullptr || peer_pubkey_b64 == nullptr) {
+        set_jni_last_error("requestConnection parameters are incomplete");
+        return JNI_FALSE;
+    }
+    if (port <= 0 || port > std::numeric_limits<uint16_t>::max()) {
+        set_jni_last_error("requestConnection port is invalid");
+        return JNI_FALSE;
+    }
+
+    const char* host_chars = env->GetStringUTFChars(host, nullptr);
+    const char* peer_pk_chars = env->GetStringUTFChars(peer_pubkey_b64, nullptr);
+    if (host_chars == nullptr || peer_pk_chars == nullptr) {
+        if (host_chars != nullptr) env->ReleaseStringUTFChars(host, host_chars);
+        if (peer_pk_chars != nullptr) env->ReleaseStringUTFChars(peer_pubkey_b64, peer_pk_chars);
+        set_jni_last_error("Failed to read requestConnection strings from Java");
+        return JNI_FALSE;
+    }
+
+    const std::string host_str(host_chars);
+    const std::string peer_pubkey_b64_str(peer_pk_chars);
+    env->ReleaseStringUTFChars(host, host_chars);
+    env->ReleaseStringUTFChars(peer_pubkey_b64, peer_pk_chars);
+
+    // Decode peer identity pubkey (base64 from mDNS TXT or QR).
+    auto peer_pk_bytes = crossscale::base64_decode(peer_pubkey_b64_str);
+    if (!peer_pk_bytes || peer_pk_bytes->size() != 32) {
+        set_jni_last_error("invalid peer identity pubkey (expected 32-byte base64)");
+        return JNI_FALSE;
+    }
+    std::array<uint8_t, 32> peer_pk{};
+    std::memcpy(peer_pk.data(), peer_pk_bytes->data(), 32);
+    if (!g_identity.has_value()) {
+        set_jni_last_error("identity not loaded; call loadIdentity first");
+        return JNI_FALSE;
+    }
+
+    // 计算手机自身的指纹(从长期身份公钥派生), 供 PC 在批准提示中展示。
+    const std::string own_fingerprint = crossscale::fingerprint(g_identity->public_key());
+
+    crossscale::TCPSocket socket;
+    const auto connect_result = socket.connect(host_str, static_cast<uint16_t>(port));
+    if (!connect_result.has_value()) {
+        set_jni_last_error("requestConnection connect failed: " + connect_result.error().message);
+        return JNI_FALSE;
+    }
+
+    std::string handshake_error;
+    auto session = run_client_handshake(socket, peer_pk, *g_identity, handshake_error);
+    if (!session.has_value()) {
+        set_jni_last_error("requestConnection handshake failed: " + handshake_error);
+        return JNI_FALSE;
+    }
+
+    std::string pairing_error;
+    const bool approved = perform_connect_request(
+        socket,
+        *session,
+        "CrossScale-Android",
+        own_fingerprint,
+        wants_encrypted_stream == JNI_TRUE,
+        pairing_error
+    );
+    if (!approved) {
+        set_jni_last_error("requestConnection pairing failed: " + pairing_error);
+        LOGW("Pairing rejected for %s:%d — %s",
+             host_str.c_str(), port, pairing_error.c_str());
+        return JNI_FALSE;
+    }
+
+    LOGI("Pairing approved for %s:%d (stream_encrypted=%d)",
+         host_str.c_str(), port, session->stream_plaintext() ? 0 : 1);
+    return JNI_TRUE;
 }
 
 JNIEXPORT jlong JNICALL

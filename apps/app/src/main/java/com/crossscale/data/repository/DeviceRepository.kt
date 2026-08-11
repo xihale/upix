@@ -3,6 +3,7 @@ package com.crossscale.data.repository
 import android.content.Context
 import android.os.Build
 import com.crossscale.data.model.DeviceProfile
+import com.crossscale.data.model.DeviceRole
 import com.crossscale.data.model.DeviceStatus
 import com.crossscale.data.model.DeviceType
 import kotlinx.coroutines.flow.Flow
@@ -18,8 +19,6 @@ class DeviceRepository(
 ) {
     private val localDeviceId = "local-${Build.MODEL}-${Build.ID}"
     private val prefs = context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-    private val manualWeightOverrides = mutableMapOf<String, Float>()
-    private var localRecommendedWeight: Float = DEFAULT_ANDROID_WEIGHT
 
     private val _devices = MutableStateFlow<List<DeviceProfile>>(emptyList())
     val devices: StateFlow<List<DeviceProfile>> = _devices.asStateFlow()
@@ -28,7 +27,6 @@ class DeviceRepository(
     }
 
     init {
-        restoreWeightPreferences()
         registerLocalDevice()
     }
 
@@ -36,7 +34,6 @@ class DeviceRepository(
         _devices.update { current ->
             val existingLocal = current.firstOrNull { it.deviceId == localDeviceId }
             val local = existingLocal?.copy(
-                weight = manualWeightOverrides[localDeviceId] ?: localRecommendedWeight,
                 recommendedTileSize = if (existingLocal.recommendedTileSize > 0) {
                     existingLocal.recommendedTileSize
                 } else {
@@ -61,11 +58,6 @@ class DeviceRepository(
                     DeviceStatus.CONNECTING -> DeviceStatus.CONNECTING
                     else -> DeviceStatus.DISCOVERED
                 }
-                val inferredWeight = inferRecommendedWeight(device)
-                val resolvedWeight = manualWeightOverrides[device.deviceId]
-                    ?: existing?.weight?.takeIf { it > 0.0f }
-                    ?: device.weight.takeIf { it > 0.0f }
-                    ?: inferredWeight
                 val resolvedQueueDepth = existing?.maxBatchSize?.takeIf { it > 0 }
                     ?: device.maxBatchSize.takeIf { it > 0 }
                     ?: inferRecommendedQueueDepth(device)
@@ -73,12 +65,13 @@ class DeviceRepository(
                     ?: device.recommendedTileSize.takeIf { it > 0 }
                     ?: inferRecommendedTileSize(device)
                 remoteById[device.deviceId] = device.copy(
+                    role = DeviceRole.PC,
                     status = status,
                     type = existing?.type ?: device.type,
                     tilesPerSecond = existing?.tilesPerSecond ?: device.tilesPerSecond,
                     recommendedTileSize = resolvedTileSize,
                     maxBatchSize = resolvedQueueDepth,
-                    weight = resolvedWeight,
+                    streamEncrypted = existing?.streamEncrypted ?: device.streamEncrypted,
                     discoveredFingerprint = device.discoveredFingerprint ?: existing?.discoveredFingerprint,
                     discoveredPubKey = device.discoveredPubKey ?: existing?.discoveredPubKey,
                     lastSeenEpochMillis = System.currentTimeMillis()
@@ -128,24 +121,43 @@ class DeviceRepository(
     }
 
     fun addManualDevice(host: String, port: Int, peerPubKeyB64: String, fingerprint: String? = null) {
+        addManualDevice(host, port, peerPubKeyB64, fingerprint, streamEncrypted = false)
+    }
+
+    fun addManualDevice(
+        host: String,
+        port: Int,
+        peerPubKeyB64: String,
+        fingerprint: String?,
+        streamEncrypted: Boolean
+    ) {
         val deviceId = "$host:$port"
-        val templateDevice = DeviceProfile(
-            deviceId = deviceId,
-            deviceName = "Remote@$host",
-            type = DeviceType.GPU,
-            tilesPerSecond = 0.0f,
-            recommendedTileSize = DEFAULT_PC_DEDICATED_TILE_SIZE,
-            maxBatchSize = DEFAULT_PC_DEDICATED_QUEUE_DEPTH,
-            weight = DEFAULT_PC_DEDICATED_WEIGHT,
-            ipAddress = host,
-            port = port,
-            status = DeviceStatus.CONNECTED,
-            discoveredFingerprint = fingerprint,
-            discoveredPubKey = peerPubKeyB64
+        val resolvedQueueDepth = inferRecommendedQueueDepth(
+            DeviceProfile(
+                deviceId = deviceId,
+                deviceName = "Remote@$host",
+                type = DeviceType.GPU,
+                tilesPerSecond = 0.0f,
+                recommendedTileSize = DEFAULT_PC_DEDICATED_TILE_SIZE,
+                maxBatchSize = DEFAULT_PC_DEDICATED_QUEUE_DEPTH,
+                role = DeviceRole.PC,
+                ipAddress = host,
+                port = port
+            )
         )
-        val resolvedWeight = manualWeightOverrides[deviceId] ?: inferRecommendedWeight(templateDevice)
-        val resolvedQueueDepth = inferRecommendedQueueDepth(templateDevice)
-        val resolvedTileSize = inferRecommendedTileSize(templateDevice)
+        val resolvedTileSize = inferRecommendedTileSize(
+            DeviceProfile(
+                deviceId = deviceId,
+                deviceName = "Remote@$host",
+                type = DeviceType.GPU,
+                tilesPerSecond = 0.0f,
+                recommendedTileSize = DEFAULT_PC_DEDICATED_TILE_SIZE,
+                maxBatchSize = DEFAULT_PC_DEDICATED_QUEUE_DEPTH,
+                role = DeviceRole.PC,
+                ipAddress = host,
+                port = port
+            )
+        )
         var remoteBecameConnected = false
         _devices.update { current ->
             val existing = current.firstOrNull { it.deviceId == deviceId }
@@ -157,7 +169,8 @@ class DeviceRepository(
                             status = DeviceStatus.CONNECTED,
                             ipAddress = host,
                             port = port,
-                            weight = manualWeightOverrides[deviceId] ?: existing.weight,
+                            role = DeviceRole.PC,
+                            streamEncrypted = streamEncrypted,
                             maxBatchSize = if (existing.maxBatchSize > 0) existing.maxBatchSize else resolvedQueueDepth,
                             recommendedTileSize = if (existing.recommendedTileSize > 0) {
                                 existing.recommendedTileSize
@@ -180,7 +193,8 @@ class DeviceRepository(
                     tilesPerSecond = 0.0f,
                     recommendedTileSize = resolvedTileSize,
                     maxBatchSize = resolvedQueueDepth,
-                    weight = resolvedWeight,
+                    role = DeviceRole.PC,
+                    streamEncrypted = streamEncrypted,
                     ipAddress = host,
                     port = port,
                     status = DeviceStatus.CONNECTED,
@@ -221,7 +235,6 @@ class DeviceRepository(
         if (normalizedSample <= 0.0f) {
             return
         }
-        val manualWeight = manualWeightOverrides[deviceId]
         _devices.update { current ->
             current.map { device ->
                 if (device.deviceId != deviceId) {
@@ -234,43 +247,11 @@ class DeviceRepository(
                     }
                     device.copy(
                         tilesPerSecond = smoothedTilesPerSecond,
-                        weight = manualWeight ?: smoothedTilesPerSecond,
                         lastSeenEpochMillis = System.currentTimeMillis()
                     )
                 }
             }
         }
-    }
-
-    fun setDeviceWeight(deviceId: String, weight: Float) {
-        val normalizedWeight = clampWeight(weight)
-        if (deviceId.isBlank()) {
-            return
-        }
-
-        manualWeightOverrides[deviceId] = normalizedWeight
-        persistWeightOverride(deviceId, normalizedWeight)
-        if (deviceId == localDeviceId) {
-            localRecommendedWeight = normalizedWeight
-            persistLocalRecommendedWeight(localRecommendedWeight)
-        }
-
-        _devices.update { current ->
-            current.map { device ->
-                if (device.deviceId == deviceId) {
-                    device.copy(
-                        weight = normalizedWeight,
-                        lastSeenEpochMillis = System.currentTimeMillis()
-                    )
-                } else {
-                    device
-                }
-            }
-        }
-        logRepository.info(
-            "DeviceRepository",
-            "Manual weight updated: $deviceId -> ${"%.2f".format(normalizedWeight)}"
-        )
     }
 
     fun isLocalDevice(deviceId: String): Boolean {
@@ -316,24 +297,11 @@ class DeviceRepository(
             tilesPerSecond = 0.0f,
             recommendedTileSize = DEFAULT_ANDROID_RECOMMENDED_TILE_SIZE,
             maxBatchSize = DEFAULT_ANDROID_QUEUE_DEPTH,
-            weight = localRecommendedWeight,
+            role = DeviceRole.MOBILE,
             ipAddress = "127.0.0.1",
             port = 9527,
             status = DeviceStatus.CONNECTED
         )
-    }
-
-    private fun inferRecommendedWeight(device: DeviceProfile): Float {
-        val fingerprint = "${device.deviceName} ${device.deviceId}".lowercase()
-        return when {
-            fingerprint.contains("android") -> DEFAULT_ANDROID_WEIGHT
-            fingerprint.contains("intel") ||
-                fingerprint.contains("integrated") ||
-                fingerprint.contains("uhd") ||
-                device.type == DeviceType.CPU -> DEFAULT_PC_INTEGRATED_WEIGHT
-
-            else -> DEFAULT_PC_DEDICATED_WEIGHT
-        }
     }
 
     private fun inferRecommendedQueueDepth(device: DeviceProfile): Int {
@@ -362,59 +330,8 @@ class DeviceRepository(
         }
     }
 
-    private fun clampWeight(weight: Float): Float {
-        return weight.coerceIn(MIN_WEIGHT, MAX_WEIGHT)
-    }
-
-    private fun restoreWeightPreferences() {
-        localRecommendedWeight = clampWeight(
-            prefs.getFloat(PREF_LOCAL_WEIGHT, DEFAULT_ANDROID_WEIGHT)
-        )
-
-        manualWeightOverrides.clear()
-        prefs.all.forEach { entry ->
-            if (!entry.key.startsWith(PREF_DEVICE_WEIGHT_PREFIX)) {
-                return@forEach
-            }
-            val deviceId = entry.key.removePrefix(PREF_DEVICE_WEIGHT_PREFIX)
-            if (deviceId.isBlank()) {
-                return@forEach
-            }
-            val parsedWeight = when (val value = entry.value) {
-                is Float -> value
-                is Number -> value.toFloat()
-                is String -> value.toFloatOrNull()
-                else -> null
-            } ?: return@forEach
-            manualWeightOverrides[deviceId] = clampWeight(parsedWeight)
-        }
-
-        if (manualWeightOverrides[localDeviceId] == null) {
-            manualWeightOverrides[localDeviceId] = localRecommendedWeight
-        }
-    }
-
-    private fun persistWeightOverride(deviceId: String, weight: Float) {
-        prefs.edit()
-            .putFloat(PREF_DEVICE_WEIGHT_PREFIX + deviceId, clampWeight(weight))
-            .apply()
-    }
-
-    private fun persistLocalRecommendedWeight(weight: Float) {
-        prefs.edit().putFloat(PREF_LOCAL_WEIGHT, clampWeight(weight)).apply()
-    }
-
     companion object {
-        private const val PREFS_NAME = "crossscale_device_weights"
-        private const val PREF_LOCAL_WEIGHT = "local_recommended_weight"
-        private const val PREF_DEVICE_WEIGHT_PREFIX = "device_weight_"
-
-        private const val MIN_WEIGHT = 0.5f
-        private const val MAX_WEIGHT = 20.0f
-
-        private const val DEFAULT_PC_DEDICATED_WEIGHT = 5.0f
-        private const val DEFAULT_PC_INTEGRATED_WEIGHT = 4.0f
-        private const val DEFAULT_ANDROID_WEIGHT = 2.0f
+        private const val PREFS_NAME = "crossscale_device_prefs"
 
         private const val DEFAULT_PC_DEDICATED_QUEUE_DEPTH = 5
         private const val DEFAULT_PC_INTEGRATED_QUEUE_DEPTH = 3

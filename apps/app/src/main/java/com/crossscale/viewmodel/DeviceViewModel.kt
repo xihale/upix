@@ -1,10 +1,12 @@
 package com.crossscale.viewmodel
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.crossscale.AppContainer
 import com.crossscale.data.model.DeviceProfile
+import com.crossscale.data.model.DeviceRole
 import com.crossscale.data.model.DeviceStatus
 import com.crossscale.data.model.DeviceType
 import com.crossscale.data.repository.DeviceRepository
@@ -30,7 +32,6 @@ data class DeviceUiState(
     val showManualConnectDialog: Boolean = false,
     val manualConnectHost: String = "",
     val manualConnectPort: String = "9527",
-    val pendingFingerprintConfirm: DeviceProfile? = null,
     val connectionError: String? = null
 )
 
@@ -39,13 +40,13 @@ class DeviceViewModel(
     private val pairingRepository: PairingRepository,
     private val coordinatorClient: CoordinatorClient,
     private val mdnsDiscovery: MDNSDiscovery,
-    private val logRepository: LogRepository
+    private val logRepository: LogRepository,
+    private val appContext: Context
 ) : ViewModel() {
     private val _isDiscovering = MutableStateFlow(false)
     private val _showManualConnectDialog = MutableStateFlow(false)
     private val _manualConnectHost = MutableStateFlow("")
     private val _manualConnectPort = MutableStateFlow("9527")
-    private val _pendingFingerprintConfirm = MutableStateFlow<DeviceProfile?>(null)
     private val _connectionError = MutableStateFlow<String?>(null)
     private var discoveryJob: Job? = null
     private val autoConnectingTargets = mutableSetOf<String>()
@@ -56,7 +57,6 @@ class DeviceViewModel(
         _showManualConnectDialog,
         _manualConnectHost,
         _manualConnectPort,
-        _pendingFingerprintConfirm,
         _connectionError
     ) { values ->
         @Suppress("UNCHECKED_CAST")
@@ -66,8 +66,7 @@ class DeviceViewModel(
             showManualConnectDialog = values[2] as Boolean,
             manualConnectHost = values[3] as String,
             manualConnectPort = values[4] as String,
-            pendingFingerprintConfirm = values[5] as DeviceProfile?,
-            connectionError = values[6] as String?
+            connectionError = values[5] as String?
         )
     }.stateIn(
         scope = viewModelScope,
@@ -92,7 +91,7 @@ class DeviceViewModel(
                         tilesPerSecond = 0.0f,
                         recommendedTileSize = 256,
                         maxBatchSize = 1,
-                        weight = 0.0f,
+                        role = DeviceRole.PC,
                         ipAddress = service.host,
                         port = service.port,
                         discoveredFingerprint = service.fingerprint,
@@ -135,15 +134,16 @@ class DeviceViewModel(
             return
         }
         viewModelScope.launch {
+            val wantsEncrypted = isStreamEncryptionEnabled()
             deviceRepository.markConnecting("${invite.host}:${invite.port}")
-            val connected = connectToCoordinator(invite.host, invite.port, invite.identityPubKey)
+            val connected = connectToCoordinator(invite.host, invite.port, invite.identityPubKey, wantsEncrypted)
             if (connected) {
                 pairingRepository.saveTrustedPC(
                     invite.host, invite.port,
                     TrustedPC(invite.identityPubKey, invite.fingerprint ?: "")
                 )
                 deviceRepository.addManualDevice(
-                    invite.host, invite.port, invite.identityPubKey, invite.fingerprint
+                    invite.host, invite.port, invite.identityPubKey, invite.fingerprint, wantsEncrypted
                 )
                 logRepository.info("DeviceViewModel", "Connected from v2 QR to ${invite.host}:${invite.port}")
             } else {
@@ -161,15 +161,18 @@ class DeviceViewModel(
         }
         val normalizedHost = host.trim()
         val normalizedPeerPubKey = peerPubKeyB64.trim()
+        val wantsEncrypted = isStreamEncryptionEnabled()
         viewModelScope.launch {
             deviceRepository.markConnecting("$normalizedHost:$port")
-            val connected = connectToCoordinator(normalizedHost, port, normalizedPeerPubKey)
+            val connected = connectToCoordinator(normalizedHost, port, normalizedPeerPubKey, wantsEncrypted)
             if (connected) {
                 pairingRepository.saveTrustedPC(
                     normalizedHost, port,
                     TrustedPC(normalizedPeerPubKey, "")
                 )
-                deviceRepository.addManualDevice(normalizedHost, port, normalizedPeerPubKey)
+                deviceRepository.addManualDevice(
+                    normalizedHost, port, normalizedPeerPubKey, null, wantsEncrypted
+                )
             } else {
                 deviceRepository.markFailed("$normalizedHost:$port")
                 _connectionError.value = "连接失败，请检查 PC 是否在线"
@@ -192,63 +195,46 @@ class DeviceViewModel(
             return
         }
         val trusted = pairingRepository.getTrustedPC(target.ipAddress, target.port)
-        // If trusted AND pubkey matches (or undiscovered), connect silently.
-        if (trusted != null &&
-            (target.discoveredPubKey.isNullOrBlank() || target.discoveredPubKey == trusted.identityPubKey)) {
-            viewModelScope.launch {
-                deviceRepository.markConnecting(deviceId)
-                val ok = connectToCoordinator(target.ipAddress, target.port, trusted.identityPubKey)
-                if (ok) {
-                    deviceRepository.addManualDevice(
-                        target.ipAddress, target.port, trusted.identityPubKey, trusted.fingerprint
-                    )
-                } else {
-                    deviceRepository.markFailed(deviceId)
-                    _connectionError.value = "连接失败，请检查 PC 是否在线"
-                }
-            }
+        val peerPubKey = when {
+            !target.discoveredPubKey.isNullOrBlank() -> target.discoveredPubKey
+            trusted != null -> trusted.identityPubKey
+            else -> null
+        }
+        if (peerPubKey.isNullOrBlank()) {
+            // No pubkey available — fall back to manual entry.
+            _manualConnectHost.value = target.ipAddress
+            _manualConnectPort.value = target.port.toString()
+            _showManualConnectDialog.value = true
             return
         }
-        // Not trusted. If we have a discovered pubkey, ask the user to confirm the fingerprint.
-        if (!target.discoveredPubKey.isNullOrBlank()) {
-            _pendingFingerprintConfirm.value = target
-            return
-        }
-        // No pubkey available — fall back to manual entry.
-        _manualConnectHost.value = target.ipAddress
-        _manualConnectPort.value = target.port.toString()
-        _showManualConnectDialog.value = true
-    }
-
-    fun confirmTrustAndConnect(deviceId: String) {
-        val target = _pendingFingerprintConfirm.value ?: return
-        _pendingFingerprintConfirm.value = null
-        val pk = target.discoveredPubKey
-        if (pk.isNullOrBlank()) {
-            _connectionError.value = "缺少 PC 公钥，无法配对"
-            return
-        }
+        val wantsEncrypted = isStreamEncryptionEnabled()
         viewModelScope.launch {
             deviceRepository.markConnecting(deviceId)
-            val ok = connectToCoordinator(target.ipAddress, target.port, pk)
-            if (ok) {
-                pairingRepository.saveTrustedPC(
-                    target.ipAddress, target.port,
-                    TrustedPC(pk, target.discoveredFingerprint ?: "")
-                )
+            // CONNECT_REQUEST round-trip: PC shows approval prompt for first-time
+            // peers, auto-approves trusted ones. Phone shows "等待 PC 批准..." while
+            // CONNECTING. On denial we surface an error instead of asking the user.
+            val approved = connectToCoordinator(target.ipAddress, target.port, peerPubKey, wantsEncrypted)
+            if (approved) {
+                // Persist trust so future connects skip the PC prompt.
+                if (trusted == null ||
+                    (target.discoveredPubKey.isNullOrBlank() &&
+                        trusted.identityPubKey != peerPubKey)) {
+                    pairingRepository.saveTrustedPC(
+                        target.ipAddress, target.port,
+                        TrustedPC(peerPubKey, target.discoveredFingerprint ?: "")
+                    )
+                }
                 deviceRepository.addManualDevice(
-                    target.ipAddress, target.port, pk, target.discoveredFingerprint
+                    target.ipAddress, target.port, peerPubKey,
+                    target.discoveredFingerprint, wantsEncrypted
                 )
-                logRepository.info("DeviceViewModel", "Trusted + connected to ${target.ipAddress}:${target.port}")
+                logRepository.info("DeviceViewModel", "PC approved + connected to ${target.ipAddress}:${target.port}")
             } else {
                 deviceRepository.markFailed(deviceId)
-                _connectionError.value = "连接失败，请检查 PC 是否在线"
+                _connectionError.value = "PC 拒绝连接"
+                logRepository.warning("DeviceViewModel", "PC denied connection from ${target.ipAddress}:${target.port}")
             }
         }
-    }
-
-    fun cancelFingerprintConfirm() {
-        _pendingFingerprintConfirm.value = null
     }
 
     fun clearConnectionError() {
@@ -272,19 +258,17 @@ class DeviceViewModel(
         }
     }
 
-    fun updateDeviceWeight(deviceId: String, weight: Float) {
-        if (deviceId.isBlank()) {
-            return
-        }
-        deviceRepository.setDeviceWeight(deviceId, weight)
-    }
-
     fun showManualConnectDialog(show: Boolean) {
         _showManualConnectDialog.value = show
         if (!show) {
             _manualConnectHost.value = ""
             _manualConnectPort.value = "9527"
         }
+    }
+
+    private fun isStreamEncryptionEnabled(): Boolean {
+        return appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(PREF_STREAM_ENCRYPTED, false)
     }
 
     override fun onCleared() {
@@ -320,7 +304,9 @@ class DeviceViewModel(
                     return@launch
                 }
                 deviceRepository.markConnecting(deviceId)
-                val connected = connectToCoordinator(device.ipAddress, device.port, trusted.identityPubKey)
+                val connected = connectToCoordinator(
+                    device.ipAddress, device.port, trusted.identityPubKey, isStreamEncryptionEnabled()
+                )
                 if (connected) {
                     deviceRepository.addManualDevice(
                         device.ipAddress, device.port, trusted.identityPubKey, trusted.fingerprint
@@ -338,10 +324,13 @@ class DeviceViewModel(
     private suspend fun connectToCoordinator(
         host: String,
         port: Int,
-        peerPubKeyB64: String
+        peerPubKeyB64: String,
+        wantsEncryptedStream: Boolean = false
     ): Boolean {
         return withContext(Dispatchers.IO) {
-            coordinatorClient.connect(host, port, peerPubKeyB64)
+            // 新流程: handshake + CONNECT_REQUEST/RESPONSE pairing. PC-side
+            // approval (auto for trusted peers, prompt for first-timers).
+            coordinatorClient.requestConnection(host, port, peerPubKeyB64, wantsEncryptedStream)
         }
     }
 
@@ -355,6 +344,9 @@ class DeviceViewModel(
     }
 
     companion object {
+        private const val PREFS_NAME = "crossscale_settings"
+        private const val PREF_STREAM_ENCRYPTED = "stream_encrypted"
+
         fun factory(container: AppContainer): ViewModelProvider.Factory {
             return object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
@@ -364,7 +356,8 @@ class DeviceViewModel(
                         pairingRepository = container.pairingRepository,
                         coordinatorClient = container.coordinatorClient,
                         mdnsDiscovery = container.mdnsDiscovery,
-                        logRepository = container.logRepository
+                        logRepository = container.logRepository,
+                        appContext = container.appContext
                     ) as T
                 }
             }

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -23,7 +24,9 @@ fun SettingsScreen(
     selectedModelName: String?,
     onOpenModels: () -> Unit,
     onOpenLogs: () -> Unit,
-    onOpenHelp: () -> Unit
+    onOpenHelp: () -> Unit,
+    isStreamEncrypted: Boolean,
+    onStreamEncryptedChange: (Boolean) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -55,6 +58,35 @@ fun SettingsScreen(
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha))
 
         SettingsLine(title = "使用帮助", subtitle = "快速开始与常见问题", onClick = onOpenHelp)
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha))
+
+        // 加密数据流传输开关: 控制图像/结果数据流是否加密(吞吐优先时关闭)。
+        // 控制帧始终加密; 仅大 payload 走 stream 路径。
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = BorderlessTokens.InteractiveRowMinHeight)
+                .padding(vertical = BorderlessTokens.ListItemVerticalPadding),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing / 2)
+            ) {
+                Text(text = "加密数据流传输 (图像/结果)", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    text = "关闭可提升吞吐; 控制帧始终加密",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = isStreamEncrypted,
+                onCheckedChange = onStreamEncryptedChange
+            )
+        }
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha))
         Text(

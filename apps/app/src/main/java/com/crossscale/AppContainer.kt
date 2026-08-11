@@ -14,7 +14,7 @@ import com.crossscale.network.CoordinatorClient
 import com.crossscale.network.MDNSDiscovery
 
 class AppContainer(context: Context) {
-    private val appContext = context.applicationContext
+    val appContext = context.applicationContext
 
     val logRepository = LogRepository()
     val modelRepository = ModelRepository(appContext, logRepository)

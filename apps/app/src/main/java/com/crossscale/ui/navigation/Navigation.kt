@@ -64,17 +64,14 @@ fun CrossScaleNavigation(
     onRefreshModels: () -> Unit,
     onImportModels: () -> Unit,
     onDeleteModel: (ModelInfo) -> Unit,
-    onStartDiscovery: () -> Unit,
-    onStopDiscovery: () -> Unit,
     onConnectDevice: (String) -> Unit,
     onDisconnectDevice: (String) -> Unit,
-    onAdjustDeviceWeight: (String, Float) -> Unit,
     onShowManualConnectDialog: (Boolean) -> Unit,
     onManualConnect: (String, String, String) -> Unit,
     onConnectByQr: (String) -> Unit,
-    onConfirmTrust: (String) -> Unit,
-    onCancelFingerprintConfirm: () -> Unit,
     onClearConnectionError: () -> Unit,
+    onStreamEncryptedChange: (Boolean) -> Unit,
+    isStreamEncrypted: Boolean,
     onClearLogs: () -> Unit,
     onOpenModelRelease: () -> Unit,
     onOpenHelp: () -> Unit,
@@ -125,16 +122,11 @@ fun CrossScaleNavigation(
             DestinationContainer {
                 DevicesScreen(
                     state = deviceUiState,
-                    onStartDiscovery = onStartDiscovery,
-                    onStopDiscovery = onStopDiscovery,
                     onConnectDevice = onConnectDevice,
                     onDisconnectDevice = onDisconnectDevice,
-                    onAdjustDeviceWeight = onAdjustDeviceWeight,
                     onShowManualConnectDialog = onShowManualConnectDialog,
                     onManualConnect = onManualConnect,
                     onConnectByQr = onConnectByQr,
-                    onConfirmTrust = onConfirmTrust,
-                    onCancelFingerprintConfirm = onCancelFingerprintConfirm,
                     onClearConnectionError = onClearConnectionError
                 )
             }
@@ -150,7 +142,9 @@ fun CrossScaleNavigation(
                     onOpenLogs = {
                         navController.navigate(AppScreen.SettingsLogs.route)
                     },
-                    onOpenHelp = onOpenHelp
+                    onOpenHelp = onOpenHelp,
+                    isStreamEncrypted = isStreamEncrypted,
+                    onStreamEncryptedChange = onStreamEncryptedChange
                 )
             }
         }

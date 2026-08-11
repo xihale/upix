@@ -58,6 +58,15 @@ fun CrossScaleApp(container: AppContainer) {
     var hasBackupAvailable by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
+    // 加密数据流开关(SharedPreferences 持久化, 默认关闭=吞吐优先)。
+    val streamEncryptedState = rememberSaveable {
+        mutableStateOf(
+            context.getSharedPreferences(STREAM_PREFS_NAME, Context.MODE_PRIVATE)
+                .getBoolean(STREAM_PREF_KEY, false)
+        )
+    }
+    val isStreamEncrypted = streamEncryptedState.value
+
     LaunchedEffect(mainUiState.selectedImagePath, mainUiState.processNestedFolders) {
         val path = mainUiState.selectedImagePath
         if (path != null) {
@@ -66,6 +75,11 @@ fun CrossScaleApp(container: AppContainer) {
             hasBackupAvailable = false
         }
         processingViewModel.refreshExpectedTotal(path)
+    }
+
+    // App 启动即自动开始 mDNS 发现(不再需要手动点击)。
+    LaunchedEffect(Unit) {
+        deviceViewModel.startDiscovery()
     }
 
     val handlePickedImageUris: (List<Uri>, String) -> Unit = { uris, pickerName ->
@@ -352,17 +366,20 @@ fun CrossScaleApp(container: AppContainer) {
                 pickModelFilesLauncher.launch(arrayOf("*/*"))
             },
             onDeleteModel = mainViewModel::deleteModel,
-            onStartDiscovery = deviceViewModel::startDiscovery,
-            onStopDiscovery = deviceViewModel::stopDiscovery,
             onConnectDevice = deviceViewModel::connectDevice,
             onDisconnectDevice = deviceViewModel::disconnectDevice,
-            onAdjustDeviceWeight = deviceViewModel::updateDeviceWeight,
             onShowManualConnectDialog = deviceViewModel::showManualConnectDialog,
             onManualConnect = deviceViewModel::connectManual,
             onConnectByQr = deviceViewModel::connectByQrPayload,
-            onConfirmTrust = deviceViewModel::confirmTrustAndConnect,
-            onCancelFingerprintConfirm = deviceViewModel::cancelFingerprintConfirm,
             onClearConnectionError = deviceViewModel::clearConnectionError,
+            isStreamEncrypted = isStreamEncrypted,
+            onStreamEncryptedChange = { enabled ->
+                context.getSharedPreferences(STREAM_PREFS_NAME, Context.MODE_PRIVATE)
+                    .edit()
+                    .putBoolean(STREAM_PREF_KEY, enabled)
+                    .apply()
+                streamEncryptedState.value = enabled
+            },
             onClearLogs = logRepository::clear,
             onOpenModelRelease = {
                 val releaseUri = Uri.parse(MODEL_RELEASE_URL)
@@ -381,6 +398,8 @@ fun CrossScaleApp(container: AppContainer) {
 }
 
 private const val MODEL_RELEASE_URL = "https://github.com/xihale/crossscale/releases"
+private const val STREAM_PREFS_NAME = "crossscale_settings"
+private const val STREAM_PREF_KEY = "stream_encrypted"
 
 private fun buildModelImportFeedbackMessage(result: ModelImportResult): String {
     if (result.importedCount <= 0) {

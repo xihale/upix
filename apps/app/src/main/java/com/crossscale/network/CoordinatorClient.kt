@@ -26,6 +26,31 @@ class CoordinatorClient(
     private var connectedEndpoint: RemoteEndpoint? = null
 
     fun connect(host: String, port: Int, peerPubKeyB64: String): Boolean {
+        return connectInternal(host, port, peerPubKeyB64, modelsDirectory.absolutePath)
+    }
+
+    /**
+     * 新连接流程: ECDH 握手 + CONNECT_REQUEST/RESPONSE 配对(无图像传输)。
+     * PC 侧对可信 peer 自动批准, 首次 peer 阻塞在 stdin [y/n] 提示。
+     * 返回 true 表示 PC 批准(approved=1); false 表示拒绝或握手失败。
+     * 成功后保留 worker 以便后续图像提交复用同一会话信任。
+     */
+    fun requestConnection(
+        host: String,
+        port: Int,
+        peerPubKeyB64: String,
+        wantsEncryptedStream: Boolean
+    ): Boolean {
+        return connectInternal(host, port, peerPubKeyB64, wantsEncryptedStream = wantsEncryptedStream)
+    }
+
+    private fun connectInternal(
+        host: String,
+        port: Int,
+        peerPubKeyB64: String,
+        modelsDirectory: String = this.modelsDirectory.absolutePath,
+        wantsEncryptedStream: Boolean = false
+    ): Boolean {
         val normalizedHost = host.trim()
         val normalizedPeerPubKeyB64 = peerPubKeyB64.trim()
         if (normalizedHost.isBlank() || port <= 0 || normalizedPeerPubKeyB64.isBlank()) {
@@ -41,18 +66,18 @@ class CoordinatorClient(
             disconnect()
         }
 
-        if (!modelsDirectory.exists() && !modelsDirectory.mkdirs()) {
-            logRepository.error("CoordinatorClient", "Failed to create models directory: ${modelsDirectory.absolutePath}")
+        if (!this.modelsDirectory.exists() && !this.modelsDirectory.mkdirs()) {
+            logRepository.error("CoordinatorClient", "Failed to create models directory: ${this.modelsDirectory.absolutePath}")
             return false
         }
 
         val activeWorker = worker ?: NativeWorker().also { worker = it }
         val connected = try {
-            activeWorker.connect(
+            activeWorker.requestConnection(
                 host = normalizedHost,
                 port = port,
                 peerPubKeyB64 = normalizedPeerPubKeyB64,
-                modelsDirectory = modelsDirectory.absolutePath
+                wantsEncryptedStream = wantsEncryptedStream
             )
         } catch (e: UnsatisfiedLinkError) {
             logRepository.error("CoordinatorClient", "Native bridge unavailable: ${e.message}")
@@ -66,7 +91,8 @@ class CoordinatorClient(
             connectedEndpoint = RemoteEndpoint(
                 host = normalizedHost,
                 port = port,
-                peerPubKeyB64 = normalizedPeerPubKeyB64
+                peerPubKeyB64 = normalizedPeerPubKeyB64,
+                streamEncrypted = wantsEncryptedStream
             )
             logRepository.info("CoordinatorClient", "Connected to $normalizedHost:$port")
         } else {
@@ -134,6 +160,7 @@ class CoordinatorClient(
             host = endpoint.host,
             port = endpoint.port,
             peerPubKeyB64 = endpoint.peerPubKeyB64,
+            wantsEncryptedStream = endpoint.streamEncrypted,
             modelName = modelName,
             tileSize = tileSize.coerceAtLeast(MIN_TILE_SIZE),
             tileOverlap = tileOverlap.coerceAtLeast(0),
@@ -312,7 +339,8 @@ class CoordinatorClient(
     private data class RemoteEndpoint(
         val host: String,
         val port: Int,
-        val peerPubKeyB64: String
+        val peerPubKeyB64: String,
+        val streamEncrypted: Boolean = false
     )
 
     private companion object {

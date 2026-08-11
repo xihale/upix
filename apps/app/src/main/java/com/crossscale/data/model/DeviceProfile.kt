@@ -7,7 +7,8 @@ data class DeviceProfile(
     val tilesPerSecond: Float,
     val recommendedTileSize: Int,
     val maxBatchSize: Int,
-    val weight: Float,
+    val role: DeviceRole = DeviceRole.MOBILE,
+    val streamEncrypted: Boolean = false,
     val ipAddress: String,
     val port: Int,
     val status: DeviceStatus = DeviceStatus.DISCOVERED,
@@ -19,6 +20,11 @@ data class DeviceProfile(
 enum class DeviceType {
     CPU,
     GPU
+}
+
+enum class DeviceRole {
+    PC,
+    MOBILE
 }
 
 enum class DeviceStatus {

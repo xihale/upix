@@ -21,24 +21,14 @@ import com.crossscale.ui.theme.BorderlessTokens
 fun DeviceCard(
     device: DeviceProfile,
     onConnect: (String) -> Unit,
-    onDisconnect: (String) -> Unit,
-    onAdjustWeight: (String, Float) -> Unit
+    onDisconnect: (String) -> Unit
 ) {
-    val effectiveWeight = if (device.weight > 0.0f) {
-        device.weight
-    } else {
-        1.0f
-    }
-    val weightLabel = if (device.weight > 0.0f) {
-        "${"%.2f".format(device.weight)}"
-    } else {
-        "未知"
-    }
     val tpsLabel = if (device.tilesPerSecond > 0.0f) {
         "${"%.2f".format(device.tilesPerSecond)} tiles/s"
     } else {
         "未知"
     }
+    val encryptionIcon = if (device.streamEncrypted) "🔒" else "🔓"
 
     Column(
         modifier = Modifier
@@ -47,7 +37,7 @@ fun DeviceCard(
         verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing)
     ) {
         Text(
-            text = device.deviceName,
+            text = "${device.deviceName} $encryptionIcon",
             style = MaterialTheme.typography.titleMedium,
             fontWeight = BorderlessTokens.SectionTitleWeight
         )
@@ -64,35 +54,13 @@ fun DeviceCard(
             )
         }
         Text(
-            text = "类型: ${device.type} · 权重: $weightLabel · 吞吐: $tpsLabel",
+            text = "角色: ${device.role} · 类型: ${device.type} · 吞吐: $tpsLabel",
             style = MaterialTheme.typography.bodyMedium
         )
         Text(
             text = "状态: ${device.status}",
             style = MaterialTheme.typography.labelLarge
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing)) {
-            OutlinedButton(
-                onClick = {
-                    onAdjustWeight(
-                        device.deviceId,
-                        (effectiveWeight - 0.5f).coerceAtLeast(0.5f)
-                    )
-                }
-            ) {
-                Text("-权重")
-            }
-            OutlinedButton(
-                onClick = {
-                    onAdjustWeight(
-                        device.deviceId,
-                        (effectiveWeight + 0.5f).coerceAtMost(20.0f)
-                    )
-                }
-            ) {
-                Text("+权重")
-            }
-        }
         Row(horizontalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing)) {
             when (device.status) {
                 DeviceStatus.CONNECTED -> {
