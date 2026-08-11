@@ -63,6 +63,10 @@ if(TARGET codec_cpufeatures_webp)
     list(APPEND CODEC_LIB_TARGETS codec_cpufeatures_webp)
 endif()
 
+# libsodium: required now that share/utils/crypto_sodium.cpp is compiled in.
+# Provides X25519/Ed25519/secretbox used by the encrypted handshake + session.
+import_static_library(sodium "${NATIVE_LIB_DIR}/libsodium.a")
+
 # Find ncnn library and its required transitive dependencies from xrepo.
 set(NCNN_STATIC_LIB ${NATIVE_LIB_DIR}/libncnn.a)
 set(NCNN_LIB_TARGETS)
@@ -134,6 +138,11 @@ list(FILTER SHARE_CORE_SRCS EXCLUDE REGEX "core/tile_processor\\.cpp$")
 # mdns.cpp (no mDNS discovery on Android — also has __linux__-only code paths).
 # This preserves the prior hand-maintained list's behavior.
 list(FILTER SHARE_CORE_SRCS EXCLUDE REGEX "core/distributed/coordinator\\.cpp$")
+# Coordinator split files (admin/task) define Coordinator:: methods; since
+# coordinator.cpp itself is excluded above (Android is worker-only), these
+# would produce dead/undefined symbols. Exclude them too.
+list(FILTER SHARE_CORE_SRCS EXCLUDE REGEX "core/distributed/coordinator_admin\\.cpp$")
+list(FILTER SHARE_CORE_SRCS EXCLUDE REGEX "core/distributed/coordinator_task\\.cpp$")
 list(FILTER SHARE_CORE_SRCS EXCLUDE REGEX "core/engine_pool\\.cpp$")
 list(FILTER SHARE_UTILS_SRCS EXCLUDE REGEX "utils/mdns\\.cpp$")
 
@@ -185,6 +194,7 @@ target_compile_options(crossscale-native PRIVATE
 # Link libraries
 target_link_libraries(crossscale-native
     ${NCNN_LIB_TARGETS}
+    sodium
     ${CODEC_LIB_TARGETS}
     ${vulkan-lib}
     ${android-lib}

@@ -2,13 +2,16 @@
 #include <string>
 #include <android/log.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cctype>
+#include <cstring>
 #include <exception>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <sstream>
 #include <thread>
 #include <vector>
@@ -18,7 +21,10 @@
 #include "core/config.hpp"
 #include "core/engine.hpp"
 #include "core/distributed/worker.hpp"
+#include "core/distributed/identity.hpp"
+#include "core/distributed/crypto_session.hpp"
 #include "protocol.hpp"
+#include "utils/crypto_sodium.hpp"
 #include "utils/image.hpp"
 #include "utils/network.hpp"
 
@@ -84,6 +90,161 @@ auto infer_scale_factor_from_model_name(const std::string& model_name) -> int {
     return 2;
 }
 
+// Process-wide long-term Ed25519 identity. Loaded once via nativeLoadIdentity;
+// used by every worker/client connection to sign the ECDH handshake.
+// std::optional because IdentityKey is not default-constructible.
+std::optional<crossscale::IdentityKey> g_identity;
+
+// Client side of the 3-message ECDH+signature handshake. Mirrors
+// Worker::handshake() in share/core/distributed/worker.cpp byte-for-byte.
+// On success returns an activated EncryptedSession; on failure returns
+// nullopt and sets error_msg.
+auto run_client_handshake(
+    crossscale::TCPSocket& socket,
+    const std::array<uint8_t, 32>& peer_identity_pubkey,
+    crossscale::IdentityKey& local_identity,
+    std::string& error_msg
+) -> std::optional<crossscale::EncryptedSession> {
+    error_msg.clear();
+    crossscale::sodium::init();
+
+    // (1) Generate ephemeral X25519 keypair, send KEY_HELLO (plaintext).
+    auto eph = crossscale::sodium::x25519_keygen();
+    const auto c_eph_pub = eph.public_key;
+    const auto c_id_pub = local_identity.public_key();
+
+    crossscale::KeyHelloMessage c_hello{};
+    std::memcpy(c_hello.eph_pub, c_eph_pub.data(), 32);
+    std::memcpy(c_hello.id_pub, c_id_pub.data(), 32);
+    std::memset(c_hello.sig, 0, 64);  // client's hello carries no signature
+
+    {
+        crossscale::MessageHeader hh{};
+        hh.type = crossscale::MessageType::MSG_KEY_HELLO;
+        hh.payload_length = sizeof(c_hello);
+        auto wire = crossscale::Protocol::serialize(hh, &c_hello);
+        if (!socket.send_all(wire.data(), wire.size()).has_value()) {
+            error_msg = "KEY_HELLO send failed";
+            return std::nullopt;
+        }
+    }
+
+    // (2) Receive server KEY_HELLO with its signature.
+    crossscale::KeyHelloMessage s_hello{};
+    {
+        std::vector<uint8_t> hdr_buf(crossscale::Protocol::HEADER_SIZE);
+        if (!socket.receive_all(hdr_buf.data(), hdr_buf.size()).has_value()) {
+            error_msg = "KEY_HELLO header recv failed";
+            return std::nullopt;
+        }
+        auto parsed_hdr = crossscale::Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
+        if (!parsed_hdr || parsed_hdr->type != crossscale::MessageType::MSG_KEY_HELLO ||
+            parsed_hdr->payload_length != sizeof(s_hello)) {
+            error_msg = "unexpected message during handshake";
+            return std::nullopt;
+        }
+        std::vector<uint8_t> payload(parsed_hdr->payload_length);
+        if (!socket.receive_all(payload.data(), payload.size()).has_value()) {
+            error_msg = "KEY_HELLO payload recv failed";
+            return std::nullopt;
+        }
+        std::memcpy(&s_hello, payload.data(), sizeof(s_hello));
+    }
+
+    // (3) Build transcript c_eph||c_id||s_eph||s_id (128 bytes). Both sides
+    // MUST construct this identical byte sequence.
+    std::array<uint8_t, 128> transcript{};
+    std::memcpy(transcript.data() + 0,  c_hello.eph_pub, 32);
+    std::memcpy(transcript.data() + 32, c_hello.id_pub,  32);
+    std::memcpy(transcript.data() + 64, s_hello.eph_pub, 32);
+    std::memcpy(transcript.data() + 96, s_hello.id_pub,  32);
+
+    // (4) MITM check: server's identity pubkey must match the one we expect.
+    std::array<uint8_t, 32> s_id_pub_arr{};
+    std::memcpy(s_id_pub_arr.data(), s_hello.id_pub, 32);
+    if (s_id_pub_arr != peer_identity_pubkey) {
+        error_msg = "server identity mismatch (possible MITM)";
+        return std::nullopt;
+    }
+
+    // (5) Verify server signature over the transcript.
+    std::array<uint8_t, 64> s_sig_arr{};
+    std::memcpy(s_sig_arr.data(), s_hello.sig, 64);
+    if (!crossscale::sodium::ed25519_verify(s_id_pub_arr, s_sig_arr,
+                                            transcript.data(), transcript.size())) {
+        error_msg = "server identity signature invalid";
+        return std::nullopt;
+    }
+
+    // (6) Derive session key and activate EncryptedSession.
+    std::array<uint8_t, 32> s_eph_pub_arr{};
+    std::memcpy(s_eph_pub_arr.data(), s_hello.eph_pub, 32);
+    auto session_key = crossscale::sodium::x25519_shared(eph.private_key, s_eph_pub_arr);
+
+    crossscale::EncryptedSession session;
+    session.activate(session_key);
+
+    // (7) Sign the same transcript with our identity, send AUTH_PROOF (encrypted).
+    auto c_sig = local_identity.sign(transcript.data(), transcript.size());
+    crossscale::AuthProofMessage proof{};
+    std::memcpy(proof.sig, c_sig.data(), 64);
+    {
+        crossscale::MessageHeader ph{};
+        ph.type = crossscale::MessageType::MSG_AUTH_PROOF;
+        ph.payload_length = sizeof(proof);
+        auto pwire = session.seal(ph, &proof);
+        if (!socket.send_all(pwire.data(), pwire.size()).has_value()) {
+            error_msg = "AUTH_PROOF send failed";
+            return std::nullopt;
+        }
+    }
+
+    // (8) Receive AUTH_RESPONSE (encrypted).
+    {
+        std::vector<uint8_t> hdr_buf(crossscale::Protocol::HEADER_SIZE);
+        if (!socket.receive_all(hdr_buf.data(), hdr_buf.size()).has_value()) {
+            error_msg = "AUTH_RESPONSE header recv failed";
+            return std::nullopt;
+        }
+        auto parsed = crossscale::Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
+        if (!parsed) {
+            error_msg = "AUTH_RESPONSE header invalid";
+            return std::nullopt;
+        }
+        if (parsed->payload_length > MAX_PAYLOAD_LENGTH) {
+            error_msg = "AUTH_RESPONSE payload too large";
+            return std::nullopt;
+        }
+        std::vector<uint8_t> wire(crossscale::Protocol::HEADER_SIZE + parsed->payload_length);
+        std::memcpy(wire.data(), hdr_buf.data(), crossscale::Protocol::HEADER_SIZE);
+        if (parsed->payload_length > 0) {
+            if (!socket.receive_all(wire.data() + crossscale::Protocol::HEADER_SIZE,
+                                    parsed->payload_length).has_value()) {
+                error_msg = "AUTH_RESPONSE payload recv failed";
+                return std::nullopt;
+            }
+        }
+        auto opened = session.open(wire.data(), wire.size());
+        if (!opened) {
+            error_msg = "AUTH_RESPONSE MAC failed";
+            return std::nullopt;
+        }
+        auto& [resp_hdr, resp_payload] = *opened;
+        if (resp_hdr.type != crossscale::MessageType::MSG_AUTH_RESPONSE ||
+            resp_payload.size() < sizeof(crossscale::AuthResponse)) {
+            error_msg = "authentication rejected by server";
+            return std::nullopt;
+        }
+        const auto* auth_resp = reinterpret_cast<const crossscale::AuthResponse*>(resp_payload.data());
+        if (auth_resp->authenticated == 0) {
+            error_msg = "authentication rejected by server";
+            return std::nullopt;
+        }
+    }
+
+    return session;
+}
+
 class AndroidWorkerSession {
 public:
     ~AndroidWorkerSession() {
@@ -93,11 +254,27 @@ public:
     auto connect(
         const std::string& host,
         uint16_t port,
-        const std::string& auth_key,
+        const std::string& peer_pubkey_b64,
         const std::string& models_directory
     ) -> bool {
-        if (host.empty() || port == 0 || auth_key.empty() || models_directory.empty()) {
+        if (host.empty() || port == 0 || peer_pubkey_b64.empty() || models_directory.empty()) {
             set_last_error("Invalid worker connection parameters");
+            return false;
+        }
+
+        // Decode the peer coordinator's long-term identity pubkey (base64 from
+        // mDNS TXT / QR). v2 handshake authenticates the server via this key.
+        auto peer_pk_bytes = crossscale::base64_decode(peer_pubkey_b64);
+        if (!peer_pk_bytes || peer_pk_bytes->size() != 32) {
+            set_last_error("Invalid peer identity pubkey (expected 32-byte base64)");
+            return false;
+        }
+        std::array<uint8_t, 32> peer_pk{};
+        std::memcpy(peer_pk.data(), peer_pk_bytes->data(), 32);
+
+        if (!g_identity.has_value()) {
+            set_last_error("identity not loaded; call loadIdentity first");
+            LOGE("Worker connect rejected: identity not loaded");
             return false;
         }
 
@@ -126,7 +303,7 @@ public:
             }
         }
 
-        const auto connect_result = worker_->connect(host, port, auth_key);
+        const auto connect_result = worker_->connect(host, port, peer_pk, *g_identity);
         if (!connect_result.has_value()) {
             set_last_error("Worker connect failed: " + connect_result.error().message);
             LOGE("Worker connect failed: %s", connect_result.error().message.c_str());
@@ -482,7 +659,7 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
     jobject thiz,
     jstring host,
     jint port,
-    jstring auth_key,
+    jstring peer_pubkey_b64,
     jstring model_name,
     jint tile_size,
     jint tile_overlap,
@@ -494,7 +671,7 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
     jint output_quality
 ) {
     (void)thiz;
-    if (host == nullptr || auth_key == nullptr || model_name == nullptr || input_image == nullptr) {
+    if (host == nullptr || peer_pubkey_b64 == nullptr || model_name == nullptr || input_image == nullptr) {
         set_jni_last_error("Distributed processing parameters are incomplete");
         return nullptr;
     }
@@ -508,16 +685,16 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
     }
 
     const char* host_chars = env->GetStringUTFChars(host, nullptr);
-    const char* key_chars = env->GetStringUTFChars(auth_key, nullptr);
+    const char* peer_pk_chars = env->GetStringUTFChars(peer_pubkey_b64, nullptr);
     const char* model_chars = env->GetStringUTFChars(model_name, nullptr);
     const char* format_chars = output_format == nullptr ? nullptr : env->GetStringUTFChars(output_format, nullptr);
 
-    if (host_chars == nullptr || key_chars == nullptr || model_chars == nullptr) {
+    if (host_chars == nullptr || peer_pk_chars == nullptr || model_chars == nullptr) {
         if (host_chars != nullptr) {
             env->ReleaseStringUTFChars(host, host_chars);
         }
-        if (key_chars != nullptr) {
-            env->ReleaseStringUTFChars(auth_key, key_chars);
+        if (peer_pk_chars != nullptr) {
+            env->ReleaseStringUTFChars(peer_pubkey_b64, peer_pk_chars);
         }
         if (model_chars != nullptr) {
             env->ReleaseStringUTFChars(model_name, model_chars);
@@ -530,7 +707,7 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
     }
 
     const std::string host_str(host_chars);
-    const std::string key_str(key_chars);
+    const std::string peer_pubkey_b64_str(peer_pk_chars);
     const std::string model_str(model_chars);
     std::string output_format_str = "jpg";
     if (format_chars != nullptr) {
@@ -542,7 +719,7 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
     const int normalized_quality = std::clamp(static_cast<int>(output_quality), 1, 100);
 
     env->ReleaseStringUTFChars(host, host_chars);
-    env->ReleaseStringUTFChars(auth_key, key_chars);
+    env->ReleaseStringUTFChars(peer_pubkey_b64, peer_pk_chars);
     env->ReleaseStringUTFChars(model_name, model_chars);
     if (format_chars != nullptr) {
         env->ReleaseStringUTFChars(output_format, format_chars);
@@ -568,6 +745,19 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
         reinterpret_cast<jbyte*>(input_bytes.data())
     );
 
+    // Decode peer identity pubkey (base64 from mDNS TXT or QR).
+    auto peer_pk_bytes = crossscale::base64_decode(peer_pubkey_b64_str);
+    if (!peer_pk_bytes || peer_pk_bytes->size() != 32) {
+        set_jni_last_error("invalid peer identity pubkey (expected 32-byte base64)");
+        return nullptr;
+    }
+    std::array<uint8_t, 32> peer_pk{};
+    std::memcpy(peer_pk.data(), peer_pk_bytes->data(), 32);
+    if (!g_identity.has_value()) {
+        set_jni_last_error("identity not loaded; call loadIdentity first");
+        return nullptr;
+    }
+
     crossscale::TCPSocket socket;
     const auto connect_result = socket.connect(host_str, static_cast<uint16_t>(port));
     if (!connect_result.has_value()) {
@@ -575,56 +765,16 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
         return nullptr;
     }
 
-    crossscale::AuthRequest auth_request{};
-    std::strncpy(auth_request.auth_key, key_str.c_str(), sizeof(auth_request.auth_key) - 1);
-
-    crossscale::MessageHeader auth_header{};
-    auth_header.type = crossscale::MessageType::MSG_AUTH_REQUEST;
-    auth_header.payload_length = sizeof(auth_request);
-    auto auth_payload = crossscale::Protocol::serialize(auth_header, &auth_request);
-    const auto auth_send_result = socket.send_all(auth_payload.data(), auth_payload.size());
-    if (!auth_send_result.has_value()) {
-        set_jni_last_error("Distributed auth send failed: " + auth_send_result.error().message);
+    std::string handshake_error;
+    auto session = run_client_handshake(socket, peer_pk, *g_identity, handshake_error);
+    if (!session.has_value()) {
+        set_jni_last_error("Distributed handshake failed: " + handshake_error);
         return nullptr;
     }
 
-    std::vector<uint8_t> auth_response_header_buffer(crossscale::Protocol::HEADER_SIZE);
-    auto auth_header_recv = socket.receive_all(auth_response_header_buffer.data(), auth_response_header_buffer.size());
-    if (!auth_header_recv.has_value()) {
-        set_jni_last_error("Distributed auth header receive failed: " + auth_header_recv.error().message);
-        return nullptr;
-    }
-
-    const auto auth_response_header =
-        crossscale::Protocol::parse_header(auth_response_header_buffer.data(), auth_response_header_buffer.size());
-    if (!auth_response_header || auth_response_header->type != crossscale::MessageType::MSG_AUTH_RESPONSE) {
-        set_jni_last_error("Distributed auth response type is invalid");
-        return nullptr;
-    }
-
-    // Security fix: Validate payload length before allocation to prevent OOM attacks.
-    if (auth_response_header->payload_length > MAX_PAYLOAD_LENGTH) {
-        set_jni_last_error("Distributed auth response payload too large: " +
-                           std::to_string(auth_response_header->payload_length) + " bytes");
-        return nullptr;
-    }
-    std::vector<uint8_t> auth_response_payload(auth_response_header->payload_length);
-    auto auth_payload_recv = socket.receive_all(auth_response_payload.data(), auth_response_payload.size());
-    if (!auth_payload_recv.has_value()) {
-        set_jni_last_error("Distributed auth payload receive failed: " + auth_payload_recv.error().message);
-        return nullptr;
-    }
-    if (auth_response_payload.size() < sizeof(crossscale::AuthResponse)) {
-        set_jni_last_error("Distributed auth payload is truncated");
-        return nullptr;
-    }
-
-    const auto* auth_response = reinterpret_cast<const crossscale::AuthResponse*>(auth_response_payload.data());
-    if (auth_response->authenticated == 0) {
-        set_jni_last_error("Distributed authentication rejected by coordinator");
-        return nullptr;
-    }
-
+    // Pack ClientTaskSubmit struct + image bytes contiguously into one
+    // plaintext payload, then seal into a single encrypted frame. The
+    // coordinator unpacks the same layout (see coordinator.cpp ~line 392).
     crossscale::ClientTaskSubmit submit_request{};
     submit_request.image_width = static_cast<uint32_t>(width);
     submit_request.image_height = static_cast<uint32_t>(height);
@@ -634,47 +784,57 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
     submit_request.tile_overlap = static_cast<uint32_t>(std::max(tile_overlap, 0));
     submit_request.image_data_length = static_cast<uint32_t>(input_bytes.size());
 
+    std::vector<uint8_t> plaintext(sizeof(submit_request) + input_bytes.size());
+    std::memcpy(plaintext.data(), &submit_request, sizeof(submit_request));
+    std::memcpy(plaintext.data() + sizeof(submit_request), input_bytes.data(), input_bytes.size());
+
     crossscale::MessageHeader submit_header{};
     submit_header.type = crossscale::MessageType::MSG_CLIENT_SUBMIT;
-    submit_header.payload_length = sizeof(submit_request);
-    auto submit_header_data = crossscale::Protocol::serialize(submit_header, &submit_request);
-    auto submit_send_result = socket.send_all(submit_header_data.data(), submit_header_data.size());
-    if (!submit_send_result.has_value()) {
-        set_jni_last_error("Distributed submit header send failed: " + submit_send_result.error().message);
-        return nullptr;
-    }
-    submit_send_result = socket.send_all(input_bytes.data(), input_bytes.size());
-    if (!submit_send_result.has_value()) {
-        set_jni_last_error("Distributed submit payload send failed: " + submit_send_result.error().message);
+    submit_header.payload_length = static_cast<uint32_t>(plaintext.size());
+    auto submit_wire = session->seal(submit_header, plaintext.data());
+    if (!socket.send_all(submit_wire.data(), submit_wire.size()).has_value()) {
+        set_jni_last_error("Distributed submit send failed");
         return nullptr;
     }
 
-    std::vector<uint8_t> result_header_buffer(crossscale::Protocol::HEADER_SIZE);
-    auto result_header_recv = socket.receive_all(result_header_buffer.data(), result_header_buffer.size());
-    if (!result_header_recv.has_value()) {
-        set_jni_last_error("Distributed response header receive failed: " + result_header_recv.error().message);
+    // Receive the encrypted ClientTaskResponse frame: header + nonce+ct, then
+    // open() to recover the plaintext header + payload. The payload layout is
+    // [ClientTaskResponse struct][result image bytes] contiguous (coordinator.cpp ~467).
+    std::vector<uint8_t> result_hdr_buf(crossscale::Protocol::HEADER_SIZE);
+    if (!socket.receive_all(result_hdr_buf.data(), result_hdr_buf.size()).has_value()) {
+        set_jni_last_error("Distributed response header receive failed");
         return nullptr;
     }
-
-    const auto result_header =
-        crossscale::Protocol::parse_header(result_header_buffer.data(), result_header_buffer.size());
-    if (!result_header || result_header->type != crossscale::MessageType::MSG_CLIENT_RESPONSE) {
+    auto result_hdr = crossscale::Protocol::parse_header(result_hdr_buf.data(), result_hdr_buf.size());
+    if (!result_hdr) {
         set_jni_last_error("Distributed response header type is invalid");
         return nullptr;
     }
-
-    // Security fix: Validate payload length before allocation to prevent OOM attacks.
-    if (result_header->payload_length > MAX_PAYLOAD_LENGTH) {
+    if (result_hdr->payload_length > MAX_PAYLOAD_LENGTH) {
         set_jni_last_error("Distributed response payload too large: " +
-                           std::to_string(result_header->payload_length) + " bytes");
+                           std::to_string(result_hdr->payload_length) + " bytes");
         return nullptr;
     }
-    std::vector<uint8_t> result_payload(result_header->payload_length);
-    auto result_payload_recv = socket.receive_all(result_payload.data(), result_payload.size());
-    if (!result_payload_recv.has_value()) {
-        set_jni_last_error("Distributed response payload receive failed: " + result_payload_recv.error().message);
+    std::vector<uint8_t> result_wire(crossscale::Protocol::HEADER_SIZE + result_hdr->payload_length);
+    std::memcpy(result_wire.data(), result_hdr_buf.data(), crossscale::Protocol::HEADER_SIZE);
+    if (result_hdr->payload_length > 0) {
+        if (!socket.receive_all(result_wire.data() + crossscale::Protocol::HEADER_SIZE,
+                                result_hdr->payload_length).has_value()) {
+            set_jni_last_error("Distributed response payload receive failed");
+            return nullptr;
+        }
+    }
+
+    auto opened = session->open(result_wire.data(), result_wire.size());
+    if (!opened) {
+        set_jni_last_error("Distributed response MAC failed");
         return nullptr;
     }
+    if (opened->first.type != crossscale::MessageType::MSG_CLIENT_RESPONSE) {
+        set_jni_last_error("Distributed response header type is invalid");
+        return nullptr;
+    }
+    const auto& result_payload = opened->second;
     if (result_payload.size() < sizeof(crossscale::ClientTaskResponse)) {
         set_jni_last_error("Distributed response payload is truncated");
         return nullptr;
@@ -686,18 +846,22 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
         return nullptr;
     }
 
-    // Security fix: Validate result data length before allocation to prevent OOM attacks.
+    // Security fix: Validate result data length before use to prevent OOM.
     if (task_response->result_data_length > MAX_PAYLOAD_LENGTH) {
         set_jni_last_error("Distributed result data too large: " +
                            std::to_string(task_response->result_data_length) + " bytes");
         return nullptr;
     }
-    std::vector<uint8_t> processed_raw(task_response->result_data_length);
-    auto processed_raw_recv = socket.receive_all(processed_raw.data(), processed_raw.size());
-    if (!processed_raw_recv.has_value()) {
-        set_jni_last_error("Distributed result receive failed: " + processed_raw_recv.error().message);
+    // The result image bytes follow the ClientTaskResponse struct in result_payload.
+    const size_t resp_hdr_size = sizeof(crossscale::ClientTaskResponse);
+    if (resp_hdr_size + task_response->result_data_length > result_payload.size()) {
+        set_jni_last_error("Distributed result payload truncated");
         return nullptr;
     }
+    std::vector<uint8_t> processed_raw(
+        result_payload.begin() + resp_hdr_size,
+        result_payload.begin() + resp_hdr_size + task_response->result_data_length
+    );
 
     const int scale_factor = infer_scale_factor_from_model_name(model_str);
     const int output_width = width * std::max(scale_factor, 1);
@@ -807,13 +971,13 @@ Java_com_crossscale_native_NativeWorker_nativeConnect(
     jlong worker_ptr,
     jstring host,
     jint port,
-    jstring auth_key,
+    jstring peer_pubkey_b64,
     jstring models_directory
 ) {
     (void)thiz;
     if (worker_ptr == 0) return JNI_FALSE;
 
-    if (host == nullptr || auth_key == nullptr || models_directory == nullptr) {
+    if (host == nullptr || peer_pubkey_b64 == nullptr || models_directory == nullptr) {
         return JNI_FALSE;
     }
     if (port <= 0 || port > std::numeric_limits<uint16_t>::max()) {
@@ -823,15 +987,15 @@ Java_com_crossscale_native_NativeWorker_nativeConnect(
     auto* worker = reinterpret_cast<AndroidWorkerSession*>(worker_ptr);
 
     const char* host_str = env->GetStringUTFChars(host, nullptr);
-    const char* key_str = env->GetStringUTFChars(auth_key, nullptr);
+    const char* peer_pk_str = env->GetStringUTFChars(peer_pubkey_b64, nullptr);
     const char* models_dir_str = env->GetStringUTFChars(models_directory, nullptr);
 
-    if (host_str == nullptr || key_str == nullptr || models_dir_str == nullptr) {
+    if (host_str == nullptr || peer_pk_str == nullptr || models_dir_str == nullptr) {
         if (host_str != nullptr) {
             env->ReleaseStringUTFChars(host, host_str);
         }
-        if (key_str != nullptr) {
-            env->ReleaseStringUTFChars(auth_key, key_str);
+        if (peer_pk_str != nullptr) {
+            env->ReleaseStringUTFChars(peer_pubkey_b64, peer_pk_str);
         }
         if (models_dir_str != nullptr) {
             env->ReleaseStringUTFChars(models_directory, models_dir_str);
@@ -842,15 +1006,46 @@ Java_com_crossscale_native_NativeWorker_nativeConnect(
     const bool result = worker->connect(
         host_str,
         static_cast<uint16_t>(port),
-        key_str,
+        peer_pk_str,
         models_dir_str
     );
 
     env->ReleaseStringUTFChars(host, host_str);
-    env->ReleaseStringUTFChars(auth_key, key_str);
+    env->ReleaseStringUTFChars(peer_pubkey_b64, peer_pk_str);
     env->ReleaseStringUTFChars(models_directory, models_dir_str);
 
     return result ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_crossscale_native_NativeWorker_nativeLoadIdentity(
+    JNIEnv* env,
+    jobject thiz,
+    jstring identity_path
+) {
+    (void)thiz;
+    if (identity_path == nullptr) {
+        set_jni_last_error("identity path is null");
+        return JNI_FALSE;
+    }
+    const char* path_chars = env->GetStringUTFChars(identity_path, nullptr);
+    if (path_chars == nullptr) {
+        set_jni_last_error("failed to read identity path string");
+        return JNI_FALSE;
+    }
+    std::string path_str(path_chars);
+    env->ReleaseStringUTFChars(identity_path, path_chars);
+
+    try {
+        g_identity.emplace(crossscale::IdentityKey::load_or_create(path_str));
+        LOGI("Identity loaded from %s, fingerprint will be derived on connect", path_str.c_str());
+        clear_jni_last_error();
+        return JNI_TRUE;
+    } catch (const std::exception& e) {
+        set_jni_last_error(std::string("failed to load/create identity: ") + e.what());
+        LOGE("Identity load failed: %s", e.what());
+        return JNI_FALSE;
+    }
 }
 
 JNIEXPORT void JNICALL

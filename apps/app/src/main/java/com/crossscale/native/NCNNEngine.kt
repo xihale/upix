@@ -20,7 +20,7 @@ object NCNNEngine {
     external fun nativeProcessImageDistributed(
         host: String,
         port: Int,
-        authKey: String,
+        peerPubKeyB64: String,
         modelName: String,
         tileSize: Int,
         tileOverlap: Int,

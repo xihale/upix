@@ -25,10 +25,10 @@ class CoordinatorClient(
     private var worker: NativeWorker? = null
     private var connectedEndpoint: RemoteEndpoint? = null
 
-    fun connect(host: String, port: Int, authKey: String): Boolean {
+    fun connect(host: String, port: Int, peerPubKeyB64: String): Boolean {
         val normalizedHost = host.trim()
-        val normalizedAuthKey = authKey.trim()
-        if (normalizedHost.isBlank() || port <= 0 || normalizedAuthKey.isBlank()) {
+        val normalizedPeerPubKeyB64 = peerPubKeyB64.trim()
+        if (normalizedHost.isBlank() || port <= 0 || normalizedPeerPubKeyB64.isBlank()) {
             logRepository.error("CoordinatorClient", "Invalid connection params")
             return false
         }
@@ -51,7 +51,7 @@ class CoordinatorClient(
             activeWorker.connect(
                 host = normalizedHost,
                 port = port,
-                authKey = normalizedAuthKey,
+                peerPubKeyB64 = normalizedPeerPubKeyB64,
                 modelsDirectory = modelsDirectory.absolutePath
             )
         } catch (e: UnsatisfiedLinkError) {
@@ -66,7 +66,7 @@ class CoordinatorClient(
             connectedEndpoint = RemoteEndpoint(
                 host = normalizedHost,
                 port = port,
-                authKey = normalizedAuthKey
+                peerPubKeyB64 = normalizedPeerPubKeyB64
             )
             logRepository.info("CoordinatorClient", "Connected to $normalizedHost:$port")
         } else {
@@ -133,7 +133,7 @@ class CoordinatorClient(
         val encodedOutput = NCNNEngine.nativeProcessImageDistributed(
             host = endpoint.host,
             port = endpoint.port,
-            authKey = endpoint.authKey,
+            peerPubKeyB64 = endpoint.peerPubKeyB64,
             modelName = modelName,
             tileSize = tileSize.coerceAtLeast(MIN_TILE_SIZE),
             tileOverlap = tileOverlap.coerceAtLeast(0),
@@ -312,7 +312,7 @@ class CoordinatorClient(
     private data class RemoteEndpoint(
         val host: String,
         val port: Int,
-        val authKey: String
+        val peerPubKeyB64: String
     )
 
     private companion object {

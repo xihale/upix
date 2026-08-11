@@ -138,6 +138,7 @@ for abi in "${ABIS[@]}"; do
     install_package "${abi}" "libpng"
     install_package "${abi}" "libjpeg"
     install_package "${abi}" "libwebp"
+    install_package "${abi}" "libsodium"
 
     copy_package_artifacts "${abi}" "ncnn" "vulkan=true"
     copy_package_artifacts "${abi}" "glslang-nihui"
@@ -147,6 +148,7 @@ for abi in "${ABIS[@]}"; do
     copy_package_artifacts "${abi}" "libpng"
     copy_package_artifacts "${abi}" "libjpeg"
     copy_package_artifacts "${abi}" "libwebp"
+    copy_package_artifacts "${abi}" "libsodium"
 done
 
 echo "Native deps synced to:"

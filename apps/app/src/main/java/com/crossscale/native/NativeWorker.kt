@@ -7,12 +7,14 @@ class NativeWorker : AutoCloseable {
 
     private var workerPtr: Long = nativeCreate()
 
-    fun connect(host: String, port: Int, authKey: String, modelsDirectory: String): Boolean {
+    fun connect(host: String, port: Int, peerPubKeyB64: String, modelsDirectory: String): Boolean {
         if (workerPtr == 0L) {
             return false
         }
-        return nativeConnect(workerPtr, host, port, authKey, modelsDirectory)
+        return nativeConnect(workerPtr, host, port, peerPubKeyB64, modelsDirectory)
     }
+
+    fun loadIdentity(identityPath: String): Boolean = nativeLoadIdentity(identityPath)
 
     fun disconnect() {
         if (workerPtr == 0L) {
@@ -52,9 +54,10 @@ class NativeWorker : AutoCloseable {
         workerPtr: Long,
         host: String,
         port: Int,
-        authKey: String,
+        peerPubKeyB64: String,
         modelsDirectory: String
     ): Boolean
+    private external fun nativeLoadIdentity(identityPath: String): Boolean
     private external fun nativeDisconnect(workerPtr: Long)
     private external fun nativeIsConnected(workerPtr: Long): Boolean
     private external fun nativeGetLastError(workerPtr: Long): String
