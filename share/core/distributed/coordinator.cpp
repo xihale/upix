@@ -25,6 +25,42 @@ Coordinator::~Coordinator() {
     stop();
 }
 
+auto Coordinator::pop_pending_approval() -> std::optional<PendingApproval> {
+    std::lock_guard<std::mutex> lock(approval_mtx_);
+    if (pending_approvals_.empty()) {
+        return std::nullopt;
+    }
+    PendingApproval req = std::move(pending_approvals_.front());
+    pending_approvals_.pop();
+    // Keep the verdict future indexed by id so resolve_approval() can find it.
+    approval_futures_[req.id] = req.verdict;
+    return req;
+}
+
+void Coordinator::resolve_approval(uint64_t id, bool approved) {
+    std::shared_ptr<std::promise<uint8_t>> fut;
+    {
+        std::lock_guard<std::mutex> lock(approval_mtx_);
+        auto it = approval_futures_.find(id);
+        if (it == approval_futures_.end()) {
+            return;  // stale or unknown id; nothing to wake
+        }
+        fut = it->second;
+        approval_futures_.erase(it);
+    }
+    if (fut) {
+        fut->set_value(approved ? 1 : 0);
+    }
+}
+
+void Coordinator::set_pc_stream_encrypted(bool enabled) {
+    pc_stream_encrypted_.store(enabled, std::memory_order_relaxed);
+}
+
+bool Coordinator::pc_stream_encrypted() const {
+    return pc_stream_encrypted_.load(std::memory_order_relaxed);
+}
+
 auto Coordinator::start(uint16_t port, IdentityKey& identity)
     -> expected<void, CoordinatorError> {
 
@@ -181,6 +217,40 @@ auto Coordinator::recv_encrypted(WorkerConnection& conn)
         if (!pay_recv.has_value()) return std::nullopt;
     }
     return conn.session.open(wire.data(), wire.size());
+}
+
+auto Coordinator::send_stream(WorkerConnection& conn, MessageType type,
+                              const void* payload, size_t len) -> bool {
+    if (!conn.session.active()) return false;
+    try {
+        MessageHeader header{};
+        header.type = type;
+        header.payload_length = static_cast<uint32_t>(len);
+        auto wire = conn.session.seal_stream(header, payload);
+        auto res = conn.socket->send_all(wire.data(), wire.size());
+        return res.has_value();
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
+auto Coordinator::recv_stream(WorkerConnection& conn)
+    -> std::optional<std::pair<MessageHeader, std::vector<uint8_t>>> {
+    if (!conn.session.active()) return std::nullopt;
+    std::vector<uint8_t> hdr_buf(Protocol::HEADER_SIZE);
+    auto hdr_recv = conn.socket->receive_all(hdr_buf.data(), hdr_buf.size());
+    if (!hdr_recv.has_value()) return std::nullopt;
+    auto parsed = Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
+    if (!parsed) return std::nullopt;
+    if (parsed->payload_length > MAX_NETWORK_PAYLOAD) return std::nullopt;
+    std::vector<uint8_t> wire(Protocol::HEADER_SIZE + parsed->payload_length);
+    std::memcpy(wire.data(), hdr_buf.data(), Protocol::HEADER_SIZE);
+    if (parsed->payload_length > 0) {
+        auto pay_recv = conn.socket->receive_all(wire.data() + Protocol::HEADER_SIZE,
+                                                 parsed->payload_length);
+        if (!pay_recv.has_value()) return std::nullopt;
+    }
+    return conn.session.open_stream(wire.data(), wire.size());
 }
 
 // Server side of the ECDH+signature handshake. `first_hdr_buf` already holds
@@ -375,14 +445,103 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
         conn.profile.port = conn.socket->peer_port();
         conn.profile.last_heartbeat = std::chrono::steady_clock::now();
 
-        // (Encrypted) second frame: DEVICE_PROFILE or CLIENT_SUBMIT.
+        // (Encrypted) second frame. The Mobile pairing flow sends
+        // MSG_CLIENT_CONNECT_REQUEST here first (request/allow gate), then a
+        // third frame carrying the role (DEVICE_PROFILE for workers,
+        // CLIENT_SUBMIT for one-shot image submitters). Legacy peers that skip
+        // the request are tolerated: a bare DEVICE_PROFILE/CLIENT_SUBMIT is
+        // treated as auto-approved (e.g. CLI workers on the same host).
         conn.socket->set_timeout(5000);
         auto second_frame = recv_encrypted(conn);
         if (!second_frame) {
             LOG_WARNING("Coordinator", "Worker " + conn.device_id +
                 " did not send DEVICE_PROFILE within timeout (engine benchmark too slow?)");
         } else {
-            auto& [frame_hdr, frame_payload] = *second_frame;
+            auto [frame_hdr, frame_payload] = std::move(*second_frame);
+
+            // ── Mobile pairing request/allow gate ───────────────────────────
+            // Run only if the peer explicitly opened with CONNECT_REQUEST.
+            if (frame_hdr.type == MessageType::MSG_CLIENT_CONNECT_REQUEST) {
+                if (frame_payload.size() < sizeof(ClientConnectRequest)) {
+                    LOG_ERROR("Coordinator", "CONNECT_REQUEST payload too short");
+                    return;
+                }
+                const ClientConnectRequest* creq =
+                    reinterpret_cast<const ClientConnectRequest*>(frame_payload.data());
+                std::string req_device_name(creq->device_name);
+                std::string req_fingerprint(creq->fingerprint);
+                bool mobile_wants_encrypted = creq->wants_encrypted_stream != 0;
+
+                // Auto-approve already-trusted peers; first-time peers block on
+                // an interactive prompt served by the PC main loop.
+                bool approved = false;
+                if (conn.peer_trusted) {
+                    approved = true;
+                    LOG_INFO("Coordinator", "Auto-approved trusted peer " +
+                             req_device_name + " (" + req_fingerprint + ")");
+                } else {
+                    PendingApproval pa;
+                    {
+                        std::lock_guard<std::mutex> lock(approval_mtx_);
+                        pa.id = next_approval_id_++;
+                        pa.verdict = std::make_shared<std::promise<uint8_t>>();
+                        approval_futures_[pa.id] = pa.verdict;
+                    }
+                    pa.device_name = req_device_name;
+                    pa.fingerprint = req_fingerprint;
+                    pa.identity_pub = conn.peer_id_pub;
+                    pa.wants_encrypted_stream = mobile_wants_encrypted;
+                    {
+                        std::lock_guard<std::mutex> lock(approval_mtx_);
+                        pending_approvals_.push(pa);
+                    }
+                    LOG_INFO("Coordinator", "Pairing request queued from " +
+                             req_device_name + " (" + req_fingerprint +
+                             ") — waiting for PC approval");
+                    // Block this connection thread until the PC resolves it.
+                    approved = (pa.verdict->get_future().get() != 0);
+                }
+
+                // Negotiate stream-encryption mode: encrypted only if BOTH sides
+                // want it (PC setting AND Mobile setting).
+                const bool stream_encrypted =
+                    approved && pc_stream_encrypted_.load(std::memory_order_relaxed) &&
+                    mobile_wants_encrypted;
+
+                ClientConnectResponse cresp{};
+                cresp.approved = approved ? 1 : 0;
+                cresp.trusted = conn.peer_trusted ? 1 : 0;
+                cresp.stream_encrypted = stream_encrypted ? 1 : 0;
+                if (!send_encrypted(conn, MessageType::MSG_CLIENT_CONNECT_RESPONSE,
+                                    &cresp, sizeof(cresp))) {
+                    LOG_ERROR("Coordinator", "Failed to send CONNECT_RESPONSE");
+                    return;
+                }
+                if (!approved) {
+                    LOG_WARNING("Coordinator", "Pairing denied for " + req_device_name);
+                    return;
+                }
+                // First-time approval ⇒ persist so future connects auto-pass.
+                if (!conn.peer_trusted && trust_store_) {
+                    trust_store_->add(conn.peer_id_pub);
+                    trust_store_->save();
+                    LOG_INFO("Coordinator", "Peer added to TrustStore: " + req_fingerprint);
+                }
+                // Apply the negotiated stream mode for the rest of this conn.
+                conn.session.set_stream_plaintext(!stream_encrypted);
+
+                // Now read the role frame (third frame after the request).
+                conn.socket->set_timeout(30000);
+                auto role_frame = recv_encrypted(conn);
+                if (!role_frame) {
+                    LOG_WARNING("Coordinator", "Peer " + conn.device_id +
+                        " closed after CONNECT_RESPONSE without a role frame");
+                    return;
+                }
+                frame_hdr = std::move(role_frame->first);
+                frame_payload = std::move(role_frame->second);
+            }
+
             if (frame_hdr.type == MessageType::MSG_DEVICE_PROFILE) {
                 if (frame_payload.size() >= sizeof(DeviceProfileMessage)) {
                     const DeviceProfileMessage* msg =
@@ -471,8 +630,8 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                     std::memcpy(resp_payload.data() + sizeof(ClientTaskResponse),
                                 process_result->data(), process_result->size());
                 }
-                if (!send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
-                                    resp_payload.data(), resp_payload.size())) {
+                if (!send_stream(conn, MessageType::MSG_CLIENT_RESPONSE,
+                                 resp_payload.data(), resp_payload.size())) {
                     LOG_ERROR("Coordinator", "Failed to send authenticated client response");
                     return;
                 }

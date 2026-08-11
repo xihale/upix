@@ -94,6 +94,13 @@ private:
     auto recv_encrypted()
         -> expected<std::pair<MessageHeader, std::vector<uint8_t>>, WorkerError>;
 
+    // 数据流变体:大 payload(tile/result)按 session 的 stream_plaintext 设定
+    // 决定是否加密。控制帧仍用 send_encrypted/recv_encrypted。
+    auto send_stream(MessageType type, const void* payload, size_t len)
+        -> expected<void, WorkerError>;
+    auto recv_stream()
+        -> expected<std::pair<MessageHeader, std::vector<uint8_t>>, WorkerError>;
+
     std::unique_ptr<TCPSocket> socket_;
     std::string device_id_;
     std::atomic<bool> running_{false};

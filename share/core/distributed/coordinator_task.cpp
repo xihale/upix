@@ -350,7 +350,10 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
                 continue;
             }
 
-            // Read the (nonce+ciphertext) body and open it.
+            // Read the body and open it. Result/tile frames are large payloads
+            // routed through the stream path (may be plaintext per session mode);
+            // control frames here are only heartbeat-equivalents (polled), which
+            // we don't receive on this socket, so open_stream is correct.
             std::vector<uint8_t> wire(Protocol::HEADER_SIZE + parsed_hdr->payload_length);
             std::memcpy(wire.data(), header_buffer.data(), Protocol::HEADER_SIZE);
             if (parsed_hdr->payload_length > 0) {
@@ -365,7 +368,7 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
                     continue;
                 }
             }
-            auto opened = worker_it->second.session.open(wire.data(), wire.size());
+            auto opened = worker_it->second.session.open_stream(wire.data(), wire.size());
             if (!opened) {
                 LOG_WARNING("Coordinator", "Worker " + worker_id + " encrypted frame MAC failed");
                 to_remove.push_back(worker_id);
@@ -407,7 +410,7 @@ auto Coordinator::distribute_task(const std::vector<uint8_t>& image_data,
                 // The worker may have requested the model between reading the
                 // assignment and sending ACCEPT; that exchange is already done.
                 if (!task.batch_sent) {
-                    bool sent_ok = send_encrypted(worker_it->second,
+                    bool sent_ok = send_stream(worker_it->second,
                         MessageType::MSG_TILES_BATCH,
                         task.pending_batch.data(), task.pending_batch.size());
                     if (!sent_ok) {

@@ -285,6 +285,48 @@ auto Worker::recv_encrypted()
     return std::move(*opened);
 }
 
+auto Worker::send_stream(MessageType type, const void* payload, size_t len)
+    -> expected<void, WorkerError> {
+    MessageHeader header{};
+    header.type = type;
+    header.payload_length = static_cast<uint32_t>(len);
+    auto wire = session_.seal_stream(header, payload);
+    auto res = socket_->send_all(wire.data(), wire.size());
+    if (!res.has_value()) {
+        return std::unexpected(WorkerError{3, "Stream send failed: " + res.error().message});
+    }
+    return {};
+}
+
+auto Worker::recv_stream()
+    -> expected<std::pair<MessageHeader, std::vector<uint8_t>>, WorkerError> {
+    std::vector<uint8_t> hdr_buf(Protocol::HEADER_SIZE);
+    auto hdr_recv = socket_->receive_all(hdr_buf.data(), hdr_buf.size());
+    if (!hdr_recv.has_value()) {
+        return std::unexpected(WorkerError{4, "Header recv failed: " + hdr_recv.error().message});
+    }
+    auto parsed = Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
+    if (!parsed) {
+        return std::unexpected(WorkerError{5, "Invalid message header"});
+    }
+    if (parsed->payload_length > MAX_NETWORK_PAYLOAD) {
+        return std::unexpected(WorkerError{7, "Payload too large"});
+    }
+    std::vector<uint8_t> wire(Protocol::HEADER_SIZE + parsed->payload_length);
+    std::memcpy(wire.data(), hdr_buf.data(), Protocol::HEADER_SIZE);
+    if (parsed->payload_length > 0) {
+        auto pay_recv = socket_->receive_all(wire.data() + Protocol::HEADER_SIZE, parsed->payload_length);
+        if (!pay_recv.has_value()) {
+            return std::unexpected(WorkerError{4, "Payload recv failed: " + pay_recv.error().message});
+        }
+    }
+    auto opened = session_.open_stream(wire.data(), wire.size());
+    if (!opened) {
+        return std::unexpected(WorkerError{5, "Stream frame open failed or session inactive"});
+    }
+    return std::move(*opened);
+}
+
 void Worker::disconnect() {
     running_ = false;
     stop_heartbeat();
@@ -428,8 +470,8 @@ auto Worker::execute_task(const Task& task, Engine& engine,
     std::vector<ProcessedTile> processed_tiles;
     processed_tiles.reserve(task.tile_indices.size());
 
-    // Receive batch of tiles in a single encrypted message
-    auto batch_frame = recv_encrypted();
+    // Receive batch of tiles (large payload — may be plaintext per stream mode)
+    auto batch_frame = recv_stream();
     if (!batch_frame.has_value()) {
         return std::unexpected(WorkerError{4, "Failed to receive batch: " + batch_frame.error().message});
     }
@@ -595,7 +637,7 @@ auto Worker::submit_results(const std::vector<uint8_t>& results)
         return std::unexpected(WorkerError{2, "Not connected"});
     }
 
-    return send_encrypted(MessageType::MSG_TASK_RESULT, results.data(), results.size());
+    return send_stream(MessageType::MSG_TASK_RESULT, results.data(), results.size());
 }
 
 void Worker::start_heartbeat(std::chrono::seconds interval) {

@@ -33,6 +33,12 @@ enum class MessageType : uint16_t {
     MSG_CLIENT_SUBMIT = 0x0500,
     MSG_CLIENT_RESPONSE = 0x0501,
 
+    // Pairing: Mobile→PC request after ECDH handshake; PC→PC reply (gated on
+    // interactive approval the first time, auto-approved once trusted).
+    // Sent inside EncryptedSession, before any CLIENT_SUBMIT.
+    MSG_CLIENT_CONNECT_REQUEST = 0x0700,
+    MSG_CLIENT_CONNECT_RESPONSE = 0x0701,
+
     // Local serve daemon (Unix domain socket). Separate range so the daemon's
     // protocol can evolve independently of the distributed TCP protocol.
     MSG_SERVE_REQUEST = 0x0601,   // client→daemon: upscale request
@@ -114,6 +120,28 @@ struct ClientTaskResponse {
     uint8_t success;
     char error_message[128];
     uint32_t result_data_length;
+};
+
+// Pairing request: Mobile→PC immediately after the ECDH handshake succeeds.
+// Carries the device's human-readable name, its own fingerprint (so the PC can
+// show "Xiaomi ... ABCD1234" in the approval prompt), and whether the Mobile
+// side has its data-stream encryption toggle on (the effective stream mode is
+// negotiated as min(pc, mobile) by the PC).
+struct ClientConnectRequest {
+    char device_name[64];
+    char fingerprint[17];          // 16 hex chars + NUL
+    uint8_t wants_encrypted_stream; // 1 = Mobile's toggle is ON
+};
+
+// Pairing response: PC→Mobile.
+//   approved         0 = PC denied (Mobile must disconnect), 1 = allowed
+//   trusted          0 = first-time (just approved this session), 1 = already
+//                    in TrustStore (auto-approved, no prompt shown on PC)
+//   stream_encrypted final negotiated data-stream mode (0 = plaintext, 1 = enc)
+struct ClientConnectResponse {
+    uint8_t approved;
+    uint8_t trusted;
+    uint8_t stream_encrypted;
 };
 
 struct ModelInfoMessage {

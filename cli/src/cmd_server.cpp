@@ -7,8 +7,10 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
+#include <iostream>
 #include <memory>
 #include <optional>
+#include <string>
 #include <thread>
 
 #include "args.hpp"
@@ -79,6 +81,32 @@ int cmd_server(const args::Server& a) {
 
     std::optional<size_t> last_worker_count;
     while (g_running && coordinator->is_running()) {
+        // 服务待批准的配对请求(仅首次连接的 Mobile;已信任的自动通过)。
+        // 阻塞读 stdin [y/n] 期间此循环暂停 — 单配对场景可接受。
+        if (auto req = coordinator->pop_pending_approval()) {
+            std::cout << "\n┌─ 配对请求 ───────────────────────────────────────\n"
+                      << "│ 设备: " << req->device_name << "\n"
+                      << "│ 指纹: " << req->fingerprint << "\n"
+                      << "│ 数据流加密: " << (req->wants_encrypted_stream ? "请求加密" : "明文")
+                      << "\n└──────────────────────────────────────────────────\n"
+                      << "允许此设备连接? [y/n]: " << std::flush;
+            std::string line;
+            bool approved = false;
+            if (std::getline(std::cin, line)) {
+                approved = (line == "y" || line == "Y" || line == "yes" || line == "YES");
+            } else {
+                // stdin EOF(例如后台运行) — 默认拒绝,避免无限等待。
+                std::cout << "(stdin 不可读,默认拒绝)\n";
+            }
+            coordinator->resolve_approval(req->id, approved);
+            if (approved) {
+                LOG_INFO("Server", "已批准配对: " + req->device_name +
+                         " (" + req->fingerprint + ") — 已加入 TrustStore");
+            } else {
+                LOG_WARNING("Server", "已拒绝配对: " + req->device_name);
+            }
+        }
+
         const size_t worker_count = coordinator->device_count();
         if (!last_worker_count.has_value() || last_worker_count.value() != worker_count) {
             LOG_INFO("Server", "Connected workers: " + std::to_string(worker_count));
