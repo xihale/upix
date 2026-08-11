@@ -43,7 +43,17 @@ auto IdentityKey::load_or_create(const std::filesystem::path& file)
         return IdentityKey(kp);
     }
 
-    // 新建
+    // 新建。父目录(如 ~/.crossscale/)可能不存在,先创建,权限 0700。
+    if (file.has_parent_path()) {
+        std::error_code ec;
+        std::filesystem::create_directories(file.parent_path(), ec);
+        // create_directories 在目录已存在时返回 false 但不报错;只有 ec 才是真错误。
+        if (ec) {
+            throw std::runtime_error("Failed to create identity directory " +
+                                     file.parent_path().string() + ": " + ec.message());
+        }
+    }
+
     auto kp = sodium::ed25519_keygen();
     {
         std::ofstream out(file, std::ios::binary | std::ios::trunc);
@@ -101,6 +111,11 @@ void TrustStore::add(const std::array<uint8_t, 32>& pubkey) {
 
 void TrustStore::save() const {
     if (file_.empty()) return;
+    if (file_.has_parent_path()) {
+        std::error_code ec;
+        std::filesystem::create_directories(file_.parent_path(), ec);
+        // 目录已存在时 ec 清空;真错误忽略(best-effort,与历史行为一致)。
+    }
     std::ofstream out(file_, std::ios::trunc);
     for (const auto& pk : entries_) {
         out << base64_encode(pk.data(), ED_PUBKEY_LEN) << "\n";
