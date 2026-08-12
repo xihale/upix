@@ -5,8 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.crossscale.AppContainer
+import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.ModelImportResult
-import com.crossscale.data.model.DeviceProfile
 import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.repository.DeviceRepository
 import com.crossscale.data.repository.InputSourceSpec
@@ -32,8 +32,7 @@ data class MainUiState(
     val backupOriginalImage: Boolean = true,
     val processNestedFolders: Boolean = true,
     val modelDirectoryPath: String = "",
-    val connectedDevices: List<DeviceProfile> = emptyList(),
-    val isDistributedMode: Boolean = false
+    val useRemote: Boolean = false
 )
 
 class MainViewModel(
@@ -54,18 +53,12 @@ class MainViewModel(
         _selectedModelName,
         _selectedInputSources,
         _selectedOutputDirectoryUri,
-        deviceRepository.connectedDevices
-    ) { models, selectedModelName, selectedInputSources, selectedOutputDirectoryUri, connectedDevices ->
+        deviceRepository.connectionState
+    ) { models, selectedModelName, selectedInputSources, selectedOutputDirectoryUri, connectionState ->
         val selectedModel = models.firstOrNull { model ->
             model.name == selectedModelName
         } ?: models.firstOrNull()
         val encodedInputSource = InputSourceSpec.encode(selectedInputSources)
-        val hasLocalConnectedDevice = connectedDevices.any { device ->
-            deviceRepository.isLocalDevice(device.deviceId)
-        }
-        val hasRemoteConnectedDevice = connectedDevices.any { device ->
-            !deviceRepository.isLocalDevice(device.deviceId)
-        }
         MainUiState(
             models = models,
             selectedModel = selectedModel,
@@ -73,8 +66,7 @@ class MainViewModel(
             selectedImagePath = encodedInputSource,
             selectedOutputDirectoryUri = selectedOutputDirectoryUri,
             modelDirectoryPath = modelRepository.modelDirectoryPath(),
-            connectedDevices = connectedDevices,
-            isDistributedMode = hasRemoteConnectedDevice && !hasLocalConnectedDevice
+            useRemote = connectionState == ConnectionState.CONNECTED
         )
     }
 

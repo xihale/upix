@@ -17,7 +17,6 @@ import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.model.ProcessingStatus
 import com.crossscale.data.model.ProcessingTask
 import com.crossscale.data.repository.BatchOutputDirectory
-import com.crossscale.data.repository.DeviceRepository
 import com.crossscale.data.repository.LogRepository
 import com.crossscale.data.repository.ProcessingCheckpoint
 import com.crossscale.data.repository.ProcessingCheckpointStore
@@ -54,12 +53,21 @@ class ProcessingViewModel(
     private val queueRepository: ProcessingQueueStore,
     private val nativeImageProcessingRepository: ImageProcessingStore,
     private val coordinatorClient: CoordinatorClient? = null,
-    private val deviceRepository: DeviceRepository? = null,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ProcessingUiState())
     val uiState: StateFlow<ProcessingUiState> = _uiState.asStateFlow()
+
+    // One-shot signal emitted when the PC becomes unreachable mid-run and
+    // processing fell back to on-device for the current (and remaining) images.
+    // UI shows a snackbar/banner; null when idle. Clear via clearRemoteFallbackMessage().
+    private val _remoteFallbackMessage = MutableStateFlow<String?>(null)
+    val remoteFallbackMessage: StateFlow<String?> = _remoteFallbackMessage.asStateFlow()
+
+    fun clearRemoteFallbackMessage() {
+        _remoteFallbackMessage.value = null
+    }
 
     private val backupRestore = BackupRestoreManager(
         inputSourceRepository = inputSourceRepository,
@@ -740,16 +748,12 @@ class ProcessingViewModel(
             return false
         }
 
-        val coordinatorConnected = coordinatorClient?.isConnected() == true
-        val localConnected = deviceRepository?.isLocalDeviceConnected() ?: true
-        val effectiveDistributedMode = distributedMode || (coordinatorConnected && !localConnected)
-        if (!effectiveDistributedMode && !localConnected) {
-            logRepository.warning(
-                "ProcessingViewModel",
-                "Local client is disconnected. Connect local client or remote coordinator before processing."
-            )
-            return false
-        }
+        // Single source of truth for remote-vs-native routing: the coordinator is
+        // "connected" iff a paired PC endpoint is set. The user "distributed"
+        // toggle no longer overrides this — if the PC is reachable we use it,
+        // otherwise we process on-device. Local-device-as-worker is gone.
+        val useRemote = coordinatorClient?.isConnected() == true
+        val effectiveDistributedMode = useRemote
 
         val modelInfo = modelRepository.getModelByName(modelName)
         if (modelInfo == null) {
@@ -915,29 +919,29 @@ class ProcessingViewModel(
             val pendingByUri = LinkedHashMap<String, ResolvedImageInput>()
             pendingImages.forEach { pendingByUri[it.uri.toString()] = it }
             val failureDetailsByUri = initialFailures.toMutableMap()
-            val distributedRemoteEnabled = effectiveDistributedMode && coordinatorConnected
+            // Per-image routing flag. Starts as the initial mode but may flip to
+            // false mid-batch once the PC is found unreachable, so the rest of the
+            // batch runs natively without re-trying a dead link each image.
+            var remoteRouting = effectiveDistributedMode
             var processingSession: ImageProcessingSession? = null
 
             try {
-                if (!distributedMode && distributedRemoteEnabled) {
-                    logRepository.info(
-                        "ProcessingViewModel",
-                        "Remote coordinator connected, local processing disabled by default"
-                    )
-                } else if (distributedMode && !distributedRemoteEnabled) {
-                    logRepository.warning(
-                        "ProcessingViewModel",
-                        "Distributed mode requested but remote coordinator is unavailable; fallback to local processing"
-                    )
-                }
-
-                if (distributedRemoteEnabled) {
+                if (remoteRouting) {
+                    // remoteRouting == true only when coordinatorClient != null
+                    // (invariant: effectiveDistributedMode = coordinatorClient?.isConnected() == true).
                     val endpoint = coordinatorClient.activeDeviceId().orEmpty()
                     logRepository.info(
                         "ProcessingViewModel",
-                        "Distributed execution enabled, routing tasks to coordinator $endpoint"
+                        "Remote mode: routing tasks to coordinator $endpoint"
                     )
                 } else {
+                    logRepository.info(
+                        "ProcessingViewModel",
+                        "Native mode: processing on device"
+                    )
+                }
+
+                if (!remoteRouting) {
                     processingSession = withContext(defaultDispatcher) {
                         nativeImageProcessingRepository.openSession(
                             modelName = modelName,
@@ -985,7 +989,6 @@ class ProcessingViewModel(
                         return@launch
                     }
                 }
-                val session = processingSession
 
                 for (item in runImages) {
                     if (!isActive) {
@@ -1006,9 +1009,10 @@ class ProcessingViewModel(
                     val outputFile = batchOutputRepository.outputFileFor(outputDirectory = outputDirectory, input = item)
 
                     val startedAt = System.currentTimeMillis()
-                    val result = withContext(defaultDispatcher) {
-                        if (distributedRemoteEnabled) {
-                            coordinatorClient.processInputRemotely(
+                    val currentSession = processingSession
+                    var result = withContext(defaultDispatcher) {
+                        if (remoteRouting) {
+                            coordinatorClient!!.processInputRemotely(
                                 input = item,
                                 modelName = modelName,
                                 tileSize = DISTRIBUTED_TILE_SIZE,
@@ -1016,10 +1020,35 @@ class ProcessingViewModel(
                                 outputFile = outputFile
                             )
                         } else {
-                            checkNotNull(session).process(
+                            checkNotNull(currentSession).process(
                                 input = item,
                                 outputFile = outputFile
                             )
+                        }
+                    }
+
+                    // PC unreachable mid-batch: drop remote for this image and the
+                    // rest of the batch, re-process THIS image natively, and emit a
+                    // UI signal so the mode chip / snackbar can react.
+                    if (remoteRouting && result.isFailure) {
+                        _remoteFallbackMessage.value = "PC 不可达，已切换本地处理"
+                        logRepository.warning(
+                            "ProcessingViewModel",
+                            "Remote submit failed for ${item.displayName}, falling back to native for remaining items"
+                        )
+                        remoteRouting = false
+                        val reopenedSession = processingSession ?: withContext(defaultDispatcher) {
+                            nativeImageProcessingRepository.openSession(
+                                modelName = modelName,
+                                modelBasePath = modelBasePath,
+                                preferGpu = true
+                            )
+                        }
+                        processingSession = reopenedSession
+                        if (reopenedSession != null) {
+                            result = withContext(defaultDispatcher) {
+                                reopenedSession.process(input = item, outputFile = outputFile)
+                            }
                         }
                     }
                     val elapsedMs = System.currentTimeMillis() - startedAt
@@ -1042,21 +1071,13 @@ class ProcessingViewModel(
                                 ?: outputFile.absolutePath
                             latestProcessorLabel = resolveProcessorLabel(
                                 explicitProcessor = result.getOrNull()?.processorLabel,
-                                distributedRemoteEnabled = distributedRemoteEnabled
+                                distributedRemoteEnabled = remoteRouting
                             )
                             latestAttributionEntry = "${item.displayName} · ${latestProcessorLabel}"
                             logRepository.info(
                                 "ProcessingViewModel",
                                 "Processed ${item.displayName} by ${latestProcessorLabel} -> $destination (${elapsedMs}ms, done=$successfulCount/$totalItems, pending=${pendingByUri.size})"
                             )
-                            result.getOrNull()?.let { nativeResult ->
-                                updateDeviceThroughputSample(
-                                    distributedRemoteEnabled = distributedRemoteEnabled,
-                                    elapsedMs = elapsedMs,
-                                    inputWidth = nativeResult.inputWidth,
-                                    inputHeight = nativeResult.inputHeight
-                                )
-                            }
                             if (!queueItemId.isNullOrBlank()) {
                                 _uiState.update { state ->
                                     state.copy(
@@ -1382,9 +1403,7 @@ class ProcessingViewModel(
                 return
             }
         }
-        val coordinatorConnected = coordinatorClient?.isConnected() == true
-        val localConnected = deviceRepository?.isLocalDeviceConnected() ?: true
-        val effectiveDistributedMode = nextBatch.distributedMode || (coordinatorConnected && !localConnected)
+        val effectiveDistributedMode = coordinatorClient?.isConnected() == true
         val updatedQueueItems = _uiState.value.queueItems.map { item ->
             if (item.id == nextBatch.id) {
                 item.copy(
@@ -1779,45 +1798,6 @@ class ProcessingViewModel(
         return (completedItems.toFloat() / totalItems.toFloat()).coerceIn(0.0f, 1.0f)
     }
 
-    private fun updateDeviceThroughputSample(
-        distributedRemoteEnabled: Boolean,
-        elapsedMs: Long,
-        inputWidth: Int,
-        inputHeight: Int
-    ) {
-        val sample = estimateTilesPerSecond(
-            elapsedMs = elapsedMs,
-            inputWidth = inputWidth,
-            inputHeight = inputHeight,
-            tileSize = DISTRIBUTED_TILE_SIZE
-        )
-        if (sample <= 0.0f) {
-            return
-        }
-
-        if (distributedRemoteEnabled) {
-            val remoteDeviceId = coordinatorClient?.activeDeviceId() ?: return
-            deviceRepository?.recordThroughputSample(remoteDeviceId, sample)
-        } else {
-            deviceRepository?.recordLocalThroughputSample(sample)
-        }
-    }
-
-    private fun estimateTilesPerSecond(
-        elapsedMs: Long,
-        inputWidth: Int,
-        inputHeight: Int,
-        tileSize: Int
-    ): Float {
-        if (elapsedMs <= 0L || inputWidth <= 0 || inputHeight <= 0 || tileSize <= 0) {
-            return 0.0f
-        }
-        val tilesX = (inputWidth + tileSize - 1) / tileSize
-        val tilesY = (inputHeight + tileSize - 1) / tileSize
-        val totalTiles = (tilesX * tilesY).coerceAtLeast(1)
-        return totalTiles * 1000.0f / elapsedMs.toFloat()
-    }
-
     private fun resolveProcessorLabel(
         explicitProcessor: String?,
         distributedRemoteEnabled: Boolean
@@ -1855,8 +1835,7 @@ class ProcessingViewModel(
                         checkpointRepository = container.processingCheckpointRepository,
                         queueRepository = container.processingQueueRepository,
                         nativeImageProcessingRepository = container.nativeImageProcessingRepository,
-                        coordinatorClient = container.coordinatorClient,
-                        deviceRepository = container.deviceRepository
+                        coordinatorClient = container.coordinatorClient
                     ) as T
                 }
             }

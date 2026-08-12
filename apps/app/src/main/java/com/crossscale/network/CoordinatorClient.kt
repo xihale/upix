@@ -22,14 +22,17 @@ class CoordinatorClient(
         ?.let { directory -> File(directory, "models") }
         ?: File(appContext.filesDir, "models")
 
-    private var worker: NativeWorker? = null
-    private var connectedEndpoint: RemoteEndpoint? = null
+    // NativeWorker is now stateless aside from library load; one-shot submit
+    // (NCNNEngine.nativeProcessImageDistributed) and requestConnection are the
+    // only native entry points used here. The old persistent worker-session
+    // (nativeCreate/Connect/Disconnect/IsConnected/GetLastError) is gone.
+    private val nativeWorker: NativeWorker by lazy { NativeWorker() }
 
-    fun connect(host: String, port: Int, peerPubKeyB64: String): Boolean {
-        // Legacy entry retained for compatibility — current callers go through
-        // requestConnection() (pairing flow). Both paths share connectInternal.
-        return connectInternal(host, port, peerPubKeyB64, modelsDirectory.absolutePath) != null
-    }
+    // Internal representation: carries the peer pubkey + stream flag needed to
+    // re-run strict-MITM handshakes for each one-shot image submit. The public,
+    // UI-facing endpoint shape (data.model.RemoteEndpoint) is owned by
+    // DeviceViewModel, which derives it from these outcomes.
+    private var connectedEndpoint: ConnectedEndpoint? = null
 
     /**
      * 新连接流程: ECDH 握手 + CONNECT_REQUEST/RESPONSE 配对(无图像传输)。
@@ -46,16 +49,6 @@ class CoordinatorClient(
         peerPubKeyB64: String,
         wantsEncryptedStream: Boolean
     ): String? {
-        return connectInternal(host, port, peerPubKeyB64, wantsEncryptedStream = wantsEncryptedStream)
-    }
-
-    private fun connectInternal(
-        host: String,
-        port: Int,
-        peerPubKeyB64: String,
-        modelsDirectory: String = this.modelsDirectory.absolutePath,
-        wantsEncryptedStream: Boolean = false
-    ): String? {
         val normalizedHost = host.trim()
         val normalizedPeerPubKeyB64 = peerPubKeyB64.trim()
         if (normalizedHost.isBlank() || port <= 0) {
@@ -63,22 +56,24 @@ class CoordinatorClient(
             return null
         }
 
+        // Switching to a different endpoint: drop the previous one first.
         val previousEndpoint = connectedEndpoint
-        if (
-            previousEndpoint != null &&
+        if (previousEndpoint != null &&
             (previousEndpoint.host != normalizedHost || previousEndpoint.port != port)
         ) {
-            disconnect()
+            clearEndpoint(previousEndpoint)
         }
 
-        if (!this.modelsDirectory.exists() && !this.modelsDirectory.mkdirs()) {
-            logRepository.error("CoordinatorClient", "Failed to create models directory: ${this.modelsDirectory.absolutePath}")
+        if (!modelsDirectory.exists() && !modelsDirectory.mkdirs()) {
+            logRepository.error(
+                "CoordinatorClient",
+                "Failed to create models directory: ${modelsDirectory.absolutePath}"
+            )
             return null
         }
 
-        val activeWorker = worker ?: NativeWorker().also { worker = it }
         val learnedPubKey = try {
-            activeWorker.requestConnection(
+            nativeWorker.requestConnection(
                 host = normalizedHost,
                 port = port,
                 peerPubKeyB64 = normalizedPeerPubKeyB64,
@@ -95,48 +90,36 @@ class CoordinatorClient(
         if (learnedPubKey != null) {
             // Use the (possibly learned) key for the endpoint so subsequent image
             // processing handshakes can do strict MITM verification against it.
-            connectedEndpoint = RemoteEndpoint(
+            connectedEndpoint = ConnectedEndpoint(
                 host = normalizedHost,
                 port = port,
                 peerPubKeyB64 = learnedPubKey,
                 streamEncrypted = wantsEncryptedStream
             )
             logRepository.info("CoordinatorClient", "Connected to $normalizedHost:$port")
-        } else {
-            connectedEndpoint = null
-            val reason = runCatching { activeWorker.lastError() }
-                .getOrNull()
-                .orEmpty()
-                .trim()
-            if (reason.isNotBlank()) {
-                logRepository.warning("CoordinatorClient", "Connect rejected by native worker: $reason")
-            } else {
-                logRepository.warning("CoordinatorClient", "Connect rejected by native worker")
-            }
-            runCatching {
-                activeWorker.disconnect()
-                activeWorker.close()
-            }
-            worker = null
+            return learnedPubKey
         }
-        return learnedPubKey
+
+        // Handshake/pairing failed (PC offline, rejected, MITM mismatch, ...).
+        // Clear any stale endpoint so isConnected() reflects reality and the
+        // caller falls back to native processing + can prompt the user.
+        connectedEndpoint?.let { clearEndpoint(it) }
+        logRepository.warning("CoordinatorClient", "Connect rejected by native worker")
+        return null
     }
 
-    fun isConnected(): Boolean {
-        val activeWorker = worker ?: return false
-        val linked = runCatching { activeWorker.isConnected() }.getOrElse { false }
-        if (!linked && connectedEndpoint != null) {
-            logRepository.warning("CoordinatorClient", "Coordinator link dropped, releasing worker resources")
-            disconnect()
-        }
-        return linked
-    }
+    /**
+     * The authoritative "is a PC paired & reachable right now" signal.
+     *
+     * Previously this read a persistent worker-session `running_` flag that the
+     * one-shot pairing path never set, then self-cleared the endpoint via
+     * disconnect() — silently forcing native fallback forever. Now it is simply
+     * `connectedEndpoint != null`, which is exactly what the pairing path sets.
+     */
+    fun isConnected(): Boolean = connectedEndpoint != null
 
     fun isConnectedTo(host: String, port: Int): Boolean {
         val endpoint = connectedEndpoint ?: return false
-        if (!isConnected()) {
-            return false
-        }
         return endpoint.host == host.trim() && endpoint.port == port
     }
 
@@ -154,12 +137,11 @@ class CoordinatorClient(
     ): Result<NativeProcessResult> {
         val endpoint = connectedEndpoint
             ?: return Result.failure(IllegalStateException("No connected coordinator endpoint"))
-        if (!isConnected()) {
-            return Result.failure(IllegalStateException("Coordinator link is not active"))
-        }
 
         val decodedInput = decodeInput(input.uri)
-            ?: return Result.failure(IllegalStateException("Failed to decode image input: ${input.displayName}"))
+            ?: return Result.failure(
+                IllegalStateException("Failed to decode image input: ${input.displayName}")
+            )
 
         val outputFormat = outputFormatFor(outputFile)
         val startedAt = System.currentTimeMillis()
@@ -179,14 +161,20 @@ class CoordinatorClient(
             outputQuality = DEFAULT_OUTPUT_QUALITY
         )
 
+        // null/empty output == PC unreachable / handshake failed / submit error.
+        // This is the remote-fallback trigger: drop the endpoint (so the UI flips
+        // to Native and the caller falls back for this image) and surface a
+        // failure the caller can catch.
         if (encodedOutput == null || encodedOutput.isEmpty()) {
-            val reason = NCNNEngine.nativeGetLastError()
+            clearEndpoint(endpoint)
+            val reason = runCatching { NCNNEngine.nativeGetLastError() }
+                .getOrNull()
                 ?.trim()
                 .orEmpty()
             val message = if (reason.isNotBlank()) {
-                "Distributed processing failed: $reason"
+                "PC 不可达，已切换本地处理: $reason"
             } else {
-                "Distributed processing failed without native details"
+                "PC 不可达，已切换本地处理"
             }
             logRepository.error("CoordinatorClient", message)
             return Result.failure(IllegalStateException(message))
@@ -197,6 +185,7 @@ class CoordinatorClient(
 
         val writeResult = writeOutputBytes(outputFile, encodedOutput)
         if (writeResult.isFailure) {
+            // Local FS failure — keep the endpoint (PC is fine).
             return Result.failure(
                 writeResult.exceptionOrNull()
                     ?: IllegalStateException("Failed to persist distributed output")
@@ -226,21 +215,17 @@ class CoordinatorClient(
         if (endpoint.host != host.trim() || endpoint.port != port) {
             return false
         }
-        disconnect()
+        clearEndpoint(endpoint)
         return true
     }
 
     fun disconnect() {
-        val endpoint = connectedEndpoint
-        worker?.disconnect()
-        worker?.close()
-        worker = null
+        connectedEndpoint?.let { clearEndpoint(it) }
+    }
+
+    private fun clearEndpoint(endpoint: ConnectedEndpoint) {
         connectedEndpoint = null
-        if (endpoint != null) {
-            logRepository.info("CoordinatorClient", "Disconnected from ${endpoint.host}:${endpoint.port}")
-        } else {
-            logRepository.info("CoordinatorClient", "Disconnected")
-        }
+        logRepository.info("CoordinatorClient", "Disconnected from ${endpoint.host}:${endpoint.port}")
     }
 
     private fun decodeInput(uri: Uri): DecodedRgbImage? {
@@ -343,7 +328,7 @@ class CoordinatorClient(
         val rgbBytes: ByteArray
     )
 
-    private data class RemoteEndpoint(
+    private data class ConnectedEndpoint(
         val host: String,
         val port: Int,
         val peerPubKeyB64: String,

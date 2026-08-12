@@ -77,9 +77,10 @@ fun CrossScaleApp(container: AppContainer) {
         processingViewModel.refreshExpectedTotal(path)
     }
 
-    // App 启动即自动开始 mDNS 发现(不再需要手动点击)。
+    // App 启动即尝试自动重连上次的 PC (1:1 模型)。成功 -> Remote 模式;
+    // 失败/无记录 -> Native 模式。mDNS 自动发现已移除。
     LaunchedEffect(Unit) {
-        deviceViewModel.startDiscovery()
+        deviceViewModel.tryAutoReconnect()
     }
 
     val handlePickedImageUris: (List<Uri>, String) -> Unit = { uris, pickerName ->
@@ -113,7 +114,7 @@ fun CrossScaleApp(container: AppContainer) {
                     processingViewModel.enqueueBatch(
                         imagePath = source,
                         modelName = selectedModelName,
-                        distributedMode = mainUiState.isDistributedMode,
+                        distributedMode = mainUiState.useRemote,
                         outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
                         overwriteOriginal = mainUiState.overwriteOriginalImage,
                         backupOriginal = mainUiState.backupOriginalImage
@@ -151,7 +152,7 @@ fun CrossScaleApp(container: AppContainer) {
                 processingViewModel.enqueueBatch(
                     imagePath = inputSource,
                     modelName = selectedModelName,
-                    distributedMode = mainUiState.isDistributedMode,
+                    distributedMode = mainUiState.useRemote,
                     outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
                     overwriteOriginal = mainUiState.overwriteOriginalImage,
                     backupOriginal = mainUiState.backupOriginalImage
@@ -275,7 +276,7 @@ fun CrossScaleApp(container: AppContainer) {
             onToggleProcessNestedFolders = mainViewModel::setProcessNestedFolders,
             onStartProcessing = {
                 processingViewModel.syncPendingQueueDefaults(
-                    distributedMode = mainUiState.isDistributedMode,
+                    distributedMode = mainUiState.useRemote,
                     outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
                     overwriteOriginal = mainUiState.overwriteOriginalImage,
                     backupOriginal = mainUiState.backupOriginalImage,
@@ -291,7 +292,7 @@ fun CrossScaleApp(container: AppContainer) {
                         processingViewModel.enqueueBatch(
                             imagePath = imagePath,
                             modelName = selectedModelName,
-                            distributedMode = mainUiState.isDistributedMode,
+                            distributedMode = mainUiState.useRemote,
                             outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
                             overwriteOriginal = mainUiState.overwriteOriginalImage,
                             backupOriginal = mainUiState.backupOriginalImage,
@@ -306,7 +307,7 @@ fun CrossScaleApp(container: AppContainer) {
             },
             onStartBatchQueue = {
                 processingViewModel.syncPendingQueueDefaults(
-                    distributedMode = mainUiState.isDistributedMode,
+                    distributedMode = mainUiState.useRemote,
                     outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
                     overwriteOriginal = mainUiState.overwriteOriginalImage,
                     backupOriginal = mainUiState.backupOriginalImage,
@@ -366,8 +367,6 @@ fun CrossScaleApp(container: AppContainer) {
                 pickModelFilesLauncher.launch(arrayOf("*/*"))
             },
             onDeleteModel = mainViewModel::deleteModel,
-            onConnectDevice = deviceViewModel::connectDevice,
-            onDisconnectDevice = deviceViewModel::disconnectDevice,
             onShowManualConnectDialog = deviceViewModel::showManualConnectDialog,
             onManualConnect = deviceViewModel::connectManual,
             onConnectByQr = deviceViewModel::connectByQrPayload,
