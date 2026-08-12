@@ -134,17 +134,16 @@ list(FILTER SHARE_UTILS_SRCS EXCLUDE REGEX "android_utils\\.cpp$")
 list(FILTER SHARE_CORE_SRCS EXCLUDE REGEX "core/ncnn_engine\\.cpp$")
 list(FILTER SHARE_CORE_SRCS EXCLUDE REGEX "core/tile_processor\\.cpp$")
 # Exclude files Android does not use (zero references in apps/app/src/main/cpp):
-# coordinator.cpp (Android is worker/client only), engine_pool.cpp (no pool mgmt),
-# mdns.cpp (no mDNS discovery on Android — also has __linux__-only code paths).
-# This preserves the prior hand-maintained list's behavior.
+# coordinator.cpp (Android is client/submit-only), engine_pool.cpp (no pool mgmt).
+# Note: worker.cpp, scheduler.cpp, coordinator_task.cpp and utils/mdns.cpp have
+# been removed from share/ entirely (1:1 phone->PC simplification), so they no
+# longer need excluding here — the GLOB above will not pick them up.
 list(FILTER SHARE_CORE_SRCS EXCLUDE REGEX "core/distributed/coordinator\\.cpp$")
-# Coordinator split files (admin/task) define Coordinator:: methods; since
-# coordinator.cpp itself is excluded above (Android is worker-only), these
-# would produce dead/undefined symbols. Exclude them too.
+# Coordinator split files define Coordinator:: methods; since coordinator.cpp
+# itself is excluded above (Android is client-only), these would produce
+# dead/undefined symbols. Exclude them too.
 list(FILTER SHARE_CORE_SRCS EXCLUDE REGEX "core/distributed/coordinator_admin\\.cpp$")
-list(FILTER SHARE_CORE_SRCS EXCLUDE REGEX "core/distributed/coordinator_task\\.cpp$")
 list(FILTER SHARE_CORE_SRCS EXCLUDE REGEX "core/engine_pool\\.cpp$")
-list(FILTER SHARE_UTILS_SRCS EXCLUDE REGEX "utils/mdns\\.cpp$")
 
 set(SHARED_SOURCES
     ${SHARE_CORE_SRCS}
