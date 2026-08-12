@@ -232,6 +232,11 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     if (!res) {
         return std::unexpected(CoordinatorError{4, res.error().message});
     }
+
+    // Return raw u8 RGB pixels. The phone's JNI layer validates this against
+    // output_width*output_height*channels, copies it into an Image, and
+    // encodes to the requested format (jpg/png) itself (jni_bridge.cpp ~825).
+    // Sending an already-encoded image here breaks that raw-RGB size check.
     return out_bytes;
 }
 
@@ -647,8 +652,11 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                                  sizeof(response.error_message) - 1);
                 }
 
-                // Response header + result data go in one encrypted frame, the
-                // same way the legacy path packed them contiguously on the wire.
+                // Response header + result data go in one encrypted (boxed) frame,
+                // matching the way the phone opens it (session.open, which always
+                // verifies a MAC). The earlier send_stream path emitted a plaintext
+                // stream frame here, which the phone's boxed open() rejected with a
+                // MAC failure → "PC 不可达".
                 std::vector<uint8_t> resp_payload(sizeof(ClientTaskResponse) +
                                                   process_result.value_or(std::vector<uint8_t>{}).size());
                 std::memcpy(resp_payload.data(), &response, sizeof(response));
@@ -656,8 +664,8 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                     std::memcpy(resp_payload.data() + sizeof(ClientTaskResponse),
                                 process_result->data(), process_result->size());
                 }
-                if (!send_stream(conn, MessageType::MSG_CLIENT_RESPONSE,
-                                 resp_payload.data(), resp_payload.size())) {
+                if (!send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
+                                    resp_payload.data(), resp_payload.size())) {
                     LOG_ERROR("Coordinator", "Failed to send authenticated client response");
                     return;
                 }
