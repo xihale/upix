@@ -126,7 +126,7 @@ int main() {
         s.activate(k);
 
         MessageHeader hdr;
-        hdr.type = MessageType::MSG_HEARTBEAT;
+        hdr.type = MessageType::MSG_CLIENT_SUBMIT;
         std::vector<uint8_t> payload(64);
         for (size_t i = 0; i < payload.size(); ++i) payload[i] = (uint8_t)i;
         hdr.payload_length = (uint32_t)payload.size();
@@ -136,7 +136,7 @@ int main() {
 
         auto opened = s.open(wire.data(), wire.size());
         CHECK(opened.has_value());
-        CHECK(opened->first.type == MessageType::MSG_HEARTBEAT);
+        CHECK(opened->first.type == MessageType::MSG_CLIENT_SUBMIT);
         CHECK(opened->first.payload_length == 64);
         CHECK(opened->second.size() == 64);
         CHECK(std::memcmp(opened->second.data(), payload.data(), 64) == 0);
@@ -147,14 +147,14 @@ int main() {
         printf("OK encrypted session seal/open + tamper reject\n");
     }
 
-    // 9. EncryptedSession empty payload round-trip (MSG_HEARTBEAT-style)
+    // 9. EncryptedSession empty payload round-trip (MSG_CLIENT_SUBMIT-style)
     {
         EncryptedSession s;
         EncryptedSession::SessionKey k{};
         for (auto& b : k) b = 0x42;
         s.activate(k);
         MessageHeader hdr;
-        hdr.type = MessageType::MSG_HEARTBEAT;
+        hdr.type = MessageType::MSG_CLIENT_SUBMIT;
         hdr.payload_length = 0;
         auto wire = s.seal(hdr, nullptr);
         CHECK(wire.size() == 15 + 24 + 0 + 16);  // 55
