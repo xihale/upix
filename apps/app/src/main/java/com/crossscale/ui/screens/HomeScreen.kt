@@ -39,12 +39,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
@@ -69,7 +73,9 @@ import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.repository.InputSourceSpec
 import com.crossscale.ui.components.ProcessingProgress
 import com.crossscale.ui.theme.BorderlessTokens
+import com.crossscale.data.model.ConnectionState
 import com.crossscale.viewmodel.MainUiState
+import com.crossscale.data.model.RemoteEndpoint
 import com.crossscale.data.repository.PersistedQueueItemStatus
 import com.crossscale.viewmodel.ProcessingQueueItemSummary
 import com.crossscale.viewmodel.ProcessingUiState
@@ -84,6 +90,10 @@ import kotlinx.coroutines.sync.withPermit
 fun HomeScreen(
     state: MainUiState,
     processingUiState: ProcessingUiState,
+    connectionState: ConnectionState,
+    connectedEndpoint: RemoteEndpoint?,
+    remoteFallbackMessage: String?,
+    onClearRemoteFallbackMessage: () -> Unit,
     onSelectModel: (ModelInfo) -> Unit,
     onSelectImages: () -> Unit,
     onSelectImageFolder: () -> Unit,
@@ -125,6 +135,38 @@ fun HomeScreen(
     var queueSheetVisible by rememberSaveable { mutableStateOf(false) }
     var previewSource by rememberSaveable { mutableStateOf<String?>(null) }
     val queueSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    val snackbarHostState = remember { SnackbarHostState() }
+    val prevConnectionState = remember { mutableStateOf(connectionState) }
+    val isProcessing = processingUiState.isProcessing
+    LaunchedEffect(connectionState) {
+        val previous = prevConnectionState.value
+        if (previous != connectionState) {
+            val message = when (connectionState) {
+                ConnectionState.CONNECTING -> "正在连接上次的 PC…"
+                ConnectionState.CONNECTED -> "已连接 PC，使用远程处理"
+                ConnectionState.DISCONNECTED -> {
+                    if (previous == ConnectionState.CONNECTED && isProcessing) {
+                        "PC 不可达，已切换本地处理"
+                    } else {
+                        "PC 不可达，使用本地处理"
+                    }
+                }
+            }
+            snackbarHostState.showSnackbar(message)
+            prevConnectionState.value = connectionState
+        }
+    }
+
+    // PC 掉线回退（处理中）：ProcessingViewModel 在远程不可达、已切换本地处理时
+    // 发出一次性信号；展示 snackbar 后清除，避免重复弹出。
+    LaunchedEffect(remoteFallbackMessage) {
+        val message = remoteFallbackMessage
+        if (!message.isNullOrBlank()) {
+            snackbarHostState.showSnackbar(message)
+            onClearRemoteFallbackMessage()
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -226,12 +268,21 @@ fun HomeScreen(
             pendingQueueCount = pendingQueueCount,
             failedQueueCount = failedQueueCount,
             hasBackupAvailable = hasBackupAvailable && !processingUiState.isProcessing && queueItems.isEmpty(),
+            connectionState = connectionState,
+            connectedEndpoint = connectedEndpoint,
             onShowQueue = {
                 queueSheetVisible = true
             },
             onStart = onStartProcessing,
             onRestore = onRestoreBackup,
             onCancel = onCancelProcessing
+        )
+
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 150.dp)
         )
     }
 
@@ -605,6 +656,56 @@ private fun SwitchRow(
     }
 }
 
+/**
+ * 醒目的处理模式指示条（始终可见，挂在底部操作区内）。
+ * 连上 PC → 绿色「远程」；未连 → 蓝色「本地」；连接中 → 琥珀。
+ */
+@Composable
+private fun ModeChip(
+    connectionState: ConnectionState,
+    connectedEndpoint: RemoteEndpoint?
+) {
+    val backgroundColor: Color
+    val contentColor: Color
+    val text: String
+    when (connectionState) {
+        ConnectionState.CONNECTED -> {
+            backgroundColor = Color(0xFFD7F4DE)
+            contentColor = Color(0xFF1B5E20)
+            val endpoint = connectedEndpoint?.let { "${it.host}:${it.port}" }.orEmpty()
+            text = "🖥️ 远程 · PC 处理 · $endpoint"
+        }
+        ConnectionState.DISCONNECTED -> {
+            backgroundColor = Color(0xFFD6E4FF)
+            contentColor = Color(0xFF0D47A1)
+            text = "📱 本地 · 手机处理"
+        }
+        ConnectionState.CONNECTING -> {
+            backgroundColor = Color(0xFFFFE8C2)
+            contentColor = Color(0xFF8A5A00)
+            text = "🔄 连接 PC 中…"
+        }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = backgroundColor,
+        contentColor = contentColor,
+        shape = RoundedCornerShape(20.dp)
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp)
+        )
+    }
+}
+
 @Composable
 private fun BottomActionBar(
     modifier: Modifier = Modifier,
@@ -612,6 +713,8 @@ private fun BottomActionBar(
     pendingQueueCount: Int,
     failedQueueCount: Int,
     hasBackupAvailable: Boolean = false,
+    connectionState: ConnectionState,
+    connectedEndpoint: RemoteEndpoint?,
     onShowQueue: () -> Unit,
     onStart: () -> Unit,
     onRestore: () -> Unit = {},
@@ -624,6 +727,11 @@ private fun BottomActionBar(
                 .padding(horizontal = 16.dp, vertical = 10.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
+            ModeChip(
+                connectionState = connectionState,
+                connectedEndpoint = connectedEndpoint
+            )
+
             QueueDockEntry(
                 pendingQueueCount = pendingQueueCount,
                 failedQueueCount = failedQueueCount,

@@ -1,29 +1,38 @@
 package com.crossscale.ui.navigation
 
+import androidx.camera.core.ExperimentalGetImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.camera.core.ExperimentalGetImage
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import kotlinx.coroutines.flow.StateFlow
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import com.crossscale.AppContainer
+import com.crossscale.CrossScaleApplication
+import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.LogEntry
 import com.crossscale.data.model.ModelInfo
-import com.crossscale.ui.screens.DevicesScreen
+import com.crossscale.data.model.RemoteEndpoint
+import com.crossscale.ui.screens.ConnectionScreen
 import com.crossscale.ui.screens.HelpScreen
 import com.crossscale.ui.screens.HomeScreen
 import com.crossscale.ui.screens.LogsScreen
 import com.crossscale.ui.screens.ModelsScreen
 import com.crossscale.ui.screens.SettingsScreen
 import com.crossscale.viewmodel.DeviceUiState
+import com.crossscale.viewmodel.DeviceViewModel
 import com.crossscale.viewmodel.MainUiState
 import com.crossscale.viewmodel.ProcessingUiState
+import com.crossscale.viewmodel.ProcessingViewModel
+import kotlinx.coroutines.flow.StateFlow
 
 @ExperimentalGetImage
 @Composable
@@ -64,8 +73,6 @@ fun CrossScaleNavigation(
     onRefreshModels: () -> Unit,
     onImportModels: () -> Unit,
     onDeleteModel: (ModelInfo) -> Unit,
-    onConnectDevice: (String) -> Unit,
-    onDisconnectDevice: (String) -> Unit,
     onShowManualConnectDialog: (Boolean) -> Unit,
     onManualConnect: (String, String) -> Unit,
     onConnectByQr: (String) -> Unit,
@@ -79,6 +86,22 @@ fun CrossScaleNavigation(
     onOpenHelp: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // 1:1 phone<->PC: the nav graph no longer takes connectionState /
+    // connectedEndpoint / onDisconnect as threaded callback params. It pulls the
+    // Activity-owned DeviceViewModel + ProcessingViewModel (same ViewModelStore as
+    // CrossScaleApp, so viewModel() returns the very same instances) and consumes
+    // the contract StateFlows directly. The connection screen's disconnect action
+    // likewise binds straight to deviceViewModel.disconnect().
+    val appContext = LocalContext.current
+    val appContainer: AppContainer = remember(appContext) {
+        (appContext.applicationContext as CrossScaleApplication).container
+    }
+    val deviceViewModel: DeviceViewModel = viewModel(factory = DeviceViewModel.factory(appContainer))
+    val processingViewModel: ProcessingViewModel = viewModel(factory = ProcessingViewModel.factory(appContainer))
+    val connectionState: ConnectionState by deviceViewModel.connectionState.collectAsState()
+    val connectedEndpoint: RemoteEndpoint? by deviceViewModel.connectedEndpoint.collectAsState()
+    val remoteFallbackMessage: String? by processingViewModel.remoteFallbackMessage.collectAsState()
+
     NavHost(
         navController = navController,
         startDestination = AppScreen.Home.route,
@@ -89,6 +112,10 @@ fun CrossScaleNavigation(
                 HomeScreen(
                     state = mainUiState,
                     processingUiState = processingUiState,
+                    connectionState = connectionState,
+                    connectedEndpoint = connectedEndpoint,
+                    remoteFallbackMessage = remoteFallbackMessage,
+                    onClearRemoteFallbackMessage = processingViewModel::clearRemoteFallbackMessage,
                     onSelectModel = onSelectModel,
                     onSelectImages = onSelectImages,
                     onSelectImageFolder = onSelectImageFolder,
@@ -122,10 +149,11 @@ fun CrossScaleNavigation(
         }
         composable(AppScreen.Devices.route) {
             DestinationContainer {
-                DevicesScreen(
+                ConnectionScreen(
                     state = deviceUiState,
-                    onConnectDevice = onConnectDevice,
-                    onDisconnectDevice = onDisconnectDevice,
+                    connectionState = connectionState,
+                    connectedEndpoint = connectedEndpoint,
+                    onDisconnect = deviceViewModel::disconnect,
                     onShowManualConnectDialog = onShowManualConnectDialog,
                     onManualConnect = onManualConnect,
                     onConnectByQr = onConnectByQr,

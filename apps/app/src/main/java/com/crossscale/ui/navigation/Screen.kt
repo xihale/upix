@@ -13,7 +13,7 @@ sealed class AppScreen(
 
     data object Devices : AppScreen(
         route = "devices",
-        title = "设备",
+        title = "连接",
         iconResId = android.R.drawable.ic_menu_share
     )
 

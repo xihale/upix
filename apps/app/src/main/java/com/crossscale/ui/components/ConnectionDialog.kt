@@ -39,7 +39,7 @@ fun ConnectionDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("手动连接") },
+        title = { Text("连接 PC") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
@@ -55,7 +55,7 @@ fun ConnectionDialog(
                     label = { Text("端口") }
                 )
                 Text(
-                    "首次连接会在握手后展示 PC 指纹供你核对。",
+                    "输入 PC 端显示的 IP 与端口。首次连接会在握手后展示 PC 指纹供你核对。",
                     style = androidx.compose.material3.MaterialTheme.typography.bodySmall
                 )
             }
@@ -67,7 +67,7 @@ fun ConnectionDialog(
                     onDismiss()
                 }
             ) {
-                Text("连接")
+                Text("连接 PC")
             }
         },
         dismissButton = {
