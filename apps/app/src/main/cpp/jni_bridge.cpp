@@ -103,7 +103,9 @@ auto run_client_handshake(
     crossscale::TCPSocket& socket,
     const std::array<uint8_t, 32>& peer_identity_pubkey,
     crossscale::IdentityKey& local_identity,
-    std::string& error_msg
+    std::string& error_msg,
+    bool tofu_mode = false,
+    std::array<uint8_t, 32>* learned_peer_pub = nullptr
 ) -> std::optional<crossscale::EncryptedSession> {
     error_msg.clear();
     crossscale::sodium::init();
@@ -160,9 +162,18 @@ auto run_client_handshake(
     std::memcpy(transcript.data() + 96, s_hello.id_pub,  32);
 
     // (4) MITM check: server's identity pubkey must match the one we expect.
+    //     In TOFU mode (manual connect by IP+port, no prior key), we skip the
+    //     equality check and instead learn the server's identity for the caller
+    //     to surface as a fingerprint for user verification.
     std::array<uint8_t, 32> s_id_pub_arr{};
     std::memcpy(s_id_pub_arr.data(), s_hello.id_pub, 32);
-    if (s_id_pub_arr != peer_identity_pubkey) {
+    if (tofu_mode) {
+        if (learned_peer_pub != nullptr) {
+            *learned_peer_pub = s_id_pub_arr;
+        }
+        LOGI("TOFU: learned server identity, fingerprint=%s",
+             crossscale::fingerprint(s_id_pub_arr).c_str());
+    } else if (s_id_pub_arr != peer_identity_pubkey) {
         error_msg = "server identity mismatch (possible MITM)";
         return std::nullopt;
     }
@@ -1043,7 +1054,7 @@ Java_com_crossscale_native_NCNNEngine_nativeRelease(
     LOGI("Engine released");
 }
 
-JNIEXPORT jboolean JNICALL
+JNIEXPORT jstring JNICALL
 Java_com_crossscale_native_NativeWorker_nativeRequestConnection(
     JNIEnv* env,
     jobject thiz,
@@ -1055,40 +1066,49 @@ Java_com_crossscale_native_NativeWorker_nativeRequestConnection(
     (void)thiz;
     clear_jni_last_error();
 
-    if (host == nullptr || peer_pubkey_b64 == nullptr) {
-        set_jni_last_error("requestConnection parameters are incomplete");
-        return JNI_FALSE;
+    if (host == nullptr) {
+        set_jni_last_error("requestConnection host is null");
+        return nullptr;
     }
     if (port <= 0 || port > std::numeric_limits<uint16_t>::max()) {
         set_jni_last_error("requestConnection port is invalid");
-        return JNI_FALSE;
+        return nullptr;
     }
 
     const char* host_chars = env->GetStringUTFChars(host, nullptr);
-    const char* peer_pk_chars = env->GetStringUTFChars(peer_pubkey_b64, nullptr);
-    if (host_chars == nullptr || peer_pk_chars == nullptr) {
-        if (host_chars != nullptr) env->ReleaseStringUTFChars(host, host_chars);
-        if (peer_pk_chars != nullptr) env->ReleaseStringUTFChars(peer_pubkey_b64, peer_pk_chars);
-        set_jni_last_error("Failed to read requestConnection strings from Java");
-        return JNI_FALSE;
+    if (host_chars == nullptr) {
+        set_jni_last_error("Failed to read requestConnection host from Java");
+        return nullptr;
     }
-
     const std::string host_str(host_chars);
-    const std::string peer_pubkey_b64_str(peer_pk_chars);
     env->ReleaseStringUTFChars(host, host_chars);
-    env->ReleaseStringUTFChars(peer_pubkey_b64, peer_pk_chars);
 
-    // Decode peer identity pubkey (base64 from mDNS TXT or QR).
-    auto peer_pk_bytes = crossscale::base64_decode(peer_pubkey_b64_str);
-    if (!peer_pk_bytes || peer_pk_bytes->size() != 32) {
-        set_jni_last_error("invalid peer identity pubkey (expected 32-byte base64)");
-        return JNI_FALSE;
+    // peer_pubkey_b64 may be null/empty (manual connect by IP+port → TOFU mode,
+    // server identity learned during handshake) or a 32-byte base64 (mDNS/QR →
+    // strict MITM check).
+    std::string peer_pubkey_b64_str;
+    if (peer_pubkey_b64 != nullptr) {
+        const char* peer_pk_chars = env->GetStringUTFChars(peer_pubkey_b64, nullptr);
+        if (peer_pk_chars != nullptr) {
+            peer_pubkey_b64_str.assign(peer_pk_chars);
+            env->ReleaseStringUTFChars(peer_pubkey_b64, peer_pk_chars);
+        }
     }
+    const bool tofu_mode = peer_pubkey_b64_str.empty();
+
     std::array<uint8_t, 32> peer_pk{};
-    std::memcpy(peer_pk.data(), peer_pk_bytes->data(), 32);
+    std::array<uint8_t, 32> learned_peer_pub{};
+    if (!tofu_mode) {
+        auto peer_pk_bytes = crossscale::base64_decode(peer_pubkey_b64_str);
+        if (!peer_pk_bytes || peer_pk_bytes->size() != 32) {
+            set_jni_last_error("invalid peer identity pubkey (expected 32-byte base64)");
+            return nullptr;
+        }
+        std::memcpy(peer_pk.data(), peer_pk_bytes->data(), 32);
+    }
     if (!g_identity.has_value()) {
         set_jni_last_error("identity not loaded; call loadIdentity first");
-        return JNI_FALSE;
+        return nullptr;
     }
 
     // 计算手机自身的指纹(从长期身份公钥派生), 供 PC 在批准提示中展示。
@@ -1098,14 +1118,17 @@ Java_com_crossscale_native_NativeWorker_nativeRequestConnection(
     const auto connect_result = socket.connect(host_str, static_cast<uint16_t>(port));
     if (!connect_result.has_value()) {
         set_jni_last_error("requestConnection connect failed: " + connect_result.error().message);
-        return JNI_FALSE;
+        return nullptr;
     }
 
     std::string handshake_error;
-    auto session = run_client_handshake(socket, peer_pk, *g_identity, handshake_error);
+    auto session = run_client_handshake(
+        socket, peer_pk, *g_identity, handshake_error,
+        tofu_mode, &learned_peer_pub
+    );
     if (!session.has_value()) {
         set_jni_last_error("requestConnection handshake failed: " + handshake_error);
-        return JNI_FALSE;
+        return nullptr;
     }
 
     std::string pairing_error;
@@ -1121,12 +1144,21 @@ Java_com_crossscale_native_NativeWorker_nativeRequestConnection(
         set_jni_last_error("requestConnection pairing failed: " + pairing_error);
         LOGW("Pairing rejected for %s:%d — %s",
              host_str.c_str(), port, pairing_error.c_str());
-        return JNI_FALSE;
+        return nullptr;
     }
 
-    LOGI("Pairing approved for %s:%d (stream_encrypted=%d)",
-         host_str.c_str(), port, session->stream_plaintext() ? 0 : 1);
-    return JNI_TRUE;
+    // Resolve the server identity to return to Kotlin. In strict mode it's the
+    // pre-known key; in TOFU mode it's the key learned during this handshake.
+    const std::string result_pubkey_b64 = tofu_mode
+        ? crossscale::base64_encode(learned_peer_pub.data(), learned_peer_pub.size())
+        : peer_pubkey_b64_str;
+    const auto& result_pubkey_arr = tofu_mode ? learned_peer_pub : peer_pk;
+
+    LOGI("Pairing approved for %s:%d (stream_encrypted=%d, tofu=%d, fp=%s)",
+         host_str.c_str(), port, session->stream_plaintext() ? 0 : 1,
+         tofu_mode ? 1 : 0,
+         crossscale::fingerprint(result_pubkey_arr).c_str());
+    return env->NewStringUTF(result_pubkey_b64.c_str());
 }
 
 JNIEXPORT jlong JNICALL

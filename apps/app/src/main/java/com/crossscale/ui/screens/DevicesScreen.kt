@@ -21,6 +21,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import com.crossscale.ui.components.ConnectionDialog
 import com.crossscale.ui.components.DeviceCard
+import com.crossscale.ui.components.FingerprintConfirmDialog
 import com.crossscale.ui.scanner.QRScannerScreen
 import com.crossscale.ui.theme.BorderlessTokens
 import com.crossscale.viewmodel.DeviceUiState
@@ -32,9 +33,11 @@ fun DevicesScreen(
     onConnectDevice: (String) -> Unit,
     onDisconnectDevice: (String) -> Unit,
     onShowManualConnectDialog: (Boolean) -> Unit,
-    onManualConnect: (String, String, String) -> Unit,
+    onManualConnect: (String, String) -> Unit,
     onConnectByQr: (String) -> Unit,
-    onClearConnectionError: () -> Unit
+    onClearConnectionError: () -> Unit,
+    onConfirmFingerprint: () -> Unit,
+    onCancelFingerprint: () -> Unit
 ) {
     val showQrScanner = remember { mutableStateOf(false) }
 
@@ -137,4 +140,14 @@ fun DevicesScreen(
         onDismiss = { onShowManualConnectDialog(false) },
         onConnect = onManualConnect
     )
+
+    state.pendingFingerprintConfirm?.let { pending ->
+        FingerprintConfirmDialog(
+            fingerprint = pending.fingerprint,
+            host = pending.host,
+            port = pending.port,
+            onConfirm = onConfirmFingerprint,
+            onDismiss = onCancelFingerprint
+        )
+    }
 }

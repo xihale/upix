@@ -71,12 +71,28 @@ auto Worker::connect(const std::string& host, uint16_t port,
         return std::unexpected(WorkerError{1, "Connection failed: " + result.error().message});
     }
 
+    // TOFU mode: an all-zero peer_identity_pubkey means the caller has no
+    // prior knowledge of the server's identity (manual connect by IP+port).
+    // handshake() will learn the server's key instead of verifying it; the
+    // caller must surface the fingerprint for user confirmation.
+    tofu_mode_ = true;
+    for (size_t i = 0; i < peer_identity_pubkey.size(); ++i) {
+        if (peer_identity_pubkey[i] != 0) {
+            tofu_mode_ = false;
+            break;
+        }
+    }
     peer_id_pub_ = peer_identity_pubkey;
     local_identity_ = &local_identity;
     running_ = true;
 
-    LOG_INFO("Worker", "Connected to " + host + ":" + std::to_string(port));
+    LOG_INFO("Worker", "Connected to " + host + ":" + std::to_string(port) +
+             (tofu_mode_ ? " (TOFU mode — server identity not pre-known)" : ""));
     return {};
+}
+
+auto Worker::learned_peer_pubkey_b64() const -> std::string {
+    return base64_encode(learned_peer_id_pub_.data(), learned_peer_id_pub_.size());
 }
 
 void Worker::set_recommended_weight(float weight) {
@@ -157,7 +173,14 @@ auto Worker::handshake(Engine& engine) -> expected<void, WorkerError> {
         std::memcpy(a.data(), s_hello.id_pub, 32);
         return a;
     }();
-    if (s_id_pub_arr != peer_id_pub_) {
+    if (tofu_mode_) {
+        // No prior knowledge of server identity — learn it now. The caller is
+        // responsible for surfacing the fingerprint for user verification and
+        // persisting the key so future connects use strict checking.
+        learned_peer_id_pub_ = s_id_pub_arr;
+        LOG_INFO("Worker", "TOFU: learned server identity, fingerprint=" +
+                 fingerprint(learned_peer_id_pub_));
+    } else if (s_id_pub_arr != peer_id_pub_) {
         return std::unexpected(WorkerError{104, "Server identity pubkey mismatch (possible MITM)"});
     }
 

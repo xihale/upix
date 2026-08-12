@@ -372,6 +372,8 @@ fun CrossScaleApp(container: AppContainer) {
             onManualConnect = deviceViewModel::connectManual,
             onConnectByQr = deviceViewModel::connectByQrPayload,
             onClearConnectionError = deviceViewModel::clearConnectionError,
+            onConfirmFingerprint = deviceViewModel::confirmFingerprintAndConnect,
+            onCancelFingerprint = deviceViewModel::cancelFingerprintConfirm,
             isStreamEncrypted = isStreamEncrypted,
             onStreamEncryptedChange = { enabled ->
                 context.getSharedPreferences(STREAM_PREFS_NAME, Context.MODE_PRIVATE)

@@ -35,12 +35,25 @@ public:
     // long-term Ed25519 identity pubkey (used to detect MITM during the
     // signature handshake) and this worker's own IdentityKey (signs the
     // transcript).
+    //
+    // TOFU mode: if peer_identity_pubkey is all-zero (no prior knowledge of the
+    // server's key, e.g. manual connect by IP+port only), the MITM equality
+    // check in handshake() is skipped and the server's learned identity is
+    // stored for retrieval via learned_peer_pubkey_b64(). The caller should
+    // surface the fingerprint to the user for visual verification, then
+    // persist the key so future connects use strict checking.
     auto connect(const std::string& host, uint16_t port,
                  const std::array<uint8_t, 32>& peer_identity_pubkey,
                  IdentityKey& local_identity)
         -> expected<void, WorkerError>;
 
     auto handshake(Engine& engine) -> expected<void, WorkerError>;
+
+    // True when connect() was called with an all-zero peer_identity_pubkey.
+    // In that mode handshake() learns the server's key instead of verifying
+    // it; learned_peer_pubkey_b64() returns the acquired key (base64).
+    bool tofu_mode() const { return tofu_mode_; }
+    auto learned_peer_pubkey_b64() const -> std::string;
 
     void disconnect();
     bool is_connected() const;
@@ -112,6 +125,12 @@ private:
     IdentityKey* local_identity_ = nullptr;
     std::array<uint8_t, 32> peer_id_pub_{};
     bool peer_trusted_ = false;
+
+    // TOFU mode: when true, handshake() learns the server identity instead of
+    // verifying it against peer_id_pub_. Set by connect() when the caller
+    // supplies an all-zero peer_identity_pubkey (manual connect by IP only).
+    bool tofu_mode_ = false;
+    std::array<uint8_t, 32> learned_peer_id_pub_{};
 
     float recommended_weight_override_ = 0.0f;
     size_t queue_depth_override_ = 0;

@@ -26,21 +26,26 @@ class CoordinatorClient(
     private var connectedEndpoint: RemoteEndpoint? = null
 
     fun connect(host: String, port: Int, peerPubKeyB64: String): Boolean {
-        return connectInternal(host, port, peerPubKeyB64, modelsDirectory.absolutePath)
+        // Legacy entry retained for compatibility — current callers go through
+        // requestConnection() (pairing flow). Both paths share connectInternal.
+        return connectInternal(host, port, peerPubKeyB64, modelsDirectory.absolutePath) != null
     }
 
     /**
      * 新连接流程: ECDH 握手 + CONNECT_REQUEST/RESPONSE 配对(无图像传输)。
      * PC 侧对可信 peer 自动批准, 首次 peer 阻塞在 stdin [y/n] 提示。
-     * 返回 true 表示 PC 批准(approved=1); false 表示拒绝或握手失败。
-     * 成功后保留 worker 以便后续图像提交复用同一会话信任。
+     *
+     * peerPubKeyB64 为空时走 TOFU: 握手期间学到 PC 公钥。成功返回学到的公钥
+     * (base64), 由调用方持久化并展示指纹供用户核对; 失败返回 null。
+     * 非空时严格 MITM 校验, 成功返回传入公钥。后续图像处理会用返回的公钥
+     * 做严格校验, 所以即便 TOFU 首连也必须把它写回 endpoint。
      */
     fun requestConnection(
         host: String,
         port: Int,
         peerPubKeyB64: String,
         wantsEncryptedStream: Boolean
-    ): Boolean {
+    ): String? {
         return connectInternal(host, port, peerPubKeyB64, wantsEncryptedStream = wantsEncryptedStream)
     }
 
@@ -50,12 +55,12 @@ class CoordinatorClient(
         peerPubKeyB64: String,
         modelsDirectory: String = this.modelsDirectory.absolutePath,
         wantsEncryptedStream: Boolean = false
-    ): Boolean {
+    ): String? {
         val normalizedHost = host.trim()
         val normalizedPeerPubKeyB64 = peerPubKeyB64.trim()
-        if (normalizedHost.isBlank() || port <= 0 || normalizedPeerPubKeyB64.isBlank()) {
+        if (normalizedHost.isBlank() || port <= 0) {
             logRepository.error("CoordinatorClient", "Invalid connection params")
-            return false
+            return null
         }
 
         val previousEndpoint = connectedEndpoint
@@ -68,11 +73,11 @@ class CoordinatorClient(
 
         if (!this.modelsDirectory.exists() && !this.modelsDirectory.mkdirs()) {
             logRepository.error("CoordinatorClient", "Failed to create models directory: ${this.modelsDirectory.absolutePath}")
-            return false
+            return null
         }
 
         val activeWorker = worker ?: NativeWorker().also { worker = it }
-        val connected = try {
+        val learnedPubKey = try {
             activeWorker.requestConnection(
                 host = normalizedHost,
                 port = port,
@@ -81,17 +86,19 @@ class CoordinatorClient(
             )
         } catch (e: UnsatisfiedLinkError) {
             logRepository.error("CoordinatorClient", "Native bridge unavailable: ${e.message}")
-            false
+            null
         } catch (e: Exception) {
             logRepository.error("CoordinatorClient", "Worker connect failed: ${e.message}")
-            false
+            null
         }
 
-        if (connected) {
+        if (learnedPubKey != null) {
+            // Use the (possibly learned) key for the endpoint so subsequent image
+            // processing handshakes can do strict MITM verification against it.
             connectedEndpoint = RemoteEndpoint(
                 host = normalizedHost,
                 port = port,
-                peerPubKeyB64 = normalizedPeerPubKeyB64,
+                peerPubKeyB64 = learnedPubKey,
                 streamEncrypted = wantsEncryptedStream
             )
             logRepository.info("CoordinatorClient", "Connected to $normalizedHost:$port")
@@ -112,7 +119,7 @@ class CoordinatorClient(
             }
             worker = null
         }
-        return connected
+        return learnedPubKey
     }
 
     fun isConnected(): Boolean {

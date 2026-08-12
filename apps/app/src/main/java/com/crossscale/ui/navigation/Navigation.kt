@@ -67,9 +67,11 @@ fun CrossScaleNavigation(
     onConnectDevice: (String) -> Unit,
     onDisconnectDevice: (String) -> Unit,
     onShowManualConnectDialog: (Boolean) -> Unit,
-    onManualConnect: (String, String, String) -> Unit,
+    onManualConnect: (String, String) -> Unit,
     onConnectByQr: (String) -> Unit,
     onClearConnectionError: () -> Unit,
+    onConfirmFingerprint: () -> Unit,
+    onCancelFingerprint: () -> Unit,
     onStreamEncryptedChange: (Boolean) -> Unit,
     isStreamEncrypted: Boolean,
     onClearLogs: () -> Unit,
@@ -127,7 +129,9 @@ fun CrossScaleNavigation(
                     onShowManualConnectDialog = onShowManualConnectDialog,
                     onManualConnect = onManualConnect,
                     onConnectByQr = onConnectByQr,
-                    onClearConnectionError = onClearConnectionError
+                    onClearConnectionError = onClearConnectionError,
+                    onConfirmFingerprint = onConfirmFingerprint,
+                    onCancelFingerprint = onCancelFingerprint
                 )
             }
         }

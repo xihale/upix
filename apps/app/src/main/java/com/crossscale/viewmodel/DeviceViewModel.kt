@@ -25,6 +25,14 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.security.MessageDigest
+
+data class PendingFingerprintConfirm(
+    val host: String,
+    val port: Int,
+    val learnedPubKeyB64: String,
+    val fingerprint: String
+)
 
 data class DeviceUiState(
     val devices: List<DeviceProfile> = emptyList(),
@@ -32,7 +40,8 @@ data class DeviceUiState(
     val showManualConnectDialog: Boolean = false,
     val manualConnectHost: String = "",
     val manualConnectPort: String = "9527",
-    val connectionError: String? = null
+    val connectionError: String? = null,
+    val pendingFingerprintConfirm: PendingFingerprintConfirm? = null
 )
 
 class DeviceViewModel(
@@ -48,6 +57,7 @@ class DeviceViewModel(
     private val _manualConnectHost = MutableStateFlow("")
     private val _manualConnectPort = MutableStateFlow("9527")
     private val _connectionError = MutableStateFlow<String?>(null)
+    private val _pendingFingerprintConfirm = MutableStateFlow<PendingFingerprintConfirm?>(null)
     private var discoveryJob: Job? = null
     private val autoConnectingTargets = mutableSetOf<String>()
 
@@ -57,7 +67,8 @@ class DeviceViewModel(
         _showManualConnectDialog,
         _manualConnectHost,
         _manualConnectPort,
-        _connectionError
+        _connectionError,
+        _pendingFingerprintConfirm
     ) { values ->
         @Suppress("UNCHECKED_CAST")
         DeviceUiState(
@@ -66,7 +77,8 @@ class DeviceViewModel(
             showManualConnectDialog = values[2] as Boolean,
             manualConnectHost = values[3] as String,
             manualConnectPort = values[4] as String,
-            connectionError = values[5] as String?
+            connectionError = values[5] as String?,
+            pendingFingerprintConfirm = values[6] as PendingFingerprintConfirm?
         )
     }.stateIn(
         scope = viewModelScope,
@@ -136,8 +148,8 @@ class DeviceViewModel(
         viewModelScope.launch {
             val wantsEncrypted = isStreamEncryptionEnabled()
             deviceRepository.markConnecting("${invite.host}:${invite.port}")
-            val connected = connectToCoordinator(invite.host, invite.port, invite.identityPubKey, wantsEncrypted)
-            if (connected) {
+            val learned = connectToCoordinator(invite.host, invite.port, invite.identityPubKey, wantsEncrypted)
+            if (learned != null) {
                 pairingRepository.saveTrustedPC(
                     invite.host, invite.port,
                     TrustedPC(invite.identityPubKey, invite.fingerprint ?: "")
@@ -153,31 +165,85 @@ class DeviceViewModel(
         }
     }
 
-    fun connectManual(host: String, portText: String, peerPubKeyB64: String) {
+    fun connectManual(host: String, portText: String) {
         val port = portText.toIntOrNull()
         if (host.isBlank() || port == null) {
             logRepository.error("DeviceViewModel", "Invalid manual address: $host:$portText")
             return
         }
         val normalizedHost = host.trim()
-        val normalizedPeerPubKey = peerPubKeyB64.trim()
         val wantsEncrypted = isStreamEncryptionEnabled()
         viewModelScope.launch {
             deviceRepository.markConnecting("$normalizedHost:$port")
-            val connected = connectToCoordinator(normalizedHost, port, normalizedPeerPubKey, wantsEncrypted)
-            if (connected) {
-                pairingRepository.saveTrustedPC(
-                    normalizedHost, port,
-                    TrustedPC(normalizedPeerPubKey, "")
-                )
-                deviceRepository.addManualDevice(
-                    normalizedHost, port, normalizedPeerPubKey, null, wantsEncrypted
-                )
-            } else {
+            // 已信任的 PC: 直接用其公钥走严格校验, 不再弹指纹确认。
+            // 首次连接: 传空串走 TOFU, 学到 PC 公钥后弹指纹确认。
+            val trusted = pairingRepository.getTrustedPC(normalizedHost, port)
+            val knownPubKey = trusted?.identityPubKey.orEmpty()
+            val learnedPubKey = connectToCoordinator(normalizedHost, port, knownPubKey, wantsEncrypted)
+            if (learnedPubKey == null) {
                 deviceRepository.markFailed("$normalizedHost:$port")
-                _connectionError.value = "连接失败，请检查 PC 是否在线"
-                logRepository.error("DeviceViewModel", "Coordinator connect failed: $normalizedHost:$port")
+                _connectionError.value = "连接失败，请检查 PC 是否在线或是否已批准"
+                logRepository.error("DeviceViewModel", "Manual connect failed: $normalizedHost:$port")
+                return@launch
             }
+            if (trusted != null) {
+                // 已信任路径: 严格校验已通过, 直接连上。
+                deviceRepository.addManualDevice(
+                    normalizedHost, port, learnedPubKey, trusted.fingerprint.ifBlank { null }, wantsEncrypted
+                )
+                logRepository.info("DeviceViewModel", "Reconnected trusted PC $normalizedHost:$port")
+                return@launch
+            }
+            // 首次 TOFU: 学到了 PC 公钥, 弹指纹确认让用户核对。
+            val fingerprint = computeFingerprint(learnedPubKey)
+            _pendingFingerprintConfirm.value = PendingFingerprintConfirm(
+                host = normalizedHost,
+                port = port,
+                learnedPubKeyB64 = learnedPubKey,
+                fingerprint = fingerprint
+            )
+            logRepository.info(
+                "DeviceViewModel",
+                "TOFU: learned PC identity at $normalizedHost:$port, fp=$fingerprint — awaiting user confirm"
+            )
+        }
+    }
+
+    /**
+     * 用户在指纹确认弹窗点了 "确认"。持久化信任并登记设备。
+     * 连接(PC 批准 + 握手)已在 connectManual 里完成, 这里只补持久化与设备登记。
+     */
+    fun confirmFingerprintAndConnect() {
+        val pending = _pendingFingerprintConfirm.value
+        if (pending == null) {
+            logRepository.warning("DeviceViewModel", "confirmFingerprint called with no pending request")
+            return
+        }
+        _pendingFingerprintConfirm.value = null
+        val wantsEncrypted = isStreamEncryptionEnabled()
+        pairingRepository.saveTrustedPC(
+            pending.host, pending.port,
+            TrustedPC(pending.learnedPubKeyB64, pending.fingerprint)
+        )
+        deviceRepository.addManualDevice(
+            pending.host, pending.port, pending.learnedPubKeyB64, pending.fingerprint, wantsEncrypted
+        )
+        logRepository.info(
+            "DeviceViewModel",
+            "Fingerprint confirmed, trusted PC saved: ${pending.host}:${pending.port} (fp=${pending.fingerprint})"
+        )
+    }
+
+    /**
+     * 用户取消了指纹确认。断开底层连接(握手已完成但用户不信任), 不持久化。
+     */
+    fun cancelFingerprintConfirm() {
+        val pending = _pendingFingerprintConfirm.value ?: return
+        _pendingFingerprintConfirm.value = null
+        viewModelScope.launch {
+            disconnectFromCoordinatorIfMatches(pending.host, pending.port)
+            deviceRepository.markFailed("${pending.host}:${pending.port}")
+            logRepository.info("DeviceViewModel", "Fingerprint confirm cancelled, dropped ${pending.host}:${pending.port}")
         }
     }
 
@@ -213,8 +279,8 @@ class DeviceViewModel(
             // CONNECT_REQUEST round-trip: PC shows approval prompt for first-time
             // peers, auto-approves trusted ones. Phone shows "等待 PC 批准..." while
             // CONNECTING. On denial we surface an error instead of asking the user.
-            val approved = connectToCoordinator(target.ipAddress, target.port, peerPubKey, wantsEncrypted)
-            if (approved) {
+            val learned = connectToCoordinator(target.ipAddress, target.port, peerPubKey, wantsEncrypted)
+            if (learned != null) {
                 // Persist trust so future connects skip the PC prompt.
                 if (trusted == null ||
                     (target.discoveredPubKey.isNullOrBlank() &&
@@ -271,6 +337,25 @@ class DeviceViewModel(
             .getBoolean(PREF_STREAM_ENCRYPTED, false)
     }
 
+    /**
+     * 指纹 = SHA256(pubkey) 前 8 字节的大写 hex (16 字符), 与 C++ 侧
+     * crossscale::fingerprint() (identity.cpp:126) 完全一致, 供用户跨设备肉眼核对。
+     */
+    private fun computeFingerprint(pubKeyB64: String): String {
+        return try {
+            val raw = android.util.Base64.decode(pubKeyB64, android.util.Base64.DEFAULT)
+            val digest = MessageDigest.getInstance("SHA-256").digest(raw)
+            buildString {
+                for (i in 0 until 8) {
+                    append(String.format("%02X", digest[i]))
+                }
+            }
+        } catch (e: Exception) {
+            logRepository.error("DeviceViewModel", "computeFingerprint failed: ${e.message}")
+            "????????????????"
+        }
+    }
+
     override fun onCleared() {
         super.onCleared()
         mdnsDiscovery.stop()
@@ -304,10 +389,10 @@ class DeviceViewModel(
                     return@launch
                 }
                 deviceRepository.markConnecting(deviceId)
-                val connected = connectToCoordinator(
+                val learned = connectToCoordinator(
                     device.ipAddress, device.port, trusted.identityPubKey, isStreamEncryptionEnabled()
                 )
-                if (connected) {
+                if (learned != null) {
                     deviceRepository.addManualDevice(
                         device.ipAddress, device.port, trusted.identityPubKey, trusted.fingerprint
                     )
@@ -326,10 +411,11 @@ class DeviceViewModel(
         port: Int,
         peerPubKeyB64: String,
         wantsEncryptedStream: Boolean = false
-    ): Boolean {
+    ): String? {
         return withContext(Dispatchers.IO) {
             // 新流程: handshake + CONNECT_REQUEST/RESPONSE pairing. PC-side
             // approval (auto for trusted peers, prompt for first-timers).
+            // peerPubKeyB64 空时走 TOFU, 返回学到的公钥; 非空严格校验返回原值。
             coordinatorClient.requestConnection(host, port, peerPubKeyB64, wantsEncryptedStream)
         }
     }

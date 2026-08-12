@@ -21,7 +21,7 @@ fun ConnectionDialog(
     initialHost: String,
     initialPort: String,
     onDismiss: () -> Unit,
-    onConnect: (String, String, String) -> Unit
+    onConnect: (String, String) -> Unit
 ) {
     if (!show) {
         return
@@ -29,13 +29,11 @@ fun ConnectionDialog(
 
     var host by remember { mutableStateOf(initialHost) }
     var port by remember { mutableStateOf(initialPort) }
-    var peerPubKey by remember { mutableStateOf("") }
 
     LaunchedEffect(show, initialHost, initialPort) {
         if (show) {
             host = initialHost
             port = initialPort
-            peerPubKey = ""
         }
     }
 
@@ -48,26 +46,24 @@ fun ConnectionDialog(
                     value = host,
                     onValueChange = { host = it },
                     singleLine = true,
-                    label = { Text("Host") }
+                    label = { Text("PC IP 地址") }
                 )
                 OutlinedTextField(
                     value = port,
                     onValueChange = { port = it },
                     singleLine = true,
-                    label = { Text("Port") }
+                    label = { Text("端口") }
                 )
-                OutlinedTextField(
-                    value = peerPubKey,
-                    onValueChange = { peerPubKey = it },
-                    singleLine = true,
-                    label = { Text("PC 公钥 (base64)") }
+                Text(
+                    "首次连接会在握手后展示 PC 指纹供你核对。",
+                    style = androidx.compose.material3.MaterialTheme.typography.bodySmall
                 )
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    onConnect(host, port, peerPubKey)
+                    onConnect(host, port)
                     onDismiss()
                 }
             ) {
