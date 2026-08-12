@@ -12,7 +12,6 @@ target("crossscale-cli")
         "src/cmd_benchmark.cpp",
         "src/cmd_perf.cpp",
         "src/cmd_server.cpp",
-        "src/cmd_worker.cpp",
         "src/cmd_serve.cpp",
         "src/cmd_process.cpp",
         "src/process_batch.cpp",

@@ -133,28 +133,12 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     // ── server ──────────────────────────────────────────────────────────────
     static args::Server server_args;
     auto* server = app->add_subcommand("server", "Start or query the coordination server");
-    auto* sstart = server->add_subcommand("start", "Start the coordinator + mDNS broadcast");
+    auto* sstart = server->add_subcommand("start", "Start the coordinator (accepts one phone, upscales submitted images)");
     sstart->add_option("-p", server_args.port, "Port")->capture_default_str();
     sstart->callback([] { g_exit_code = cmd_server(server_args); server_args.subcommand = "start"; });
     auto* sinfo = server->add_subcommand("info", "Print the connection card (IP/QR/key)");
     sinfo->add_option("-p", server_args.port, "Port")->capture_default_str();
     sinfo->callback([] { g_exit_code = cmd_server(server_args); server_args.subcommand = "info"; });
-
-    // ── worker ──────────────────────────────────────────────────────────────
-    static args::Worker worker_args;
-    auto* worker = app->add_subcommand("worker", "Connect as a worker to a coordinator");
-    auto* wconnect = worker->add_subcommand("connect", "Connect to <host>:<port>");
-    wconnect->add_option("host_port", worker_args.host_port, "<host>:<port>")->required();
-    wconnect->add_option("--peer-pubkey", worker_args.peer_pubkey,
-                         "Coordinator identity pubkey (base64, from mDNS or QR)")
-        ->required();
-    wconnect->add_option("--recommended-weight", worker_args.recommended_weight, "Recommended weight");
-    wconnect->add_option("--queue-depth", worker_args.queue_depth, "Queue depth (1-1024)")
-        ->check(CLI::Range((size_t)1, (size_t)1024));
-    wconnect->add_option("--recommended-tile-size", worker_args.recommended_tile_size,
-                         "Recommended tile size (0-8192)")
-        ->check(CLI::Range(0, 8192));
-    wconnect->callback([] { g_exit_code = cmd_worker(worker_args); });
 
     // ── serve ───────────────────────────────────────────────────────────────
     // Flags are shared by start/stop. We register them on each nested

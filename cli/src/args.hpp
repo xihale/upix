@@ -65,15 +65,6 @@ struct Server {
     uint16_t port = 9527;
 };
 
-// `worker connect <host>:<port>`.
-struct Worker {
-    std::string host_port;          // positional: <host>:<port>
-    std::string peer_pubkey;        // base64 coordinator identity pubkey (required)
-    float recommended_weight = 0.0f;
-    size_t queue_depth = 0;
-    int recommended_tile_size = 0;
-};
-
 // `serve {start, stop}`.
 struct Serve {
     std::string subcommand;         // start / stop (default start)

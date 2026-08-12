@@ -1,4 +1,5 @@
 #include "coordinator.hpp"
+#include "core/tile_types.hpp"
 #include "utils/logger.hpp"
 #include "utils/network.hpp"
 #include "utils/crypto.hpp"
@@ -8,11 +9,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cerrno>
-#include <fstream>
 #include <optional>
-#include <numeric>
-#include <deque>
-#include <unordered_set>
 
 namespace crossscale {
 
@@ -129,12 +126,7 @@ void Coordinator::stop() {
         }
         client_threads_.clear();
     }
-    
-    {
-        std::lock_guard<std::mutex> lock(workers_mutex_);
-        workers_.clear();
-    }
-    
+
     if (server_) {
         server_.reset();
     }
@@ -146,16 +138,101 @@ bool Coordinator::is_running() const {
     return running_;
 }
 
-auto Coordinator::get_connected_devices() -> std::vector<DeviceProfile> {
-    return scheduler_.get_all_devices();
-}
-
-auto Coordinator::device_count() const -> size_t {
-    return scheduler_.device_count();
-}
-
 void Coordinator::cancel_current_task() {
     task_cancelled_ = true;
+}
+
+// Lazily create + initialize the local engine (GPU → CPU fallback) and ensure
+// `model_name` is loaded. Idempotent. Mirrors share/core/serve/daemon.cpp.
+bool Coordinator::ensure_engine_ready(const std::string& model_name) {
+    std::lock_guard<std::mutex> lk(engine_mutex_);
+
+    if (!engine_initialized_) {
+        engine_ = create_ncnn_engine();
+        auto init_res = engine_->initialize(DeviceType::GPU_VULKAN);
+        if (!init_res) {
+            LOG_WARNING("Coordinator", "GPU unavailable, falling back to CPU: " + init_res.error().message);
+            auto cpu_res = engine_->initialize(DeviceType::CPU);
+            if (!cpu_res) {
+                LOG_ERROR("Coordinator", "engine initialize failed: " + cpu_res.error().message);
+                return false;
+            }
+        }
+        tile_processor_ = std::make_unique<TileProcessor>();
+        engine_initialized_ = true;
+        LOG_INFO("Coordinator", "Local engine ready on " +
+                 std::string(engine_->current_device() == DeviceType::GPU_VULKAN ? "GPU" : "CPU"));
+    }
+
+    // Empty model name = "use whatever is loaded" (caller didn't specify).
+    if (model_name.empty() || model_name == loaded_model_name_) {
+        return true;
+    }
+    auto info = model_manager_.get_model(model_name);
+    if (!info) {
+        LOG_ERROR("Coordinator", "unknown model requested: " + model_name);
+        return false;
+    }
+    auto load_res = engine_->load_model(info->param_path.string(), info->bin_path.string());
+    if (!load_res) {
+        LOG_ERROR("Coordinator", "model load failed: " + load_res.error().message);
+        return false;
+    }
+    loaded_model_name_ = model_name;
+    LOG_INFO("Coordinator", "switched model to " + model_name);
+    return true;
+}
+
+// Upscale a submitted image on the PC's own engine. image_data is raw u8 pixels.
+// Replaces the old multi-worker distribute_task — no tile dispatch, no workers.
+auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
+                                  int width, int height, int channels,
+                                  const std::string& model_name,
+                                  const ProcessingConfig& config)
+    -> expected<std::vector<uint8_t>, CoordinatorError> {
+
+    if (!ensure_engine_ready(model_name)) {
+        return std::unexpected(CoordinatorError{2, "Engine/model not ready: " + model_name});
+    }
+
+    // Inference is serialized under engine_mutex_ (Vulkan is not concurrency-safe).
+    std::lock_guard<std::mutex> lk(engine_mutex_);
+    const int scale = engine_->get_scale_factor();
+    const int out_w = width * scale;
+    const int out_h = height * scale;
+    const size_t out_bytes_n = static_cast<size_t>(out_w) * out_h * channels;
+    if (out_w <= 0 || out_h <= 0 || out_bytes_n > MAX_NETWORK_PAYLOAD) {
+        return std::unexpected(CoordinatorError{3, "Invalid output dimensions"});
+    }
+
+    LOG_INFO("Coordinator", "Processing locally: " + std::to_string(width) + "x" +
+             std::to_string(height) + " model=" + (model_name.empty() ? loaded_model_name_ : model_name) +
+             " tile=" + std::to_string(config.tile_size));
+
+    std::vector<uint8_t> out_bytes(out_bytes_n);
+
+    TileConfig tc;
+    tc.tile_size = config.tile_size;
+    tc.overlap = config.tile_overlap;
+    tc.batch_size = 1;
+
+    task_cancelled_ = false;
+    auto res = tile_processor_->process_image_u8(
+        image_data.data(), out_bytes.data(),
+        width, height, channels,
+        *engine_, tc,
+        [this](const ProcessingProgress& p) {
+            if (on_task_progress_) {
+                on_task_progress_(p.percentage() / 100.0f);
+            }
+        },
+        task_cancelled_,
+        /*enable_alpha_bicubic=*/true);
+
+    if (!res) {
+        return std::unexpected(CoordinatorError{4, res.error().message});
+    }
+    return out_bytes;
 }
 
 void Coordinator::accept_loop() {
@@ -392,38 +469,6 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
     conn.socket = std::move(socket);
     conn.device_id = crypto::generate_uuid().substr(0, 35);
 
-    // Helper: read N plaintext bytes off the socket (used for the legacy
-    // unauthenticated CLIENT_SUBMIT path only).
-    auto read_payload = [&](uint32_t payload_length) -> std::optional<std::vector<uint8_t>> {
-        if (payload_length > MAX_NETWORK_PAYLOAD) {
-            LOG_ERROR("Coordinator", "Payload too large: " + std::to_string(payload_length) + " bytes");
-            return std::nullopt;
-        }
-        std::vector<uint8_t> payload(payload_length);
-        if (payload_length == 0) {
-            return payload;
-        }
-        auto payload_result = conn.socket->receive_all(payload.data(), payload.size());
-        if (!payload_result.has_value()) {
-            return std::nullopt;
-        }
-        return payload;
-    };
-
-    auto parse_device_profile = [](const DeviceProfileMessage& msg, const std::string& fallback_device_id) {
-        DeviceProfile profile;
-        profile.device_id = fallback_device_id;
-        profile.device_name = std::string(msg.device_name);
-        profile.type = static_cast<DeviceType>(msg.device_type);
-        profile.tiles_per_second = std::max(msg.tiles_per_second, 1.0f);
-        profile.recommended_tile_size = static_cast<int>(msg.recommended_tile_size);
-        profile.max_batch_size = static_cast<size_t>(msg.max_batch_size);
-        profile.ip_address = std::string(msg.ip_address);
-        profile.port = msg.port;
-        profile.last_heartbeat = std::chrono::steady_clock::now();
-        return profile;
-    };
-
     // ── Branch on the first frame ────────────────────────────────────────────
     if (first_parsed->type == MessageType::MSG_KEY_HELLO) {
         // ── Encrypted worker handshake path ──
@@ -434,28 +479,15 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
             return;
         }
 
-        // Seed a fallback profile; overwritten by the worker's DEVICE_PROFILE.
-        conn.profile.device_id = conn.device_id;
-        conn.profile.device_name = "CLI-Worker";
-        conn.profile.type = DeviceType::CPU;
-        conn.profile.tiles_per_second = 1.0f;
-        conn.profile.recommended_tile_size = 256;
-        conn.profile.max_batch_size = 1;
-        conn.profile.ip_address = conn.socket->peer_address();
-        conn.profile.port = conn.socket->peer_port();
-        conn.profile.last_heartbeat = std::chrono::steady_clock::now();
-
-        // (Encrypted) second frame. The Mobile pairing flow sends
-        // MSG_CLIENT_CONNECT_REQUEST here first (request/allow gate), then a
-        // third frame carrying the role (DEVICE_PROFILE for workers,
-        // CLIENT_SUBMIT for one-shot image submitters). Legacy peers that skip
-        // the request are tolerated: a bare DEVICE_PROFILE/CLIENT_SUBMIT is
-        // treated as auto-approved (e.g. CLI workers on the same host).
+        // (Encrypted) second frame. The phone always opens the pairing gate
+        // first: MSG_CLIENT_CONNECT_REQUEST, then (once approved) a third frame
+        // carrying the MSG_CLIENT_SUBMIT with the image to upscale. A phone
+        // that skips the gate and submits bare is tolerated as auto-approved.
         conn.socket->set_timeout(5000);
         auto second_frame = recv_encrypted(conn);
         if (!second_frame) {
-            LOG_WARNING("Coordinator", "Worker " + conn.device_id +
-                " did not send DEVICE_PROFILE within timeout (engine benchmark too slow?)");
+            LOG_WARNING("Coordinator", "Peer " + conn.device_id +
+                " did not send CONNECT_REQUEST within timeout");
         } else {
             auto [frame_hdr, frame_payload] = std::move(*second_frame);
 
@@ -530,25 +562,20 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                 // Apply the negotiated stream mode for the rest of this conn.
                 conn.session.set_stream_plaintext(!stream_encrypted);
 
-                // Now read the role frame (third frame after the request).
+                // Now read the submit frame (third frame after the request):
+                // the phone sends MSG_CLIENT_SUBMIT with the image to upscale.
                 conn.socket->set_timeout(30000);
                 auto role_frame = recv_encrypted(conn);
                 if (!role_frame) {
                     LOG_WARNING("Coordinator", "Peer " + conn.device_id +
-                        " closed after CONNECT_RESPONSE without a role frame");
+                        " closed after CONNECT_RESPONSE without a CLIENT_SUBMIT");
                     return;
                 }
                 frame_hdr = std::move(role_frame->first);
                 frame_payload = std::move(role_frame->second);
             }
 
-            if (frame_hdr.type == MessageType::MSG_DEVICE_PROFILE) {
-                if (frame_payload.size() >= sizeof(DeviceProfileMessage)) {
-                    const DeviceProfileMessage* msg =
-                        reinterpret_cast<const DeviceProfileMessage*>(frame_payload.data());
-                    conn.profile = parse_device_profile(*msg, conn.device_id);
-                }
-            } else if (frame_hdr.type == MessageType::MSG_CLIENT_SUBMIT) {
+            if (frame_hdr.type == MessageType::MSG_CLIENT_SUBMIT) {
                 if (frame_payload.size() < sizeof(ClientTaskSubmit)) {
                     LOG_ERROR("Coordinator", "Authenticated client submit payload is invalid");
                     return;
@@ -599,13 +626,12 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                 config.tile_size = static_cast<int>(tile_size);
                 config.tile_overlap = static_cast<int>(tile_overlap);
 
-                auto process_result = distribute_task(
+                auto process_result = process_locally(
                     image_data,
                     static_cast<int>(img_width),
                     static_cast<int>(img_height),
                     static_cast<int>(channels),
                     model_name,
-                    2,
                     config
                 );
 
@@ -646,128 +672,8 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                 // Unknown second frame; already drained via recv_encrypted.
             }
         }
-
-        const std::string worker_id = conn.device_id;
-        {
-            std::lock_guard<std::mutex> lock(workers_mutex_);
-            scheduler_.register_device(conn.profile);
-            workers_[worker_id] = std::move(conn);
-            auto it = workers_.find(worker_id);
-            if (it != workers_.end()) {
-                send_model_list(it->second);
-            }
-        }
-
-        LOG_INFO("Coordinator", "Worker connected: " + worker_id);
-
-        if (on_device_connected_) {
-            std::optional<DeviceProfile> connected_profile;
-            {
-                std::lock_guard<std::mutex> lock(workers_mutex_);
-                auto it = workers_.find(worker_id);
-                if (it != workers_.end()) {
-                    connected_profile = it->second.profile;
-                }
-            }
-            if (connected_profile.has_value()) {
-                on_device_connected_(connected_profile.value());
-            }
-        }
     }
-    else if (first_parsed->type == MessageType::MSG_CLIENT_SUBMIT) {
-        // ── Legacy unauthenticated client submit (plaintext, one-shot) ──
-        // This path is intentionally NOT encrypted: it is a single request over
-        // a fresh TCP connection with no handshake, used by the local CLI client.
-        auto submit_payload = read_payload(first_parsed->payload_length);
-        if (!submit_payload.has_value() || submit_payload->size() < sizeof(ClientTaskSubmit)) {
-            LOG_ERROR("Coordinator", "Client submit payload is invalid");
-            return;
-        }
-
-        const ClientTaskSubmit* task = reinterpret_cast<const ClientTaskSubmit*>(submit_payload->data());
-        uint32_t img_width = task->image_width;
-        uint32_t img_height = task->image_height;
-        uint8_t channels = task->channels;
-        std::string model_name(task->model_name);
-        uint32_t tile_size = task->tile_size;
-        uint32_t tile_overlap = task->tile_overlap;
-        uint32_t image_data_len = task->image_data_length;
-
-        if (image_data_len > MAX_NETWORK_PAYLOAD) {
-            LOG_ERROR("Coordinator", "Image data too large: " + std::to_string(image_data_len) + " bytes");
-            return;
-        }
-
-        std::vector<uint8_t> image_data(image_data_len);
-        auto image_receive = conn.socket->receive_all(image_data.data(), image_data_len);
-        if (!image_receive.has_value()) {
-            LOG_ERROR("Coordinator", "Failed to receive client image payload: " + image_receive.error().message);
-            return;
-        }
-
-        LOG_INFO("Coordinator", "Received client task: " +
-                 std::to_string(img_width) + "x" + std::to_string(img_height) +
-                 " model=" + model_name);
-
-        ProcessingConfig config;
-        config.tile_size = static_cast<int>(tile_size);
-        config.tile_overlap = static_cast<int>(tile_overlap);
-
-        auto result = distribute_task(
-            image_data,
-            static_cast<int>(img_width),
-            static_cast<int>(img_height),
-            static_cast<int>(channels),
-            model_name,
-            2,
-            config
-        );
-
-        ClientTaskResponse resp{};
-        if (result.has_value()) {
-            resp.success = 1;
-            resp.result_data_length = static_cast<uint32_t>(result->size());
-
-            MessageHeader resp_header{};
-            resp_header.type = MessageType::MSG_CLIENT_RESPONSE;
-            resp_header.payload_length = sizeof(resp);
-
-            auto header_data = Protocol::serialize(resp_header, &resp);
-            auto send_header_result = conn.socket->send_all(header_data.data(), header_data.size());
-            if (!send_header_result.has_value()) {
-                LOG_ERROR("Coordinator", "Failed to send client response header: " + send_header_result.error().message);
-                return;
-            }
-
-            auto send_result_data = conn.socket->send_all(result->data(), result->size());
-            if (!send_result_data.has_value()) {
-                LOG_ERROR("Coordinator", "Failed to send client result data: " + send_result_data.error().message);
-                return;
-            }
-
-            LOG_INFO("Coordinator", "Client task completed, sent " +
-                     std::to_string(result->size()) + " bytes");
-        } else {
-            resp.success = 0;
-            resp.result_data_length = 0;
-            std::strncpy(resp.error_message, result.error().message.c_str(),
-                         sizeof(resp.error_message) - 1);
-
-            MessageHeader resp_header{};
-            resp_header.type = MessageType::MSG_CLIENT_RESPONSE;
-            resp_header.payload_length = sizeof(resp);
-
-            auto header_data = Protocol::serialize(resp_header, &resp);
-            auto send_header_result = conn.socket->send_all(header_data.data(), header_data.size());
-            if (!send_header_result.has_value()) {
-                LOG_ERROR("Coordinator", "Failed to send client failure response: " + send_header_result.error().message);
-                return;
-            }
-
-            LOG_ERROR("Coordinator", "Client task failed: " + result.error().message);
-        }
-    }
-    // Unknown first message → drop silently.
+    // Any other first message (no handshake, no recognized type) → drop silently.
 }
 
 } // namespace crossscale

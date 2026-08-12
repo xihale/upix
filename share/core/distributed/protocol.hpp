@@ -1,46 +1,37 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
-#include <chrono>
 #include <vector>
 
 namespace crossscale {
 
+// Wire protocol for the 1:1 phone↔PC model. The phone is a submitter (not a
+// compute worker): it handshakes, pairs, then sends CLIENT_SUBMIT frames
+// carrying an image; the PC upscales each one on its own engine and replies
+// with CLIENT_RESPONSE. The multi-worker dispatch messages (DEVICE_PROFILE,
+// MODEL_*, TASK_*, TILES_BATCH) have been removed along with mDNS discovery.
 enum class MessageType : uint16_t {
-    // Encrypted handshake: see worker.cpp / coordinator.cpp for the sequence.
-    // KEY_HELLO is plaintext (carries ephemeral + identity pubkeys + S→C sig);
-    // AUTH_PROOF and everything after it travel inside EncryptedSession.
+    // Encrypted handshake. KEY_HELLO is plaintext (carries ephemeral + identity
+    // pubkeys + S→C sig); AUTH_PROOF and everything after travel inside
+    // EncryptedSession.
     MSG_KEY_HELLO = 0x0007,
     MSG_AUTH_PROOF = 0x0008,
     MSG_AUTH_RESPONSE = 0x0004,
-    MSG_DISCONNECT = 0x0005,
-    MSG_HEARTBEAT = 0x0006,
 
-    MSG_DEVICE_PROFILE = 0x0100,
-
-    MSG_MODEL_LIST = 0x0200,
-    MSG_MODEL_REQUEST = 0x0201,
-    MSG_MODEL_DATA = 0x0202,
-
-    MSG_TASK_ASSIGNMENT = 0x0300,
-    MSG_TASK_ACCEPT = 0x0301,
-    MSG_TASK_PROGRESS = 0x0303,
-    MSG_TASK_RESULT = 0x0304,
-
-    MSG_TILES_BATCH = 0x0403,
-
+    // One-shot image submit (phone→PC, inside EncryptedSession after pairing).
     MSG_CLIENT_SUBMIT = 0x0500,
     MSG_CLIENT_RESPONSE = 0x0501,
 
-    // Pairing: Mobile→PC request after ECDH handshake; PC→PC reply (gated on
-    // interactive approval the first time, auto-approved once trusted).
-    // Sent inside EncryptedSession, before any CLIENT_SUBMIT.
+    // Pairing: phone→PC request immediately after the ECDH handshake; PC→phone
+    // reply (gated on interactive approval the first time, auto-approved once
+    // trusted). Sent inside EncryptedSession, before any CLIENT_SUBMIT.
     MSG_CLIENT_CONNECT_REQUEST = 0x0700,
     MSG_CLIENT_CONNECT_RESPONSE = 0x0701,
 
     // Local serve daemon (Unix domain socket). Separate range so the daemon's
-    // protocol can evolve independently of the distributed TCP protocol.
+    // protocol can evolve independently of the TCP protocol.
     MSG_SERVE_REQUEST = 0x0601,   // client→daemon: upscale request
     MSG_SERVE_RESPONSE = 0x0602,  // daemon→client: upscale result
 };
@@ -73,39 +64,8 @@ struct AuthResponse {
     uint8_t trusted;  // 0 = first-time (TOFU pending), 1 = already in TrustStore
 };
 
-struct DeviceProfileMessage {
-    char device_id[36];
-    char device_name[64];
-    uint8_t device_type;
-    float tiles_per_second;
-    uint32_t recommended_tile_size;
-    uint32_t max_batch_size;
-    char ip_address[46];
-    uint16_t port;
-};
-
-struct TaskAssignmentMessage {
-    char task_id[36];
-    char model_name[64];
-    uint32_t tile_count;
-};
-
-struct TileInfo {
-    uint32_t x, y;
-    uint32_t width, height;
-    uint32_t overlap;
-};
-
-struct ImageTileMessage {
-    char task_id[36];
-    uint32_t tile_index;
-    uint32_t tile_x, tile_y;
-    uint32_t width, height;
-    uint8_t channels;
-    uint8_t pixel_format;
-    uint32_t data_length;
-};
-
+// One-shot image submit (phone→PC). The raw u8 image pixels follow the struct
+// contiguously inside the same encrypted frame.
 struct ClientTaskSubmit {
     uint32_t image_width;
     uint32_t image_height;
@@ -122,19 +82,19 @@ struct ClientTaskResponse {
     uint32_t result_data_length;
 };
 
-// Pairing request: Mobile→PC immediately after the ECDH handshake succeeds.
+// Pairing request: phone→PC immediately after the ECDH handshake succeeds.
 // Carries the device's human-readable name, its own fingerprint (so the PC can
-// show "Xiaomi ... ABCD1234" in the approval prompt), and whether the Mobile
-// side has its data-stream encryption toggle on (the effective stream mode is
-// negotiated as min(pc, mobile) by the PC).
+// show "Xiaomi ... ABCD1234" in the approval prompt), and whether the phone has
+// its data-stream encryption toggle on (the effective stream mode is negotiated
+// as min(pc, phone) by the PC).
 struct ClientConnectRequest {
     char device_name[64];
     char fingerprint[17];          // 16 hex chars + NUL
-    uint8_t wants_encrypted_stream; // 1 = Mobile's toggle is ON
+    uint8_t wants_encrypted_stream; // 1 = phone's toggle is ON
 };
 
-// Pairing response: PC→Mobile.
-//   approved         0 = PC denied (Mobile must disconnect), 1 = allowed
+// Pairing response: PC→phone.
+//   approved         0 = PC denied (phone must disconnect), 1 = allowed
 //   trusted          0 = first-time (just approved this session), 1 = already
 //                    in TrustStore (auto-approved, no prompt shown on PC)
 //   stream_encrypted final negotiated data-stream mode (0 = plaintext, 1 = enc)
@@ -144,30 +104,10 @@ struct ClientConnectResponse {
     uint8_t stream_encrypted;
 };
 
-struct ModelInfoMessage {
-    char name[64];
-    uint32_t param_size;
-    uint32_t bin_size;
-    char hash[64];
-};
-
-struct ModelListMessage {
-    uint32_t model_count;
-};
-
-struct ModelDataMessage {
-    char model_name[64];
-    uint8_t file_type;
-    uint64_t file_offset;
-    uint32_t data_length;
-};
-
 // ── Local serve daemon messages ─────────────────────────────────────────────
 // The daemon holds a warm engine; clients send an image, receive the upscaled
 // result. On the wire: Protocol header + payload, where
 // payload = [Serve{Request,Response} struct][img_length bytes] contiguous.
-// All integers little-endian (host order on POSIX serve targets).
-
 struct ServeRequest {
     char model_name[64];     // empty = use daemon's current model; non-empty & different -> lazy reload
     int32_t tile_size;
@@ -192,13 +132,13 @@ public:
     static constexpr uint32_t MAGIC = 0x53534358;
     static constexpr uint8_t VERSION = 2;
     static constexpr size_t HEADER_SIZE = 15;
-    
-    static auto serialize(const MessageHeader& header, const void* payload) 
+
+    static auto serialize(const MessageHeader& header, const void* payload)
         -> std::vector<uint8_t>;
-    
+
     static auto parse_header(const uint8_t* data, size_t size)
         -> std::optional<MessageHeader>;
-    
+
     static auto compute_checksum(const void* data, size_t size) -> uint32_t;
 };
 

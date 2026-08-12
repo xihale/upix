@@ -29,6 +29,5 @@ int cmd_model(const args::Model& a);
 int cmd_benchmark(const args::Benchmark& a);
 int cmd_perf(const args::Perf& a);
 int cmd_server(const args::Server& a);
-int cmd_worker(const args::Worker& a);
 int cmd_serve(const args::Serve& a);
 int cmd_completion(const args::Completion& a);
