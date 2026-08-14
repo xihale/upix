@@ -15,6 +15,33 @@
 
 namespace crossscale {
 
+namespace {
+// Enable TCP keepalive with aggressive intervals so long-lived request/response
+// connections (phone -> PC distributed upscale) survive NAT / stateful firewall
+// idle eviction during the long, traffic-free processing phase. Without this, a
+// NAT that drops an idle connection (~30-60s on many home/Wi-Fi routers) silently
+// kills the link while the PC is still upscaling; the PC's eventual response send
+// then fails (looks "stuck" until SO_SNDTIMEO) and the phone reports the PC
+// unreachable and falls back to native.
+//   idle=10s before first probe (under typical NAT timeouts), intvl=3s, count=5
+void apply_tcp_keepalive(int fd) {
+    int enabled = 1;
+    setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &enabled, sizeof(enabled));
+#ifdef TCP_KEEPIDLE
+    int idle = 10;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle, sizeof(idle));
+#endif
+#ifdef TCP_KEEPINTVL
+    int interval = 3;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval, sizeof(interval));
+#endif
+#ifdef TCP_KEEPCNT
+    int count = 5;
+    setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count));
+#endif
+}
+}  // namespace
+
 TCPSocket::TCPSocket() = default;
 
 TCPSocket::~TCPSocket() {
@@ -61,6 +88,8 @@ auto TCPSocket::connect(const std::string& host, uint16_t port)
     int buf_size = 1 * 1024 * 1024;
     setsockopt(socket_, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
     setsockopt(socket_, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
+
+    apply_tcp_keepalive(socket_);
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
@@ -250,6 +279,8 @@ auto TCPServer::accept()
     int buf_size = 1 * 1024 * 1024;
     setsockopt(client_socket, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
     setsockopt(client_socket, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
+
+    apply_tcp_keepalive(client_socket);
 
     return socket;
 }

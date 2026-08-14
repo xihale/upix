@@ -291,6 +291,46 @@ auto perform_connect_request(
     return true;
 }
 
+// Read + decrypt one sealed frame from the server. Used in a loop after submit
+// to drain streamed MSG_TASK_PROGRESS frames until the terminal MSG_CLIENT_RESPONSE.
+auto recv_encrypted_frame(
+    crossscale::TCPSocket& socket,
+    crossscale::EncryptedSession& session,
+    std::string& error_msg
+) -> std::optional<std::pair<crossscale::MessageHeader, std::vector<uint8_t>>> {
+    error_msg.clear();
+    std::vector<uint8_t> hdr_buf(crossscale::Protocol::HEADER_SIZE);
+    if (!socket.receive_all(hdr_buf.data(), hdr_buf.size()).has_value()) {
+        error_msg = "response header receive failed";
+        return std::nullopt;
+    }
+    auto parsed = crossscale::Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
+    if (!parsed) {
+        error_msg = "response header is invalid";
+        return std::nullopt;
+    }
+    if (parsed->payload_length > MAX_PAYLOAD_LENGTH) {
+        error_msg = "response payload too large: " +
+                     std::to_string(parsed->payload_length) + " bytes";
+        return std::nullopt;
+    }
+    std::vector<uint8_t> wire(crossscale::Protocol::HEADER_SIZE + parsed->payload_length);
+    std::memcpy(wire.data(), hdr_buf.data(), crossscale::Protocol::HEADER_SIZE);
+    if (parsed->payload_length > 0) {
+        if (!socket.receive_all(wire.data() + crossscale::Protocol::HEADER_SIZE,
+                                parsed->payload_length).has_value()) {
+            error_msg = "response payload receive failed";
+            return std::nullopt;
+        }
+    }
+    auto opened = session.open(wire.data(), wire.size());
+    if (!opened) {
+        error_msg = "response MAC failed";
+        return std::nullopt;
+    }
+    return std::move(*opened);
+}
+
 }  // namespace
 
 extern "C" {
@@ -707,44 +747,30 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
         return nullptr;
     }
 
-    // Receive the encrypted ClientTaskResponse frame: header + nonce+ct, then
-    // open() to recover the plaintext header + payload. The payload layout is
-    // [ClientTaskResponse struct][result image bytes] contiguous (coordinator.cpp ~467).
-    std::vector<uint8_t> result_hdr_buf(crossscale::Protocol::HEADER_SIZE);
-    if (!socket.receive_all(result_hdr_buf.data(), result_hdr_buf.size()).has_value()) {
-        set_jni_last_error("Distributed response header receive failed");
-        return nullptr;
-    }
-    auto result_hdr = crossscale::Protocol::parse_header(result_hdr_buf.data(), result_hdr_buf.size());
-    if (!result_hdr) {
-        set_jni_last_error("Distributed response header type is invalid");
-        return nullptr;
-    }
-    if (result_hdr->payload_length > MAX_PAYLOAD_LENGTH) {
-        set_jni_last_error("Distributed response payload too large: " +
-                           std::to_string(result_hdr->payload_length) + " bytes");
-        return nullptr;
-    }
-    std::vector<uint8_t> result_wire(crossscale::Protocol::HEADER_SIZE + result_hdr->payload_length);
-    std::memcpy(result_wire.data(), result_hdr_buf.data(), crossscale::Protocol::HEADER_SIZE);
-    if (result_hdr->payload_length > 0) {
-        if (!socket.receive_all(result_wire.data() + crossscale::Protocol::HEADER_SIZE,
-                                result_hdr->payload_length).has_value()) {
-            set_jni_last_error("Distributed response payload receive failed");
+    // Receive frames until the terminal MSG_CLIENT_RESPONSE. The PC streams
+    // MSG_TASK_PROGRESS frames while it upscales (the traffic keeps the link
+    // alive through NAT/stateful firewalls during the long, otherwise-idle
+    // processing, and carries real progress for a future UI hook). Drain those
+    // and keep reading until the result arrives. The result payload layout is
+    // [ClientTaskResponse struct][result image bytes] contiguous.
+    std::vector<uint8_t> result_payload;
+    while (true) {
+        std::string frame_error;
+        auto frame = recv_encrypted_frame(socket, *session, frame_error);
+        if (!frame) {
+            set_jni_last_error("Distributed " + frame_error);
             return nullptr;
         }
+        if (frame->first.type == crossscale::MessageType::MSG_TASK_PROGRESS) {
+            continue;  // progress update; drain and wait for the result
+        }
+        if (frame->first.type != crossscale::MessageType::MSG_CLIENT_RESPONSE) {
+            set_jni_last_error("Distributed response frame type is invalid");
+            return nullptr;
+        }
+        result_payload = std::move(frame->second);
+        break;
     }
-
-    auto opened = session->open(result_wire.data(), result_wire.size());
-    if (!opened) {
-        set_jni_last_error("Distributed response MAC failed");
-        return nullptr;
-    }
-    if (opened->first.type != crossscale::MessageType::MSG_CLIENT_RESPONSE) {
-        set_jni_last_error("Distributed response header type is invalid");
-        return nullptr;
-    }
-    const auto& result_payload = opened->second;
     if (result_payload.size() < sizeof(crossscale::ClientTaskResponse)) {
         set_jni_last_error("Distributed response payload is truncated");
         return nullptr;

@@ -92,7 +92,7 @@ int run_batch(const args::Process& a) {
         LOG_INFO("CLI", "Found " + std::to_string(tasks.size()) + " images to process");
 
         // Model selection
-        crossscale::ModelManager manager(fs::current_path() / "models");
+        crossscale::ModelManager manager(models_dir);
         auto models_opt = manager.scan_models();
         if (!models_opt.has_value() || models_opt->empty()) {
             LOG_ERROR("Engine", "No models found in " + models_dir);
@@ -426,15 +426,8 @@ int run_batch(const args::Process& a) {
 
                 std::thread process_thread([&]() {
                     crossscale::TileProcessor queue_processor;
-                    const bool use_gpu_submit_queue =
-                        gpu_submit_queue_max > 1 &&
-                        engine->supports_gpu_tile_pipeline_u8_queue() &&
-                        !(auto_tile || config.auto_tile_size);
-                    size_t runtime_queue_depth_cap = gpu_submit_queue_max;
-                    if (use_gpu_submit_queue) {
-                        LOG_INFO("Engine", "GPU submit queue enabled, depth=" +
-                                           std::to_string(gpu_submit_queue_max));
-                    }
+                    const bool use_gpu_submit_queue = false;
+                    size_t runtime_queue_depth_cap = 1;
 
                     auto enqueue_processed = [&](ProcessedTask&& processed) {
                         std::unique_lock<std::mutex> lock(processed_mutex);

@@ -23,6 +23,11 @@ enum class MessageType : uint16_t {
     // One-shot image submit (phone→PC, inside EncryptedSession after pairing).
     MSG_CLIENT_SUBMIT = 0x0500,
     MSG_CLIENT_RESPONSE = 0x0501,
+    // PC→phone streamed progress while a CLIENT_SUBMIT is being processed. Keeps
+    // traffic flowing during the (potentially minutes-long) upscale so NAT/stateful
+    // firewalls cannot evict an idle connection, and lays the groundwork for the
+    // phone to show real progress. The terminal result is still MSG_CLIENT_RESPONSE.
+    MSG_TASK_PROGRESS = 0x0502,
 
     // Pairing: phone→PC request immediately after the ECDH handshake; PC→phone
     // reply (gated on interactive approval the first time, auto-approved once
@@ -83,6 +88,13 @@ struct ClientTaskResponse {
     uint8_t success;
     char error_message[128];
     uint32_t result_data_length;
+};
+
+// Streamed upscale progress (PC→phone), 0..100. Sent inside the EncryptedSession
+// as MSG_TASK_PROGRESS frames between CLIENT_SUBMIT and CLIENT_RESPONSE. The phone
+// drains these (and may surface them to the UI) until the terminal CLIENT_RESPONSE.
+struct TaskProgressMessage {
+    uint32_t percent;  // 0..100 inclusive
 };
 
 // Pairing request: phone→PC immediately after the ECDH handshake succeeds.

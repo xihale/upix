@@ -19,9 +19,11 @@
 #include <pipeline.h>
 #endif
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <mutex>
@@ -156,17 +158,12 @@ namespace crossscale {
             return {};
         }
         const size_t in_elemsize = opt.use_fp16_storage ? 2u : 4u;
-        // submit_budget is pinned to 1: each tile's blend dispatch does read-modify-write
-        // accumulation (dst += w*src, weight += w) into SHARED out_gpu_hwc/out_gpu_weight.
-        // Packing more than one blend into a single VkCompute command buffer is a RAW/WAR
-        // hazard — ncnn's record_pipeline inserts no memory barrier between dispatches that
-        // read and write the same buffer, so later tiles lose their writes (dark/black
-        // regions). ncnn's VkCompute::barrier_readwrite is protected and cannot be called
-        // from here, so one tile per command buffer relies on the implicit queue-submit
-        // barrier to serialize the accumulations. See process_tiles_gpu_u8 for the same
-        // constraint and the commit history for the empirical confirmation
-        // (one-tile-per-cmd -> mean 242 vs corrupted 139).
-        constexpr size_t submit_budget = 1;
+        // Multi-Task Concurrent Tile Scheduling:
+        // Each task operates on its own dedicated output buffer (state.out_gpu_hwc).
+        // By scheduling up to 1 tile per task per submit round (local_budget = 1),
+        // multiple distinct image tasks can execute in parallel within the same VkCompute
+        // command buffer without intra-image RAW/WAR hazard.
+        const size_t submit_budget = std::max<size_t>(1, std::min<size_t>(states.size(), 16));
 
         int input_idx = -1;
         int output_idx = -1;
@@ -316,11 +313,19 @@ namespace crossscale {
         std::vector<ncnn::vk_constant_type> normalize_quantize_constants(2);
         std::vector<ncnn::VkMat> clear_bindings(1);
         std::vector<ncnn::vk_constant_type> clear_constants(1);
+        // ---- TEMP PERF INSTRUMENTATION (remove after measuring) ----
+        const bool cs_perf = std::getenv("CROSSSCALE_PIPELINE_TIMER") != nullptr;
+        double perf_record_ms = 0.0, perf_submit_ms = 0.0;
+        long perf_submits = 0;
+        long perf_tiles_total = static_cast<long>(total_tiles);
+        auto perf_t0 = std::chrono::steady_clock::now();
+        // ---- END TEMP ----
         while (true) {
             if (cancel_flag) {
                 return std::unexpected(EngineError{3, "Processing cancelled"});
             }
 
+            auto perf_t_rec_start = std::chrono::steady_clock::now();
             ncnn::VkCompute cmd(vkdev_);
             bool has_init_work = false;
             if (need_init_submit) {
@@ -451,7 +456,14 @@ namespace crossscale {
                 }
             }
 
+            auto perf_t_rec_end = std::chrono::steady_clock::now();
+            if (cs_perf) perf_record_ms += std::chrono::duration<double, std::milli>(perf_t_rec_end - perf_t_rec_start).count();
+            auto perf_t_sub_start = std::chrono::steady_clock::now();
             int submit_ret = cmd.submit_and_wait();
+            if (cs_perf) {
+                perf_submit_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - perf_t_sub_start).count();
+                perf_submits++;
+            }
             if (submit_ret != 0) {
                 if (all_tiles_scheduled) {
                     return std::unexpected(EngineError{214, "Vulkan queue normalize+quantize/download failed (error " +
@@ -516,6 +528,21 @@ namespace crossscale {
                                         std::to_string(submit_ret) + ")"});
             }
         }
+
+        // ---- TEMP PERF INSTRUMENTATION print ----
+        if (cs_perf) {
+            double perf_total_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - perf_t0).count();
+            char pbuf[512];
+            int pn = std::snprintf(pbuf, sizeof(pbuf),
+                "[PERF] u8_queue pipeline: tiles=%ld submits=%ld total=%.1fms record=%.1fms submit=%.1fms "
+                "(submit=%.0f%% of total, %.3fms/submit)",
+                perf_tiles_total, perf_submits, perf_total_ms, perf_record_ms, perf_submit_ms,
+                perf_total_ms > 0 ? 100.0 * perf_submit_ms / perf_total_ms : 0.0,
+                perf_submits > 0 ? perf_submit_ms / perf_submits : 0.0);
+            LOG_INFO("Engine", std::string(pbuf, pn));
+        }
+        // ---- END TEMP ----
 
         return {};
 #else
@@ -596,12 +623,10 @@ namespace crossscale {
         progress.total_tiles = static_cast<int>(regions.size());
         progress.completed_tiles = 0;
 
-        const size_t tiles_per_cmd = static_cast<size_t>(std::max(1, config.batch_size));
-        // See the long comment in process_tiles_gpu_u8: blend accumulation is a read-modify-write
-        // on shared buffers, so multiple blend dispatches per VkCompute are a RAW/WAR hazard.
-        // Pin per-cmd tiles to 1 to serialize via the queue-submit barrier.
-        const size_t tiles_per_submit = 1;
-        (void)tiles_per_cmd;
+        // 4-Pass Disjoint Tile Batching:
+        // Tiles with grid coordinates of the same parity (gx % 2, gy % 2) have strictly non-overlapping
+        // inner and output blending areas. All tiles within the same pass can be safely recorded and
+        // executed in the SAME VkCompute command buffer without memory hazards.
         const size_t in_total_full = static_cast<size_t>(input_width) * input_height * channels;
         if (in_total_full > static_cast<size_t>(std::numeric_limits<int>::max())) {
             return std::unexpected(EngineError{205, "Input image too large for Vulkan tile pipeline"});
@@ -767,73 +792,105 @@ namespace crossscale {
         }
 
         if (use_gpu_crop) {
-            size_t region_idx = 0;
-            while (region_idx < regions.size()) {
-                if (cancel_flag) {
-                    return std::unexpected(EngineError{3, "Processing cancelled"});
+            const int tile_step = std::max(1, config.tile_size - config.overlap);
+            std::array<std::vector<size_t>, 4> pass_indices;
+            if (config.overlap > 0) {
+                for (size_t i = 0; i < regions.size(); ++i) {
+                    const auto& reg = regions[i];
+                    int gx = static_cast<int>(reg.x) / tile_step;
+                    int gy = static_cast<int>(reg.y) / tile_step;
+                    int pass_id = ((gy & 1) << 1) | (gx & 1);
+                    pass_indices[pass_id].push_back(i);
                 }
+            } else {
+                pass_indices[0].reserve(regions.size());
+                for (size_t i = 0; i < regions.size(); ++i) {
+                    pass_indices[0].push_back(i);
+                }
+            }
 
-                size_t batch_end = std::min(regions.size(), region_idx + tiles_per_submit);
-                ncnn::VkCompute cmd(vkdev_);
-                std::vector<ncnn::VkMat> batch_keepalive;
-                batch_keepalive.reserve((batch_end - region_idx) * 2);
-                for (size_t i = region_idx; i < batch_end; ++i) {
-                    const auto& region = regions[i];
-                    const TilePadInfo pad_info = compute_pad(region);
-                    const int tile_in_w = pad_info.in_w;
-                    const int tile_in_h = pad_info.in_h;
-                    const size_t tile_in_total = static_cast<size_t>(tile_in_w) * tile_in_h * channels;
-                    if (tile_in_total == 0) {
-                        return std::unexpected(EngineError{206, "Invalid tile dimensions"});
+            const size_t heap_budget_mb = static_cast<size_t>(vkdev_->get_heap_budget());
+            const size_t max_tiles_per_submit = (heap_budget_mb > 2000) ? 64 : 16;
+
+            for (int pass_id = 0; pass_id < 4; ++pass_id) {
+                const auto& p_indices = pass_indices[pass_id];
+                if (p_indices.empty()) continue;
+
+                size_t pass_cursor = 0;
+                while (pass_cursor < p_indices.size()) {
+                    if (cancel_flag) {
+                        return std::unexpected(EngineError{3, "Processing cancelled"});
                     }
 
-                    ncnn::VkMat in_gpu_chw;
-                    in_gpu_chw.create(tile_in_w, tile_in_h, channels, in_elemsize, 1, blob_vkallocator);
+                    size_t chunk_end = std::min(p_indices.size(), pass_cursor + max_tiles_per_submit);
+                    size_t chunk_size = chunk_end - pass_cursor;
 
-                    std::vector<ncnn::VkMat> pre_bindings(2);
-                    pre_bindings[0] = in_gpu_full;
-                    pre_bindings[1] = in_gpu_chw;
+                    ncnn::VkCompute cmd(vkdev_);
+                    std::vector<ncnn::VkMat> batch_keepalive;
+                    batch_keepalive.reserve(chunk_size * 2);
 
-                    std::vector<ncnn::vk_constant_type> pre_constants(8);
-                    pre_constants[0].i = input_width;
-                    pre_constants[1].i = input_height;
-                    pre_constants[2].i = channels;
-                    pre_constants[3].i = pad_info.tile_x;
-                    pre_constants[4].i = pad_info.tile_y;
-                    pre_constants[5].i = tile_in_w;
-                    pre_constants[6].i = tile_in_h;
-                    pre_constants[7].i = static_cast<int>(in_gpu_chw.cstep);
+                    for (size_t i = pass_cursor; i < chunk_end; ++i) {
+                        size_t r_idx = p_indices[i];
+                        const auto& region = regions[r_idx];
+                        const TilePadInfo pad_info = compute_pad(region);
+                        const int tile_in_w = pad_info.in_w;
+                        const int tile_in_h = pad_info.in_h;
+                        const size_t tile_in_total = static_cast<size_t>(tile_in_w) * tile_in_h * channels;
+                        if (tile_in_total == 0) {
+                            return std::unexpected(EngineError{206, "Invalid tile dimensions"});
+                        }
 
-                    ncnn::VkMat pre_dispatcher;
-                    pre_dispatcher.w = tile_in_w;
-                    pre_dispatcher.h = tile_in_h;
-                    pre_dispatcher.c = channels;
-                    cmd.record_pipeline(preproc_hwc_crop_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
+                        ncnn::VkMat in_gpu_chw;
+                        in_gpu_chw.create(tile_in_w, tile_in_h, channels, in_elemsize, 1, blob_vkallocator);
 
-                    auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, batch_keepalive,
-                                                             tile_in_w, tile_in_h);
-                    if (!record_result.has_value()) {
-                        return std::unexpected(record_result.error());                    }
-                }
+                        std::vector<ncnn::VkMat> pre_bindings(2);
+                        pre_bindings[0] = in_gpu_full;
+                        pre_bindings[1] = in_gpu_chw;
 
-                int submit_ret = cmd.submit_and_wait();
-                if (submit_ret != 0) {
-                    return std::unexpected(EngineError{210, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"});
-                }
+                        std::vector<ncnn::vk_constant_type> pre_constants(8);
+                        pre_constants[0].i = input_width;
+                        pre_constants[1].i = input_height;
+                        pre_constants[2].i = channels;
+                        pre_constants[3].i = pad_info.tile_x;
+                        pre_constants[4].i = pad_info.tile_y;
+                        pre_constants[5].i = tile_in_w;
+                        pre_constants[6].i = tile_in_h;
+                        pre_constants[7].i = static_cast<int>(in_gpu_chw.cstep);
 
-                for (size_t i = region_idx; i < batch_end; ++i) {
-                    const auto& region = regions[i];
-                    progress.completed_tiles++;
-                    progress.current_tile_x = region.x;
-                    progress.current_tile_y = region.y;
-                    if (progress_callback) {
-                        progress_callback(progress);
+                        ncnn::VkMat pre_dispatcher;
+                        pre_dispatcher.w = tile_in_w;
+                        pre_dispatcher.h = tile_in_h;
+                        pre_dispatcher.c = channels;
+                        cmd.record_pipeline(preproc_hwc_crop_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
+
+                        auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, batch_keepalive,
+                                                                 tile_in_w, tile_in_h);
+                        if (!record_result.has_value()) {
+                            return std::unexpected(record_result.error());
+                        }
                     }
-                }
 
-                region_idx = batch_end;
+                    int submit_ret = cmd.submit_and_wait();
+                    if (submit_ret != 0) {
+                        return std::unexpected(EngineError{210, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"});
+                    }
+
+                    for (size_t i = pass_cursor; i < chunk_end; ++i) {
+                        size_t r_idx = p_indices[i];
+                        const auto& region = regions[r_idx];
+                        progress.completed_tiles++;
+                        progress.current_tile_x = region.x;
+                        progress.current_tile_y = region.y;
+                        if (progress_callback) {
+                            progress_callback(progress);
+                        }
+                    }
+
+                    pass_cursor = chunk_end;
+                }
             }
         } else {
+            const size_t tiles_per_cmd = static_cast<size_t>(std::max(1, config.batch_size));
             struct BatchWork {
                 size_t begin = 0;
                 size_t end = 0;
@@ -1075,19 +1132,10 @@ namespace crossscale {
         progress.total_tiles = static_cast<int>(regions.size());
         progress.completed_tiles = 0;
 
-        const size_t tiles_per_cmd = static_cast<size_t>(std::max(1, config.batch_size));
-        // Each tile's blend dispatch performs read-modify-write accumulation (dst += src*w,
-        // weight += w) into the SHARED out_gpu_hwc / out_gpu_weight buffers. Recording more
-        // than one such dispatch in a single VkCompute command buffer is a RAW/WAR hazard:
-        // ncnn's record_pipeline inserts no memory barrier between dispatches that read and
-        // write the same buffer, so later tiles read stale/partial data and their writes are
-        // lost — producing dark/black regions (confirmed for scale>=3 overlapping tiles).
-        // ncnn's VkCompute::barrier_readwrite is protected, so we cannot insert barriers from
-        // here. The correct, robust fix is to submit each tile in its OWN VkCompute so the
-        // implicit queue-submit barrier serializes the accumulations. batch_size therefore
-        // controls inference batching intent only; the per-cmd tile count is pinned to 1.
-        const size_t tiles_per_submit = 1;
-        (void)tiles_per_cmd;
+        // 4-Pass Disjoint Tile Batching:
+        // Tiles with grid coordinates of the same parity (gx % 2, gy % 2) have strictly non-overlapping
+        // inner and output blending areas. All tiles within the same pass can be safely recorded and
+        // executed in the SAME VkCompute command buffer without memory hazards.
         const size_t in_total_full = static_cast<size_t>(input_width) * input_height * channels;
         if (in_total_full > static_cast<size_t>(std::numeric_limits<int>::max())) {
             return std::unexpected(EngineError{205, "Input image too large for Vulkan tile pipeline"});
@@ -1273,90 +1321,135 @@ namespace crossscale {
             return std::unexpected(EngineError{213, "GPU u8 crop pipeline unavailable"});
         }
 
+        // ---- TEMP PERF INSTRUMENTATION (crop-u8 hot path) ----
+        const bool cs_perf2 = std::getenv("CROSSSCALE_PIPELINE_TIMER") != nullptr;
+        double p2_record_ms = 0.0, p2_submit_ms = 0.0;
+        long p2_submits = 0, p2_tiles = static_cast<long>(regions.size());
+        auto p2_t0 = std::chrono::steady_clock::now();
+        // ---- END TEMP ----
+
         if (use_gpu_crop) {
-            LOG_INFO("Engine", "Using GPU tile pipeline with crop u8 preprocessing");
+            LOG_INFO("Engine", "Using GPU tile pipeline with 4-pass disjoint tile batching");
             
-            size_t region_idx = 0;
-            while (region_idx < regions.size()) {
-                if (cancel_flag) {
-                    return std::unexpected(EngineError{3, "Processing cancelled"});
+            const int tile_step = std::max(1, config.tile_size - config.overlap);
+            std::array<std::vector<size_t>, 4> pass_indices;
+            if (config.overlap > 0) {
+                for (size_t i = 0; i < regions.size(); ++i) {
+                    const auto& reg = regions[i];
+                    int gx = static_cast<int>(reg.x) / tile_step;
+                    int gy = static_cast<int>(reg.y) / tile_step;
+                    int pass_id = ((gy & 1) << 1) | (gx & 1);
+                    pass_indices[pass_id].push_back(i);
                 }
+            } else {
+                pass_indices[0].reserve(regions.size());
+                for (size_t i = 0; i < regions.size(); ++i) {
+                    pass_indices[0].push_back(i);
+                }
+            }
 
-                size_t batch_end = std::min(regions.size(), region_idx + tiles_per_submit);
-                ncnn::VkCompute cmd(vkdev_);
-                std::vector<ncnn::VkMat> batch_keepalive;
-                batch_keepalive.reserve((batch_end - region_idx) * 2);
-                for (size_t i = region_idx; i < batch_end; ++i) {
-                    const auto& region = regions[i];
-                    const TilePadInfo pad_info = compute_pad(region);
-                    const int tile_in_w = pad_info.in_w;
-                    const int tile_in_h = pad_info.in_h;
-                    const size_t tile_in_total = static_cast<size_t>(tile_in_w) * tile_in_h * channels;
-                    if (tile_in_total == 0) {
-                        return std::unexpected(EngineError{206, "Invalid tile dimensions"});
+            const size_t heap_budget_mb = static_cast<size_t>(vkdev_->get_heap_budget());
+            const size_t max_tiles_per_submit = (heap_budget_mb > 2000) ? 64 : 16;
+
+            size_t total_completed_tiles = 0;
+            for (int pass_id = 0; pass_id < 4; ++pass_id) {
+                const auto& p_indices = pass_indices[pass_id];
+                if (p_indices.empty()) continue;
+
+                size_t pass_cursor = 0;
+                while (pass_cursor < p_indices.size()) {
+                    if (cancel_flag) {
+                        return std::unexpected(EngineError{3, "Processing cancelled"});
                     }
 
-                    ncnn::VkMat in_gpu_chw;
-                    in_gpu_chw.create(tile_in_w, tile_in_h, channels, in_elemsize, 1, blob_vkallocator);
+                    auto perf_t_rec_start2 = std::chrono::steady_clock::now();
+                    size_t chunk_end = std::min(p_indices.size(), pass_cursor + max_tiles_per_submit);
+                    size_t chunk_size = chunk_end - pass_cursor;
 
-                    std::vector<ncnn::VkMat> pre_bindings(2);
-                    pre_bindings[0] = in_gpu_full;
-                    pre_bindings[1] = in_gpu_chw;
+                    ncnn::VkCompute cmd(vkdev_);
+                    std::vector<ncnn::VkMat> batch_keepalive;
+                    batch_keepalive.reserve(chunk_size * 2);
 
-                    std::vector<ncnn::vk_constant_type> pre_constants(8);
-                    pre_constants[0].i = input_width;
-                    pre_constants[1].i = input_height;
-                    pre_constants[2].i = channels;
-                    pre_constants[3].i = pad_info.tile_x;
-                    pre_constants[4].i = pad_info.tile_y;
-                    pre_constants[5].i = tile_in_w;
-                    pre_constants[6].i = tile_in_h;
-                    pre_constants[7].i = static_cast<int>(in_gpu_chw.cstep);
+                    for (size_t i = pass_cursor; i < chunk_end; ++i) {
+                        size_t r_idx = p_indices[i];
+                        const auto& region = regions[r_idx];
+                        const TilePadInfo pad_info = compute_pad(region);
+                        const int tile_in_w = pad_info.in_w;
+                        const int tile_in_h = pad_info.in_h;
+                        const size_t tile_in_total = static_cast<size_t>(tile_in_w) * tile_in_h * channels;
+                        if (tile_in_total == 0) {
+                            return std::unexpected(EngineError{206, "Invalid tile dimensions"});
+                        }
 
-                    ncnn::VkMat pre_dispatcher;
-                    pre_dispatcher.w = tile_in_w;
-                    pre_dispatcher.h = tile_in_h;
-                    pre_dispatcher.c = channels;
-                    cmd.record_pipeline(preproc_hwc_crop_u8_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
+                        ncnn::VkMat in_gpu_chw;
+                        in_gpu_chw.create(tile_in_w, tile_in_h, channels, in_elemsize, 1, blob_vkallocator);
 
-                    auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, batch_keepalive,
-                                                             tile_in_w, tile_in_h);
-                    if (!record_result.has_value()) {
-                        return std::unexpected(record_result.error());                    }
-                }
+                        std::vector<ncnn::VkMat> pre_bindings(2);
+                        pre_bindings[0] = in_gpu_full;
+                        pre_bindings[1] = in_gpu_chw;
 
-                ncnn::VkMat out_gpu_u8;
-                const bool is_last_batch = (batch_end == regions.size());
-                if (is_last_batch) {
-                    out_gpu_u8.create(static_cast<int>(out_total), 1u, blob_vkallocator);
-                    record_normalize_quantize_download(cmd, out_gpu_u8);
-                }
+                        std::vector<ncnn::vk_constant_type> pre_constants(8);
+                        pre_constants[0].i = input_width;
+                        pre_constants[1].i = input_height;
+                        pre_constants[2].i = channels;
+                        pre_constants[3].i = pad_info.tile_x;
+                        pre_constants[4].i = pad_info.tile_y;
+                        pre_constants[5].i = tile_in_w;
+                        pre_constants[6].i = tile_in_h;
+                        pre_constants[7].i = static_cast<int>(in_gpu_chw.cstep);
 
-                int submit_ret = cmd.submit_and_wait();
-                if (submit_ret != 0) {
+                        ncnn::VkMat pre_dispatcher;
+                        pre_dispatcher.w = tile_in_w;
+                        pre_dispatcher.h = tile_in_h;
+                        pre_dispatcher.c = channels;
+                        cmd.record_pipeline(preproc_hwc_crop_u8_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
+
+                        auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, batch_keepalive,
+                                                                 tile_in_w, tile_in_h);
+                        if (!record_result.has_value()) {
+                            return std::unexpected(record_result.error());
+                        }
+                    }
+
+                    const bool is_last_batch = (total_completed_tiles + chunk_size == regions.size());
+                    ncnn::VkMat out_gpu_u8;
                     if (is_last_batch) {
-                        return std::unexpected(EngineError{214, "Vulkan normalize+quantize/download failed (error " +
-                                                std::to_string(submit_ret) + ")"});
+                        out_gpu_u8.create(static_cast<int>(out_total), 1u, blob_vkallocator);
+                        record_normalize_quantize_download(cmd, out_gpu_u8);
                     }
-                    return std::unexpected(EngineError{210, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"});
-                }
-                if (is_last_batch) {
-                    output_downloaded = true;
-                }
 
-                for (size_t i = region_idx; i < batch_end; ++i) {
-                    const auto& region = regions[i];
-                    progress.completed_tiles++;
-                    progress.current_tile_x = region.x;
-                    progress.current_tile_y = region.y;
-                    if (progress_callback) {
-                        progress_callback(progress);
+                    if (cs_perf2) p2_record_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - perf_t_rec_start2).count();
+                    auto p2_sub_start = std::chrono::steady_clock::now();
+                    int submit_ret = cmd.submit_and_wait();
+                    if (cs_perf2) { p2_submit_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p2_sub_start).count(); p2_submits++; }
+                    if (submit_ret != 0) {
+                        if (is_last_batch) {
+                            return std::unexpected(EngineError{214, "Vulkan normalize+quantize/download failed (error " +
+                                                    std::to_string(submit_ret) + ")"});
+                        }
+                        return std::unexpected(EngineError{210, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"});
                     }
-                }
+                    if (is_last_batch) {
+                        output_downloaded = true;
+                    }
 
-                region_idx = batch_end;
+                    for (size_t i = pass_cursor; i < chunk_end; ++i) {
+                        size_t r_idx = p_indices[i];
+                        const auto& region = regions[r_idx];
+                        progress.completed_tiles++;
+                        progress.current_tile_x = region.x;
+                        progress.current_tile_y = region.y;
+                        if (progress_callback) {
+                            progress_callback(progress);
+                        }
+                    }
+
+                    total_completed_tiles += chunk_size;
+                    pass_cursor = chunk_end;
+                }
             }
         } else {
+            const size_t tiles_per_cmd = static_cast<size_t>(std::max(1, config.batch_size));
             struct BatchWork {
                 size_t begin = 0;
                 size_t end = 0;
@@ -1509,6 +1602,22 @@ namespace crossscale {
                 return std::unexpected(EngineError{214, "Vulkan normalize+quantize/download failed (error " + std::to_string(submit_ret) + ")"});
             }
         }
+
+        // ---- TEMP PERF INSTRUMENTATION print (crop-u8 hot path) ----
+        if (cs_perf2) {
+            double p2_total_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - p2_t0).count();
+            char p2buf[640];
+            int p2n = std::snprintf(p2buf, sizeof(p2buf),
+                "[PERF] u8 crop pipeline: tiles=%ld submits=%ld total=%.1fms record=%.1fms submit=%.1fms "
+                "(submit=%.0f%% of total, %.3fms/submit, record=%.0f%%)",
+                p2_tiles, p2_submits, p2_total_ms, p2_record_ms, p2_submit_ms,
+                p2_total_ms > 0 ? 100.0 * p2_submit_ms / p2_total_ms : 0.0,
+                p2_submits > 0 ? p2_submit_ms / p2_submits : 0.0,
+                p2_total_ms > 0 ? 100.0 * p2_record_ms / p2_total_ms : 0.0);
+            LOG_INFO("Engine", std::string(p2buf, p2n));
+        }
+        // ---- END TEMP ----
 
         return {};
 #else

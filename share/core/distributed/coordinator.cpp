@@ -10,6 +10,7 @@
 #include <chrono>
 #include <algorithm>
 #include <cerrno>
+#include <cstdio>
 #include <optional>
 
 namespace crossscale {
@@ -19,6 +20,35 @@ static constexpr uint32_t MAX_NETWORK_PAYLOAD = 100 * 1024 * 1024;
 // Raw upscaled pixels are a transient buffer (encoded to jpg/png before
 // transport), so they may exceed MAX_NETWORK_PAYLOAD. Bound PC memory instead.
 static constexpr uint64_t MAX_RAW_OUTPUT_BYTES = 512ULL * 1024 * 1024;
+
+// Human-readable byte count for logs: "6.66 MB", "512.0 KB", "723 bytes".
+static std::string format_bytes(uint64_t bytes) {
+    constexpr uint64_t KB = 1024;
+    constexpr uint64_t MB = 1024 * KB;
+    constexpr uint64_t GB = 1024 * MB;
+    char buf[32];
+    if (bytes >= GB) {
+        std::snprintf(buf, sizeof(buf), "%.2f GB", static_cast<double>(bytes) / static_cast<double>(GB));
+    } else if (bytes >= MB) {
+        std::snprintf(buf, sizeof(buf), "%.2f MB", static_cast<double>(bytes) / static_cast<double>(MB));
+    } else if (bytes >= KB) {
+        std::snprintf(buf, sizeof(buf), "%.1f KB", static_cast<double>(bytes) / static_cast<double>(KB));
+    } else {
+        std::snprintf(buf, sizeof(buf), "%llu bytes", static_cast<unsigned long long>(bytes));
+    }
+    return buf;
+}
+
+// Human-readable duration for logs: "340 ms" or "3.21 s".
+static std::string format_seconds(double s) {
+    char buf[32];
+    if (s < 1.0) {
+        std::snprintf(buf, sizeof(buf), "%.0f ms", s * 1000.0);
+    } else {
+        std::snprintf(buf, sizeof(buf), "%.2f s", s);
+    }
+    return buf;
+}
 
 Coordinator::Coordinator() = default;
 
@@ -181,7 +211,8 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
                                   const std::string& model_name,
                                   const ProcessingConfig& config,
                                   const std::string& output_format,
-                                  int output_quality)
+                                  int output_quality,
+                                  std::function<void(float)> progress_sink)
     -> expected<std::vector<uint8_t>, CoordinatorError> {
 
     if (!ensure_engine_ready(model_name)) {
@@ -212,17 +243,23 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     // Cancellation has no external hook today (cancel_current_task was removed);
     // keep a local flag so the engine stays interruptible if one is wired in.
     std::atomic<bool> cancel{false};
+    const auto t_inf_start = std::chrono::steady_clock::now();
     auto res = tile_processor_->process_image_u8(
         image_data.data(), out_bytes.data(),
         width, height, channels,
         *engine_, tc,
-        [this](const ProcessingProgress& p) {
+        [this, &progress_sink](const ProcessingProgress& p) {
+            const float frac = p.percentage() / 100.0f;
             if (on_task_progress_) {
-                on_task_progress_(p.percentage() / 100.0f);
+                on_task_progress_(frac);
+            }
+            if (progress_sink) {
+                progress_sink(frac);
             }
         },
         cancel,
         /*enable_alpha_bicubic=*/true);
+    const auto t_inf_end = std::chrono::steady_clock::now();
 
     if (!res) {
         return std::unexpected(CoordinatorError{4, res.error().message});
@@ -231,26 +268,39 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     // Encode before transport: a camera photo at x2 is hundreds of MB raw but
     // only a few MB as jpg/webp. The phone forwards these bytes to Kotlin as-is.
     //   jpg/webp — lossy; output_quality (default 90) is real compression.
-    //   png      — lossless; quality only selects zlib level (inverted), so we
-    //              force max compression for transport. PNG can't shrink photos
-    //              the way lossy codecs do; the size guard below rejects the
-    //              case where even max-compressed PNG exceeds the transport cap.
+    //   png      — lossless; the zlib level only trades encode CPU for transport
+    //              SIZE, never pixel quality. Level 9 (the old default, quality=1)
+    //              is a pure pessimization: on a 7000x7200 photo it spent ~111 s of
+    //              CPU to save ~9 MB vs level 1 (2.4 s). Level 4 sits at the size/
+    //              time knee measured on real photos (good ratio, just before the
+    //              level 8-9 explosion) — identical decoded pixels, ~24x faster
+    //              than level 9. (quality 61 -> zlib level 4 via png_compression_level_from_quality.)
     int transport_quality = output_quality;
     if (output_format == "png") {
-        transport_quality = 1;  // → zlib level 9 via png_compression_level_from_quality
+        transport_quality = 61;  // -> zlib level 4 via png_compression_level_from_quality
     }
+    const auto t_enc_start = std::chrono::steady_clock::now();
     Image out_image(out_w, out_h, channels);
     std::memcpy(out_image.data(), out_bytes.data(), out_bytes.size());
     auto encoded = out_image.save_to_memory(output_format, transport_quality);
+    const auto t_enc_end = std::chrono::steady_clock::now();
     if (!encoded) {
         return std::unexpected(CoordinatorError{5, "output encode failed: " + encoded.error().message});
     }
     if (encoded->size() > MAX_NETWORK_PAYLOAD) {
         return std::unexpected(CoordinatorError{
             6, "Encoded output too large for transport (" +
-               std::to_string(encoded->size() / (1024 * 1024)) +
-               " MB); use jpg or webp for large images"});
+               format_bytes(encoded->size()) +
+               "); use jpg or webp for large images"});
     }
+
+    const double inf_s = std::chrono::duration<double>(t_inf_end - t_inf_start).count();
+    const double enc_s = std::chrono::duration<double>(t_enc_end - t_enc_start).count();
+    LOG_INFO("Coordinator", "Local upscale done: inference " + format_seconds(inf_s) +
+             " + encode " + format_seconds(enc_s) + " (" + std::to_string(out_w) + "x" +
+             std::to_string(out_h) + " " + output_format + " -> " +
+             format_bytes(encoded->size()) + ")");
+
     return *encoded;
 }
 
@@ -572,7 +622,7 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                 int output_quality = task->output_quality == 0 ? 90 : task->output_quality;
 
                 if (image_data_len > MAX_NETWORK_PAYLOAD) {
-                    LOG_ERROR("Coordinator", "Image data too large: " + std::to_string(image_data_len) + " bytes");
+                    LOG_ERROR("Coordinator", "Image data too large: " + format_bytes(image_data_len));
                     return;
                 }
                 if (img_width == 0 || img_height == 0 || img_width > 65536 || img_height > 65536) {
@@ -606,6 +656,29 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                 config.tile_size = static_cast<int>(tile_size);
                 config.tile_overlap = static_cast<int>(tile_overlap);
 
+                // Stream MSG_TASK_PROGRESS to the phone during the upscale. This
+                // keeps traffic flowing on the connection (so NAT/stateful
+                // firewalls cannot evict it as idle while the PC works for tens
+                // of seconds) and lets the phone show real progress. Throttled to
+                // whole-percent changes to avoid flooding a many-tile image. The
+                // progress callback runs on this same thread (process_locally is
+                // synchronous), so no locking on last_sent_pct is needed.
+                int last_sent_pct = -1;
+                auto progress_sink = [&conn, &last_sent_pct, this](float frac) {
+                    const int pct = static_cast<int>(
+                        std::clamp(frac, 0.0f, 1.0f) * 100.0f);
+                    if (pct == last_sent_pct) {
+                        return;
+                    }
+                    last_sent_pct = pct;
+                    TaskProgressMessage msg{};
+                    msg.percent = static_cast<uint32_t>(pct);
+                    // A failed progress send (peer gone) is non-fatal: processing
+                    // continues and the terminal response send reports the error.
+                    (void)send_encrypted(conn, MessageType::MSG_TASK_PROGRESS,
+                                         &msg, sizeof(msg));
+                };
+
                 auto process_result = process_locally(
                     image_data,
                     static_cast<int>(img_width),
@@ -614,7 +687,8 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                     model_name,
                     config,
                     output_format,
-                    output_quality
+                    output_quality,
+                    progress_sink
                 );
 
                 ClientTaskResponse response{};
@@ -638,14 +712,20 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                     std::memcpy(resp_payload.data() + sizeof(ClientTaskResponse),
                                 process_result->data(), process_result->size());
                 }
-                if (!send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
-                                    resp_payload.data(), resp_payload.size())) {
+                const auto t_send_start = std::chrono::steady_clock::now();
+                const bool sent_ok = send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
+                                                    resp_payload.data(), resp_payload.size());
+                const auto t_send_end = std::chrono::steady_clock::now();
+                if (!sent_ok) {
                     LOG_ERROR("Coordinator", "Failed to send authenticated client response");
                     return;
                 }
                 if (process_result.has_value()) {
-                    LOG_INFO("Coordinator", "Authenticated client task completed, sent " +
-                             std::to_string(process_result->size()) + " bytes");
+                    const double send_s =
+                        std::chrono::duration<double>(t_send_end - t_send_start).count();
+                    const size_t sent_bytes = process_result->size();
+                    LOG_INFO("Coordinator", "Task completed: sent " + format_bytes(sent_bytes) +
+                             " in " + format_seconds(send_s));
                 } else {
                     LOG_ERROR("Coordinator", "Authenticated client task failed: " + process_result.error().message);
                 }

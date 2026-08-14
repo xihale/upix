@@ -88,7 +88,8 @@ public:
         const std::string& model_name,
         const ProcessingConfig& config,
         const std::string& output_format,
-        int output_quality
+        int output_quality,
+        std::function<void(float)> progress_sink = nullptr
     ) -> expected<std::vector<uint8_t>, CoordinatorError>;
 
     auto& on_task_progress() { return on_task_progress_; }

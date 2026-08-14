@@ -267,6 +267,8 @@ auto Image::save_to_memory(const std::string& format, int quality) const
     try {
         if (output_format == "png") {
             std::vector<uint8_t> encoded;
+            const size_t estimated_size = static_cast<size_t>(width_) * height_ * channels_ / 2 + 4096;
+            encoded.reserve(estimated_size);
 
             png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
             if (!png) return std::unexpected(ImageError{20, "Failed to create PNG write struct"});
@@ -310,10 +312,11 @@ auto Image::save_to_memory(const std::string& format, int quality) const
             );
 
             png_write_info(png, info);
+            std::vector<png_bytep> row_pointers(height_);
             for (int y = 0; y < height_; ++y) {
-                png_bytep row = const_cast<png_bytep>(&data_[static_cast<size_t>(y) * width_ * channels_]);
-                png_write_row(png, row);
+                row_pointers[y] = const_cast<png_bytep>(&data_[static_cast<size_t>(y) * width_ * channels_]);
             }
+            png_write_image(png, row_pointers.data());
             png_write_end(png, nullptr);
             png_destroy_write_struct(&png, &info);
             return encoded;
@@ -342,11 +345,14 @@ auto Image::save_to_memory(const std::string& format, int quality) const
             jpeg_set_quality(&cinfo, clamped_quality, TRUE);
             jpeg_start_compress(&cinfo, TRUE);
 
-            JSAMPROW row_pointer[1];
+            std::vector<JSAMPROW> row_pointers(height_);
             const size_t row_stride = static_cast<size_t>(width_) * channels_;
+            for (int y = 0; y < height_; ++y) {
+                row_pointers[y] = const_cast<JSAMPROW>(&data_[static_cast<size_t>(y) * row_stride]);
+            }
             while (cinfo.next_scanline < cinfo.image_height) {
-                row_pointer[0] = const_cast<JSAMPLE*>(&data_[static_cast<size_t>(cinfo.next_scanline) * row_stride]);
-                jpeg_write_scanlines(&cinfo, row_pointer, 1);
+                JDIMENSION num_lines = cinfo.image_height - cinfo.next_scanline;
+                jpeg_write_scanlines(&cinfo, &row_pointers[cinfo.next_scanline], num_lines);
             }
 
             jpeg_finish_compress(&cinfo);
