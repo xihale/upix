@@ -130,6 +130,8 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     auto* server = app->add_subcommand("server", "Start or query the coordination server");
     auto* sstart = server->add_subcommand("start", "Start the coordinator (accepts one phone, upscales submitted images)");
     sstart->add_option("-p", server_args.port, "Port")->capture_default_str();
+    sstart->add_flag("--auto-approve", server_args.auto_approve,
+                     "Auto-approve all pairing requests without prompting (for automated testing/CI)");
     sstart->callback([] { g_exit_code = cmd_server(server_args); server_args.subcommand = "start"; });
     auto* sinfo = server->add_subcommand("info", "Print the connection card (IP/QR/key)");
     sinfo->add_option("-p", server_args.port, "Port")->capture_default_str();

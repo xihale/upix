@@ -63,20 +63,27 @@ int cmd_server(const args::Server& a) {
 
     while (g_running && coordinator->is_running()) {
         // 服务待批准的配对请求(仅首次连接的手机;已信任的自动通过)。
-        // 阻塞读 stdin [y/n] 期间此循环暂停 — 单配对场景可接受。
+        // --auto-approve 跳过 stdin [y/n] 提示,直接批准 — 供自动化测试/CI。
+        // 否则阻塞读 stdin,单配对场景可接受。
         if (auto req = coordinator->pop_pending_approval()) {
-            std::cout << "\n┌─ 配对请求 ───────────────────────────────────────\n"
-                      << "│ 设备: " << req->device_name << "\n"
-                      << "│ 指纹: " << req->fingerprint << "\n"
-                      << "\n└──────────────────────────────────────────────────\n"
-                      << "允许此设备连接? [y/n]: " << std::flush;
-            std::string line;
             bool approved = false;
-            if (std::getline(std::cin, line)) {
-                approved = (line == "y" || line == "Y" || line == "yes" || line == "YES");
+            if (a.auto_approve) {
+                approved = true;
+                LOG_INFO("Server", "自动批准配对(--auto-approve): " + req->device_name +
+                         " (" + req->fingerprint + ")");
             } else {
-                // stdin EOF(例如后台运行) — 默认拒绝,避免无限等待。
-                std::cout << "(stdin 不可读,默认拒绝)\n";
+                std::cout << "\n┌─ 配对请求 ───────────────────────────────────────\n"
+                          << "│ 设备: " << req->device_name << "\n"
+                          << "│ 指纹: " << req->fingerprint << "\n"
+                          << "\n└──────────────────────────────────────────────────\n"
+                          << "允许此设备连接? [y/n]: " << std::flush;
+                std::string line;
+                if (std::getline(std::cin, line)) {
+                    approved = (line == "y" || line == "Y" || line == "yes" || line == "YES");
+                } else {
+                    // stdin EOF(例如后台运行) — 默认拒绝,避免无限等待。
+                    std::cout << "(stdin 不可读,默认拒绝)\n";
+                }
             }
             coordinator->resolve_approval(req->id, approved);
             if (approved) {

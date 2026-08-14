@@ -60,6 +60,7 @@ struct Perf {
 struct Server {
     std::string subcommand;         // start / info
     uint16_t port = 9527;
+    bool auto_approve = false;      // start: auto-approve pairing requests (testing/CI)
 };
 
 // `serve {start, stop}`.
