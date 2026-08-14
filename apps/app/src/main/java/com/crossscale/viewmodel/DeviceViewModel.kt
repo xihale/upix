@@ -1,6 +1,8 @@
 package com.crossscale.viewmodel
 
 import android.content.Context
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Stable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -25,6 +27,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.security.MessageDigest
 
+@Immutable
 data class PendingFingerprintConfirm(
     val host: String,
     val port: Int,
@@ -38,6 +41,7 @@ data class PendingFingerprintConfirm(
  * [DeviceViewModel.connectedEndpoint]. What remains here are the manual-connect
  * dialog flags, the error banner text and the TOFU fingerprint-confirm payload.
  */
+@Immutable
 data class DeviceUiState(
     val showManualConnectDialog: Boolean = false,
     val manualConnectHost: String = "",
@@ -46,6 +50,9 @@ data class DeviceUiState(
     val pendingFingerprintConfirm: PendingFingerprintConfirm? = null
 )
 
+// Observable state lives in StateFlow properties; the class itself never
+// mutates through public API, so it is safe to mark @Stable.
+@Stable
 class DeviceViewModel(
     private val deviceRepository: DeviceRepository,
     private val pairingRepository: PairingRepository,

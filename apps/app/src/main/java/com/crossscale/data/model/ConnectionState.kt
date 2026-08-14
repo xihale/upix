@@ -1,5 +1,7 @@
 package com.crossscale.data.model
 
+import androidx.compose.runtime.Immutable
+
 /**
  * 1:1 phone<->PC connection state. The phone connects to at most one PC.
  *
@@ -17,6 +19,7 @@ enum class ConnectionState {
  * The PC the phone is currently talking to. [fingerprint] is the user-verifiable
  * SHA256(pubkey) short fingerprint, shown in the UI for visual cross-check.
  */
+@Immutable
 data class RemoteEndpoint(
     val host: String,
     val port: Int,

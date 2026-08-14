@@ -1,5 +1,6 @@
 package com.crossscale.viewmodel
 
+import androidx.compose.runtime.Stable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -31,6 +32,9 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+// Observable state lives in StateFlow properties; the class itself never
+// mutates through public API, so it is safe to mark @Stable.
+@Stable
 class ProcessingViewModel(
     private val logRepository: LogRepository,
     private val modelRepository: ModelProvider,

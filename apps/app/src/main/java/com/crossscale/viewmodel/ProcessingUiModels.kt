@@ -1,11 +1,16 @@
 package com.crossscale.viewmodel
 
+import androidx.compose.runtime.Immutable
 import com.crossscale.data.model.ProcessingTask
 import com.crossscale.data.repository.BatchOutputDirectory
 import com.crossscale.data.repository.PersistedQueueItemStatus
 import com.crossscale.data.repository.ProcessingFailureDetail
 import com.crossscale.data.repository.ResolvedImageInput
 
+// List fields are treated as immutable by convention (never mutated after
+// construction), which keeps these states skippable for Compose.
+
+@Immutable
 data class ProcessingUiState(
     val task: ProcessingTask? = null,
     val isProcessing: Boolean = false,
@@ -18,6 +23,7 @@ data class ProcessingUiState(
     val isQueueRunning: Boolean = false
 )
 
+@Immutable
 data class ProcessingQueueItemSummary(
     val id: String,
     val source: String,
@@ -36,6 +42,7 @@ data class ProcessingQueueItemSummary(
     val lastOutputUri: String? = null
 )
 
+@Immutable
 data class ProcessingCheckpointSummary(
     val taskId: String,
     val source: String,
@@ -54,6 +61,7 @@ data class ProcessingCheckpointSummary(
     val pendingItemDetails: List<ProcessingCheckpointItemSummary> = emptyList()
 )
 
+@Immutable
 data class ProcessingCheckpointItemSummary(
     val uri: String,
     val displayName: String,

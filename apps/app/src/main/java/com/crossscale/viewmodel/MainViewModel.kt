@@ -1,6 +1,8 @@
 package com.crossscale.viewmodel
 
 import android.net.Uri
+import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.Stable
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
@@ -23,6 +25,9 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+// List/Set fields are treated as immutable by convention (never mutated
+// after construction), which keeps the state skippable for Compose.
+@Immutable
 data class MainUiState(
     val models: List<ModelInfo> = emptyList(),
     val selectedModel: ModelInfo? = null,
@@ -37,6 +42,9 @@ data class MainUiState(
     val useRemote: Boolean = false
 )
 
+// Observable state lives in StateFlow properties; the class itself never
+// mutates through public API, so it is safe to mark @Stable.
+@Stable
 class MainViewModel(
     private val modelRepository: ModelProvider,
     private val deviceRepository: DeviceRepository,

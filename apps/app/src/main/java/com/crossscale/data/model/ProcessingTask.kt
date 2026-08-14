@@ -1,5 +1,6 @@
 package com.crossscale.data.model
 
+import androidx.compose.runtime.Immutable
 import com.crossscale.data.repository.ProcessingFailureDetail
 
 enum class ProcessingStatus {
@@ -10,6 +11,9 @@ enum class ProcessingStatus {
     CANCELED
 }
 
+// List fields would otherwise be inferred unstable by the Compose compiler;
+// by convention the lists are never mutated after construction.
+@Immutable
 data class ProcessingTask(
     val id: String,
     val imagePath: String,

@@ -69,8 +69,8 @@ fun HomeScreen(
     val selectedModel = state.selectedModel?.name ?: "未选择"
     val selectedOutput = abbreviatePath(state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/CrossScale")
     val queueItems = processingUiState.queueItems
-    val pendingQueueCount = countPendingQueueItems(queueItems)
-    val failedQueueCount = countFailedQueueItems(queueItems)
+    val pendingQueueCount = remember(queueItems) { countPendingQueueItems(queueItems) }
+    val failedQueueCount = remember(queueItems) { countFailedQueueItems(queueItems) }
 
     var showModelSheet by rememberSaveable { mutableStateOf(false) }
     var queueSheetVisible by rememberSaveable { mutableStateOf(false) }

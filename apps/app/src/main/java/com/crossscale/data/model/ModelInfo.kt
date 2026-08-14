@@ -1,5 +1,8 @@
 package com.crossscale.data.model
 
+import androidx.compose.runtime.Immutable
+
+@Immutable
 data class ModelInfo(
     val name: String,
     val scaleFactor: Int,

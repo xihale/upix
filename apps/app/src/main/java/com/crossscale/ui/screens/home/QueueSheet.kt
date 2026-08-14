@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,8 +60,8 @@ internal fun QueueBottomSheetContent(
     onClearBatchQueue: () -> Unit
 ) {
     val queueItems = processingUiState.queueItems
-    val pendingQueueCount = countPendingQueueItems(queueItems)
-    val failedQueueCount = countFailedQueueItems(queueItems)
+    val pendingQueueCount = remember(queueItems) { countPendingQueueItems(queueItems) }
+    val failedQueueCount = remember(queueItems) { countFailedQueueItems(queueItems) }
     val queueRunningLabel = if (processingUiState.isQueueRunning) "运行中" else "已暂停"
 
     Column(
@@ -156,6 +157,9 @@ private fun QueueItemRow(
     }
     val canOpenOutput = queueItem.status == PersistedQueueItemStatus.COMPLETED &&
         !queueItem.lastOutputUri.isNullOrBlank()
+    // Decoding a (possibly multi-source) spec parses JSON and URIs; only
+    // recompute when the source itself changes, not on every recomposition.
+    val sourceLabel = remember(queueItem.source) { inputSourceLabel(queueItem.source) }
 
     Column(
         modifier = Modifier
@@ -167,7 +171,7 @@ private fun QueueItemRow(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
             QueueItemThumbnail(source = queueItem.source)
             Column(modifier = Modifier.weight(1f)) {
-                Text(text = "#${index + 1} ${inputSourceLabel(queueItem.source)}", style = MaterialTheme.typography.bodyMedium)
+                Text(text = "#${index + 1} $sourceLabel", style = MaterialTheme.typography.bodyMedium)
                 Text(
                     text = "分配：${allocationSummary(queueItem)}",
                     style = MaterialTheme.typography.bodySmall,
