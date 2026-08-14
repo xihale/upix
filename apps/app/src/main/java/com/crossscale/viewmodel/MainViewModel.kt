@@ -4,6 +4,8 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.crossscale.AppContainer
 import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.ModelImportResult
@@ -11,7 +13,7 @@ import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.repository.DeviceRepository
 import com.crossscale.data.repository.InputSourceSpec
 import com.crossscale.data.repository.LogRepository
-import com.crossscale.data.repository.ModelRepository
+import com.crossscale.data.repository.ModelProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -36,7 +38,7 @@ data class MainUiState(
 )
 
 class MainViewModel(
-    private val modelRepository: ModelRepository,
+    private val modelRepository: ModelProvider,
     private val deviceRepository: DeviceRepository,
     private val logRepository: LogRepository
 ) : ViewModel() {
@@ -303,16 +305,13 @@ class MainViewModel(
     }
 
     companion object {
-        fun factory(container: AppContainer): ViewModelProvider.Factory {
-            return object : ViewModelProvider.Factory {
-                @Suppress("UNCHECKED_CAST")
-                override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                    return MainViewModel(
-                        modelRepository = container.modelRepository,
-                        deviceRepository = container.deviceRepository,
-                        logRepository = container.logRepository
-                    ) as T
-                }
+        fun factory(container: AppContainer): ViewModelProvider.Factory = viewModelFactory {
+            initializer {
+                MainViewModel(
+                    modelRepository = container.modelRepository,
+                    deviceRepository = container.deviceRepository,
+                    logRepository = container.logRepository
+                )
             }
         }
     }

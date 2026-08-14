@@ -1,5 +1,7 @@
 package com.crossscale.viewmodel
 
+import android.net.Uri
+import com.crossscale.data.model.ModelImportResult
 import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.model.ProcessingStatus
 import com.crossscale.data.repository.BatchOutputDirectory
@@ -658,12 +660,30 @@ class ProcessingViewModelTest {
     private class FakeModelProvider(
         private val modelInfo: ModelInfo
     ) : ModelProvider {
+        private val _models = MutableStateFlow(listOf(modelInfo))
+        override val models: StateFlow<List<ModelInfo>> = _models.asStateFlow()
+
         override fun getModelByName(name: String): ModelInfo? {
             return if (modelInfo.name == name) {
                 modelInfo
             } else {
                 null
             }
+        }
+
+        override fun modelDirectoryPath(): String = "/models"
+
+        override suspend fun syncBundledModels() = Unit
+
+        override suspend fun refreshModels() {
+            _models.value = listOf(modelInfo)
+        }
+
+        override suspend fun importModels(inputUris: List<Uri>): ModelImportResult =
+            ModelImportResult()
+
+        override suspend fun deleteModel(modelInfo: ModelInfo) {
+            _models.value = emptyList()
         }
     }
 

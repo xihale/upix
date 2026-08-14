@@ -8,8 +8,8 @@ import android.os.Environment
 import com.crossscale.data.repository.LogRepository
 import com.crossscale.data.repository.NativeProcessResult
 import com.crossscale.data.repository.ResolvedImageInput
-import com.crossscale.native.NCNNEngine
-import com.crossscale.native.NativeWorker
+import com.crossscale.nativelib.NCNNEngine
+import com.crossscale.nativelib.NativeWorker
 import java.io.File
 import java.io.FileOutputStream
 

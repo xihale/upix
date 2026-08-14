@@ -1,11 +1,23 @@
 package com.crossscale.data.repository
 
+import android.net.Uri
+import com.crossscale.data.model.ModelImportResult
 import com.crossscale.data.model.ModelInfo
 import java.io.File
 import kotlinx.coroutines.flow.StateFlow
 
+/**
+ * Model catalog contract: observe the available models and manage their
+ * lifecycle (discovery refresh, bundled sync, import, delete).
+ */
 interface ModelProvider {
+    val models: StateFlow<List<ModelInfo>>
     fun getModelByName(name: String): ModelInfo?
+    fun modelDirectoryPath(): String
+    suspend fun syncBundledModels()
+    suspend fun refreshModels()
+    suspend fun importModels(inputUris: List<Uri>): ModelImportResult
+    suspend fun deleteModel(modelInfo: ModelInfo)
 }
 
 interface InputSourceResolver {

@@ -17,7 +17,7 @@ class CrossScaleApplication : Application() {
         // Load/create the long-term Ed25519 identity (stored app-private).
         // Must happen before any coordinator/worker connect attempt.
         val identityFile = java.io.File(filesDir, "identity")
-        com.crossscale.native.NativeWorker().loadIdentity(identityFile.absolutePath)
+        com.crossscale.nativelib.NativeWorker().loadIdentity(identityFile.absolutePath)
         Log.i(TAG, "CrossScale Application started")
     }
 }

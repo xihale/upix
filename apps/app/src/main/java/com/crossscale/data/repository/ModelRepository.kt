@@ -28,9 +28,9 @@ class ModelRepository(
         ?: File(context.filesDir, "models")
 
     private val _models = MutableStateFlow<List<ModelInfo>>(emptyList())
-    val models: StateFlow<List<ModelInfo>> = _models.asStateFlow()
+    override val models: StateFlow<List<ModelInfo>> = _models.asStateFlow()
 
-    suspend fun syncBundledModels() = withContext(Dispatchers.IO) {
+    override suspend fun syncBundledModels() = withContext(Dispatchers.IO) {
         ensureModelDirectory()
 
         val copied = copyBundledDefaultModel()
@@ -41,12 +41,12 @@ class ModelRepository(
         refreshModelsInternal()
     }
 
-    suspend fun refreshModels() = withContext(Dispatchers.IO) {
+    override suspend fun refreshModels() = withContext(Dispatchers.IO) {
         ensureModelDirectory()
         refreshModelsInternal()
     }
 
-    suspend fun deleteModel(modelInfo: ModelInfo) = withContext(Dispatchers.IO) {
+    override suspend fun deleteModel(modelInfo: ModelInfo) = withContext(Dispatchers.IO) {
         val paramFile = File(modelInfo.paramPath)
         val binFile = File(modelInfo.binPath)
         if (paramFile.exists()) {
@@ -61,7 +61,7 @@ class ModelRepository(
         refreshModelsInternal()
     }
 
-    suspend fun importModels(inputUris: List<Uri>): ModelImportResult = withContext(Dispatchers.IO) {
+    override suspend fun importModels(inputUris: List<Uri>): ModelImportResult = withContext(Dispatchers.IO) {
         ensureModelDirectory()
 
         val normalizedUris = inputUris.distinct()
@@ -177,7 +177,7 @@ class ModelRepository(
         }
     }
 
-    fun modelDirectoryPath(): String {
+    override fun modelDirectoryPath(): String {
         return modelsDirectory.absolutePath
     }
 

@@ -9,8 +9,8 @@
 }
 
 # Keep NativeWorker and NCNNEngine classes that are called from JNI
--keep class com.crossscale.native.NativeWorker { *; }
--keep class com.crossscale.native.NCNNEngine { *; }
+-keep class com.crossscale.nativelib.NativeWorker { *; }
+-keep class com.crossscale.nativelib.NCNNEngine { *; }
 
 # Keep data model classes used in serialization
 -keep class com.crossscale.data.model.** { *; }

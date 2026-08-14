@@ -3,8 +3,8 @@ package com.crossscale
 import android.graphics.BitmapFactory
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.crossscale.native.NCNNEngine
-import com.crossscale.native.NativeWorker
+import com.crossscale.nativelib.NCNNEngine
+import com.crossscale.nativelib.NativeWorker
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.FixMethodOrder

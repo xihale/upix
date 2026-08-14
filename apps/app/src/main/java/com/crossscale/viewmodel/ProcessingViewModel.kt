@@ -4,6 +4,8 @@ import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.crossscale.AppContainer
 import com.crossscale.data.repository.BatchOutputStore
 import com.crossscale.data.repository.ImageProcessingSession
@@ -1823,21 +1825,18 @@ class ProcessingViewModel(
         private const val DISTRIBUTED_TILE_OVERLAP = 16
         private const val MAX_RECENT_ATTRIBUTIONS = 8
 
-        fun factory(container: AppContainer): ViewModelProvider.Factory {
-            return object : ViewModelProvider.Factory {
-                @Suppress("UNCHECKED_CAST")
-                override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                    return ProcessingViewModel(
-                        logRepository = container.logRepository,
-                        modelRepository = container.modelRepository,
-                        inputSourceRepository = container.inputSourceRepository,
-                        batchOutputRepository = container.batchOutputRepository,
-                        checkpointRepository = container.processingCheckpointRepository,
-                        queueRepository = container.processingQueueRepository,
-                        nativeImageProcessingRepository = container.nativeImageProcessingRepository,
-                        coordinatorClient = container.coordinatorClient
-                    ) as T
-                }
+        fun factory(container: AppContainer): ViewModelProvider.Factory = viewModelFactory {
+            initializer {
+                ProcessingViewModel(
+                    logRepository = container.logRepository,
+                    modelRepository = container.modelRepository,
+                    inputSourceRepository = container.inputSourceRepository,
+                    batchOutputRepository = container.batchOutputRepository,
+                    checkpointRepository = container.processingCheckpointRepository,
+                    queueRepository = container.processingQueueRepository,
+                    nativeImageProcessingRepository = container.nativeImageProcessingRepository,
+                    coordinatorClient = container.coordinatorClient
+                )
             }
         }
     }

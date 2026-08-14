@@ -4,6 +4,8 @@ import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.crossscale.AppContainer
 import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.RemoteEndpoint
@@ -331,18 +333,15 @@ class DeviceViewModel(
         private const val PREFS_NAME = "crossscale_settings"
         private const val PREF_STREAM_ENCRYPTED = "stream_encrypted"
 
-        fun factory(container: AppContainer): ViewModelProvider.Factory {
-            return object : ViewModelProvider.Factory {
-                @Suppress("UNCHECKED_CAST")
-                override fun <T : ViewModel> create(modelClass: Class<T>): T {
-                    return DeviceViewModel(
-                        deviceRepository = container.deviceRepository,
-                        pairingRepository = container.pairingRepository,
-                        coordinatorClient = container.coordinatorClient,
-                        logRepository = container.logRepository,
-                        appContext = container.appContext
-                    ) as T
-                }
+        fun factory(container: AppContainer): ViewModelProvider.Factory = viewModelFactory {
+            initializer {
+                DeviceViewModel(
+                    deviceRepository = container.deviceRepository,
+                    pairingRepository = container.pairingRepository,
+                    coordinatorClient = container.coordinatorClient,
+                    logRepository = container.logRepository,
+                    appContext = container.appContext
+                )
             }
         }
     }

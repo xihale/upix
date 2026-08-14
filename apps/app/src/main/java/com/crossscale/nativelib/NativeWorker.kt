@@ -1,4 +1,4 @@
-package com.crossscale.native
+package com.crossscale.nativelib
 
 class NativeWorker {
     init {

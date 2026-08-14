@@ -336,7 +336,7 @@ auto recv_encrypted_frame(
 extern "C" {
 
 JNIEXPORT jlong JNICALL
-Java_com_crossscale_native_NCNNEngine_nativeInit(
+Java_com_crossscale_nativelib_NCNNEngine_nativeInit(
     JNIEnv* env,
     jobject thiz,
     jint device_type
@@ -370,7 +370,7 @@ Java_com_crossscale_native_NCNNEngine_nativeInit(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_crossscale_native_NCNNEngine_nativeLoadModel(
+Java_com_crossscale_nativelib_NCNNEngine_nativeLoadModel(
     JNIEnv* env,
     jobject thiz,
     jlong engine_ptr,
@@ -414,7 +414,7 @@ Java_com_crossscale_native_NCNNEngine_nativeLoadModel(
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_crossscale_native_NCNNEngine_nativeGetLastError(
+Java_com_crossscale_nativelib_NCNNEngine_nativeGetLastError(
     JNIEnv* env,
     jobject thiz
 ) {
@@ -424,7 +424,7 @@ Java_com_crossscale_native_NCNNEngine_nativeGetLastError(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_com_crossscale_native_NCNNEngine_nativeProcessImage(
+Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImage(
     JNIEnv* env,
     jobject thiz,
     jlong engine_ptr,
@@ -574,7 +574,7 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImage(
 }
 
 JNIEXPORT jfloat JNICALL
-Java_com_crossscale_native_NCNNEngine_nativeBenchmark(
+Java_com_crossscale_nativelib_NCNNEngine_nativeBenchmark(
     JNIEnv* env,
     jobject thiz,
     jlong engine_ptr
@@ -588,7 +588,7 @@ Java_com_crossscale_native_NCNNEngine_nativeBenchmark(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
+Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
     JNIEnv* env,
     jobject thiz,
     jstring host,
@@ -813,7 +813,7 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
 }
 
 JNIEXPORT jint JNICALL
-Java_com_crossscale_native_NCNNEngine_nativeGetScaleFactor(
+Java_com_crossscale_nativelib_NCNNEngine_nativeGetScaleFactor(
     JNIEnv* env,
     jobject thiz,
     jlong engine_ptr
@@ -827,7 +827,7 @@ Java_com_crossscale_native_NCNNEngine_nativeGetScaleFactor(
 }
 
 JNIEXPORT jobjectArray JNICALL
-Java_com_crossscale_native_NCNNEngine_nativeGetDevices(
+Java_com_crossscale_nativelib_NCNNEngine_nativeGetDevices(
     JNIEnv* env,
     jclass clazz
 ) {
@@ -852,7 +852,7 @@ Java_com_crossscale_native_NCNNEngine_nativeGetDevices(
 }
 
 JNIEXPORT void JNICALL
-Java_com_crossscale_native_NCNNEngine_nativeRelease(
+Java_com_crossscale_nativelib_NCNNEngine_nativeRelease(
     JNIEnv* env,
     jobject thiz,
     jlong engine_ptr
@@ -867,7 +867,7 @@ Java_com_crossscale_native_NCNNEngine_nativeRelease(
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_crossscale_native_NativeWorker_nativeRequestConnection(
+Java_com_crossscale_nativelib_NativeWorker_nativeRequestConnection(
     JNIEnv* env,
     jobject thiz,
     jstring host,
@@ -973,7 +973,7 @@ Java_com_crossscale_native_NativeWorker_nativeRequestConnection(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_crossscale_native_NativeWorker_nativeLoadIdentity(
+Java_com_crossscale_nativelib_NativeWorker_nativeLoadIdentity(
     JNIEnv* env,
     jobject thiz,
     jstring identity_path
