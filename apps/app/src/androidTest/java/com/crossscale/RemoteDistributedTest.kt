@@ -25,7 +25,8 @@ import org.junit.runners.MethodSorters
  *     -e class com.crossscale.RemoteDistributedTest \
  *     com.crossscale.test/androidx.test.runner.AndroidJUnitRunner
  *
- * Orchestration lives in scripts/test_remote_e2e.sh.
+ * Orchestration: run the `am instrument` command above directly (see
+ * scripts/android_test.sh for the general build/unit/smoke harness).
  */
 @RunWith(AndroidJUnit4::class)
 @FixMethodOrder(MethodSorters.NAME_ASCENDING)

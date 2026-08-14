@@ -5,17 +5,36 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ANDROID_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-NDK_PATH="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-${NDK_HOME:-${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/home/xihale/Android/Sdk}}/ndk/29.0.14206865}}}"
-SDK_PATH="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/home/xihale/Android/Sdk}}"
-NDK_API_LEVEL="${ANDROID_NATIVE_API_LEVEL:-26}"
-
-if [[ ! -d "${NDK_PATH}" ]]; then
-    echo "NDK not found: ${NDK_PATH}" >&2
+# Locate the Android SDK: prefer env vars, then derive it from sdkmanager on
+# PATH, then fall back to the sdk.dir recorded in apps/local.properties (the
+# standard location Gradle itself uses). No hard-coded install paths.
+SDK_PATH="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+if [[ -z "${SDK_PATH}" ]] && command -v sdkmanager >/dev/null 2>&1; then
+    candidate="$(cd "$(dirname "$(command -v sdkmanager)")/../.." 2>/dev/null && pwd)"
+    if [[ -n "${candidate}" && -d "${candidate}/platform-tools" ]]; then
+        SDK_PATH="${candidate}"
+    fi
+fi
+if [[ -z "${SDK_PATH}" && -f "${ANDROID_DIR}/local.properties" ]]; then
+    SDK_PATH="$(sed -n 's/^sdk\.dir=//p' "${ANDROID_DIR}/local.properties" | head -n1 | tr -d '\r')"
+fi
+if [[ -z "${SDK_PATH}" ]]; then
+    echo "Android SDK not found. Set ANDROID_HOME or ANDROID_SDK_ROOT to your SDK install." >&2
+    exit 1
+fi
+if [[ ! -d "${SDK_PATH}" ]]; then
+    echo "Android SDK not found: ${SDK_PATH}" >&2
     exit 1
 fi
 
-if [[ ! -d "${SDK_PATH}" ]]; then
-    echo "Android SDK not found: ${SDK_PATH}" >&2
+# NDK version must match ndkVersion in app/build.gradle.kts.
+NDK_VERSION="29.0.14206865"
+NDK_PATH="${ANDROID_NDK_ROOT:-${ANDROID_NDK_HOME:-${NDK_HOME:-${SDK_PATH}/ndk/${NDK_VERSION}}}}"
+NDK_API_LEVEL="${ANDROID_NATIVE_API_LEVEL:-26}"
+
+if [[ ! -d "${NDK_PATH}" ]]; then
+    echo "NDK ${NDK_VERSION} not found: ${NDK_PATH}" >&2
+    echo "Set ANDROID_NDK_ROOT or install it via sdkmanager --install \"ndk;${NDK_VERSION}\"." >&2
     exit 1
 fi
 

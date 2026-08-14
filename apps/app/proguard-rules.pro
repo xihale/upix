@@ -36,7 +36,3 @@
 
 # Keep EncryptedSharedPreferences and security-crypto internals
 -keep class androidx.security.crypto.** { *; }
-
-# Keep Ktor client classes
--keep class io.ktor.** { *; }
--dontwarn io.ktor.**
