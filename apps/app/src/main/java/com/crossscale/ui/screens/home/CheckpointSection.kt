@@ -97,8 +97,8 @@ internal fun CheckpointSection(
 /**
  * Resolves the checkpoint status text from the summary counts at the
  * consumption point. Mirrors the statusLabel derivation in
- * ProcessingMappers.toUiSummary (kept there as a VM-owned Chinese string;
- * event-based i18n of viewmodel messages is a later phase).
+ * ProcessingMappers.toUiSummary (which resolves the same resources via
+ * StringProvider on the viewmodel side).
  */
 @Composable
 private fun checkpointStatusLabel(summary: ProcessingCheckpointSummary): String {
