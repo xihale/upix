@@ -125,6 +125,11 @@ dependencies {
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
 
+    // Material icon vector sets. Not part of the Compose BOM; pinned via
+    // libs.materialIcons (1.7.8, final release of the independent version line).
+    implementation(libs.androidx.compose.material.icons.core)
+    implementation(libs.androidx.compose.material.icons.extended)
+
     // ViewModel
     implementation(libs.androidx.lifecycle.viewmodel.compose)
 

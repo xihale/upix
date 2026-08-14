@@ -1,44 +1,53 @@
 package com.crossscale.ui.navigation
 
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.HelpOutline
+import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
+import androidx.compose.material.icons.outlined.Devices
+import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.ModelTraining
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.ui.graphics.vector.ImageVector
+
 sealed class AppScreen(
     val route: String,
     val title: String,
-    val iconResId: Int
+    val icon: ImageVector
 ) {
     data object Home : AppScreen(
         route = "home",
         title = "主页",
-        iconResId = android.R.drawable.ic_menu_view
+        icon = Icons.Outlined.Home
     )
 
     data object Devices : AppScreen(
         route = "devices",
         title = "连接",
-        iconResId = android.R.drawable.ic_menu_share
+        icon = Icons.Outlined.Devices
     )
 
     data object Settings : AppScreen(
         route = "settings",
         title = "设置",
-        iconResId = android.R.drawable.ic_menu_manage
+        icon = Icons.Outlined.Settings
     )
 
     data object Help : AppScreen(
         route = "help",
         title = "帮助",
-        iconResId = android.R.drawable.ic_menu_help
+        icon = Icons.AutoMirrored.Outlined.HelpOutline
     )
 
     data object SettingsModels : AppScreen(
         route = "settings/models",
         title = "模型管理",
-        iconResId = android.R.drawable.ic_menu_gallery
+        icon = Icons.Outlined.ModelTraining
     )
 
     data object SettingsLogs : AppScreen(
         route = "settings/logs",
         title = "日志",
-        iconResId = android.R.drawable.ic_menu_info_details
+        icon = Icons.AutoMirrored.Outlined.ReceiptLong
     )
 
     companion object {

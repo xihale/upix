@@ -19,6 +19,9 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.AddPhotoAlternate
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -38,7 +41,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.crossscale.data.thumbnails.decodeQueueThumbnailWithLimit
 import com.crossscale.ui.theme.BorderlessTokens
@@ -104,7 +106,7 @@ private fun EmptyHero() {
             contentAlignment = Alignment.Center
         ) {
             Icon(
-                painter = painterResource(id = android.R.drawable.ic_input_add),
+                imageVector = Icons.Outlined.AddPhotoAlternate,
                 contentDescription = null,
                 tint = Color.White,
                 modifier = Modifier.size(36.dp)
@@ -201,8 +203,8 @@ private fun SelectedHero(
         ) {
             Box(contentAlignment = Alignment.Center) {
                 Icon(
-                    painter = painterResource(id = android.R.drawable.ic_menu_close_clear_cancel),
-                    contentDescription = null,
+                    imageVector = Icons.Outlined.Close,
+                    contentDescription = "清除已选图片",
                     modifier = Modifier.size(16.dp),
                     tint = MaterialTheme.colorScheme.onSurface
                 )

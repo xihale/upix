@@ -14,6 +14,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
+import androidx.compose.material.icons.outlined.Queue
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -26,7 +29,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.unit.dp
 import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.RemoteEndpoint
@@ -158,7 +160,7 @@ private fun QueueDockEntry(
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    painter = painterResource(id = android.R.drawable.ic_menu_sort_by_size),
+                    imageVector = Icons.Outlined.Queue,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.onPrimaryContainer,
                     modifier = Modifier.size(15.dp)
@@ -181,7 +183,7 @@ private fun QueueDockEntry(
             QueueStatusBadge(pendingQueueCount = pendingQueueCount, failedQueueCount = failedQueueCount)
 
             Icon(
-                painter = painterResource(id = android.R.drawable.arrow_up_float),
+                imageVector = Icons.Outlined.KeyboardArrowUp,
                 contentDescription = "打开队列",
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(16.dp)

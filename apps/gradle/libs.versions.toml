@@ -8,6 +8,10 @@ coreKtx = "1.17.0"
 lifecycle = "2.10.0"
 activityCompose = "1.12.4"
 composeBom = "2026.02.00"
+# material-icons-core/extended are NOT covered by the Compose BOM; 1.7.8 is the
+# final release on their independent version line and stays API-compatible with
+# newer Compose releases (they only contain ImageVector definitions).
+materialIcons = "1.7.8"
 navigationCompose = "2.9.7"
 coroutines = "1.10.2"
 camerax = "1.5.3"
@@ -34,6 +38,10 @@ androidx-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling
 androidx-compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4" }
 androidx-compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest" }
 androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
+
+# Material icon vector sets (own version line, not in the Compose BOM)
+androidx-compose-material-icons-core = { module = "androidx.compose.material:material-icons-core", version.ref = "materialIcons" }
+androidx-compose-material-icons-extended = { module = "androidx.compose.material:material-icons-extended", version.ref = "materialIcons" }
 
 # ViewModel
 androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }

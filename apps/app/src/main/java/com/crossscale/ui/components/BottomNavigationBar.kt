@@ -10,7 +10,6 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.navigation.NavDestination
 import androidx.navigation.NavDestination.Companion.hierarchy
-import androidx.compose.ui.res.painterResource
 import androidx.navigation.NavController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import com.crossscale.ui.navigation.AppScreen
@@ -28,7 +27,7 @@ fun BottomNavigationBar(navController: NavController) {
             val selected = isScreenSelected(currentDestination = currentDestination, screen = screen)
 
             NavigationBarItem(
-                icon = { Icon(painterResource(id = screen.iconResId), contentDescription = screen.title) },
+                icon = { Icon(screen.icon, contentDescription = screen.title) },
                 label = { Text(screen.title) },
                 selected = selected,
                 onClick = {
