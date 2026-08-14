@@ -18,6 +18,7 @@ a.out
 # IDE / editor
 .vscode/
 .idea/
+.zcode/
 *.swp
 *.swo
 *~
