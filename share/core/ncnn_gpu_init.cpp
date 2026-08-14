@@ -162,26 +162,35 @@ std::mutex g_vulkan_init_mutex;
         file.clear();
         file.seekg(0);
 
+        // Infer the net scale factor from Interp layers. SR nets compose
+        // upsampling, so the net scale is the product of every Interp layer's
+        // per-axis scale (param 1 = height scale, 2 = width scale). Only
+        // scale-based resize types (param 0 in {1,3,4,5}) carry a scale;
+        // type 2 resizes to fixed output dims instead and is skipped.
+        // e.g. realesrgan-x4plus: two 2x Interps -> 4;
+        //      Real-ESRGANv3-anime x2: 4x Interp then 0.5x downsample -> 2.
+        double interp_product = 1.0;
+        bool found_interp = false;
         while (std::getline(file, line)) {
-            // Check for scale in layer names (common in SR models)
-            if (line.find("upsample") != std::string::npos ||
-                line.find("Upsample") != std::string::npos ||
-                line.find("interp") != std::string::npos) {
-                // Check for scale factor in the line
-                size_t pos = line.find("scale_factor=");
-                if (pos != std::string::npos) {
-                    scale_factor_ = std::stoi(line.substr(pos + 13));
-                    break;
+            // Param lines start with the layer type in column 0.
+            if (line.rfind("Interp", 0) != 0) continue;
+            found_interp = true;
+            auto param = [&line](const std::string& key) -> double {
+                try {
+                    size_t pos = line.find(key);
+                    if (pos == std::string::npos) return 1.0;
+                    return std::stod(line.substr(pos + key.size()));
+                } catch (const std::exception&) {
+                    return 1.0;
                 }
-                pos = line.find("6=");  // Often scale is param 6 in Interp layers
-                if (pos != std::string::npos) {
-                    float scale = std::stof(line.substr(pos + 2));
-                    if (scale > 1.0f && scale < 10.0f) {
-                        scale_factor_ = static_cast<int>(scale);
-                        break;
-                    }
-                }
-            }
+            };
+            if (param(" 0=") == 2.0) continue;  // fixed output size, not a scale
+            const double h_scale = param(" 1=");
+            if (h_scale > 0.0) interp_product *= h_scale;
+        }
+        if (found_interp) {
+            const int detected = static_cast<int>(interp_product + 0.5);
+            if (detected >= 1) scale_factor_ = detected;
         }
 
         // If we couldn't detect, try inferring from model metadata or use default

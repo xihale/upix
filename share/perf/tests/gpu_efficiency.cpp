@@ -226,6 +226,9 @@ auto GpuEfficiencyTest::run(const TestConfig& cfg, Reporter& rep) -> int {
         nvml.stop();
         return 3;
     }
+    // Output-shape expectations must match the resolved model's scale
+    // (cmd_process does the same after load_model).
+    engine->set_scale_factor(cfg.scale);
 
     // Capture GPU identity for the meta event. Prefer NVML's marketing name
     // (accurate); fall back to the engine's generic "Vulkan GPU-N" label.
@@ -276,6 +279,7 @@ auto GpuEfficiencyTest::run(const TestConfig& cfg, Reporter& rep) -> int {
             if (!cl) {
                 LOG_WARNING("Perf", "CPU model load failed, skipping baseline: " + cl.error().message);
             } else {
+                cpu_engine->set_scale_factor(cfg.scale);
                 auto r = run_phase(*cpu_engine, cfg, DeviceType::CPU, nvml, wl, rep, "cpu");
                 cpu_tps = summarize(r, "cpu", rep);
             }
