@@ -6,6 +6,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 
 #if defined(__linux__)
 #include <sys/sysinfo.h>
@@ -126,6 +129,55 @@ inline auto TileSizeOptimizer::profile_device(Engine& engine) -> DevicePerforman
     return profile;
 }
 
+// ---------------------------------------------------------------------------
+// Auto-tile probe cache
+//
+// The probe benchmarks up to 8 tile sizes with (2 warmup + 5 timed) full
+// forward passes each — a large fixed cost that dominates wall time when a
+// directory contains many images of the same shape (screenshots, anime
+// frames). Tile size only affects performance, never output correctness, so
+// the probe decision is cached per (model, device type, dimension bucket)
+// and reused. Dimensions are bucketed by rounding up to multiples of 256:
+// images in the same bucket produce the same tile grid at every candidate
+// size, so the probe result transfers. Inline functions with function-local
+// statics are shared across translation units (ODR), and the mutex guards
+// the multi-threaded batch path.
+// ---------------------------------------------------------------------------
+namespace detail {
+
+struct TileProbeKey {
+    std::string model_name;
+    int device = 0;          // DeviceType as int
+    int width_bucket = 0;    // ceil(width / 256)
+    int height_bucket = 0;   // ceil(height / 256)
+
+    bool operator==(const TileProbeKey& o) const {
+        return device == o.device
+            && width_bucket == o.width_bucket
+            && height_bucket == o.height_bucket
+            && model_name == o.model_name;
+    }
+};
+
+struct TileProbeKeyHash {
+    size_t operator()(const TileProbeKey& k) const {
+        size_t h = std::hash<int>{}((k.device * 31 + k.width_bucket) * 31 + k.height_bucket);
+        return h ^ (std::hash<std::string>{}(k.model_name) << 1);
+    }
+};
+
+inline auto tile_probe_cache() -> std::unordered_map<TileProbeKey, int, TileProbeKeyHash>& {
+    static std::unordered_map<TileProbeKey, int, TileProbeKeyHash> cache;
+    return cache;
+}
+
+inline auto tile_probe_cache_mutex() -> std::mutex& {
+    static std::mutex mutex;
+    return mutex;
+}
+
+} // namespace detail
+
 inline auto TileSizeOptimizer::find_optimal_tile_size(
     Engine& engine,
     const ModelConstraints& model,
@@ -133,6 +185,30 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
     int image_width,
     int image_height
 ) -> int {
+
+    // Probe cache lookup: (model, device type, quantized dimensions).
+    constexpr int DIM_BUCKET = 256;
+    detail::TileProbeKey key{
+        model.model_name,
+        static_cast<int>(engine.current_device()),
+        (image_width + DIM_BUCKET - 1) / DIM_BUCKET,
+        (image_height + DIM_BUCKET - 1) / DIM_BUCKET,
+    };
+
+    {
+        std::lock_guard<std::mutex> lock(detail::tile_probe_cache_mutex());
+        auto& cache = detail::tile_probe_cache();
+        if (auto it = cache.find(key); it != cache.end()) {
+            LOG_DEBUG("TileOptimizer", "Auto-tile cache HIT: model=" + key.model_name +
+                      " bucket=" + std::to_string(key.width_bucket) + "x" +
+                      std::to_string(key.height_bucket) +
+                      " -> tile_size=" + std::to_string(it->second));
+            return it->second;
+        }
+    }
+    LOG_DEBUG("TileOptimizer", "Auto-tile cache MISS: model=" + key.model_name +
+              " bucket=" + std::to_string(key.width_bucket) + "x" +
+              std::to_string(key.height_bucket) + " -> running probe");
 
     LOG_INFO("TileOptimizer", "Finding optimal tile size...");
 
@@ -251,6 +327,11 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
     LOG_INFO("TileOptimizer", "Optimal tile size: " + std::to_string(best_tile) +
             " (min_time=" + std::to_string(min_time) + "s, penalty=" +
             std::to_string(actual_penalty) + "%)");
+
+    {
+        std::lock_guard<std::mutex> lock(detail::tile_probe_cache_mutex());
+        detail::tile_probe_cache().emplace(key, best_tile);
+    }
 
     return best_tile;
 }

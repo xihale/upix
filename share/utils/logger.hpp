@@ -2,6 +2,7 @@
 
 #include <string>
 #include <string_view>
+#include <cstdlib>
 #include <mutex>
 #include <chrono>
 #include <iostream>
@@ -125,7 +126,13 @@ private:
         }
     }
 
-    LogLevel min_level_ = LogLevel::INFO;
+    LogLevel min_level_ = [] {
+        // CROSSSCALE_LOG_LEVEL=debug enables DEBUG output (default INFO).
+        if (const char* lvl = std::getenv("CROSSSCALE_LOG_LEVEL")) {
+            if (std::string_view(lvl) == "debug") return LogLevel::DEBUG;
+        }
+        return LogLevel::INFO;
+    }();
     std::mutex mutex_;
 };
 
