@@ -1,6 +1,7 @@
 package com.crossscale.viewmodel
 
 import android.net.Uri
+import com.crossscale.R
 import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.model.ProcessingTask
 import com.crossscale.data.repository.BatchOutputStore
@@ -12,6 +13,7 @@ import com.crossscale.data.repository.ProcessingFailureDetail
 import com.crossscale.data.repository.ProcessingPendingItem
 import com.crossscale.data.repository.ResolvedImageInput
 import com.crossscale.network.CoordinatorClient
+import com.crossscale.util.StringProvider
 
 // Run planning and checkpoint bookkeeping extracted from ProcessingViewModel.
 // The planner owns no state: every function is a computation over its arguments
@@ -23,6 +25,7 @@ class ProcessingRunPlanner(
     private val batchOutputRepository: BatchOutputStore,
     private val checkpointRepository: ProcessingCheckpointStore,
     private val logRepository: LogRepository,
+    private val stringProvider: StringProvider,
     private val coordinatorClient: CoordinatorClient? = null
 ) {
     internal fun buildRunSetup(
@@ -291,9 +294,11 @@ class ProcessingRunPlanner(
             return normalizedExplicitProcessor
         }
         if (!distributedRemoteEnabled) {
-            return "本机"
+            return stringProvider.getString(R.string.processing_processor_local)
         }
-        return coordinatorClient?.activeDeviceId().orEmpty().ifBlank { "远端节点" }
+        return coordinatorClient?.activeDeviceId().orEmpty().ifBlank {
+            stringProvider.getString(R.string.processing_processor_remote_node)
+        }
     }
 
     companion object {

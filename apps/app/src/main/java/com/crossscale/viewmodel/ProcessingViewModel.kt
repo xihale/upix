@@ -18,6 +18,7 @@ import com.crossscale.data.repository.ProcessingCheckpointStore
 import com.crossscale.data.repository.ProcessingQueueStore
 import com.crossscale.data.repository.canRetryFailedOnly
 import com.crossscale.network.CoordinatorClient
+import com.crossscale.util.StringProvider
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,7 +46,8 @@ class ProcessingViewModel(
     private val nativeImageProcessingRepository: ImageProcessingStore,
     private val coordinatorClient: CoordinatorClient? = null,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
-    private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default
+    private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val stringProvider: StringProvider
 ) : ViewModel(), ProcessingRunEngineHost, ProcessingQueueControllerHost {
     private val _uiState = MutableStateFlow(ProcessingUiState())
     val uiState: StateFlow<ProcessingUiState> = _uiState.asStateFlow()
@@ -87,6 +89,7 @@ class ProcessingViewModel(
         batchOutputRepository = batchOutputRepository,
         checkpointRepository = checkpointRepository,
         logRepository = logRepository,
+        stringProvider = stringProvider,
         coordinatorClient = coordinatorClient
     )
 
@@ -99,7 +102,8 @@ class ProcessingViewModel(
         checkpointRepository = checkpointRepository,
         coordinatorClient = coordinatorClient,
         logRepository = logRepository,
-        defaultDispatcher = defaultDispatcher
+        defaultDispatcher = defaultDispatcher,
+        stringProvider = stringProvider
     )
 
     private val queueController = ProcessingQueueController(
@@ -124,7 +128,7 @@ class ProcessingViewModel(
                 _uiState.update { state ->
                     state.copy(
                         canResume = checkpoint != null,
-                        checkpointSummary = checkpoint?.toUiSummary(),
+                        checkpointSummary = checkpoint?.toUiSummary(stringProvider),
                         canRetryFailedOnly = checkpoint?.canRetryFailedOnly() == true
                     )
                 }
@@ -501,7 +505,8 @@ class ProcessingViewModel(
                     checkpointRepository = container.processingCheckpointRepository,
                     queueRepository = container.processingQueueRepository,
                     nativeImageProcessingRepository = container.nativeImageProcessingRepository,
-                    coordinatorClient = container.coordinatorClient
+                    coordinatorClient = container.coordinatorClient,
+                    stringProvider = container.stringProvider
                 )
             }
         }

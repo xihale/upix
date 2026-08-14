@@ -1,9 +1,11 @@
 package com.crossscale.viewmodel
 
+import com.crossscale.R
 import com.crossscale.data.repository.PersistedQueueItem
 import com.crossscale.data.repository.ProcessingCheckpoint
 import com.crossscale.data.repository.ProcessingQueueSnapshot
 import com.crossscale.data.repository.failedPendingCount
+import com.crossscale.util.StringProvider
 
 // Pure mappers extracted from ProcessingViewModel. No state, no I/O.
 // internal = visible to the :app module only (UI/data layers do not call these).
@@ -73,7 +75,7 @@ internal fun PersistedQueueItem.toUiQueueItem(): ProcessingQueueItemSummary {
     )
 }
 
-internal fun ProcessingCheckpoint.toUiSummary(): ProcessingCheckpointSummary {
+internal fun ProcessingCheckpoint.toUiSummary(stringProvider: StringProvider): ProcessingCheckpointSummary {
     val pendingCount = pendingItems.size.coerceAtLeast(0)
     val failedCount = failedPendingCount().coerceAtLeast(0)
     val deferredCount = (pendingCount - failedCount).coerceAtLeast(0)
@@ -104,9 +106,12 @@ internal fun ProcessingCheckpoint.toUiSummary(): ProcessingCheckpointSummary {
                 .thenBy { item -> item.uri }
         )
     val checkpointStatus = when {
-        pendingCount <= 0 && failedCount <= 0 -> "已完成"
-        failedCount > 0 -> "可继续（含失败项）"
-        else -> "可继续"
+        pendingCount <= 0 && failedCount <= 0 ->
+            stringProvider.getString(R.string.common_status_completed)
+        failedCount > 0 ->
+            stringProvider.getString(R.string.checkpoint_status_resumable_with_failures)
+        else ->
+            stringProvider.getString(R.string.checkpoint_status_resumable)
     }
     return ProcessingCheckpointSummary(
         taskId = taskId,

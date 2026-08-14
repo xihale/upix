@@ -35,6 +35,8 @@
     <string name="home_include_subdirectories">包含子目录</string>
     <string name="home_select_model_sheet_title">选择模型</string>
     <string name="home_restore_backup">恢复备份</string>
+    <string name="home_restore_backup_result_success">成功恢复 %1$d 个备份</string>
+    <string name="home_restore_backup_result_partial">恢复了 %1$d 个备份，失败 %2$d 个</string>
     <string name="home_continue_queue">继续队列</string>
     <string name="home_start_upscaling">开始超分</string>
     <string name="home_stop">停止</string>
@@ -110,6 +112,32 @@
     <string name="models_import_invalid">模型无效：必须成对包含同名 .param 和 .bin（支持从 zip 导入）</string>
     <string name="models_import_result_partial">已导入 %1$d 个模型，%2$d 个无效</string>
     <string name="models_import_result_success">已成功导入 %1$d 个模型</string>
+    <!-- Model import failure detail (resolved by MainViewModel / ModelRepository) -->
+    <string name="models_error_no_files_selected">未选择模型文件</string>
+    <string name="models_import_error_no_files">未选择任何模型文件</string>
+    <string name="models_import_error_staging_dir">模型导入失败：无法创建临时目录</string>
+    <string name="models_import_error_unsupported_type">%1$s：仅支持 .param/.bin/.zip</string>
+    <string name="models_import_error_invalid_pair">%1$s：模型无效，必须同时包含同名 .param 和 .bin</string>
+    <string name="models_import_error_invalid_pair_generic">模型无效，必须同时包含同名 .param 和 .bin</string>
+    <string name="models_import_error_import_failed">%1$s：导入失败（%2$s）</string>
+    <string name="models_import_error_no_models_found">未发现可导入模型，模型文件必须为 .param/.bin 或包含它们的 .zip</string>
+    <string name="models_import_error_unreadable">%1$s：无法读取文件</string>
+    <string name="models_import_error_read_failed">%1$s：读取失败（%2$s）</string>
+    <string name="models_import_error_zip_unreadable">%1$s：无法读取 zip 文件</string>
+    <string name="models_import_error_zip_illegal_entry">%1$s：zip 条目包含非法路径，已跳过: %2$s</string>
+    <string name="models_import_error_unzip_failed">%1$s：解压失败（%2$s）</string>
+    <string name="models_import_error_zip_no_models">%1$s：zip 中未找到 .param/.bin 模型文件</string>
+    <string name="models_import_error_duplicate_param">%1$s：检测到重复 .param，仅保留首个</string>
+    <string name="models_import_error_duplicate_bin">%1$s：检测到重复 .bin，仅保留首个</string>
+    <string name="models_import_error_invalid_extension">%1$s：无效的模型文件扩展名</string>
+    <string name="models_import_error_mkdir_failed">无法创建模型目录：%1$s</string>
+
+    <!-- Connection errors (resolved by DeviceViewModel) -->
+    <string name="connection_error_auto_reconnect_failed">自动重连失败，使用本地处理</string>
+    <string name="connection_error_invalid_params">无效的连接参数</string>
+    <string name="connection_error_connect_failed">连接失败，请检查 PC 是否在线或是否已批准</string>
+    <string name="connection_error_invalid_qr">无效或过期的二维码（请确认 PC 已升级到加密版本）</string>
+    <string name="connection_error_invalid_address">无效的地址</string>
 
     <!-- Connection screen -->
     <string name="connection_title">连接 PC</string>
@@ -151,6 +179,15 @@
     <string name="progress_recent_attributions">近期分配: %1$s</string>
     <string name="progress_output_directory">输出目录: %1$s</string>
     <string name="progress_last_error">最近错误: %1$s</string>
+    <!-- Processing run messages (resolved by ProcessingRunPlanner / ProcessingRunEngine) -->
+    <string name="processing_processor_local">本机</string>
+    <string name="processing_processor_remote_node">远端节点</string>
+    <string name="processing_remote_fallback">PC 不可达，已切换本地处理</string>
+    <string name="processing_error_model_not_found">未找到模型：%1$s</string>
+    <string name="processing_error_native_session">初始化本地处理引擎失败：%1$s</string>
+    <string name="processing_error_save_output">保存输出文件失败</string>
+    <string name="processing_error_unknown_processing">未知处理错误</string>
+    <string name="processing_error_unknown_failure">未知任务错误</string>
 
     <!-- Settings screen -->
     <string name="settings_current_model">当前模型：%1$s</string>

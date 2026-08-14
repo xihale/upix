@@ -12,11 +12,15 @@ import com.crossscale.data.repository.PairingRepository
 import com.crossscale.data.repository.ProcessingCheckpointRepository
 import com.crossscale.data.repository.ProcessingQueueRepository
 import com.crossscale.network.CoordinatorClient
+import com.crossscale.util.StringProvider
 
 class AppContainer(context: Context) {
     val appContext = context.applicationContext
 
     val logRepository = LogRepository()
+    val stringProvider = StringProvider { resId, formatArgs ->
+        appContext.getString(resId, *formatArgs)
+    }
     val appSettingsRepository = AppSettingsRepository(appContext)
     val modelRepository = ModelRepository(appContext, logRepository)
     val deviceRepository = DeviceRepository(logRepository)

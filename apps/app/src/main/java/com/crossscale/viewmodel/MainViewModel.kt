@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.crossscale.AppContainer
+import com.crossscale.R
 import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.ModelImportResult
 import com.crossscale.data.model.ModelInfo
@@ -16,6 +17,7 @@ import com.crossscale.data.repository.DeviceRepository
 import com.crossscale.data.repository.InputSourceSpec
 import com.crossscale.data.repository.LogRepository
 import com.crossscale.data.repository.ModelProvider
+import com.crossscale.util.StringProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -48,7 +50,8 @@ data class MainUiState(
 class MainViewModel(
     private val modelRepository: ModelProvider,
     private val deviceRepository: DeviceRepository,
-    private val logRepository: LogRepository
+    private val logRepository: LogRepository,
+    private val stringProvider: StringProvider
 ) : ViewModel() {
     private val _selectedModelName = MutableStateFlow<String?>(null)
     private val _selectedInputSources = MutableStateFlow<List<String>>(emptyList())
@@ -283,7 +286,9 @@ class MainViewModel(
         if (normalizedUris.isEmpty()) {
             onCompleted(
                 ModelImportResult(
-                    invalidItems = listOf("未选择模型文件")
+                    invalidItems = listOf(
+                        stringProvider.getString(R.string.models_error_no_files_selected)
+                    )
                 )
             )
             return
@@ -318,7 +323,8 @@ class MainViewModel(
                 MainViewModel(
                     modelRepository = container.modelRepository,
                     deviceRepository = container.deviceRepository,
-                    logRepository = container.logRepository
+                    logRepository = container.logRepository,
+                    stringProvider = container.stringProvider
                 )
             }
         }

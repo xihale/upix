@@ -111,7 +111,11 @@ internal fun restoreBackup(
     if (path != null) {
         processingViewModel.restoreBackup(path, mainUiState.processNestedFolders) { restored, failed ->
             scope.launch {
-                val msg = if (failed > 0) "恢复了 $restored 个备份，失败 $failed 个" else "成功恢复 $restored 个备份"
+                val msg = if (failed > 0) {
+                    context.getString(R.string.home_restore_backup_result_partial, restored, failed)
+                } else {
+                    context.getString(R.string.home_restore_backup_result_success, restored)
+                }
                 Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                 // Refresh backup availability state after restore
                 onBackupAvailabilityChanged(processingViewModel.hasBackupFor(path, mainUiState.processNestedFolders))

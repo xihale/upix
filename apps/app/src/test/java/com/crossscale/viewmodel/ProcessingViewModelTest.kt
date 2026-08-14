@@ -21,6 +21,7 @@ import com.crossscale.data.repository.ProcessingQueueRepository
 import com.crossscale.data.repository.ProcessingQueueSnapshot
 import com.crossscale.data.repository.ProcessingQueueStore
 import com.crossscale.data.repository.ResolvedImageInput
+import com.crossscale.util.StringProvider
 import java.io.File
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -654,7 +655,8 @@ class ProcessingViewModelTest {
         queueRepository = queueRepository,
         nativeImageProcessingRepository = nativeImageProcessingRepository,
         ioDispatcher = mainDispatcherRule.testDispatcher,
-        defaultDispatcher = mainDispatcherRule.testDispatcher
+        defaultDispatcher = mainDispatcherRule.testDispatcher,
+        stringProvider = StringProvider { _, _ -> "" }
     )
 
     private class FakeModelProvider(

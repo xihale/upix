@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import com.crossscale.R
 import com.crossscale.nativelib.NCNNEngine
 import java.io.File
 import java.io.FileOutputStream
@@ -458,7 +459,7 @@ class NativeImageProcessingRepository(
                 inputHeight = decoded.height,
                 outputWidth = outputWidth,
                 outputHeight = outputHeight,
-                processorLabel = "本机"
+                processorLabel = context.getString(R.string.processing_processor_local)
             )
         }
 

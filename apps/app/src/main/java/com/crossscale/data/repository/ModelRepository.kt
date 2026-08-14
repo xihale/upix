@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.os.Environment
 import android.provider.OpenableColumns
+import com.crossscale.R
 import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.model.ModelImportResult
 import java.io.BufferedInputStream
@@ -67,7 +68,9 @@ class ModelRepository(
         val normalizedUris = inputUris.distinct()
         if (normalizedUris.isEmpty()) {
             return@withContext ModelImportResult(
-                invalidItems = listOf("未选择任何模型文件")
+                invalidItems = listOf(
+                    context.getString(R.string.models_import_error_no_files)
+                )
             )
         }
 
@@ -81,7 +84,9 @@ class ModelRepository(
                 "Failed to create staging directory for model import: ${stagingRoot.absolutePath}"
             )
             return@withContext ModelImportResult(
-                invalidItems = listOf("模型导入失败：无法创建临时目录")
+                invalidItems = listOf(
+                    context.getString(R.string.models_import_error_staging_dir)
+                )
             )
         }
 
@@ -115,7 +120,9 @@ class ModelRepository(
                     )
 
                     else -> {
-                        invalidItems.add("$sourceName：仅支持 .param/.bin/.zip")
+                        invalidItems.add(
+                            context.getString(R.string.models_import_error_unsupported_type, sourceName)
+                        )
                     }
                 }
             }
@@ -124,7 +131,12 @@ class ModelRepository(
                 val paramFile = candidate.paramFile
                 val binFile = candidate.binFile
                 if (paramFile == null || binFile == null) {
-                    invalidItems.add("${candidate.suggestedName}：模型无效，必须同时包含同名 .param 和 .bin")
+                    invalidItems.add(
+                        context.getString(
+                            R.string.models_import_error_invalid_pair,
+                            candidate.suggestedName
+                        )
+                    )
                     return@forEach
                 }
 
@@ -136,7 +148,13 @@ class ModelRepository(
                     )
                 }.getOrElse { throwable ->
                     val reason = throwable.message.orEmpty().ifBlank { "unknown error" }
-                    invalidItems.add("${candidate.suggestedName}：导入失败（$reason）")
+                    invalidItems.add(
+                        context.getString(
+                            R.string.models_import_error_import_failed,
+                            candidate.suggestedName,
+                            reason
+                        )
+                    )
                     return@forEach
                 }
 
@@ -149,10 +167,14 @@ class ModelRepository(
         }
 
         if (candidates.isEmpty()) {
-            invalidItems.add("未发现可导入模型，模型文件必须为 .param/.bin 或包含它们的 .zip")
+            invalidItems.add(
+                context.getString(R.string.models_import_error_no_models_found)
+            )
         }
         if (importedModelNames.isEmpty() && invalidItems.isEmpty()) {
-            invalidItems.add("模型无效，必须同时包含同名 .param 和 .bin")
+            invalidItems.add(
+                context.getString(R.string.models_import_error_invalid_pair_generic)
+            )
         }
 
         if (importedModelNames.isNotEmpty()) {
@@ -291,7 +313,9 @@ class ModelRepository(
     ) {
         val sourceInputStream = contentResolver.openInputStream(sourceUri)
         if (sourceInputStream == null) {
-            invalidItems.add("$sourceName：无法读取文件")
+            invalidItems.add(
+                context.getString(R.string.models_import_error_unreadable, sourceName)
+            )
             return
         }
 
@@ -310,7 +334,13 @@ class ModelRepository(
                 }
             }
         }.onFailure { throwable ->
-            invalidItems.add("$sourceName：读取失败（${throwable.message}）")
+            invalidItems.add(
+                context.getString(
+                    R.string.models_import_error_read_failed,
+                    sourceName,
+                    throwable.message.orEmpty()
+                )
+            )
             return
         }
 
@@ -334,7 +364,9 @@ class ModelRepository(
     ) {
         val sourceInputStream = contentResolver.openInputStream(sourceUri)
         if (sourceInputStream == null) {
-            invalidItems.add("$sourceName：无法读取 zip 文件")
+            invalidItems.add(
+                context.getString(R.string.models_import_error_zip_unreadable, sourceName)
+            )
             return
         }
 
@@ -352,7 +384,13 @@ class ModelRepository(
                             // Security fix: Validate against Zip Slip vulnerability.
                             // Reject entries with path traversal sequences ("..").
                             if (normalizedEntryPath.contains("..")) {
-                                invalidItems.add("$sourceName：zip 条目包含非法路径，已跳过: $normalizedEntryPath")
+                                invalidItems.add(
+                                    context.getString(
+                                        R.string.models_import_error_zip_illegal_entry,
+                                        sourceName,
+                                        normalizedEntryPath
+                                    )
+                                )
                                 zipInput.closeEntry()
                                 entry = zipInput.nextEntry
                                 continue
@@ -396,12 +434,20 @@ class ModelRepository(
                 }
             }
         }.onFailure { throwable ->
-            invalidItems.add("$sourceName：解压失败（${throwable.message}）")
+            invalidItems.add(
+                context.getString(
+                    R.string.models_import_error_unzip_failed,
+                    sourceName,
+                    throwable.message.orEmpty()
+                )
+            )
             return
         }
 
         if (matchedEntryCount <= 0) {
-            invalidItems.add("$sourceName：zip 中未找到 .param/.bin 模型文件")
+            invalidItems.add(
+                context.getString(R.string.models_import_error_zip_no_models, sourceName)
+            )
         }
     }
 
@@ -423,7 +469,12 @@ class ModelRepository(
 
         if (extension == PARAM_FILE_EXTENSION) {
             if (candidate.paramFile != null) {
-                invalidItems.add("${candidate.suggestedName}：检测到重复 .param，仅保留首个")
+                invalidItems.add(
+                    context.getString(
+                        R.string.models_import_error_duplicate_param,
+                        candidate.suggestedName
+                    )
+                )
                 return
             }
             candidate.paramFile = stagingFile
@@ -432,14 +483,21 @@ class ModelRepository(
 
         if (extension == BIN_FILE_EXTENSION) {
             if (candidate.binFile != null) {
-                invalidItems.add("${candidate.suggestedName}：检测到重复 .bin，仅保留首个")
+                invalidItems.add(
+                    context.getString(
+                        R.string.models_import_error_duplicate_bin,
+                        candidate.suggestedName
+                    )
+                )
                 return
             }
             candidate.binFile = stagingFile
             return
         }
 
-        invalidItems.add("$sourceLabel：无效的模型文件扩展名")
+        invalidItems.add(
+            context.getString(R.string.models_import_error_invalid_extension, sourceLabel)
+        )
     }
 
     private fun importCandidatePair(
@@ -451,7 +509,12 @@ class ModelRepository(
         val uniqueName = resolveUniqueModelName(sanitizedName)
         val targetDirectory = File(modelsDirectory, uniqueName)
         if (!targetDirectory.exists() && !targetDirectory.mkdirs()) {
-            throw IOException("无法创建模型目录：${targetDirectory.absolutePath}")
+            throw IOException(
+                context.getString(
+                    R.string.models_import_error_mkdir_failed,
+                    targetDirectory.absolutePath
+                )
+            )
         }
 
         val targetParam = File(targetDirectory, "$uniqueName.$PARAM_FILE_EXTENSION")

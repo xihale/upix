@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.crossscale.AppContainer
+import com.crossscale.R
 import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.RemoteEndpoint
 import com.crossscale.data.repository.DeviceRepository
@@ -17,6 +18,7 @@ import com.crossscale.data.repository.PairingRepository
 import com.crossscale.data.repository.TrustedPC
 import com.crossscale.network.CoordinatorClient
 import com.crossscale.network.JoinInviteParser
+import com.crossscale.util.StringProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -58,7 +60,8 @@ class DeviceViewModel(
     private val pairingRepository: PairingRepository,
     private val coordinatorClient: CoordinatorClient,
     private val logRepository: LogRepository,
-    private val appContext: Context
+    private val appContext: Context,
+    private val stringProvider: StringProvider
 ) : ViewModel() {
 
     // ---- CONTRACT: observable connection state (consumed by UI via collectAsState) ----
@@ -92,7 +95,10 @@ class DeviceViewModel(
                     "Auto-reconnected to last PC ${pc.host}:${pc.port}"
                 )
             } else {
-                onConnectionFailure(pc.host, pc.port, "自动重连失败，使用本地处理")
+                onConnectionFailure(
+                    pc.host, pc.port,
+                    stringProvider.getString(R.string.connection_error_auto_reconnect_failed)
+                )
             }
         }
     }
@@ -111,7 +117,7 @@ class DeviceViewModel(
     ) {
         val normalizedHost = host.trim()
         if (normalizedHost.isBlank() || port <= 0) {
-            _connectionError.value = "无效的连接参数"
+            _connectionError.value = stringProvider.getString(R.string.connection_error_invalid_params)
             return
         }
         val knownKey = peerPubKeyB64?.trim().orEmpty()
@@ -121,7 +127,7 @@ class DeviceViewModel(
             if (learned == null) {
                 onConnectionFailure(
                     normalizedHost, port,
-                    "连接失败，请检查 PC 是否在线或是否已批准"
+                    stringProvider.getString(R.string.connection_error_connect_failed)
                 )
                 return@launch
             }
@@ -147,7 +153,7 @@ class DeviceViewModel(
     fun connectByQrPayload(rawPayload: String) {
         val invite = JoinInviteParser.parse(rawPayload)
         if (invite == null) {
-            _connectionError.value = "无效或过期的二维码（请确认 PC 已升级到加密版本）"
+            _connectionError.value = stringProvider.getString(R.string.connection_error_invalid_qr)
             logRepository.error("DeviceViewModel", "Invalid/legacy QR payload")
             return
         }
@@ -166,7 +172,7 @@ class DeviceViewModel(
         val port = portText.trim().toIntOrNull()
         if (host.isBlank() || port == null) {
             logRepository.error("DeviceViewModel", "Invalid manual address: $host:$portText")
-            _connectionError.value = "无效的地址"
+            _connectionError.value = stringProvider.getString(R.string.connection_error_invalid_address)
             return
         }
         val normalizedHost = host.trim()
@@ -347,7 +353,8 @@ class DeviceViewModel(
                     pairingRepository = container.pairingRepository,
                     coordinatorClient = container.coordinatorClient,
                     logRepository = container.logRepository,
-                    appContext = container.appContext
+                    appContext = container.appContext,
+                    stringProvider = container.stringProvider
                 )
             }
         }

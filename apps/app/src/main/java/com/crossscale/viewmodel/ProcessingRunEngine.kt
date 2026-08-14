@@ -1,5 +1,6 @@
 package com.crossscale.viewmodel
 
+import com.crossscale.R
 import com.crossscale.data.model.ProcessingStatus
 import com.crossscale.data.model.ProcessingTask
 import com.crossscale.data.repository.BatchOutputStore
@@ -12,6 +13,7 @@ import com.crossscale.data.repository.ProcessingCheckpointStore
 import com.crossscale.data.repository.ProcessingFailureDetail
 import com.crossscale.data.repository.ResolvedImageInput
 import com.crossscale.network.CoordinatorClient
+import com.crossscale.util.StringProvider
 import java.util.LinkedHashMap
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -64,7 +66,8 @@ internal class ProcessingRunEngine(
     private val checkpointRepository: ProcessingCheckpointStore,
     private val coordinatorClient: CoordinatorClient?,
     private val logRepository: LogRepository,
-    private val defaultDispatcher: CoroutineDispatcher
+    private val defaultDispatcher: CoroutineDispatcher,
+    private val stringProvider: StringProvider
 ) {
     fun startProcessingInternal(
         imagePath: String,
@@ -110,7 +113,9 @@ internal class ProcessingRunEngine(
 
         val modelInfo = modelRepository.getModelByName(modelName)
         if (modelInfo == null) {
-            val errorMessage = "Model not found: $modelName"
+            val errorMessage = stringProvider.getString(
+                R.string.processing_error_model_not_found, modelName
+            )
             logRepository.error("ProcessingViewModel", errorMessage)
             host.updateUiState { state ->
                 state.copy(
@@ -305,7 +310,9 @@ internal class ProcessingRunEngine(
                     }
 
                     if (processingSession == null) {
-                        val errorMessage = "Failed to initialize native session for model $modelName"
+                        val errorMessage = stringProvider.getString(
+                            R.string.processing_error_native_session, modelName
+                        )
                         lastError = errorMessage
                         logRepository.error("ProcessingViewModel", errorMessage)
                         planner.saveCheckpointSnapshot(
@@ -385,7 +392,9 @@ internal class ProcessingRunEngine(
                     // rest of the batch, re-process THIS image natively, and emit a
                     // UI signal so the mode chip / snackbar can react.
                     if (remoteRouting && result.isFailure) {
-                        host.emitRemoteFallbackMessage("PC 不可达，已切换本地处理")
+                        host.emitRemoteFallbackMessage(
+                            stringProvider.getString(R.string.processing_remote_fallback)
+                        )
                         logRepository.warning(
                             "ProcessingViewModel",
                             "Remote submit failed for ${item.displayName}, falling back to native for remaining items"
@@ -446,7 +455,8 @@ internal class ProcessingRunEngine(
                                 }
                             }
                         } else {
-                            lastError = commitResult.exceptionOrNull()?.message ?: "Failed to save output file"
+                            lastError = commitResult.exceptionOrNull()?.message
+                                ?: stringProvider.getString(R.string.processing_error_save_output)
                             val previousAttempts = failureDetailsByUri[itemUri]?.attempts ?: 0
                             failureDetailsByUri[itemUri] = ProcessingFailureDetail(
                                 uri = itemUri,
@@ -461,7 +471,8 @@ internal class ProcessingRunEngine(
                             )
                         }
                     } else {
-                        lastError = result.exceptionOrNull()?.message ?: "Unknown processing error"
+                        lastError = result.exceptionOrNull()?.message
+                            ?: stringProvider.getString(R.string.processing_error_unknown_processing)
                         val previousAttempts = failureDetailsByUri[itemUri]?.attempts ?: 0
                         failureDetailsByUri[itemUri] = ProcessingFailureDetail(
                             uri = itemUri,
@@ -603,7 +614,8 @@ internal class ProcessingRunEngine(
                 logRepository.warning("ProcessingViewModel", "Task $taskId canceled")
                 throw cancellationException
             } catch (throwable: Throwable) {
-                val errorMessage = throwable.message ?: "Unknown task failure"
+                val errorMessage = throwable.message
+                    ?: stringProvider.getString(R.string.processing_error_unknown_failure)
                 lastError = errorMessage
                 planner.saveCheckpointSnapshot(
                     taskId = taskId,
