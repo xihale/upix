@@ -384,10 +384,10 @@ CLI 有 5 个 `CROSSSCALE_GPU_SUBMIT_QUEUE*` env（每个 getenv→stoul→catch
 | 文档 | 内容 |
 |---|---|
 | `docs/PONYTAIL_AUDIT.md` | 26 项过度工程审计（§1 的执行清单来源） |
-| `docs/ARCHITECTURE.md` / `docs/TECHNICAL_REPORT.md` | 当前架构全貌 |
+| `docs/ARCHITECTURE.md` | 当前架构全貌（已合并原 OVERVIEW/TECHNICAL_REPORT） |
 | `docs/SERVE_DAEMON_DESIGN.md` | serve daemon 设计（§3.5 评估依据） |
 | `docs/DATA_FLOW.md` | 关键调用链（拆分验证参考） |
-| `docs/superpowers/specs/2026-07-23-serve-daemon-simplification-design.md` | serve daemon 简化的成功先例（本设计的验证模式来源） |
+| `docs/decisions/specs/2026-07-23-serve-daemon-simplification-design.md` | serve daemon 简化的成功先例（本设计的验证模式来源） |
 
 ---
 

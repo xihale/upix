@@ -1,5 +1,6 @@
 #include "coordinator.hpp"
 #include "core/tile_types.hpp"
+#include "utils/image.hpp"
 #include "utils/logger.hpp"
 #include "utils/network.hpp"
 #include "utils/crypto.hpp"
@@ -15,6 +16,9 @@ namespace crossscale {
 
 // Maximum payload size for network messages (100 MB)
 static constexpr uint32_t MAX_NETWORK_PAYLOAD = 100 * 1024 * 1024;
+// Raw upscaled pixels are a transient buffer (encoded to jpg/png before
+// transport), so they may exceed MAX_NETWORK_PAYLOAD. Bound PC memory instead.
+static constexpr uint64_t MAX_RAW_OUTPUT_BYTES = 512ULL * 1024 * 1024;
 
 Coordinator::Coordinator() = default;
 
@@ -50,14 +54,6 @@ void Coordinator::resolve_approval(uint64_t id, bool approved) {
     }
 }
 
-void Coordinator::set_pc_stream_encrypted(bool enabled) {
-    pc_stream_encrypted_.store(enabled, std::memory_order_relaxed);
-}
-
-bool Coordinator::pc_stream_encrypted() const {
-    return pc_stream_encrypted_.load(std::memory_order_relaxed);
-}
-
 auto Coordinator::start(uint16_t port, IdentityKey& identity)
     -> expected<void, CoordinatorError> {
 
@@ -85,7 +81,6 @@ auto Coordinator::start(uint16_t port, IdentityKey& identity)
     }
 
     port_ = port;
-    server_name_ = "CrossScale-Server";
     running_ = true;
     if (accept_thread_.joinable()) {
         accept_thread_.join();
@@ -138,10 +133,6 @@ bool Coordinator::is_running() const {
     return running_;
 }
 
-void Coordinator::cancel_current_task() {
-    task_cancelled_ = true;
-}
-
 // Lazily create + initialize the local engine (GPU → CPU fallback) and ensure
 // `model_name` is loaded. Idempotent. Mirrors share/core/serve/daemon.cpp.
 bool Coordinator::ensure_engine_ready(const std::string& model_name) {
@@ -188,7 +179,9 @@ bool Coordinator::ensure_engine_ready(const std::string& model_name) {
 auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
                                   int width, int height, int channels,
                                   const std::string& model_name,
-                                  const ProcessingConfig& config)
+                                  const ProcessingConfig& config,
+                                  const std::string& output_format,
+                                  int output_quality)
     -> expected<std::vector<uint8_t>, CoordinatorError> {
 
     if (!ensure_engine_ready(model_name)) {
@@ -201,7 +194,7 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     const int out_w = width * scale;
     const int out_h = height * scale;
     const size_t out_bytes_n = static_cast<size_t>(out_w) * out_h * channels;
-    if (out_w <= 0 || out_h <= 0 || out_bytes_n > MAX_NETWORK_PAYLOAD) {
+    if (out_w <= 0 || out_h <= 0 || out_bytes_n > MAX_RAW_OUTPUT_BYTES) {
         return std::unexpected(CoordinatorError{3, "Invalid output dimensions"});
     }
 
@@ -216,7 +209,9 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     tc.overlap = config.tile_overlap;
     tc.batch_size = 1;
 
-    task_cancelled_ = false;
+    // Cancellation has no external hook today (cancel_current_task was removed);
+    // keep a local flag so the engine stays interruptible if one is wired in.
+    std::atomic<bool> cancel{false};
     auto res = tile_processor_->process_image_u8(
         image_data.data(), out_bytes.data(),
         width, height, channels,
@@ -226,18 +221,37 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
                 on_task_progress_(p.percentage() / 100.0f);
             }
         },
-        task_cancelled_,
+        cancel,
         /*enable_alpha_bicubic=*/true);
 
     if (!res) {
         return std::unexpected(CoordinatorError{4, res.error().message});
     }
 
-    // Return raw u8 RGB pixels. The phone's JNI layer validates this against
-    // output_width*output_height*channels, copies it into an Image, and
-    // encodes to the requested format (jpg/png) itself (jni_bridge.cpp ~825).
-    // Sending an already-encoded image here breaks that raw-RGB size check.
-    return out_bytes;
+    // Encode before transport: a camera photo at x2 is hundreds of MB raw but
+    // only a few MB as jpg/webp. The phone forwards these bytes to Kotlin as-is.
+    //   jpg/webp — lossy; output_quality (default 90) is real compression.
+    //   png      — lossless; quality only selects zlib level (inverted), so we
+    //              force max compression for transport. PNG can't shrink photos
+    //              the way lossy codecs do; the size guard below rejects the
+    //              case where even max-compressed PNG exceeds the transport cap.
+    int transport_quality = output_quality;
+    if (output_format == "png") {
+        transport_quality = 1;  // → zlib level 9 via png_compression_level_from_quality
+    }
+    Image out_image(out_w, out_h, channels);
+    std::memcpy(out_image.data(), out_bytes.data(), out_bytes.size());
+    auto encoded = out_image.save_to_memory(output_format, transport_quality);
+    if (!encoded) {
+        return std::unexpected(CoordinatorError{5, "output encode failed: " + encoded.error().message});
+    }
+    if (encoded->size() > MAX_NETWORK_PAYLOAD) {
+        return std::unexpected(CoordinatorError{
+            6, "Encoded output too large for transport (" +
+               std::to_string(encoded->size() / (1024 * 1024)) +
+               " MB); use jpg or webp for large images"});
+    }
+    return *encoded;
 }
 
 void Coordinator::accept_loop() {
@@ -299,40 +313,6 @@ auto Coordinator::recv_encrypted(WorkerConnection& conn)
         if (!pay_recv.has_value()) return std::nullopt;
     }
     return conn.session.open(wire.data(), wire.size());
-}
-
-auto Coordinator::send_stream(WorkerConnection& conn, MessageType type,
-                              const void* payload, size_t len) -> bool {
-    if (!conn.session.active()) return false;
-    try {
-        MessageHeader header{};
-        header.type = type;
-        header.payload_length = static_cast<uint32_t>(len);
-        auto wire = conn.session.seal_stream(header, payload);
-        auto res = conn.socket->send_all(wire.data(), wire.size());
-        return res.has_value();
-    } catch (const std::exception&) {
-        return false;
-    }
-}
-
-auto Coordinator::recv_stream(WorkerConnection& conn)
-    -> std::optional<std::pair<MessageHeader, std::vector<uint8_t>>> {
-    if (!conn.session.active()) return std::nullopt;
-    std::vector<uint8_t> hdr_buf(Protocol::HEADER_SIZE);
-    auto hdr_recv = conn.socket->receive_all(hdr_buf.data(), hdr_buf.size());
-    if (!hdr_recv.has_value()) return std::nullopt;
-    auto parsed = Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
-    if (!parsed) return std::nullopt;
-    if (parsed->payload_length > MAX_NETWORK_PAYLOAD) return std::nullopt;
-    std::vector<uint8_t> wire(Protocol::HEADER_SIZE + parsed->payload_length);
-    std::memcpy(wire.data(), hdr_buf.data(), Protocol::HEADER_SIZE);
-    if (parsed->payload_length > 0) {
-        auto pay_recv = conn.socket->receive_all(wire.data() + Protocol::HEADER_SIZE,
-                                                 parsed->payload_length);
-        if (!pay_recv.has_value()) return std::nullopt;
-    }
-    return conn.session.open_stream(wire.data(), wire.size());
 }
 
 // Server side of the ECDH+signature handshake. `first_hdr_buf` already holds
@@ -507,7 +487,6 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                     reinterpret_cast<const ClientConnectRequest*>(frame_payload.data());
                 std::string req_device_name(creq->device_name);
                 std::string req_fingerprint(creq->fingerprint);
-                bool mobile_wants_encrypted = creq->wants_encrypted_stream != 0;
 
                 // Auto-approve already-trusted peers; first-time peers block on
                 // an interactive prompt served by the PC main loop.
@@ -527,7 +506,6 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                     pa.device_name = req_device_name;
                     pa.fingerprint = req_fingerprint;
                     pa.identity_pub = conn.peer_id_pub;
-                    pa.wants_encrypted_stream = mobile_wants_encrypted;
                     {
                         std::lock_guard<std::mutex> lock(approval_mtx_);
                         pending_approvals_.push(pa);
@@ -539,16 +517,10 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                     approved = (pa.verdict->get_future().get() != 0);
                 }
 
-                // Negotiate stream-encryption mode: encrypted only if BOTH sides
-                // want it (PC setting AND Mobile setting).
-                const bool stream_encrypted =
-                    approved && pc_stream_encrypted_.load(std::memory_order_relaxed) &&
-                    mobile_wants_encrypted;
-
                 ClientConnectResponse cresp{};
                 cresp.approved = approved ? 1 : 0;
                 cresp.trusted = conn.peer_trusted ? 1 : 0;
-                cresp.stream_encrypted = stream_encrypted ? 1 : 0;
+                cresp.stream_encrypted = 0;  // stream encryption removed; wire field kept for compat
                 if (!send_encrypted(conn, MessageType::MSG_CLIENT_CONNECT_RESPONSE,
                                     &cresp, sizeof(cresp))) {
                     LOG_ERROR("Coordinator", "Failed to send CONNECT_RESPONSE");
@@ -564,8 +536,6 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                     trust_store_->save();
                     LOG_INFO("Coordinator", "Peer added to TrustStore: " + req_fingerprint);
                 }
-                // Apply the negotiated stream mode for the rest of this conn.
-                conn.session.set_stream_plaintext(!stream_encrypted);
 
                 // Now read the submit frame (third frame after the request):
                 // the phone sends MSG_CLIENT_SUBMIT with the image to upscale.
@@ -595,6 +565,11 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                 uint32_t tile_size = task->tile_size;
                 uint32_t tile_overlap = task->tile_overlap;
                 uint32_t image_data_len = task->image_data_length;
+                std::string output_format(task->output_format);
+                if (output_format.empty()) {
+                    output_format = "jpg";
+                }
+                int output_quality = task->output_quality == 0 ? 90 : task->output_quality;
 
                 if (image_data_len > MAX_NETWORK_PAYLOAD) {
                     LOG_ERROR("Coordinator", "Image data too large: " + std::to_string(image_data_len) + " bytes");
@@ -637,7 +612,9 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                     static_cast<int>(img_height),
                     static_cast<int>(channels),
                     model_name,
-                    config
+                    config,
+                    output_format,
+                    output_quality
                 );
 
                 ClientTaskResponse response{};
@@ -653,10 +630,7 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                 }
 
                 // Response header + result data go in one encrypted (boxed) frame,
-                // matching the way the phone opens it (session.open, which always
-                // verifies a MAC). The earlier send_stream path emitted a plaintext
-                // stream frame here, which the phone's boxed open() rejected with a
-                // MAC failure → "PC 不可达".
+                // matching the way the phone opens it (session.open verifies the MAC).
                 std::vector<uint8_t> resp_payload(sizeof(ClientTaskResponse) +
                                                   process_result.value_or(std::vector<uint8_t>{}).size());
                 std::memcpy(resp_payload.data(), &response, sizeof(response));

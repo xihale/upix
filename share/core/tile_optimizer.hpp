@@ -123,34 +123,7 @@ inline auto TileSizeOptimizer::profile_device(Engine& engine) -> DevicePerforman
     profile.device_name = engine.model_name();
     profile.available_memory_mb = get_available_memory_mb();
 
-    profile.total_memory_mb = profile.available_memory_mb;
-
     return profile;
-}
-
-inline auto TileSizeOptimizer::estimate_tile_size(
-    const DevicePerformanceProfile& device,
-    const ModelConstraints& model
-) const -> int {
-
-    // 基于可用内存估算
-    size_t available_mb = device.available_memory_mb;
-
-    // 保留 20% 给系统
-    size_t usable_mb = static_cast<size_t>(available_mb * 0.8);
-
-    // 从最大可能 tile 开始递减测试
-    int test_sizes[] = {512, 448, 384, 320, 256, 192, 128, 64};
-
-    for (int size : test_sizes) {
-        size_t required_mb = calculate_tile_memory(size, model.input_channels,
-                                                   model.scale_factor, model);
-        if (required_mb <= usable_mb) {
-            return size;
-        }
-    }
-
-    return 64; // 最小安全值
 }
 
 inline auto TileSizeOptimizer::find_optimal_tile_size(

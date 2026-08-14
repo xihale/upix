@@ -71,30 +71,4 @@ auto EncryptedSession::open(const uint8_t* wire, size_t wire_len) const
     return std::make_pair(real_hdr, std::move(*opened));
 }
 
-auto EncryptedSession::seal_stream(const MessageHeader& header,
-                                   const void* plaintext_payload) const
-    -> std::vector<uint8_t> {
-    if (!stream_plaintext_) {
-        return seal(header, plaintext_payload);  // 加密模式
-    }
-    // 明文模式:15B header + 原始 payload,checksum 保留(明文 CRC 仅用于
-    // 线路完整性,不承载机密性)。等价于 Protocol::serialize。
-    return Protocol::serialize(header, plaintext_payload);
-}
-
-auto EncryptedSession::open_stream(const uint8_t* wire, size_t wire_len) const
-    -> std::optional<std::pair<MessageHeader, std::vector<uint8_t>>> {
-    if (!stream_plaintext_) {
-        return open(wire, wire_len);  // 加密模式
-    }
-    // 明文模式:解析 header,后随原始 payload。
-    if (wire_len < Protocol::HEADER_SIZE) return std::nullopt;
-    auto hdr = Protocol::parse_header(wire, Protocol::HEADER_SIZE);
-    if (!hdr) return std::nullopt;
-    const size_t payload_len = wire_len - Protocol::HEADER_SIZE;
-    if (hdr->payload_length != payload_len) return std::nullopt;
-    std::vector<uint8_t> payload(wire + Protocol::HEADER_SIZE, wire + wire_len);
-    return std::make_pair(*hdr, std::move(payload));
-}
-
 } // namespace crossscale

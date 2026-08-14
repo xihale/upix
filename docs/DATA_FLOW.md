@@ -9,7 +9,7 @@
 ### 调用链
 
 ```
-main.cpp (process 命令)
+cmd_process.cpp / process_batch.cpp (process 命令)
   │
   ├─ ModelManager::scan_models()          // 扫描 models/ 目录
   │     └─ 解析 .param 文件推断 scale_factor / channels
@@ -76,7 +76,7 @@ main.cpp (process 命令)
 ### CPU 多线程模式 (`--jobs N`)
 
 ```
-main.cpp
+cmd_process.cpp / process_batch.cpp
   │
   ├─ EnginePool(N, param, bin, CPU)    // 创建 N 个独立 CPU Engine
   │     └─ acquire() / release()
@@ -89,7 +89,7 @@ main.cpp
 ### GPU 流水线模式 (`--gpu` 目录)
 
 ```
-main.cpp
+cmd_process.cpp / process_batch.cpp
   │
   ├─ 单 Engine（GPU Vulkan 不支持并发提交）
   ├─ Prepare 线程池（~2 线程）
@@ -105,7 +105,7 @@ main.cpp
 ### GPU 多 Engine 模式 (`--jobs N --gpu`)
 
 ```
-main.cpp
+cmd_process.cpp / process_batch.cpp
   │
   ├─ N 个独立 GPU Engine（每个有自己的 ncnn::Net + VkCompute）
   ├─ 每个 Engine 串行处理自己的图像列表

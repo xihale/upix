@@ -12,7 +12,7 @@
 
 ## 背景与重要说明
 
-原始 spec（`docs/superpowers/specs/2026-07-28-architecture-simplification-design.md`）的 §1
+原始 spec（`docs/decisions/specs/2026-07-28-architecture-simplification-design.md`）的 §1
 引用了 `docs/PONYTAIL_AUDIT.md` 的 26 项死代码。但 2026-07-28 逐项核查发现 **audit 报告
 基于旧版本，绝大多数项早已删除**：
 

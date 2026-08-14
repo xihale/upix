@@ -2,7 +2,7 @@
 
 > 测试日期: 2026-07-23 ｜ 机器: NVIDIA GeForce RTX 4060 Laptop GPU (8 GB) + Intel UHD
 > 模型: Real-ESRGANv3-anime ×2 (fp16 精度) ｜ CLI: `crossscale process`
-> 对照此前 `PERF_REPORT_GPU_EFFICIENCY.md`(合成 tensor 隔离推理)、`PERF_REPORT_GPU_EXHAUSTIVE.md`(穷尽探索)
+> 对照此前 `./PERF_REPORT_GPU_EFFICIENCY.md`(合成 tensor 隔离推理)、`./PERF_REPORT_GPU_EXHAUSTIVE.md`(穷尽探索)
 
 ---
 
@@ -116,7 +116,7 @@ tile 从 128→512,wall time 几乎不变(0.92–0.98s)。**因为固定开销 0
 **核心洞察**:
 1. 引擎复用一次省下 ~3.7s(7×固定开销 491ms ≈ 3.4s,加上并发)。
 2. 复用后 GPU 终于显现优势:**比 CPU 快 4 倍**。
-3. 但批量 GPU util 仍仅 **15%**——推理阶段 GPU 依然欠载,这正是此前 perf 框架发现的 "submit 序列化" 瓶颈(可靠并发多引擎能提到 ~96%,见 `PERF_REPORT_GPU_EFFICIENCY.md` §8)。
+3. 但批量 GPU util 仍仅 **15%**——推理阶段 GPU 依然欠载,这正是此前 perf 框架发现的 "submit 序列化" 瓶颈(可靠并发多引擎能提到 ~96%,见 `./PERF_REPORT_GPU_EFFICIENCY.md` §8)。
 
 ---
 
@@ -212,8 +212,8 @@ crossscale process ... --no-daemon  # 强制走内联路径(调试用)
 
 | 报告 | 测什么 | 瓶颈结论 |
 |---|---|---|
-| `PERF_REPORT_GPU_EFFICIENCY.md` | 合成 tensor,隔离推理 | submit 序列化,util 59% |
-| `PERF_REPORT_GPU_EXHAUSTIVE.md` | 2D 网格/精度/残差 | fp16 核心速度,配置已最优 |
+| `./PERF_REPORT_GPU_EFFICIENCY.md` | 合成 tensor,隔离推理 | submit 序列化,util 59% |
+| `./PERF_REPORT_GPU_EXHAUSTIVE.md` | 2D 网格/精度/残差 | fp16 核心速度,配置已最优 |
 | **本报告** | **真实图像端到端** | **固定开销 60% 主导单图场景;复用后 GPU 4× 胜 CPU** |
 
 三者互补:**合成 tensor 测推理纯度,真实图像测用户感知**。本报告补齐了"端到端"这一缺失视角。

@@ -140,10 +140,6 @@ void UnixSocket::close() {
     path_.clear();
 }
 
-bool UnixSocket::is_connected() const {
-    return socket_ >= 0;
-}
-
 // ── UnixServer ──────────────────────────────────────────────────────────────
 
 UnixServer::UnixServer() = default;

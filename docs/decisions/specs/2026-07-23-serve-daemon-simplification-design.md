@@ -2,7 +2,7 @@
 
 **日期**: 2026-07-23
 **相关提交**: `4545191` (待简化的实现) → 简化后替换
-**前置阅读**: `docs/PERF_REPORT_REAL_IMAGES.md` §4/§7.2(性能背景)
+**前置阅读**: `docs/perf/PERF_REPORT_REAL_IMAGES.md` §4/§7.2(性能背景)
 
 ## 背景与动机
 

@@ -68,7 +68,7 @@ CPU 对照阶段 GPU util avg=0.7~3.5%、active_ratio<7% —— **证明 GPU 隔
 ### 结论 1:Tile 越大,GPU 利用率越高 → 当前是"计算密度不足"型低占用
 - tile 128 → util 仅 **40.7%**,但 active_ratio 92.5% → GPU 一直在等数据/调度,SM 大量空转
 - tile 384 → util 升至 **73.2%**,active_ratio 95% → SM 真正忙起来了
-- **根因**: 小 tile 的固定开销(kernel launch、tile 提取、u8→float 转换)占比过高,SM 算力喂不饱。这与 `docs/GPU_EFFICIENCY_REPORT.md` 早期记录的"小图 util 仅 6-13%"是同一类问题,经引擎层的并发 batch + 并行提取优化后已从 13% 提升到 40%(128)/59%(256)。
+- **根因**: 小 tile 的固定开销(kernel launch、tile 提取、u8→float 转换)占比过高,SM 算力喂不饱。这与 `./GPU_EFFICIENCY_REPORT.md` 早期记录的"小图 util 仅 6-13%"是同一类问题,经引擎层的并发 batch + 并行提取优化后已从 13% 提升到 40%(128)/59%(256)。
 
 ### 结论 2:Vulkan 串行提交是硬约束,单 tile 难破 ~73% util
 - `engine.hpp:96-97` 明确:Vulkan 后端 batch 强制串行,`--jobs`+`--gpu` 无效。
@@ -79,7 +79,7 @@ CPU 对照阶段 GPU util avg=0.7~3.5%、active_ratio<7% —— **证明 GPU 隔
 - tile 128 加速比仅 ×9.13:小 tile CPU 也不吃亏(GPU 固定开销吃掉优势)
 - tile 256 加速比 ×22.15:GPU 优势充分发挥的甜点
 - tile 384 回落至 ×15.88:CPU 在大 tile 下多核(4 线程)摊薄了差距
-- **生产建议**: 默认 tile_size=256 是合理选择,与 `docs/PERFORMANCE_RESULTS.md` 的历史结论一致
+- **生产建议**: 默认 tile_size=256 是合理选择,与 `./PERFORMANCE_RESULTS.md` 的历史结论一致
 
 ### 结论 4:SM 时钟全程锁在 ~2470 MHz(无降频)
 - 满载时 SM/graphics clock 稳定在 2370-2475 MHz,**未发生热降频**

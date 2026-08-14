@@ -73,7 +73,8 @@ void print_progress_stderr(const crossscale::ProcessingProgress& prog,
     }
 }
 
-auto convert_image_channels(const crossscale::Image& source, int target_channels)
+// Internal helper: convert an image's channel count (1/2/3/4) to a target count.
+static auto convert_image_channels(const crossscale::Image& source, int target_channels)
     -> std::optional<crossscale::Image> {
     const int src_channels = source.channels();
     if (src_channels < 1 || src_channels > 4 || target_channels < 1 || target_channels > 4) {

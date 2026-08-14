@@ -33,24 +33,8 @@ public:
     auto open(const uint8_t* wire, size_t wire_len) const
         -> std::optional<std::pair<MessageHeader, std::vector<uint8_t>>>;
 
-    // ── 数据流(大 payload)明文旁路 ──────────────────────────────────────────
-    // 控制帧(握手/DEVICE_PROFILE/CONNECT_*/HEARTBEAT 等)始终走 seal/open,
-    // 不受此开关影响。仅图像 tile / 结果数据通过 seal_stream/open_stream,
-    // 以便在吞吐优先时降级为明文传输。默认明文(stream_plaintext_=true)。
-    void set_stream_plaintext(bool plaintext) { stream_plaintext_ = plaintext; }
-    bool stream_plaintext() const { return stream_plaintext_; }
-
-    // seal_stream: 明文模式时按原样序列化(无 nonce/ct),加密模式时等价 seal()。
-    auto seal_stream(const MessageHeader& header, const void* plaintext_payload) const
-        -> std::vector<uint8_t>;
-    // open_stream: 与 seal_stream 对应。明文模式直接解析 header+payload,
-    // 加密模式等价 open()。两种模式由调用方按同一 session 状态配对。
-    auto open_stream(const uint8_t* wire, size_t wire_len) const
-        -> std::optional<std::pair<MessageHeader, std::vector<uint8_t>>>;
-
 private:
     bool active_ = false;
-    bool stream_plaintext_ = true;  // 默认数据流明文(吞吐优先)
     SessionKey key_{};
 };
 

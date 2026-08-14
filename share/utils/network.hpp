@@ -50,21 +50,8 @@ public:
     // Set timeout (milliseconds)
     void set_timeout(int timeout_ms);
 
-    // Set socket buffer sizes (SO_SNDBUF and SO_RCVBUF)
-    void set_buffer_size(size_t size);
-
     // Close connection
     void close();
-    
-    // Check if connected
-    bool is_connected() const;
-    
-    // Get socket handle
-    int handle() const { return socket_; }
-    
-    // Get peer address
-    std::string peer_address() const;
-    uint16_t peer_port() const;
 
 private:
     int socket_ = -1;
@@ -94,12 +81,6 @@ public:
     
     // Stop server
     void stop();
-    
-    // Check if listening
-    bool is_listening() const;
-    
-    // Get port
-    uint16_t port() const { return port_; }
 
 private:
     int server_socket_ = -1;
@@ -111,10 +92,7 @@ namespace network_utils {
     // Get local IP addresses
     std::vector<std::string> get_local_addresses();
 
-    // Generate random auth key
-    std::string generate_auth_key(size_t length = 16);
-
-    // Simple CRC32
+    // CRC32 (zlib-backed)
     uint32_t crc32(const void* data, size_t size);
 }
 

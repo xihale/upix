@@ -56,7 +56,6 @@ struct PendingApproval {
     std::string device_name;               // human-readable, from the request
     std::string fingerprint;               // 16-char hex of the phone's identity
     std::array<uint8_t, 32> identity_pub;  // to add to TrustStore on approval
-    bool wants_encrypted_stream = false;
     // Resolution channel: set by resolve_approval(), read by the blocked handler.
     std::shared_ptr<std::promise<uint8_t>> verdict;  // 0=denied, 1=approved
 };
@@ -87,10 +86,10 @@ public:
         int height,
         int channels,
         const std::string& model_name,
-        const ProcessingConfig& config
+        const ProcessingConfig& config,
+        const std::string& output_format,
+        int output_quality
     ) -> expected<std::vector<uint8_t>, CoordinatorError>;
-
-    void cancel_current_task();
 
     auto& on_task_progress() { return on_task_progress_; }
 
@@ -107,15 +106,6 @@ public:
     // on that resolution. Already-trusted peers never appear here.
     auto pop_pending_approval() -> std::optional<PendingApproval>;
     void resolve_approval(uint64_t id, bool approved);
-
-    // ── Data-stream encryption toggle (large image/result payloads) ──────────
-    // The handshake + all control frames are always encrypted regardless of
-    // this setting; this only governs the big image/result payloads. When
-    // false (default), those payloads travel plaintext for throughput; when
-    // true they are sealed by EncryptedSession like everything else. The final
-    // per-session mode is negotiated as min(pc, phone) and set on both sides.
-    void set_pc_stream_encrypted(bool enabled);
-    bool pc_stream_encrypted() const;
 
 private:
     void accept_loop();
@@ -136,11 +126,6 @@ private:
     auto send_encrypted(WorkerConnection& conn, MessageType type,
                         const void* payload, size_t len) -> bool;
     auto recv_encrypted(WorkerConnection& conn)
-        -> std::optional<std::pair<MessageHeader, std::vector<uint8_t>>>;
-    // 数据流(大 payload)变体:按 session 的 stream_plaintext 设定决定是否加密。
-    auto send_stream(WorkerConnection& conn, MessageType type,
-                     const void* payload, size_t len) -> bool;
-    auto recv_stream(WorkerConnection& conn)
         -> std::optional<std::pair<MessageHeader, std::vector<uint8_t>>>;
 
     std::unique_ptr<TCPServer> server_;
@@ -166,10 +151,8 @@ private:
     // (TOFU for everyone, flagged untrusted).
     std::optional<TrustStore> trust_store_;
 
-    std::string server_name_;
     uint16_t port_ = 0;
     std::atomic<bool> running_{false};
-    std::atomic<bool> task_cancelled_{false};
 
     std::function<void(float)> on_task_progress_;
 
@@ -178,10 +161,6 @@ private:
     std::queue<PendingApproval> pending_approvals_;
     std::unordered_map<uint64_t, std::shared_ptr<std::promise<uint8_t>>> approval_futures_;
     uint64_t next_approval_id_ = 1;
-
-    // PC-side data-stream encryption preference (default off). The negotiated
-    // per-connection mode is min(this, phone's wants_encrypted_stream).
-    std::atomic<bool> pc_stream_encrypted_{false};
 };
 
 }

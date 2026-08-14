@@ -31,8 +31,6 @@ struct ConfigJson {
     bool auto_tile_size = false;
     int min_tile_size = 64;
     int max_tile_size = 512;
-    size_t max_memory_mb = 0;
-    int num_threads = 0;
     bool use_gpu = true;
     std::string model_name;
     std::string output_format;
@@ -106,8 +104,6 @@ auto ProcessingConfig::load(const std::filesystem::path& path)
     config.auto_tile_size = parsed.auto_tile_size;
     config.min_tile_size = parsed.min_tile_size;
     config.max_tile_size = parsed.max_tile_size;
-    config.max_memory_mb = parsed.max_memory_mb;
-    config.num_threads = parsed.num_threads;
     config.use_gpu = parsed.use_gpu;
     config.model_name = parsed.model_name;
     config.output_quality = parsed.output_quality;
@@ -126,8 +122,6 @@ auto ProcessingConfig::save(const std::filesystem::path& path) const
         .auto_tile_size = auto_tile_size,
         .min_tile_size = min_tile_size,
         .max_tile_size = max_tile_size,
-        .max_memory_mb = max_memory_mb,
-        .num_threads = num_threads,
         .use_gpu = use_gpu,
         .model_name = model_name,
         .output_format = normalize_output_format(output_format),

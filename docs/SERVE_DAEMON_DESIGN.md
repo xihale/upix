@@ -18,7 +18,7 @@
 
 ### 1.1 问题来源
 
-端到端性能报告(`docs/PERF_REPORT_REAL_IMAGES.md`, commit `f48a98f`)实测发现:**单图 `crossscale process` 被 ~60% 的固定开销淹没**。
+端到端性能报告(`docs/perf/PERF_REPORT_REAL_IMAGES.md`, commit `f48a98f`)实测发现:**单图 `crossscale process` 被 ~60% 的固定开销淹没**。
 
 阶段分解(1024² 图,GPU):
 
@@ -46,7 +46,7 @@
 
 ## 2. 设计目标与简化决策
 
-初版(commit `4545191`)实现了完整方案,但引入了 HELLO 协商、MSG_SERVE_STOP、status 子命令、手工帧组装、双 fork 守护化等复杂度。经头脑风暴后做了一次**中等深度简化**(spec: `docs/superpowers/specs/2026-07-23-serve-daemon-simplification-design.md`),三个核心决策:
+初版(commit `4545191`)实现了完整方案,但引入了 HELLO 协商、MSG_SERVE_STOP、status 子命令、手工帧组装、双 fork 守护化等复杂度。经头脑风暴后做了一次**中等深度简化**(spec: `docs/decisions/specs/2026-07-23-serve-daemon-simplification-design.md`),三个核心决策:
 
 | 维度 | 决策 | 理由 |
 |---|---|---|

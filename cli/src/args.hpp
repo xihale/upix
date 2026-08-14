@@ -39,9 +39,6 @@ struct Process {
 // `model list` — no flags.
 struct Model {};
 
-// `benchmark` — no flags.
-struct Benchmark {};
-
 // `perf {list-probes, gpu-efficiency, gpu-concurrency, gpu-reuse}`.
 // One instance per nested subcommand (see cli_app.cpp) so each gets its own
 // default values. duration/warmup are kept as raw strings ("5s", "1.5") and

@@ -68,7 +68,6 @@ int cmd_server(const args::Server& a) {
             std::cout << "\n┌─ 配对请求 ───────────────────────────────────────\n"
                       << "│ 设备: " << req->device_name << "\n"
                       << "│ 指纹: " << req->fingerprint << "\n"
-                      << "│ 数据流加密: " << (req->wants_encrypted_stream ? "请求加密" : "明文")
                       << "\n└──────────────────────────────────────────────────\n"
                       << "允许此设备连接? [y/n]: " << std::flush;
             std::string line;

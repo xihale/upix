@@ -8,7 +8,7 @@
 
 **Tech Stack:** C++23, ncnn, AF_UNIX socket, POSIX signals, xmake build。
 
-**Spec:** `docs/superpowers/specs/2026-07-23-serve-daemon-simplification-design.md`
+**Spec:** `docs/decisions/specs/2026-07-23-serve-daemon-simplification-design.md`
 
 ---
 

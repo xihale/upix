@@ -17,16 +17,13 @@ auto build_app() -> std::unique_ptr<CLI::App>;
 // Forward-declared here; defined in their respective cmd_*.cpp.
 namespace args { struct Process;   }
 namespace args { struct Model;     }
-namespace args { struct Benchmark; }
 namespace args { struct Perf;      }
 namespace args { struct Server;    }
-namespace args { struct Worker;    }
 namespace args { struct Serve;     }
 namespace args { struct Completion;}
 
 int cmd_process(const args::Process& a);
 int cmd_model(const args::Model& a);
-int cmd_benchmark(const args::Benchmark& a);
 int cmd_perf(const args::Perf& a);
 int cmd_server(const args::Server& a);
 int cmd_serve(const args::Serve& a);

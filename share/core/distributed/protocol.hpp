@@ -65,7 +65,8 @@ struct AuthResponse {
 };
 
 // One-shot image submit (phone→PC). The raw u8 image pixels follow the struct
-// contiguously inside the same encrypted frame.
+// contiguously inside the same encrypted frame. output_format/quality tell the
+// PC how to encode the upscaled result (raw RGB doesn't scale to camera photos).
 struct ClientTaskSubmit {
     uint32_t image_width;
     uint32_t image_height;
@@ -74,6 +75,8 @@ struct ClientTaskSubmit {
     uint32_t tile_size;
     uint32_t tile_overlap;
     uint32_t image_data_length;
+    char output_format[8];  // "jpg"/"png"/"webp"
+    uint8_t output_quality; // 1..100
 };
 
 struct ClientTaskResponse {

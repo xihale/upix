@@ -47,10 +47,6 @@ auto infer_format_from_extension(const std::string& path) -> std::string;
 void print_progress_stderr(const crossscale::ProcessingProgress& prog,
                            std::chrono::steady_clock::time_point start_time);
 
-// Convert an image's channel count (1/2/3/4) to a target count.
-auto convert_image_channels(const crossscale::Image& source, int target_channels)
-    -> std::optional<crossscale::Image>;
-
 // Convert `image` in place to `expected_channels`; logs + returns false on
 // failure. No-op when channels already match.
 auto normalize_channels_for_model(crossscale::Image& image,

@@ -9,9 +9,9 @@
 #include <ifaddrs.h>
 #include <poll.h>
 #include <cstring>
-#include <random>
 #include <chrono>
 #include <mutex>
+#include <zlib.h>
 
 namespace crossscale {
 
@@ -153,34 +153,12 @@ void TCPSocket::set_timeout(int timeout_ms) {
     setsockopt(socket_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
 
-void TCPSocket::set_buffer_size(size_t size) {
-    if (socket_ < 0) return;
-
-    int buf_size = static_cast<int>(size);
-    setsockopt(socket_, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
-    setsockopt(socket_, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
-}
-
 void TCPSocket::close() {
     std::lock_guard<std::recursive_mutex> lock(io_mutex_);
     if (socket_ >= 0) {
         ::close(socket_);
         socket_ = -1;
     }
-    peer_address_.clear();
-    peer_port_ = 0;
-}
-
-bool TCPSocket::is_connected() const {
-    return socket_ >= 0;
-}
-
-std::string TCPSocket::peer_address() const {
-    return peer_address_;
-}
-
-uint16_t TCPSocket::peer_port() const {
-    return peer_port_;
 }
 
 TCPServer::TCPServer() = default;
@@ -284,10 +262,6 @@ void TCPServer::stop() {
     port_ = 0;
 }
 
-bool TCPServer::is_listening() const {
-    return server_socket_ >= 0;
-}
-
 namespace network_utils {
 
 std::vector<std::string> get_local_addresses() {
@@ -313,47 +287,10 @@ std::vector<std::string> get_local_addresses() {
     return addresses;
 }
 
-std::string generate_auth_key(size_t length) {
-    static const char chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-    
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::uniform_int_distribution<> dis(0, sizeof(chars) - 2);
-    
-    std::string key;
-    key.reserve(length);
-    for (size_t i = 0; i < length; ++i) {
-        key += chars[dis(gen)];
-    }
-    return key;
-}
-
-static uint32_t crc32_table[256];
-static std::once_flag crc32_init_flag;
-
-static void init_crc32_table() {
-    std::call_once(crc32_init_flag, []() {
-        for (uint32_t i = 0; i < 256; ++i) {
-            uint32_t crc = i;
-            for (int j = 0; j < 8; ++j) {
-                crc = (crc >> 1) ^ ((crc & 1) ? 0xEDB88320 : 0);
-            }
-            crc32_table[i] = crc;
-        }
-    });
-}
-
+// Standard CRC-32 (IEEE 802.3) — identical to the former hand-rolled table.
+// zlib ships this exact algorithm and is already linked (transitively via libpng).
 uint32_t crc32(const void* data, size_t size) {
-    init_crc32_table();
-    
-    uint32_t crc = 0xFFFFFFFF;
-    const uint8_t* ptr = static_cast<const uint8_t*>(data);
-    
-    for (size_t i = 0; i < size; ++i) {
-        crc = (crc >> 8) ^ crc32_table[(crc ^ ptr[i]) & 0xFF];
-    }
-    
-    return crc ^ 0xFFFFFFFF;
+    return ::crc32(0L, static_cast<const Bytef*>(data), static_cast<uInt>(size));
 }
 
 } // namespace network_utils

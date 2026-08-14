@@ -134,48 +134,27 @@ auto fingerprint(const std::array<uint8_t, 32>& pubkey) -> std::string {
 }
 
 // ── base64 ──────────────────────────────────────────────────────────────
-namespace {
-constexpr char B64[] =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-}
-
+// Standard (padded, no line-wrap) base64 via libsodium. Byte-for-byte
+// compatible with the former hand-rolled codec, so persisted TrustStore
+// entries and exchanged peer-pubkey strings keep decoding identically.
 auto base64_encode(const uint8_t* data, size_t len) -> std::string {
-    std::string out;
-    out.reserve(((len + 2) / 3) * 4);
-    for (size_t i = 0; i < len; i += 3) {
-        uint32_t n = uint32_t(data[i]) << 16;
-        if (i + 1 < len) n |= uint32_t(data[i+1]) << 8;
-        if (i + 2 < len) n |= uint32_t(data[i+2]);
-        out += B64[(n >> 18) & 63];
-        out += B64[(n >> 12) & 63];
-        out += (i + 1 < len) ? B64[(n >> 6) & 63] : '=';
-        out += (i + 2 < len) ? B64[n & 63] : '=';
-    }
+    const size_t enc_len = sodium_base64_encoded_len(len, sodium_base64_VARIANT_ORIGINAL);
+    std::string out(enc_len, '\0');
+    sodium_bin2base64(out.data(), enc_len, data, len, sodium_base64_VARIANT_ORIGINAL);
+    if (!out.empty() && out.back() == '\0') out.pop_back();  // drop embedded NUL
     return out;
 }
 
 auto base64_decode(std::string_view s) -> std::optional<std::vector<uint8_t>> {
-    static const std::array<int8_t,256> rev = []{
-        std::array<int8_t,256> t;
-        t.fill((int8_t)-1);
-        for (int i = 0; i < 64; ++i) t[(unsigned char)B64[i]] = (int8_t)i;
-        return t;
-    }();
-    std::vector<uint8_t> out;
-    out.reserve(s.size() * 3 / 4);
-    uint32_t acc = 0;
-    int bits = 0;
-    for (unsigned char c : s) {
-        if (c == '=') break;
-        int8_t v = rev[c];
-        if (v < 0) return std::nullopt;  // 非法字符
-        acc = (acc << 6) | uint32_t(v);
-        bits += 6;
-        if (bits >= 8) {
-            bits -= 8;
-            out.push_back(uint8_t(acc >> bits));
-        }
+    std::vector<uint8_t> out(s.size() * 3 / 4 + 1);
+    size_t out_len = 0;
+    if (sodium_base642bin(out.data(), out.size(),
+                          reinterpret_cast<const char*>(s.data()), s.size(),
+                          nullptr, &out_len, nullptr,
+                          sodium_base64_VARIANT_ORIGINAL) != 0) {
+        return std::nullopt;  // 非法字符
     }
+    out.resize(out_len);
     return out;
 }
 

@@ -1,11 +1,27 @@
 #include "model_manager.hpp"
 #include "utils/logger.hpp"
+#include <cctype>
 #include <fstream>
 #include <sstream>
 #include <algorithm>
 #include <unordered_set>
 
 namespace crossscale {
+
+namespace {
+// Model names arrive from two independent sources — the Android app's asset
+// layout ("Real-ESRGANv3-anime_x2", underscore before the scale suffix) and
+// the PC's models/ directory ("Real-ESRGANv3-anime-x2", dash, see
+// parse_param_file below) — that disagree only on the word separator. Fold
+// both into one canonical lowercase/dash-joined form so a phone-submitted
+// name resolves regardless of which separator each side happened to use.
+std::string normalize_model_name(std::string s) {
+    for (char& c : s) {
+        c = (c == '_') ? '-' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return s;
+}
+}  // namespace
 
 ModelManager::ModelManager(const std::filesystem::path& models_dir)
     : models_dir_(models_dir) {}
@@ -42,9 +58,12 @@ auto ModelManager::scan_models() -> expected<std::vector<ModelInfo>, ModelManage
 }
 
 auto ModelManager::get_model(const std::string& name) const -> std::optional<ModelInfo> {
-    auto it = std::find_if(models_.begin(), models_.end(), 
-        [&](const ModelInfo& m) { return m.name == name; });
-    
+    // Tolerant match: normalize both sides so "_x2" / "-x2" and case
+    // differences resolve to the same entry.
+    const auto key = normalize_model_name(name);
+    auto it = std::find_if(models_.begin(), models_.end(),
+        [&](const ModelInfo& m) { return normalize_model_name(m.name) == key; });
+
     if (it != models_.end()) {
         return *it;
     }

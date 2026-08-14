@@ -12,7 +12,7 @@
 
 ## Pre-Plan Reality Check (read this before executing)
 
-The original Layer-3 design (`docs/superpowers/specs/2026-07-28-architecture-simplification-design.md` §4.1–4.3) named three code deletions. Independent verification against the current working tree shows the situation has changed:
+The original Layer-3 design (`docs/decisions/specs/2026-07-28-architecture-simplification-design.md` §4.1–4.3) named three code deletions. Independent verification against the current working tree shows the situation has changed:
 
 | Target | Spec said | Reality (verified 2026-07-28) | Action in this plan |
 |---|---|---|---|
@@ -185,7 +185,7 @@ grep cmd_client/args::Client clean."
 - Edit: `docs/TECHNICAL_REPORT.md` (same)
 - Edit: `docs/OVERVIEW.md` (mDNS mentions)
 - Edit: `docs/DATA_FLOW.md` (mDNS mentions)
-- Edit: `docs/superpowers/specs/2026-07-28-architecture-simplification-design.md` §4.2 — mark as already-executed
+- Edit: `docs/decisions/specs/2026-07-28-architecture-simplification-design.md` §4.2 — mark as already-executed
 - Edit: `README.md:99-102` — the "Client-side offloading" usage example invokes the now-deleted `client process` subcommand; this is **user-facing** (code-quality reviewer flagged it as the highest-impact stale doc). Remove or replace it.
 
 **Context:** Spec §4.2 said "delete the C++ MDNSDiscovery stub, keep MDNSBroadcaster." Verification shows the C++ stub was already deleted in commit `8c11549`; only `MDNSBroadcaster` (which the spec wanted to keep) remains in C++. The Android `MDNSDiscovery.kt` (platform-native NsdManager) is the only "MDNSDiscovery" that exists, and it stays. So §4.2 is effectively a no-op for code; only docs that describe the removed stub need updating to avoid misleading future readers. Separately, the Task 1 code-quality review flagged `README.md:102` (`./crossscale-cli client process ...`) as a user-facing stale example — folded into this doc-reconciliation task.
@@ -244,7 +244,7 @@ Two doc-only reconciliations after Layer 3 Task 1:
 - Edit: `docs/PONYTAIL_AUDIT.md:56` (xor_encrypt audit entry — code already deleted)
 - Edit: `docs/ARCHITECTURE.md:173,323` (stale `crypto::xor_encrypt` references)
 - Edit: `docs/TECHNICAL_REPORT.md:182,475` (same)
-- Edit: `docs/superpowers/specs/2026-07-28-architecture-simplification-design.md` §4.3 — mark as already-executed
+- Edit: `docs/decisions/specs/2026-07-28-architecture-simplification-design.md` §4.3 — mark as already-executed
 
 **Context:** Spec §4.3 said "delete `crypto::xor_encrypt`/`xor_decrypt` (0 callers, fake security)." Verification confirms it was already deleted in commit `8c11549`; current `share/utils/crypto.{hpp,cpp}` expose only `sha256_hex` and `generate_uuid`. So §4.3 is a no-op for code; only docs need updating.
 
@@ -313,7 +313,7 @@ An early draft of this plan included an optional Task 4 to delete `MAX_NETWORK_P
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-07-28-layer3-protocol-role-pruning.md`. Two execution options:
+Plan complete and saved to `docs/decisions/plans/2026-07-28-layer3-protocol-role-pruning.md`. Two execution options:
 
 **1. Subagent-Driven (recommended)** — I dispatch a fresh subagent per task, review between tasks, fast iteration.
 

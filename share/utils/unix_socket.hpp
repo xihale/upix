@@ -36,8 +36,6 @@ public:
     void set_timeout(int timeout_ms);
     void close();
 
-    bool is_connected() const;
-    int handle() const { return socket_; }
     const std::string& path() const { return path_; }
 
 private:
@@ -69,7 +67,6 @@ public:
     auto accept() -> expected<std::unique_ptr<UnixSocket>, NetworkError>;
 
     void stop();
-    bool is_listening() const { return server_socket_ >= 0; }
     const std::string& path() const { return path_; }
 
 private:

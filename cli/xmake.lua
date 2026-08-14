@@ -9,7 +9,6 @@ target("crossscale-cli")
         "src/cli_app.cpp",
         "src/common.cpp",
         "src/cmd_model.cpp",
-        "src/cmd_benchmark.cpp",
         "src/cmd_perf.cpp",
         "src/cmd_server.cpp",
         "src/cmd_serve.cpp",

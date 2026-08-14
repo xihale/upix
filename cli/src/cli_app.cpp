@@ -68,11 +68,6 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     model->add_subcommand("list", "List available models")
         ->callback([] { g_exit_code = cmd_model(model_args); });
 
-    // ── benchmark ───────────────────────────────────────────────────────────
-    static args::Benchmark bench_args;
-    app->add_subcommand("benchmark", "Run a CPU micro-benchmark")
-        ->callback([] { g_exit_code = cmd_benchmark(bench_args); });
-
     // ── perf ────────────────────────────────────────────────────────────────
     // One Perf instance per nested subcommand so each carries its own defaults
     // (gpu-efficiency: dur=5s/warm=1s/no-concurrency; gpu-concurrency:

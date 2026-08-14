@@ -214,64 +214,15 @@ int run_batch(const args::Process& a) {
         }
         // Track processing start time for ETA
         auto batch_start_time = std::chrono::steady_clock::now();
+        // Speculative submit-queue tuning env vars (CROSSSCALE_GPU_SUBMIT_QUEUE*,
+        // _MIN_SUBMIT_BATCH, _BATCH_WAIT_MS) were removed: undocumented, unexposed
+        // as CLI flags, and never overridden. Values pinned to their former defaults.
         size_t gpu_submit_queue_max = 3;
-        if (const char* queue_env = std::getenv("CROSSSCALE_GPU_SUBMIT_QUEUE")) {
-            try {
-                gpu_submit_queue_max = static_cast<size_t>(std::stoul(queue_env));
-            } catch (...) {
-                gpu_submit_queue_max = 3;
-            }
-        }
-        gpu_submit_queue_max = std::clamp(gpu_submit_queue_max, static_cast<size_t>(1), static_cast<size_t>(8));
-
         size_t gpu_submit_queue_min = 1;
-        if (const char* queue_min_env = std::getenv("CROSSSCALE_GPU_SUBMIT_QUEUE_MIN")) {
-            try {
-                gpu_submit_queue_min = static_cast<size_t>(std::stoul(queue_min_env));
-            } catch (...) {
-                gpu_submit_queue_min = 1;
-            }
-        }
-        gpu_submit_queue_min = std::clamp(gpu_submit_queue_min, static_cast<size_t>(1), gpu_submit_queue_max);
-
         bool gpu_dynamic_submit_queue = true;
-        if (const char* queue_dynamic_env = std::getenv("CROSSSCALE_GPU_SUBMIT_QUEUE_DYNAMIC")) {
-            gpu_dynamic_submit_queue = std::string(queue_dynamic_env) != "0";
-        }
-
         size_t gpu_submit_queue_target_tiles = 64;
-        if (const char* queue_target_env = std::getenv("CROSSSCALE_GPU_SUBMIT_QUEUE_TARGET_TILES")) {
-            try {
-                gpu_submit_queue_target_tiles = static_cast<size_t>(std::stoul(queue_target_env));
-            } catch (...) {
-                gpu_submit_queue_target_tiles = 64;
-            }
-        }
-        gpu_submit_queue_target_tiles = std::clamp(
-            gpu_submit_queue_target_tiles,
-            static_cast<size_t>(16),
-            static_cast<size_t>(256)
-        );
-
-        size_t gpu_min_submit_batch = gpu_submit_queue_min;
-        if (const char* min_batch_env = std::getenv("CROSSSCALE_GPU_MIN_SUBMIT_BATCH")) {
-            try {
-                gpu_min_submit_batch = static_cast<size_t>(std::stoul(min_batch_env));
-            } catch (...) {
-                gpu_min_submit_batch = gpu_submit_queue_min;
-            }
-        }
-        gpu_min_submit_batch = std::clamp(gpu_min_submit_batch, static_cast<size_t>(1), gpu_submit_queue_max);
-
+        size_t gpu_min_submit_batch = 1;
         int gpu_batch_wait_ms = 0;
-        if (const char* batch_wait_env = std::getenv("CROSSSCALE_GPU_BATCH_WAIT_MS")) {
-            try {
-                gpu_batch_wait_ms = std::stoi(batch_wait_env);
-            } catch (...) {
-                gpu_batch_wait_ms = 0;
-            }
-        }
-        gpu_batch_wait_ms = std::clamp(gpu_batch_wait_ms, 0, 10);
 
         struct ProcessedTask {
             std::string out_path;

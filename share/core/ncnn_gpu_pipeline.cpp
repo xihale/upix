@@ -116,10 +116,7 @@ namespace crossscale {
         states.reserve(tasks.size());
         std::vector<std::vector<TilePadInfo>> task_pad_infos;
         task_pad_infos.reserve(tasks.size());
-        size_t submit_budget = 0;
         size_t total_tiles = 0;
-        size_t total_tile_pixels = 0;
-        size_t max_task_channels = 1;
         for (const auto& task : tasks) {
             if (task.input_data == nullptr || task.output_data == nullptr || task.regions == nullptr) {
                 return std::unexpected(EngineError{205, "GPU queue task has null buffers"});
@@ -147,13 +144,10 @@ namespace crossscale {
             state.progress.completed_tiles = 0;
             states.emplace_back(std::move(state));
 
-            submit_budget += static_cast<size_t>(std::max(1, task.config.batch_size));
             total_tiles += task.regions->size();
-            max_task_channels = std::max(max_task_channels, static_cast<size_t>(task.channels));
             std::vector<TilePadInfo> pad_infos;
             pad_infos.reserve(task.regions->size());
             for (const auto& region : *task.regions) {
-                total_tile_pixels += static_cast<size_t>(region.width) * static_cast<size_t>(region.height);
                 pad_infos.emplace_back(compute_pad(task, region));
             }
             task_pad_infos.emplace_back(std::move(pad_infos));
@@ -162,104 +156,17 @@ namespace crossscale {
             return {};
         }
         const size_t in_elemsize = opt.use_fp16_storage ? 2u : 4u;
-        const double avg_tile_pixels = static_cast<double>(total_tile_pixels) /
-                                       static_cast<double>(std::max<size_t>(1, total_tiles));
-
-        size_t tiles_per_task_target = 24;
-        if (avg_tile_pixels <= (256.0 * 256.0)) {
-            tiles_per_task_target = 40;
-        } else if (avg_tile_pixels <= (384.0 * 384.0)) {
-            tiles_per_task_target = 32;
-        }
-        if (const char* target_env = std::getenv("CROSSSCALE_GPU_SUBMIT_TILES_PER_TASK")) {
-            try {
-                tiles_per_task_target = std::clamp(
-                    static_cast<size_t>(std::stoul(target_env)),
-                    static_cast<size_t>(8),
-                    static_cast<size_t>(96)
-                );
-            } catch (...) {
-                // Ignore malformed env input and keep adaptive target.
-            }
-        }
-
-        submit_budget = std::max(submit_budget * 8, tasks.size() * tiles_per_task_target);
-        submit_budget = std::max(submit_budget, static_cast<size_t>(32));
-
-        size_t submit_memory_budget_mb = 768;
-        if (vkdev_ != nullptr) {
-            const bool is_discrete_gpu = vkdev_->info.type() == 0;
-            const size_t heap_budget_mb = static_cast<size_t>(vkdev_->get_heap_budget());
-            if (heap_budget_mb > 0) {
-                // Keep submit memory bounded to a fraction of the live heap budget so
-                // high-end dGPUs can keep deeper in-flight work without starving small GPUs.
-                const size_t budget_divisor = is_discrete_gpu ? 8 : 14;
-                const size_t min_budget_mb = is_discrete_gpu ? 768 : 256;
-                const size_t max_budget_mb = is_discrete_gpu ? 1536 : 640;
-                submit_memory_budget_mb = std::clamp(
-                    heap_budget_mb / budget_divisor,
-                    min_budget_mb,
-                    max_budget_mb
-                );
-            } else {
-                submit_memory_budget_mb = is_discrete_gpu ? 1024 : 384;
-            }
-        }
-        if (const char* mem_env = std::getenv("CROSSSCALE_GPU_SUBMIT_MB")) {
-            try {
-                submit_memory_budget_mb = std::clamp(
-                    static_cast<size_t>(std::stoul(mem_env)),
-                    static_cast<size_t>(128),
-                    static_cast<size_t>(2048)
-                );
-            } catch (...) {
-                // Ignore malformed env input and keep default memory budget.
-            }
-        }
-
-        const double scale_squared = static_cast<double>(scale_factor_) * static_cast<double>(scale_factor_);
-        const double bytes_per_tile = std::max(
-            1.0,
-            avg_tile_pixels *
-                static_cast<double>(max_task_channels) *
-                static_cast<double>(in_elemsize) *
-                (1.0 + scale_squared)
-        );
-        size_t submit_budget_cap = static_cast<size_t>(
-            (static_cast<double>(submit_memory_budget_mb) * 1024.0 * 1024.0) / bytes_per_tile
-        );
-        submit_budget_cap = std::clamp(submit_budget_cap, static_cast<size_t>(32), static_cast<size_t>(256));
-        submit_budget_cap = std::min(total_tiles, submit_budget_cap);
-        if (const char* budget_env = std::getenv("CROSSSCALE_GPU_SUBMIT_BUDGET")) {
-            try {
-                const size_t env_budget = static_cast<size_t>(std::stoul(budget_env));
-                submit_budget_cap = std::min(total_tiles, std::clamp(env_budget, static_cast<size_t>(16), static_cast<size_t>(256)));
-            } catch (...) {
-                // Ignore malformed env input and keep default cap.
-            }
-        }
-        submit_budget = std::min(submit_budget, submit_budget_cap);
-        // Each tile's blend dispatch does read-modify-write accumulation (dst += w*src, weight += w)
-        // into SHARED out_gpu_hwc/out_gpu_weight. Packing more than one blend into a single VkCompute
-        // command buffer is a RAW/WAR hazard: ncnn's record_pipeline inserts no memory barrier
-        // between dispatches that read and write the same buffer, so later tiles lose their writes
-        // (producing the same dark/black-region corruption as the non-queue paths). ncnn's
-        // VkCompute::barrier_readwrite is protected and cannot be called from here. Pin submit_budget
-        // to 1 so each batch submits exactly one tile's blend, relying on the implicit queue-submit
-        // barrier to serialize accumulations. This sacrifices the multi-task pipeline parallelism the
-        // queue path was designed for, in exchange for correctness. See commit history for the
-        // empirical confirmation (one-tile-per-cmd -> mean 242 vs corrupted 139).
-        submit_budget = 1;
-        LOG_INFO("Engine", "GPU queue submit tuning: " + format_vulkan_runtime_snapshot(
-            "queue_budget",
-            -1,
-            -1,
-            static_cast<int>(max_task_channels),
-            submit_budget,
-            submit_budget_cap,
-            submit_memory_budget_mb,
-            avg_tile_pixels
-        ));
+        // submit_budget is pinned to 1: each tile's blend dispatch does read-modify-write
+        // accumulation (dst += w*src, weight += w) into SHARED out_gpu_hwc/out_gpu_weight.
+        // Packing more than one blend into a single VkCompute command buffer is a RAW/WAR
+        // hazard — ncnn's record_pipeline inserts no memory barrier between dispatches that
+        // read and write the same buffer, so later tiles lose their writes (dark/black
+        // regions). ncnn's VkCompute::barrier_readwrite is protected and cannot be called
+        // from here, so one tile per command buffer relies on the implicit queue-submit
+        // barrier to serialize the accumulations. See process_tiles_gpu_u8 for the same
+        // constraint and the commit history for the empirical confirmation
+        // (one-tile-per-cmd -> mean 242 vs corrupted 139).
+        constexpr size_t submit_budget = 1;
 
         int input_idx = -1;
         int output_idx = -1;

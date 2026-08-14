@@ -21,11 +21,7 @@ struct ProcessingConfig {
     // 批处理设置
     int batch_size = 1;
 
-    // 内存约束 (MB)
-    size_t max_memory_mb = 0;  // 0 = 自动检测
-
     // 性能设置
-    int num_threads = 0;  // 0 = 自动
     bool use_gpu = true;
 
     // 模型设置
@@ -35,9 +31,6 @@ struct ProcessingConfig {
     // 输出设置
     int output_quality = 90;
     std::string output_format;
-
-    // Network settings
-    size_t network_buffer_size = 0;  // 0 = auto (based on tile size)
 
     // 从 JSON 文件加载
     static auto load(const std::filesystem::path& path)
@@ -64,10 +57,7 @@ struct DevicePerformanceProfile {
     DeviceType device_type = DeviceType::CPU;
     std::string device_name;
 
-    size_t total_memory_mb = 0;
     size_t available_memory_mb = 0;
-
-    int optimal_tile_size = 256;
 
     struct TileBenchmark {
         int tile_size = 0;
@@ -75,9 +65,6 @@ struct DevicePerformanceProfile {
         size_t memory_usage_mb = 0;
         bool success = false;
     };
-    std::vector<TileBenchmark> tile_benchmarks;
-
-    float performance_score = 0.0f;
 };
 
 // 模型约束
@@ -101,11 +88,6 @@ public:
         int image_width,
         int image_height
     ) -> int;
-
-    auto estimate_tile_size(
-        const DevicePerformanceProfile& device,
-        const ModelConstraints& model
-    ) const -> int;
 
     auto profile_device(Engine& engine) -> DevicePerformanceProfile;
 
