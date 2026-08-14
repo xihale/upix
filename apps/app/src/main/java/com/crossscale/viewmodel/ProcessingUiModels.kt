@@ -63,7 +63,7 @@ data class ProcessingCheckpointItemSummary(
 )
 
 // Visible for the viewmodel package only. Held as a local value in
-// ProcessingViewModel.buildRunSetup and consumed by startProcessingInternal.
+// ProcessingRunPlanner.buildRunSetup and consumed by ProcessingRunEngine.
 internal data class ProcessingRunSetup(
     val allImages: List<ResolvedImageInput>,
     val runImages: List<ResolvedImageInput>,
