@@ -1,6 +1,7 @@
 package com.crossscale
 
 import android.content.Context
+import com.crossscale.data.repository.AppSettingsRepository
 import com.crossscale.data.repository.BatchOutputRepository
 import com.crossscale.data.repository.DeviceRepository
 import com.crossscale.data.repository.InputSourceRepository
@@ -16,6 +17,7 @@ class AppContainer(context: Context) {
     val appContext = context.applicationContext
 
     val logRepository = LogRepository()
+    val appSettingsRepository = AppSettingsRepository(appContext)
     val modelRepository = ModelRepository(appContext, logRepository)
     val deviceRepository = DeviceRepository(logRepository)
     val pairingRepository = PairingRepository(appContext, logRepository)
