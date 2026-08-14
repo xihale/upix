@@ -28,7 +28,8 @@ JNI_LIBS_DIR="${ANDROID_DIR}/app/src/main/jniLibs"
 THIRD_PARTY_INCLUDE_DIR="${ANDROID_DIR}/app/src/main/cpp/third_party/include"
 
 mkdir -p "${JNI_LIBS_DIR}"
-rm -rf "${THIRD_PARTY_INCLUDE_DIR}"
+# Headers are merged in place (not wiped) so already-synced packages can be
+# skipped on re-runs.
 mkdir -p "${THIRD_PARTY_INCLUDE_DIR}"
 
 extract_json_field() {
@@ -127,28 +128,54 @@ copy_package_artifacts() {
     done < <(printf '%s' "${json}" | extract_json_field "libfiles")
 }
 
+# Returns 0 when a package's artifacts are already present locally, so a
+# re-run can skip it entirely. This keeps the script idempotent and immune to
+# xrepo recipe hash drift (a changed upstream recipe can make an installed
+# store instance invisible to xrepo and trigger unnecessary source rebuilds).
+# lib sentinel is empty for header-only packages.
+package_synced() {
+    local abi="$1"
+    local lib_sentinel="$2"
+    local header_sentinel="$3"
+
+    if [[ -n "${lib_sentinel}" && ! -e "${JNI_LIBS_DIR}/${abi}/${lib_sentinel}" ]]; then
+        return 1
+    fi
+    [[ -z "${header_sentinel}" || -e "${THIRD_PARTY_INCLUDE_DIR}/${header_sentinel}" ]]
+}
+
+# sync_package <abi> <package> [config] <lib-sentinel> <header-sentinel>
+sync_package() {
+    local abi="$1"
+    local package_name="$2"
+    local config="$3"
+    local lib_sentinel="$4"
+    local header_sentinel="$5"
+
+    if package_synced "${abi}" "${lib_sentinel}" "${header_sentinel}"; then
+        echo "    [skip] ${package_name} (${abi}): already synced"
+        return 0
+    fi
+    install_package "${abi}" "${package_name}" "${config}"
+    copy_package_artifacts "${abi}" "${package_name}" "${config}"
+}
+
 for abi in "${ABIS[@]}"; do
     echo "==> Syncing native deps for ${abi}"
 
-    install_package "${abi}" "ncnn" "vulkan=true"
-    install_package "${abi}" "glslang-nihui"
-    install_package "${abi}" "libomp"
-    install_package "${abi}" "glaze"
-    install_package "${abi}" "zlib"
-    install_package "${abi}" "libpng"
-    install_package "${abi}" "libjpeg"
-    install_package "${abi}" "libwebp"
-    install_package "${abi}" "libsodium"
-
-    copy_package_artifacts "${abi}" "ncnn" "vulkan=true"
-    copy_package_artifacts "${abi}" "glslang-nihui"
-    copy_package_artifacts "${abi}" "libomp"
-    copy_package_artifacts "${abi}" "glaze"
-    copy_package_artifacts "${abi}" "zlib"
-    copy_package_artifacts "${abi}" "libpng"
-    copy_package_artifacts "${abi}" "libjpeg"
-    copy_package_artifacts "${abi}" "libwebp"
-    copy_package_artifacts "${abi}" "libsodium"
+    # Versions are pinned so the sync is deterministic and works offline from
+    # the local xrepo store/cache. Unpinned resolves drift to newer upstream
+    # versions and forces full source downloads (observed hanging on clones).
+    sync_package "${abi}" "ncnn 20250916" "vulkan=true" "libncnn.a" "ncnn/net.h"
+    sync_package "${abi}" "glslang-nihui 20250916" "" "libglslang.a" "glslang"
+    sync_package "${abi}" "libomp 19.1.0" "" "libomp.so" "omp.h"
+    sync_package "${abi}" "glaze v7.0.2" "" "" "glaze"
+    sync_package "${abi}" "zlib 1.3.1" "" "libz.a" "zlib.h"
+    sync_package "${abi}" "libdeflate 1.25" "" "libdeflate.a" "libdeflate.h"
+    sync_package "${abi}" "libpng 1.6.54" "" "libpng.a" "png.h"
+    sync_package "${abi}" "libjpeg v9f" "" "libjpeg.a" "jpeglib.h"
+    sync_package "${abi}" "libwebp v1.3.0" "" "libwebp.a" "webp"
+    sync_package "${abi}" "libsodium 1.0.22" "" "libsodium.a" "sodium.h"
 done
 
 echo "Native deps synced to:"

@@ -40,8 +40,9 @@ import_static_library(codec_png "${NATIVE_LIB_DIR}/libpng.a")
 import_static_library(codec_jpeg "${NATIVE_LIB_DIR}/libjpeg.a")
 import_static_library(codec_webp "${NATIVE_LIB_DIR}/libwebp.a")
 import_static_library(codec_z "${NATIVE_LIB_DIR}/libz.a")
+import_static_library(codec_deflate "${NATIVE_LIB_DIR}/libdeflate.a")
 
-set(CODEC_LIB_TARGETS codec_png codec_jpeg codec_webp codec_z)
+set(CODEC_LIB_TARGETS codec_png codec_jpeg codec_webp codec_z codec_deflate)
 
 import_optional_static_library(codec_webpdecoder "${NATIVE_LIB_DIR}/libwebpdecoder.a")
 if(TARGET codec_webpdecoder)
