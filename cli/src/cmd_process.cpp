@@ -33,6 +33,7 @@
 #include "core/serve/daemon.hpp"  // default_serve_socket_path, ServeRequest/Response
 #include "core/engine.hpp"
 #include "core/engine_pool.hpp"
+#include "core/engine_setup.hpp"
 #include "core/model_manager.hpp"
 #include "core/distributed/protocol.hpp"
 #include "core/tile_optimizer.hpp"
@@ -197,56 +198,28 @@ int cmd_process(const args::Process& a) {
     LOG_INFO("Engine", "Image loaded: " + std::to_string(image.width()) + "x" +
              std::to_string(image.height()) + " (" + std::to_string(image.channels()) + " channels)");
 
-    auto engine = crossscale::create_ncnn_engine();
-    auto init_result = engine->initialize();  // Try GPU first, fallback to CPU
-    if (!init_result.has_value()) {
-        LOG_ERROR("Engine", "Failed to initialize engine");
+    // Engine init + model load via the shared recipe. ENGINE_DEFAULT mirrors the
+    // original `engine->initialize()` (no arg): try GPU, fall back to CPU.
+    auto setup = crossscale::setup_engine(
+        crossscale::SetupDevice::ENGINE_DEFAULT,
+        models_dir,
+        model_name
+    );
+    if (!setup) {
+        LOG_ERROR("Engine", setup.error());
         return 1;
     }
-
-    std::string param_path, bin_path;
-
-    // Load model using ModelManager
-    crossscale::ModelManager manager(fs::current_path() / "models");
-    auto models_opt = manager.scan_models();
-    if (!models_opt.has_value() || models_opt->empty()) {
-        LOG_ERROR("Engine", "No models found in " + models_dir);
-        return 1;
-    }
-    auto& models = models_opt.value();
-
-    const crossscale::ModelInfo* selected_model = nullptr;
+    const auto* selected_model = setup->selected;  // capture pointer before moves
+    auto engine = std::move(setup->engine);
+    // `manager` owns the scanned model vector that `selected_model` points into;
+    // keep it alive for the whole function (used again at line ~289 below).
+    crossscale::ModelManager manager = std::move(setup->models);
     if (model_name.empty()) {
-        selected_model = &models[0];
         LOG_INFO("Engine", "No model specified, using first available: " + selected_model->name);
-    } else {
-        for (const auto& m : models) {
-            if (m.name == model_name) {
-                selected_model = &m;
-                break;
-            }
-        }
-        if (!selected_model) {
-            LOG_ERROR("Engine", "Model not found: " + model_name);
-            LOG_ERROR("Engine", "Available models:");
-            for (const auto& m : models) {
-                LOG_ERROR("Engine", "  - " + m.name + " (" + std::to_string(m.scale_factor) + "x)");
-            }
-            return 1;
-        }
     }
-
-    param_path = selected_model->param_path.string();
-    bin_path = selected_model->bin_path.string();
     std::string model_name_resolved = selected_model->name;
     int model_input_channels = std::max(1, selected_model->input_channels);
     LOG_INFO("Engine", "Using model: " + model_name_resolved + " (" + std::to_string(selected_model->scale_factor) + "x)");
-
-    auto load_result = engine->load_model(param_path, bin_path);
-    if (!load_result.has_value()) {
-        LOG_ERROR("Engine", "Failed to load model: " + load_result.error().message);
-        return 1;
-    }
     // Override engine's heuristic scale detection with the authoritative value
     // parsed from the model filename.
     engine->set_scale_factor(selected_model->scale_factor);

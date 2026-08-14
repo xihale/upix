@@ -1,6 +1,7 @@
 #include "core/serve/daemon.hpp"
 
 #include "core/engine.hpp"
+#include "core/engine_setup.hpp"
 #include "core/model_manager.hpp"
 #include "core/tile_processor.hpp"
 #include "core/tile_types.hpp"
@@ -73,47 +74,21 @@ auto ServeDaemon::start(const std::string& socket_path,
     device_ = device;
     socket_path_ = socket_path;
 
-    // ── Engine init (the ~330 ms cost amortized over all future requests) ──
-    engine_ = create_ncnn_engine();
-    auto init_res = engine_->initialize(device == ServeDevice::GPU
-                                        ? DeviceType::GPU_VULKAN
-                                        : DeviceType::CPU);
-    if (!init_res) {
-        LOG_ERROR("Serve", "engine initialize failed: " + init_res.error().message);
+    // ── Engine init + model load (create→init→scan→select→load recipe) ──────
+    // Collapses the previous 2/3/4/5/6 distinct failure codes to a single 2;
+    // the only caller (cmd_serve) checks `!= 0` and does not branch on the code.
+    auto setup = setup_engine(
+        device == ServeDevice::GPU ? SetupDevice::GPU : SetupDevice::CPU,
+        models_dir,
+        model_name
+    );
+    if (!setup) {
+        LOG_ERROR("Serve", setup.error());
         return 2;
     }
-
-    // ── Resolve + load the initial model (the ~160 ms cost amortized) ───────
-    models_ = std::make_unique<ModelManager>();
-    models_->set_models_directory(models_dir.empty() ? "./models" : models_dir);
-    auto scan = models_->scan_models();
-    if (!scan) {
-        LOG_ERROR("Serve", "model scan failed: " + scan.error().message);
-        return 3;
-    }
-    if (scan->empty()) {
-        LOG_ERROR("Serve", "no models found in: " + models_dir);
-        return 4;
-    }
-    const ModelInfo* chosen = nullptr;
-    if (!model_name.empty()) {
-        for (const auto& m : *scan) {
-            if (m.name == model_name) { chosen = &m; break; }
-        }
-        if (!chosen) {
-            LOG_ERROR("Serve", "model not found: " + model_name);
-            return 5;
-        }
-    } else {
-        chosen = &scan->front();
-    }
-    auto load_res = engine_->load_model(chosen->param_path.string(),
-                                        chosen->bin_path.string());
-    if (!load_res) {
-        LOG_ERROR("Serve", "model load failed: " + load_res.error().message);
-        return 6;
-    }
-    loaded_model_name_ = chosen->name;
+    loaded_model_name_ = setup->selected->name;  // read pointer before moving models
+    engine_ = std::move(setup->engine);
+    models_ = std::make_unique<ModelManager>(std::move(setup->models));
     processor_ = std::make_unique<TileProcessor>();
 
     // ── Bind the socket ─────────────────────────────────────────────────────
