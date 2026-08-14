@@ -12,6 +12,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.crossscale.R
 import com.crossscale.data.model.ModelInfo
 import com.crossscale.ui.theme.BorderlessTokens
 
@@ -36,7 +38,7 @@ fun ModelCard(
             )
             if (isSelected) {
                 Text(
-                    text = "当前",
+                    text = stringResource(R.string.models_current),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary
                 )
@@ -44,17 +46,27 @@ fun ModelCard(
         }
 
         Text(
-            text = "放大倍率: ${model.scaleFactor}x · 大小: ${model.totalSize / 1024 / 1024}MB",
+            text = stringResource(
+                R.string.models_card_summary,
+                model.scaleFactor,
+                model.totalSize / 1024 / 1024
+            ),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         Row(horizontalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing)) {
             Button(onClick = { onSelect(model) }) {
-                Text(if (isSelected) "已选择" else "选择")
+                Text(
+                    if (isSelected) {
+                        stringResource(R.string.models_selected)
+                    } else {
+                        stringResource(R.string.models_select)
+                    }
+                )
             }
             OutlinedButton(onClick = { onDelete(model) }) {
-                Text("删除")
+                Text(stringResource(R.string.models_delete))
             }
         }
 

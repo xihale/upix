@@ -31,9 +31,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import com.crossscale.R
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
 import com.google.mlkit.vision.barcode.common.Barcode
@@ -49,6 +51,9 @@ fun QRScannerScreen(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val permissionDeniedMessage = stringResource(R.string.scanner_permission_denied)
+    val scanFailedMessage = stringResource(R.string.scanner_scan_failed)
+    val cameraFailedMessage = stringResource(R.string.scanner_camera_failed)
     val previewView = remember {
         PreviewView(context).apply {
             scaleType = PreviewView.ScaleType.FILL_CENTER
@@ -76,7 +81,7 @@ fun QRScannerScreen(
     ) { granted ->
         cameraPermissionGranted = granted
         if (!granted) {
-            scanError = "未授予相机权限，无法扫码。"
+            scanError = permissionDeniedMessage
         }
     }
 
@@ -141,7 +146,7 @@ fun QRScannerScreen(
                             }
                         }
                         .addOnFailureListener { throwable ->
-                            scanError = throwable.message ?: "扫码失败，请重试。"
+                            scanError = throwable.message ?: scanFailedMessage
                         }
                         .addOnCompleteListener {
                             processingFrame.set(false)
@@ -161,7 +166,7 @@ fun QRScannerScreen(
                     analysis
                 )
             } catch (throwable: Throwable) {
-                scanError = throwable.message ?: "启动相机失败。"
+                scanError = throwable.message ?: cameraFailedMessage
             }
         }
         cameraProviderFuture.addListener(listener, ContextCompat.getMainExecutor(context))
@@ -183,12 +188,12 @@ fun QRScannerScreen(
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
-            text = "二维码扫描",
+            text = stringResource(R.string.scanner_title),
             style = MaterialTheme.typography.headlineMedium
         )
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            text = "将摄像头对准 CLI 端显示的二维码，识别后会自动连接。",
+            text = stringResource(R.string.scanner_hint),
             style = MaterialTheme.typography.bodyMedium
         )
 
@@ -203,7 +208,7 @@ fun QRScannerScreen(
             )
         } else {
             Text(
-                text = "需要相机权限以启用扫码。",
+                text = stringResource(R.string.scanner_permission_required),
                 style = MaterialTheme.typography.bodyMedium
             )
             Spacer(modifier = Modifier.height(8.dp))
@@ -211,7 +216,7 @@ fun QRScannerScreen(
                 onClick = { requestPermissionLauncher.launch(Manifest.permission.CAMERA) },
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("授予相机权限")
+                Text(stringResource(R.string.scanner_grant_permission))
             }
         }
 
@@ -229,7 +234,7 @@ fun QRScannerScreen(
             onClick = onClose,
             modifier = Modifier.fillMaxWidth()
         ) {
-            Text("关闭")
+            Text(stringResource(R.string.scanner_close))
         }
     }
 }

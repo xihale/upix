@@ -14,9 +14,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.Button
+import com.crossscale.R
 
 /**
  * TOFU 首次连接: 展示从握手学到的 PC 指纹(16 字符大写 hex), 让用户与 PC 终端
@@ -32,7 +34,7 @@ fun FingerprintConfirmDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("确认 PC 指纹") },
+        title = { Text(stringResource(R.string.dialog_fingerprint_title)) },
         text = {
             Column(
                 verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -40,7 +42,7 @@ fun FingerprintConfirmDialog(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
-                    "首次连接 $host:$port。\n请核对下方指纹与 PC 终端显示的指纹是否一致:",
+                    stringResource(R.string.dialog_fingerprint_body, host, port),
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center
                 )
@@ -61,17 +63,17 @@ fun FingerprintConfirmDialog(
                     )
                 }
                 Text(
-                    "指纹一致即建立信任, 以后自动连接。若不一致请取消(可能存在中间人)。",
+                    stringResource(R.string.dialog_fingerprint_trust_note),
                     style = MaterialTheme.typography.bodySmall,
                     textAlign = TextAlign.Center
                 )
             }
         },
         confirmButton = {
-            Button(onClick = onConfirm) { Text("指纹一致, 确认") }
+            Button(onClick = onConfirm) { Text(stringResource(R.string.dialog_fingerprint_confirm)) }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) { Text("取消") }
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.common_cancel)) }
         }
     )
 }

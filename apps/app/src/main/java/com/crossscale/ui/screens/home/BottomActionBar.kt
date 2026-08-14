@@ -29,7 +29,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.crossscale.R
 import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.RemoteEndpoint
 import com.crossscale.ui.theme.BorderlessTokens
@@ -84,7 +86,7 @@ internal fun BottomActionBar(
                         )
                     ) {
                         Text(
-                            "恢复备份",
+                            stringResource(R.string.home_restore_backup),
                             fontWeight = BorderlessTokens.SectionTitleWeight
                         )
                     }
@@ -100,12 +102,16 @@ internal fun BottomActionBar(
                         containerColor = MaterialTheme.colorScheme.primaryContainer,
                         contentColor = MaterialTheme.colorScheme.onPrimaryContainer
                     )
-                ) {
-                    Text(
-                        if (isProcessing) "继续队列" else "开始超分",
-                        fontWeight = BorderlessTokens.SectionTitleWeight
-                    )
-                }
+                    ) {
+                        Text(
+                            if (isProcessing) {
+                                stringResource(R.string.home_continue_queue)
+                            } else {
+                                stringResource(R.string.home_start_upscaling)
+                            },
+                            fontWeight = BorderlessTokens.SectionTitleWeight
+                        )
+                    }
 
                 if (isProcessing) {
                     OutlinedButton(
@@ -115,7 +121,7 @@ internal fun BottomActionBar(
                             .height(52.dp),
                         shape = CircleShape
                     ) {
-                        Text("停止")
+                        Text(stringResource(R.string.home_stop))
                     }
                 }
             }
@@ -169,12 +175,12 @@ private fun QueueDockEntry(
 
             Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(
-                    text = "队列",
+                    text = stringResource(R.string.home_queue_title),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = BorderlessTokens.SectionTitleWeight
                 )
                 Text(
-                    text = "待处理 $pendingQueueCount · 失败 $failedQueueCount",
+                    text = stringResource(R.string.home_queue_summary, pendingQueueCount, failedQueueCount),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -184,7 +190,7 @@ private fun QueueDockEntry(
 
             Icon(
                 imageVector = Icons.Outlined.KeyboardArrowUp,
-                contentDescription = "打开队列",
+                contentDescription = stringResource(R.string.home_open_queue_cd),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(16.dp)
             )
@@ -198,9 +204,9 @@ private fun QueueStatusBadge(
     failedQueueCount: Int
 ) {
     val label = when {
-        failedQueueCount > 0 -> "${failedQueueCount} 失败"
-        pendingQueueCount > 0 -> "${pendingQueueCount} 待处理"
-        else -> "空"
+        failedQueueCount > 0 -> stringResource(R.string.home_badge_failed, failedQueueCount)
+        pendingQueueCount > 0 -> stringResource(R.string.home_badge_pending, pendingQueueCount)
+        else -> stringResource(R.string.home_badge_empty)
     }
     val backgroundColor = when {
         failedQueueCount > 0 -> MaterialTheme.colorScheme.errorContainer

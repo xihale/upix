@@ -16,6 +16,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
+import com.crossscale.R
 import com.crossscale.data.model.ModelImportResult
 import com.crossscale.data.repository.LogRepository
 import com.crossscale.util.isImageSourceDecodable
@@ -154,7 +155,7 @@ internal class InputSelectionController(
                 persistUriPermission(context = context, uri = uri, read = true, write = false)
             }
             mainViewModel.importModels(uris) { result ->
-                val message = buildModelImportFeedbackMessage(result)
+                val message = buildModelImportFeedbackMessage(result, context)
                 Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
             }
         }
@@ -188,14 +189,14 @@ internal class InputSelectionController(
     }
 }
 
-private fun buildModelImportFeedbackMessage(result: ModelImportResult): String {
+private fun buildModelImportFeedbackMessage(result: ModelImportResult, context: Context): String {
     if (result.importedCount <= 0) {
-        return "模型无效：必须成对包含同名 .param 和 .bin（支持从 zip 导入）"
+        return context.getString(R.string.models_import_invalid)
     }
     return if (result.invalidCount > 0) {
-        "已导入 ${result.importedCount} 个模型，${result.invalidCount} 个无效"
+        context.getString(R.string.models_import_result_partial, result.importedCount, result.invalidCount)
     } else {
-        "已成功导入 ${result.importedCount} 个模型"
+        context.getString(R.string.models_import_result_success, result.importedCount)
     }
 }
 

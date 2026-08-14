@@ -9,9 +9,11 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.crossscale.R
 import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.RemoteEndpoint
 
@@ -32,17 +34,17 @@ internal fun ModeChip(
             backgroundColor = Color(0xFFD7F4DE)
             contentColor = Color(0xFF1B5E20)
             val endpoint = connectedEndpoint?.let { "${it.host}:${it.port}" }.orEmpty()
-            text = "🖥️ 远程 · PC 处理 · $endpoint"
+            text = stringResource(R.string.home_mode_remote, endpoint)
         }
         ConnectionState.DISCONNECTED -> {
             backgroundColor = Color(0xFFD6E4FF)
             contentColor = Color(0xFF0D47A1)
-            text = "📱 本地 · 手机处理"
+            text = stringResource(R.string.home_mode_local)
         }
         ConnectionState.CONNECTING -> {
             backgroundColor = Color(0xFFFFE8C2)
             contentColor = Color(0xFF8A5A00)
-            text = "🔄 连接 PC 中…"
+            text = stringResource(R.string.home_mode_connecting)
         }
     }
 

@@ -1,5 +1,6 @@
 package com.crossscale.ui.components
 
+import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -9,7 +10,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.crossscale.R
 import com.crossscale.data.model.ProcessingStatus
 import com.crossscale.viewmodel.ProcessingUiState
 import kotlin.math.roundToInt
@@ -25,7 +28,7 @@ fun ProcessingProgress(uiState: ProcessingUiState) {
         verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Text(
-            text = "任务状态: ${task.status.toDisplayLabel()}",
+            text = stringResource(R.string.progress_task_status, stringResource(task.status.toDisplayLabelRes())),
             style = MaterialTheme.typography.titleSmall
         )
         LinearProgressIndicator(
@@ -33,89 +36,103 @@ fun ProcessingProgress(uiState: ProcessingUiState) {
             modifier = Modifier.fillMaxWidth()
         )
         Text(
-            text = "进度: ${(task.progress * 100.0f).roundToInt()}%",
+            text = stringResource(R.string.progress_progress_percent, (task.progress * 100.0f).roundToInt()),
             style = MaterialTheme.typography.bodyMedium
         )
         Text(
-            text = "已处理: ${task.completedItems}/${task.totalItems}",
+            text = stringResource(R.string.progress_completed_items, task.completedItems, task.totalItems),
             style = MaterialTheme.typography.bodyMedium
         )
         Text(
-            text = "待处理: ${task.pendingItems}/${task.totalItems}",
+            text = stringResource(R.string.progress_pending_items, task.pendingItems, task.totalItems),
             style = MaterialTheme.typography.bodyMedium
         )
         Text(
-            text = "失败: ${task.failedItems}",
+            text = stringResource(R.string.progress_failed_count, task.failedItems),
             style = MaterialTheme.typography.bodyMedium
         )
         if (task.failedItemNames.isNotEmpty()) {
             val previewNames = task.failedItemNames.take(5)
             Text(
-                text = "失败文件(${previewNames.size}/${task.failedItemNames.size}): ${previewNames.joinToString(separator = ", ")}",
+                text = stringResource(
+                    R.string.progress_failed_files,
+                    previewNames.size,
+                    task.failedItemNames.size,
+                    previewNames.joinToString(separator = ", ")
+                ),
                 style = MaterialTheme.typography.bodySmall
             )
         }
         if (task.failureDetails.isNotEmpty()) {
             Text(
-                text = "失败详情:",
+                text = stringResource(R.string.progress_failure_details),
                 style = MaterialTheme.typography.bodyMedium
             )
             val previewFailures = task.failureDetails.take(3)
             previewFailures.forEach { detail ->
                 Text(
-                    text = "• ${detail.displayName.ifBlank { detail.uri }}: ${detail.errorMessage} (${detail.attempts}次)",
+                    text = stringResource(
+                        R.string.progress_failure_detail_item,
+                        detail.displayName.ifBlank { detail.uri },
+                        detail.errorMessage,
+                        detail.attempts
+                    ),
                     style = MaterialTheme.typography.bodySmall
                 )
             }
             if (task.failureDetails.size > previewFailures.size) {
                 val moreCount = task.failureDetails.size - previewFailures.size
                 Text(
-                    text = "还有 $moreCount 条失败记录",
+                    text = stringResource(R.string.progress_more_failures, moreCount),
                     style = MaterialTheme.typography.bodySmall
                 )
             }
         }
         task.currentItemName?.let { itemName ->
             Text(
-                text = "当前文件: $itemName",
+                text = stringResource(R.string.progress_current_file, itemName),
                 style = MaterialTheme.typography.bodySmall
             )
         }
         task.lastProcessedItemName?.let { itemName ->
-            val processorLabel = task.lastProcessorLabel ?: "未知节点"
+            val processorLabel = task.lastProcessorLabel ?: stringResource(R.string.progress_unknown_node)
             Text(
-                text = "最近完成: $itemName · 处理节点: $processorLabel",
+                text = stringResource(R.string.progress_last_completed, itemName, processorLabel),
                 style = MaterialTheme.typography.bodySmall
             )
         }
         if (task.recentProcessorAttributions.isNotEmpty()) {
             val previewAttributions = task.recentProcessorAttributions.takeLast(3)
             Text(
-                text = "近期分配: ${previewAttributions.joinToString(separator = " | ")}",
+                text = stringResource(
+                    R.string.progress_recent_attributions,
+                    previewAttributions.joinToString(separator = " | ")
+                ),
                 style = MaterialTheme.typography.bodySmall
             )
         }
         task.outputDirectory?.let { outputDirectory ->
             Text(
-                text = "输出目录: $outputDirectory",
+                text = stringResource(R.string.progress_output_directory, outputDirectory),
                 style = MaterialTheme.typography.bodySmall
             )
         }
         task.lastErrorMessage?.let { errorMessage ->
             Text(
-                text = "最近错误: $errorMessage",
+                text = stringResource(R.string.progress_last_error, errorMessage),
                 style = MaterialTheme.typography.bodySmall
             )
         }
     }
 }
 
-private fun ProcessingStatus.toDisplayLabel(): String {
+@StringRes
+private fun ProcessingStatus.toDisplayLabelRes(): Int {
     return when (this) {
-        ProcessingStatus.IDLE -> "空闲"
-        ProcessingStatus.RUNNING -> "处理中"
-        ProcessingStatus.COMPLETED -> "已完成"
-        ProcessingStatus.FAILED -> "失败"
-        ProcessingStatus.CANCELED -> "已取消"
+        ProcessingStatus.IDLE -> R.string.progress_status_idle
+        ProcessingStatus.RUNNING -> R.string.common_status_processing
+        ProcessingStatus.COMPLETED -> R.string.common_status_completed
+        ProcessingStatus.FAILED -> R.string.common_status_failed
+        ProcessingStatus.CANCELED -> R.string.progress_status_canceled
     }
 }

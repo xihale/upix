@@ -15,6 +15,8 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.crossscale.R
 import com.crossscale.data.model.ModelInfo
 import com.crossscale.ui.components.ModelCard
 import com.crossscale.ui.theme.BorderlessTokens
@@ -30,6 +32,7 @@ fun ModelsScreen(
     modelDirectoryPath: String,
     onOpenModelRelease: () -> Unit
 ) {
+    val notSelectedLabel = stringResource(R.string.common_not_selected)
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -40,12 +43,16 @@ fun ModelsScreen(
         verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionSpacing)
     ) {
         Text(
-            text = "模型",
+            text = stringResource(R.string.models_title),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = BorderlessTokens.SectionTitleWeight
         )
         Text(
-            text = "已发现 ${models.size} 个模型；当前：${selectedModel?.name ?: "未选择"}",
+            text = stringResource(
+                R.string.models_discovered_summary,
+                models.size,
+                selectedModel?.name ?: notSelectedLabel
+            ),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -59,7 +66,7 @@ fun ModelsScreen(
                 .fillMaxWidth()
                 .heightIn(min = BorderlessTokens.InteractiveRowMinHeight)
         ) {
-            Text("刷新模型列表")
+            Text(stringResource(R.string.models_refresh))
         }
         Button(
             onClick = onImportModels,
@@ -67,7 +74,7 @@ fun ModelsScreen(
                 .fillMaxWidth()
                 .heightIn(min = BorderlessTokens.InteractiveRowMinHeight)
         ) {
-            Text("导入模型（.param/.bin/.zip）")
+            Text(stringResource(R.string.models_import))
         }
         OutlinedButton(
             onClick = onOpenModelRelease,
@@ -75,15 +82,15 @@ fun ModelsScreen(
                 .fillMaxWidth()
                 .heightIn(min = BorderlessTokens.InteractiveRowMinHeight)
         ) {
-            Text("下载模型（占位）")
+            Text(stringResource(R.string.models_download))
         }
         Text(
-            text = "模型目录：$modelDirectoryPath",
+            text = stringResource(R.string.common_model_directory, modelDirectoryPath),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Text(
-            text = "导入规则：必须成对同名 .param + .bin；zip 支持多模型与多层文件夹。",
+            text = stringResource(R.string.models_import_rules),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -94,7 +101,7 @@ fun ModelsScreen(
 
         if (models.isEmpty()) {
             Text(
-                text = "未发现模型，请将 .param/.bin 放入模型目录",
+                text = stringResource(R.string.models_empty_hint),
                 style = MaterialTheme.typography.bodyMedium
             )
         } else {

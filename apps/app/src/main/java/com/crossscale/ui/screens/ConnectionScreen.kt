@@ -32,7 +32,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.crossscale.R
 import com.crossscale.ui.components.ConnectionDialog
 import com.crossscale.ui.components.FingerprintConfirmDialog
 import com.crossscale.ui.scanner.QRScannerScreen
@@ -82,7 +84,7 @@ fun ConnectionScreen(
             verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionSpacing)
         ) {
             Text(
-                text = "连接 PC",
+                text = stringResource(R.string.connection_title),
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold
             )
@@ -106,7 +108,9 @@ fun ConnectionScreen(
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.weight(1f)
                         )
-                        TextButton(onClick = onClearConnectionError) { Text("忽略") }
+                        TextButton(onClick = onClearConnectionError) {
+                            Text(stringResource(R.string.connection_ignore))
+                        }
                     }
                 }
             }
@@ -166,7 +170,7 @@ private fun ConnectedStatusCard(
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = "✅ 已连接 PC",
+                text = stringResource(R.string.connection_connected_title),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -178,7 +182,7 @@ private fun ConnectedStatusCard(
                 )
                 it.fingerprint?.takeIf { fp -> fp.isNotBlank() }?.let { fp ->
                     Text(
-                        text = "指纹：$fp",
+                        text = stringResource(R.string.connection_fingerprint, fp),
                         style = MaterialTheme.typography.labelMedium,
                         fontFamily = FontFamily.Monospace
                     )
@@ -190,7 +194,7 @@ private fun ConnectedStatusCard(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp)
             ) {
-                Text("断开连接")
+                Text(stringResource(R.string.connection_disconnect))
             }
         }
     }
@@ -219,13 +223,13 @@ private fun ConnectingCard() {
                     strokeWidth = 2.dp
                 )
                 Text(
-                    text = "正在连接 PC…",
+                    text = stringResource(R.string.connection_connecting_title),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
             }
             Text(
-                text = "首次连接需在 PC 端批准并核对指纹。",
+                text = stringResource(R.string.connection_connecting_hint),
                 style = MaterialTheme.typography.bodySmall
             )
         }
@@ -253,7 +257,7 @@ private fun DisconnectedActions(
             )
         ) {
             Text(
-                text = "📷 扫码连接",
+                text = stringResource(R.string.connection_scan_qr),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
@@ -267,7 +271,7 @@ private fun DisconnectedActions(
             shape = RoundedCornerShape(16.dp)
         ) {
             Text(
-                text = "手动输入 IP:port",
+                text = stringResource(R.string.connection_manual_input),
                 style = MaterialTheme.typography.titleMedium
             )
         }
@@ -293,15 +297,12 @@ private fun HelpCard() {
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             Text(
-                text = "ℹ️ 使用说明",
+                text = stringResource(R.string.connection_usage_title),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "连接 PC 后，图片将发送到 PC 用 GPU 超分辨率处理（更快）；" +
-                    "未连接时手机本地处理。" +
-                    "首次连接需在 PC 端批准并核对指纹。" +
-                    "下次启动 App 会自动重连上次使用的 PC。",
+                text = stringResource(R.string.connection_usage_body),
                 style = MaterialTheme.typography.bodyMedium
             )
         }

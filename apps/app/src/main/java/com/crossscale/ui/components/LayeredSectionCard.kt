@@ -12,6 +12,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.crossscale.R
 import com.crossscale.ui.theme.BorderlessTokens
 
 @Composable
@@ -51,7 +53,13 @@ fun LayeredSectionCard(
 
             if (showDetailsToggle) {
                 TextButton(onClick = onToggleExpanded) {
-                    Text(if (expanded) "收起" else "详情")
+                    Text(
+                        if (expanded) {
+                            stringResource(R.string.common_collapse)
+                        } else {
+                            stringResource(R.string.common_details)
+                        }
+                    )
                 }
             }
         }

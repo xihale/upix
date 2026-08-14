@@ -15,7 +15,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import com.crossscale.R
 import com.crossscale.ui.theme.BorderlessTokens
 
 @Composable
@@ -38,26 +40,41 @@ fun SettingsScreen(
         verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing)
     ) {
         Text(
-            text = "设置",
+            text = stringResource(R.string.common_settings),
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = BorderlessTokens.SectionTitleWeight
         )
 
         Text(
-            text = "当前模型：${selectedModelName ?: "未选择"}",
+            text = stringResource(
+                R.string.settings_current_model,
+                selectedModelName ?: stringResource(R.string.common_not_selected)
+            ),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerStrongAlpha))
 
-        SettingsLine(title = "模型管理", subtitle = "下载、删除与切换模型", onClick = onOpenModels)
+        SettingsLine(
+            title = stringResource(R.string.common_model_management),
+            subtitle = stringResource(R.string.settings_model_management_subtitle),
+            onClick = onOpenModels
+        )
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha))
 
-        SettingsLine(title = "日志", subtitle = "查看运行和错误日志", onClick = onOpenLogs)
+        SettingsLine(
+            title = stringResource(R.string.common_logs),
+            subtitle = stringResource(R.string.settings_logs_subtitle),
+            onClick = onOpenLogs
+        )
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha))
 
-        SettingsLine(title = "使用帮助", subtitle = "快速开始与常见问题", onClick = onOpenHelp)
+        SettingsLine(
+            title = stringResource(R.string.common_help),
+            subtitle = stringResource(R.string.settings_help_subtitle),
+            onClick = onOpenHelp
+        )
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha))
 
@@ -75,9 +92,12 @@ fun SettingsScreen(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing / 2)
             ) {
-                Text(text = "加密数据流传输 (图像/结果)", style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    text = "关闭可提升吞吐; 控制帧始终加密",
+                    text = stringResource(R.string.settings_stream_encryption_title),
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Text(
+                    text = stringResource(R.string.settings_stream_encryption_subtitle),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -90,7 +110,7 @@ fun SettingsScreen(
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha))
         Text(
-            text = "模型目录：$modelDirectoryPath",
+            text = stringResource(R.string.common_model_directory, modelDirectoryPath),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
@@ -126,7 +146,7 @@ private fun SettingsLine(
             )
         }
         Text(
-            text = "进入",
+            text = stringResource(R.string.settings_enter),
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary
         )

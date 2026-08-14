@@ -13,7 +13,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.crossscale.R
 
 @Composable
 fun ConnectionDialog(
@@ -39,23 +41,23 @@ fun ConnectionDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("连接 PC") },
+        title = { Text(stringResource(R.string.connection_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedTextField(
                     value = host,
                     onValueChange = { host = it },
                     singleLine = true,
-                    label = { Text("PC IP 地址") }
+                    label = { Text(stringResource(R.string.connection_host_label)) }
                 )
                 OutlinedTextField(
                     value = port,
                     onValueChange = { port = it },
                     singleLine = true,
-                    label = { Text("端口") }
+                    label = { Text(stringResource(R.string.connection_port_label)) }
                 )
                 Text(
-                    "输入 PC 端显示的 IP 与端口。首次连接会在握手后展示 PC 指纹供你核对。",
+                    stringResource(R.string.connection_manual_hint),
                     style = androidx.compose.material3.MaterialTheme.typography.bodySmall
                 )
             }
@@ -67,12 +69,12 @@ fun ConnectionDialog(
                     onDismiss()
                 }
             ) {
-                Text("连接 PC")
+                Text(stringResource(R.string.connection_title))
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("取消")
+                Text(stringResource(R.string.common_cancel))
             }
         }
     )

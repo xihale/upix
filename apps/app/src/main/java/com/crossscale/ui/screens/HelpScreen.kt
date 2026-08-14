@@ -10,6 +10,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.crossscale.R
 import com.crossscale.ui.theme.BorderlessTokens
 
 @Composable
@@ -24,19 +26,19 @@ fun HelpScreen() {
         verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionSpacing)
     ) {
         Text(
-            text = "使用帮助",
+            text = stringResource(R.string.common_help),
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = BorderlessTokens.SectionTitleWeight
         )
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerStrongAlpha))
-        HelpLine("1. 在主页顶部点击“添加图片或文件夹”。")
-        HelpLine("2. 选择超分模型与输出路径。")
-        HelpLine("3. 根据需要开启“覆盖原图 / 备份原图”。")
-        HelpLine("4. 点击底部“开始超分”，并可上拉队列查看进度与失败原因。")
-        HelpLine("5. 文件与模型导入统一使用系统文件选择器。")
+        HelpLine(stringResource(R.string.help_step_1))
+        HelpLine(stringResource(R.string.help_step_2))
+        HelpLine(stringResource(R.string.help_step_3))
+        HelpLine(stringResource(R.string.help_step_4))
+        HelpLine(stringResource(R.string.help_step_5))
 
         Text(
-            text = "提示：若开启覆盖原图，建议同时开启备份原图。",
+            text = stringResource(R.string.help_tip),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.fillMaxWidth()

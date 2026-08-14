@@ -31,8 +31,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.crossscale.R
 import com.crossscale.data.repository.InputSourceSpec
 import com.crossscale.data.repository.PersistedQueueItemStatus
 import com.crossscale.data.thumbnails.decodeQueueThumbnailWithLimit
@@ -62,7 +64,11 @@ internal fun QueueBottomSheetContent(
     val queueItems = processingUiState.queueItems
     val pendingQueueCount = remember(queueItems) { countPendingQueueItems(queueItems) }
     val failedQueueCount = remember(queueItems) { countFailedQueueItems(queueItems) }
-    val queueRunningLabel = if (processingUiState.isQueueRunning) "运行中" else "已暂停"
+    val queueRunningLabel = if (processingUiState.isQueueRunning) {
+        stringResource(R.string.queue_running)
+    } else {
+        stringResource(R.string.queue_paused)
+    }
 
     Column(
         modifier = Modifier
@@ -72,12 +78,12 @@ internal fun QueueBottomSheetContent(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         Text(
-            text = "队列详情",
+            text = stringResource(R.string.queue_details_title),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = BorderlessTokens.SectionTitleWeight
         )
         Text(
-            text = "状态：$queueRunningLabel · 待处理 $pendingQueueCount · 失败 $failedQueueCount",
+            text = stringResource(R.string.queue_status_summary, queueRunningLabel, pendingQueueCount, failedQueueCount),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -88,27 +94,27 @@ internal fun QueueBottomSheetContent(
                 enabled = !processingUiState.isProcessing && pendingQueueCount > 0,
                 modifier = Modifier.weight(1f)
             ) {
-                Text("启动")
+                Text(stringResource(R.string.queue_start))
             }
             OutlinedButton(
                 onClick = onPauseBatchQueue,
                 enabled = processingUiState.isQueueRunning,
                 modifier = Modifier.weight(1f)
             ) {
-                Text("暂停")
+                Text(stringResource(R.string.queue_pause))
             }
             OutlinedButton(
                 onClick = onClearBatchQueue,
                 enabled = queueItems.isNotEmpty(),
                 modifier = Modifier.weight(1f)
             ) {
-                Text("清空")
+                Text(stringResource(R.string.queue_clear))
             }
         }
 
         if (queueItems.isEmpty()) {
             Text(
-                text = "队列为空",
+                text = stringResource(R.string.queue_empty),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(vertical = 16.dp)
@@ -149,17 +155,20 @@ private fun QueueItemRow(
     onOpenQueuedBatchOutput: (String) -> Unit,
     onRemoveQueuedBatch: (String) -> Unit
 ) {
-    val queueItemStatus = when (queueItem.status) {
-        PersistedQueueItemStatus.PENDING -> "未开始"
-        PersistedQueueItemStatus.RUNNING -> "处理中"
-        PersistedQueueItemStatus.FAILED -> "失败"
-        PersistedQueueItemStatus.COMPLETED -> "已完成"
+    val queueItemStatusRes = when (queueItem.status) {
+        PersistedQueueItemStatus.PENDING -> R.string.queue_status_pending
+        PersistedQueueItemStatus.RUNNING -> R.string.common_status_processing
+        PersistedQueueItemStatus.FAILED -> R.string.common_status_failed
+        PersistedQueueItemStatus.COMPLETED -> R.string.common_status_completed
     }
     val canOpenOutput = queueItem.status == PersistedQueueItemStatus.COMPLETED &&
         !queueItem.lastOutputUri.isNullOrBlank()
+    val unnamedInputLabel = stringResource(R.string.queue_unnamed_input)
     // Decoding a (possibly multi-source) spec parses JSON and URIs; only
     // recompute when the source itself changes, not on every recomposition.
-    val sourceLabel = remember(queueItem.source) { inputSourceLabel(queueItem.source) }
+    val sourceLabel = remember(queueItem.source, unnamedInputLabel) {
+        inputSourceLabel(queueItem.source, unnamedInputLabel)
+    }
 
     Column(
         modifier = Modifier
@@ -173,7 +182,7 @@ private fun QueueItemRow(
             Column(modifier = Modifier.weight(1f)) {
                 Text(text = "#${index + 1} $sourceLabel", style = MaterialTheme.typography.bodyMedium)
                 Text(
-                    text = "分配：${allocationSummary(queueItem)}",
+                    text = stringResource(R.string.queue_allocation_label, allocationSummary(queueItem)),
                     style = MaterialTheme.typography.bodySmall,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis
@@ -181,21 +190,24 @@ private fun QueueItemRow(
             }
         }
 
-        Text(text = "状态：$queueItemStatus", style = MaterialTheme.typography.bodySmall)
+        Text(
+            text = stringResource(R.string.queue_status_label, stringResource(queueItemStatusRes)),
+            style = MaterialTheme.typography.bodySmall
+        )
 
         if (queueItem.status == PersistedQueueItemStatus.FAILED) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(onClick = { onRetryQueuedBatch(queueItem.id) }, enabled = !isProcessing) {
-                    Text("重试")
+                    Text(stringResource(R.string.common_retry))
                 }
                 OutlinedButton(onClick = { onRetryQueuedBatchFailedOnly(queueItem.id) }, enabled = !isProcessing) {
-                    Text("仅失败项")
+                    Text(stringResource(R.string.queue_retry_failed_only))
                 }
             }
         }
         if (canOpenOutput) {
             OutlinedButton(onClick = { onOpenQueuedBatchOutput(queueItem.id) }) {
-                Text("打开结果")
+                Text(stringResource(R.string.queue_open_output))
             }
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -203,7 +215,7 @@ private fun QueueItemRow(
                 onClick = { onRemoveQueuedBatch(queueItem.id) },
                 enabled = queueItem.status != PersistedQueueItemStatus.RUNNING
             ) {
-                Text("移除")
+                Text(stringResource(R.string.queue_remove))
             }
             Spacer(modifier = Modifier.width(8.dp))
             Text(
@@ -242,26 +254,41 @@ private fun QueueItemThumbnail(source: String) {
                 contentScale = ContentScale.Crop
             )
         } else {
-            Text(text = "无图", style = MaterialTheme.typography.bodySmall)
+            Text(text = stringResource(R.string.queue_no_image), style = MaterialTheme.typography.bodySmall)
         }
     }
 }
 
+@Composable
 private fun allocationSummary(item: ProcessingQueueItemSummary): String {
-    val mode = if (item.distributedMode) "分布式" else "单机"
-    val expected = item.expectedItems?.let { count -> "$count 张" } ?: "待统计"
-    val overwrite = if (item.overwriteOriginal) "覆盖原图" else "写入输出目录"
-    val backup = if (item.overwriteOriginal && item.backupOriginal) "（备份）" else ""
-    return "$mode / 预计 $expected / $overwrite$backup"
+    val mode = if (item.distributedMode) {
+        stringResource(R.string.queue_mode_distributed)
+    } else {
+        stringResource(R.string.queue_mode_standalone)
+    }
+    val expected = item.expectedItems?.let { count ->
+        stringResource(R.string.queue_expected_count, count)
+    } ?: stringResource(R.string.queue_expected_pending)
+    val overwrite = if (item.overwriteOriginal) {
+        stringResource(R.string.common_overwrite_original)
+    } else {
+        stringResource(R.string.queue_write_to_output)
+    }
+    val backup = if (item.overwriteOriginal && item.backupOriginal) {
+        stringResource(R.string.queue_backup_suffix)
+    } else {
+        ""
+    }
+    return stringResource(R.string.queue_allocation_summary, mode, expected, overwrite, backup)
 }
 
-private fun inputSourceLabel(source: String): String {
+private fun inputSourceLabel(source: String, unnamedInputLabel: String): String {
     if (source.isBlank()) {
-        return "未命名输入"
+        return unnamedInputLabel
     }
     val decodedSources = InputSourceSpec.decode(source).orEmpty()
     if (decodedSources.isNotEmpty()) {
-        val firstLabel = inputSourceLabel(decodedSources.first())
+        val firstLabel = inputSourceLabel(decodedSources.first(), unnamedInputLabel)
         val remainingCount = decodedSources.size - 1
         return if (remainingCount > 0) "$firstLabel +$remainingCount" else firstLabel
     }

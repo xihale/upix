@@ -41,7 +41,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.crossscale.R
 import com.crossscale.data.thumbnails.decodeQueueThumbnailWithLimit
 import com.crossscale.ui.theme.BorderlessTokens
 
@@ -114,7 +116,7 @@ private fun EmptyHero() {
         }
         Spacer(modifier = Modifier.height(14.dp))
         Text(
-            text = "添加图片或文件夹",
+            text = stringResource(R.string.hero_add_hint),
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -168,12 +170,12 @@ private fun SelectedHero(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "已选择 ${selectedInputs.size} 项",
+                    text = stringResource(R.string.hero_selected_count, selectedInputs.size),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = BorderlessTokens.SectionTitleWeight
                 )
                 Text(
-                    text = "继续添加",
+                    text = stringResource(R.string.hero_add_more),
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.combinedClickable(onClick = onAddImage, onLongClick = onAddFolder)
@@ -204,7 +206,7 @@ private fun SelectedHero(
             Box(contentAlignment = Alignment.Center) {
                 Icon(
                     imageVector = Icons.Outlined.Close,
-                    contentDescription = "清除已选图片",
+                    contentDescription = stringResource(R.string.hero_clear_selection_cd),
                     modifier = Modifier.size(16.dp),
                     tint = MaterialTheme.colorScheme.onSurface
                 )
@@ -243,7 +245,11 @@ private fun HeroThumbnail(
             )
         } else {
             Text(
-                text = if (isCorrupted) "损坏" else "预览",
+                text = if (isCorrupted) {
+                    stringResource(R.string.hero_thumbnail_corrupted)
+                } else {
+                    stringResource(R.string.hero_thumbnail_preview)
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = if (isCorrupted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface
             )
@@ -262,9 +268,10 @@ internal fun PreviewBottomSheet(
     val previewBitmap by produceState<ImageBitmap?>(initialValue = null, source) {
         value = decodeQueueThumbnailWithLimit(context = context, source = source)
     }
-    val previewTitle = remember(source) {
+    val previewFallbackTitle = stringResource(R.string.hero_thumbnail_preview)
+    val previewTitle = remember(source, previewFallbackTitle) {
         source.substringAfterLast('/').ifBlank {
-            source.takeLast(28).ifBlank { "预览" }
+            source.takeLast(28).ifBlank { previewFallbackTitle }
         }
     }
 
@@ -276,7 +283,7 @@ internal fun PreviewBottomSheet(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Text(
-                text = "预览 · $previewTitle",
+                text = stringResource(R.string.hero_preview_title, previewTitle),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = BorderlessTokens.SectionTitleWeight
             )
@@ -291,7 +298,11 @@ internal fun PreviewBottomSheet(
                 val bitmap = previewBitmap
                 if (bitmap == null) {
                     Text(
-                        text = if (isCorrupted) "图片损坏" else "暂无可预览图像",
+                        text = if (isCorrupted) {
+                            stringResource(R.string.hero_image_corrupted)
+                        } else {
+                            stringResource(R.string.hero_no_preview)
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = if (isCorrupted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -305,7 +316,7 @@ internal fun PreviewBottomSheet(
                 }
             }
             Text(
-                text = "长按缩略图可预览，单击缩略图可删除",
+                text = stringResource(R.string.hero_thumbnail_hint),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

@@ -27,7 +27,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.crossscale.R
 import com.crossscale.data.model.ConnectionState
 import com.crossscale.ui.components.ProcessingProgress
 import com.crossscale.ui.components.SettingsRow
@@ -63,10 +65,15 @@ fun HomeScreen(
     val connectionState = connection.connectionState
     val connectedEndpoint = connection.connectedEndpoint
     val remoteFallbackMessage = connection.remoteFallbackMessage
+    val notSelectedLabel = stringResource(R.string.common_not_selected)
+    val snackbarConnectingMessage = stringResource(R.string.home_snackbar_connecting)
+    val snackbarConnectedMessage = stringResource(R.string.home_snackbar_connected)
+    val snackbarPcUnreachableSwitchedMessage = stringResource(R.string.home_snackbar_pc_unreachable_switched)
+    val snackbarPcUnreachableLocalMessage = stringResource(R.string.home_snackbar_pc_unreachable_local)
 
     val selectedInputs = state.selectedInputSources
     val corruptedSources = state.corruptedInputSources
-    val selectedModel = state.selectedModel?.name ?: "未选择"
+    val selectedModel = state.selectedModel?.name ?: notSelectedLabel
     val selectedOutput = abbreviatePath(state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/CrossScale")
     val queueItems = processingUiState.queueItems
     val pendingQueueCount = remember(queueItems) { countPendingQueueItems(queueItems) }
@@ -84,13 +91,13 @@ fun HomeScreen(
         val previous = prevConnectionState.value
         if (previous != connectionState) {
             val message = when (connectionState) {
-                ConnectionState.CONNECTING -> "正在连接上次的 PC…"
-                ConnectionState.CONNECTED -> "已连接 PC，使用远程处理"
+                ConnectionState.CONNECTING -> snackbarConnectingMessage
+                ConnectionState.CONNECTED -> snackbarConnectedMessage
                 ConnectionState.DISCONNECTED -> {
                     if (previous == ConnectionState.CONNECTED && isProcessing) {
-                        "PC 不可达，已切换本地处理"
+                        snackbarPcUnreachableSwitchedMessage
                     } else {
-                        "PC 不可达，使用本地处理"
+                        snackbarPcUnreachableLocalMessage
                     }
                 }
             }
@@ -132,7 +139,7 @@ fun HomeScreen(
 
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text(
-                    text = "参数",
+                    text = stringResource(R.string.home_parameters_section),
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = BorderlessTokens.SectionTitleWeight
                 )
@@ -141,7 +148,7 @@ fun HomeScreen(
                 )
 
                 SettingsRow(
-                    title = "超分模型",
+                    title = stringResource(R.string.home_model_setting_label),
                     value = selectedModel,
                     onClick = { showModelSheet = true }
                 )
@@ -150,12 +157,12 @@ fun HomeScreen(
                 )
 
                 SettingsRow(
-                    title = "输出路径",
+                    title = stringResource(R.string.home_output_path_label),
                     value = selectedOutput,
                     onClick = setupActions.onSelectOutputFolder,
                     trailing = {
                         TextButton(onClick = setupActions.onUseDefaultOutputFolder) {
-                            Text("默认")
+                            Text(stringResource(R.string.home_use_default_output))
                         }
                     }
                 )
@@ -164,7 +171,7 @@ fun HomeScreen(
                 )
 
                 SwitchRow(
-                    title = "覆盖原图",
+                    title = stringResource(R.string.common_overwrite_original),
                     checked = state.overwriteOriginalImage,
                     onCheckedChange = setupActions.onToggleOverwriteOriginal
                 )
@@ -173,7 +180,7 @@ fun HomeScreen(
                 )
 
                 SwitchRow(
-                    title = "备份原图",
+                    title = stringResource(R.string.home_backup_original),
                     checked = state.backupOriginalImage,
                     enabled = state.overwriteOriginalImage,
                     onCheckedChange = setupActions.onToggleBackupOriginal
@@ -183,7 +190,7 @@ fun HomeScreen(
                 )
 
                 SwitchRow(
-                    title = "包含子目录",
+                    title = stringResource(R.string.home_include_subdirectories),
                     checked = state.processNestedFolders,
                     onCheckedChange = setupActions.onToggleProcessNestedFolders
                 )
@@ -230,7 +237,7 @@ fun HomeScreen(
     if (showModelSheet) {
         ModalBottomSheet(onDismissRequest = { showModelSheet = false }) {
             Text(
-                text = "选择模型",
+                text = stringResource(R.string.home_select_model_sheet_title),
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
             )

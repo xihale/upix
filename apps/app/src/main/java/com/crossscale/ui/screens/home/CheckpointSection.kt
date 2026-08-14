@@ -12,9 +12,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.crossscale.R
 import com.crossscale.ui.theme.BorderlessTokens
+import com.crossscale.viewmodel.ProcessingCheckpointSummary
 import com.crossscale.viewmodel.ProcessingUiState
 
 @Composable
@@ -30,28 +33,33 @@ internal fun CheckpointSection(
 
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Text(
-            text = "断点续传",
+            text = stringResource(R.string.checkpoint_title),
             style = MaterialTheme.typography.titleSmall,
             fontWeight = BorderlessTokens.SectionTitleWeight
         )
         Text(
-            text = "${checkpointSummary.statusLabel} · 待处理 ${checkpointSummary.pendingItems} · 失败 ${checkpointSummary.failedItems}",
+            text = stringResource(
+                R.string.checkpoint_summary,
+                checkpointStatusLabel(checkpointSummary),
+                checkpointSummary.pendingItems,
+                checkpointSummary.failedItems
+            ),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             OutlinedButton(onClick = onResumeProcessing, modifier = Modifier.weight(1f)) {
-                Text("继续")
+                Text(stringResource(R.string.checkpoint_resume))
             }
             OutlinedButton(
                 onClick = onRetryFailedItems,
                 enabled = processingUiState.canRetryFailedOnly,
                 modifier = Modifier.weight(1f)
             ) {
-                Text("重试失败")
+                Text(stringResource(R.string.checkpoint_retry_failed))
             }
             OutlinedButton(onClick = onDiscardCheckpoint, modifier = Modifier.weight(1f)) {
-                Text("丢弃")
+                Text(stringResource(R.string.checkpoint_discard))
             }
         }
 
@@ -70,11 +78,11 @@ internal fun CheckpointSection(
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     TextButton(onClick = { onResumePendingItem(item.uri) }) {
-                        Text("继续")
+                        Text(stringResource(R.string.checkpoint_resume))
                     }
                     if (item.isFailed) {
                         TextButton(onClick = { onRetryFailedItem(item.uri) }) {
-                            Text("重试")
+                            Text(stringResource(R.string.common_retry))
                         }
                     }
                 }
@@ -84,4 +92,20 @@ internal fun CheckpointSection(
             )
         }
     }
+}
+
+/**
+ * Resolves the checkpoint status text from the summary counts at the
+ * consumption point. Mirrors the statusLabel derivation in
+ * ProcessingMappers.toUiSummary (kept there as a VM-owned Chinese string;
+ * event-based i18n of viewmodel messages is a later phase).
+ */
+@Composable
+private fun checkpointStatusLabel(summary: ProcessingCheckpointSummary): String {
+    val statusRes = when {
+        summary.pendingItems <= 0 && summary.failedItems <= 0 -> R.string.common_status_completed
+        summary.failedItems > 0 -> R.string.checkpoint_status_resumable_with_failures
+        else -> R.string.checkpoint_status_resumable
+    }
+    return stringResource(statusRes)
 }

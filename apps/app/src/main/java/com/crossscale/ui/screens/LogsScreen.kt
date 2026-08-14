@@ -21,6 +21,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import com.crossscale.R
 import com.crossscale.data.model.LogEntry
 import com.crossscale.data.model.LogLevel
 import com.crossscale.ui.components.LogViewer
@@ -64,12 +66,12 @@ fun LogsScreen(
         verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing)
     ) {
         Text(
-            text = "日志",
+            text = stringResource(R.string.common_logs),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = BorderlessTokens.SectionTitleWeight
         )
         Text(
-            text = "当前结果：${filteredLogs.size} 条",
+            text = stringResource(R.string.logs_result_count, filteredLogs.size),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodySmall
         )
@@ -79,7 +81,7 @@ fun LogsScreen(
             value = query,
             onValueChange = { query = it },
             modifier = Modifier.fillMaxWidth(),
-            label = { Text("搜索") },
+            label = { Text(stringResource(R.string.logs_search_label)) },
             singleLine = true
         )
 
@@ -88,7 +90,7 @@ fun LogsScreen(
                 FilterChip(
                     selected = selectedLevel == null,
                     onClick = { selectedLevel = null },
-                    label = { Text("全部") }
+                    label = { Text(stringResource(R.string.logs_filter_all)) }
                 )
             }
             items(LogLevel.entries) { level ->
@@ -106,7 +108,7 @@ fun LogsScreen(
                 .fillMaxWidth()
                 .heightIn(min = BorderlessTokens.InteractiveRowMinHeight)
         ) {
-            Text("清空日志")
+            Text(stringResource(R.string.logs_clear))
         }
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerStrongAlpha))
