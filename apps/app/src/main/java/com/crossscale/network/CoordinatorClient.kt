@@ -118,11 +118,6 @@ class CoordinatorClient(
      */
     fun isConnected(): Boolean = connectedEndpoint != null
 
-    fun isConnectedTo(host: String, port: Int): Boolean {
-        val endpoint = connectedEndpoint ?: return false
-        return endpoint.host == host.trim() && endpoint.port == port
-    }
-
     fun activeDeviceId(): String? {
         val endpoint = connectedEndpoint ?: return null
         return "${endpoint.host}:${endpoint.port}"

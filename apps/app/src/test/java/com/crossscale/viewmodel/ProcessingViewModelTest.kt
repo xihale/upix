@@ -73,30 +73,12 @@ class ProcessingViewModelTest {
         )
         val checkpointStore = FakeCheckpointStore(initialCheckpoint)
         val inputSourceResolver = FakeInputSourceResolver()
-        val batchOutputStore = FakeBatchOutputStore()
         val imageProcessingStore = FakeImageProcessingStore()
 
-        val viewModel = ProcessingViewModel(
-            logRepository = LogRepository(),
-            modelRepository = FakeModelProvider(
-                ModelInfo(
-                    name = "Real-ESRGANv3-anime-x2",
-                    scaleFactor = 2,
-                    inputChannels = 3,
-                    tileSize = 0,
-                    totalSize = 1024L,
-                    hash = "hash",
-                    paramPath = "/models/Real-ESRGANv3-anime-x2.param",
-                    binPath = "/models/Real-ESRGANv3-anime-x2.bin"
-                )
-            ),
+        val viewModel = makeViewModel(
             inputSourceRepository = inputSourceResolver,
-            batchOutputRepository = batchOutputStore,
             checkpointRepository = checkpointStore,
-            queueRepository = FakeQueueStore(),
-            nativeImageProcessingRepository = imageProcessingStore,
-            ioDispatcher = mainDispatcherRule.testDispatcher,
-            defaultDispatcher = mainDispatcherRule.testDispatcher
+            nativeImageProcessingRepository = imageProcessingStore
         )
 
         advanceUntilIdle()
@@ -153,27 +135,8 @@ class ProcessingViewModelTest {
             )
         )
 
-        val viewModel = ProcessingViewModel(
-            logRepository = LogRepository(),
-            modelRepository = FakeModelProvider(
-                ModelInfo(
-                    name = "Real-ESRGANv3-anime-x2",
-                    scaleFactor = 2,
-                    inputChannels = 3,
-                    tileSize = 0,
-                    totalSize = 1024L,
-                    hash = "hash",
-                    paramPath = "/models/Real-ESRGANv3-anime-x2.param",
-                    binPath = "/models/Real-ESRGANv3-anime-x2.bin"
-                )
-            ),
-            inputSourceRepository = FakeInputSourceResolver(),
-            batchOutputRepository = FakeBatchOutputStore(),
-            checkpointRepository = checkpointStore,
-            queueRepository = FakeQueueStore(),
-            nativeImageProcessingRepository = FakeImageProcessingStore(),
-            ioDispatcher = mainDispatcherRule.testDispatcher,
-            defaultDispatcher = mainDispatcherRule.testDispatcher
+        val viewModel = makeViewModel(
+            checkpointRepository = checkpointStore
         )
 
         advanceUntilIdle()
@@ -213,27 +176,9 @@ class ProcessingViewModelTest {
             )
         )
         val imageProcessingStore = FakeImageProcessingStore()
-        val viewModel = ProcessingViewModel(
-            logRepository = LogRepository(),
-            modelRepository = FakeModelProvider(
-                ModelInfo(
-                    name = "Real-ESRGANv3-anime-x2",
-                    scaleFactor = 2,
-                    inputChannels = 3,
-                    tileSize = 0,
-                    totalSize = 1024L,
-                    hash = "hash",
-                    paramPath = "/models/Real-ESRGANv3-anime-x2.param",
-                    binPath = "/models/Real-ESRGANv3-anime-x2.bin"
-                )
-            ),
-            inputSourceRepository = FakeInputSourceResolver(),
-            batchOutputRepository = FakeBatchOutputStore(),
+        val viewModel = makeViewModel(
             checkpointRepository = checkpointStore,
-            queueRepository = FakeQueueStore(),
-            nativeImageProcessingRepository = imageProcessingStore,
-            ioDispatcher = mainDispatcherRule.testDispatcher,
-            defaultDispatcher = mainDispatcherRule.testDispatcher
+            nativeImageProcessingRepository = imageProcessingStore
         )
 
         advanceUntilIdle()
@@ -291,27 +236,9 @@ class ProcessingViewModelTest {
             )
         )
         val imageProcessingStore = FakeImageProcessingStore()
-        val viewModel = ProcessingViewModel(
-            logRepository = LogRepository(),
-            modelRepository = FakeModelProvider(
-                ModelInfo(
-                    name = "Real-ESRGANv3-anime-x2",
-                    scaleFactor = 2,
-                    inputChannels = 3,
-                    tileSize = 0,
-                    totalSize = 1024L,
-                    hash = "hash",
-                    paramPath = "/models/Real-ESRGANv3-anime-x2.param",
-                    binPath = "/models/Real-ESRGANv3-anime-x2.bin"
-                )
-            ),
-            inputSourceRepository = FakeInputSourceResolver(),
-            batchOutputRepository = FakeBatchOutputStore(),
+        val viewModel = makeViewModel(
             checkpointRepository = checkpointStore,
-            queueRepository = FakeQueueStore(),
-            nativeImageProcessingRepository = imageProcessingStore,
-            ioDispatcher = mainDispatcherRule.testDispatcher,
-            defaultDispatcher = mainDispatcherRule.testDispatcher
+            nativeImageProcessingRepository = imageProcessingStore
         )
 
         advanceUntilIdle()
@@ -344,27 +271,8 @@ class ProcessingViewModelTest {
             register(source, listOf(inputUri))
         }
 
-        val viewModel = ProcessingViewModel(
-            logRepository = LogRepository(),
-            modelRepository = FakeModelProvider(
-                ModelInfo(
-                    name = "Real-ESRGANv3-anime-x2",
-                    scaleFactor = 2,
-                    inputChannels = 3,
-                    tileSize = 0,
-                    totalSize = 1024L,
-                    hash = "hash",
-                    paramPath = "/models/Real-ESRGANv3-anime-x2.param",
-                    binPath = "/models/Real-ESRGANv3-anime-x2.bin"
-                )
-            ),
-            inputSourceRepository = inputSourceResolver,
-            batchOutputRepository = FakeBatchOutputStore(),
-            checkpointRepository = FakeCheckpointStore(null),
-            queueRepository = FakeQueueStore(),
-            nativeImageProcessingRepository = FakeImageProcessingStore(),
-            ioDispatcher = mainDispatcherRule.testDispatcher,
-            defaultDispatcher = mainDispatcherRule.testDispatcher
+        val viewModel = makeViewModel(
+            inputSourceRepository = inputSourceResolver
         )
 
         advanceUntilIdle()
@@ -403,27 +311,9 @@ class ProcessingViewModelTest {
             register(sourceB, listOf(uriB))
         }
         val imageProcessingStore = FakeImageProcessingStore()
-        val viewModel = ProcessingViewModel(
-            logRepository = LogRepository(),
-            modelRepository = FakeModelProvider(
-                ModelInfo(
-                    name = "Real-ESRGANv3-anime-x2",
-                    scaleFactor = 2,
-                    inputChannels = 3,
-                    tileSize = 0,
-                    totalSize = 1024L,
-                    hash = "hash",
-                    paramPath = "/models/Real-ESRGANv3-anime-x2.param",
-                    binPath = "/models/Real-ESRGANv3-anime-x2.bin"
-                )
-            ),
+        val viewModel = makeViewModel(
             inputSourceRepository = inputSourceResolver,
-            batchOutputRepository = FakeBatchOutputStore(),
-            checkpointRepository = FakeCheckpointStore(null),
-            queueRepository = FakeQueueStore(),
-            nativeImageProcessingRepository = imageProcessingStore,
-            ioDispatcher = mainDispatcherRule.testDispatcher,
-            defaultDispatcher = mainDispatcherRule.testDispatcher
+            nativeImageProcessingRepository = imageProcessingStore
         )
 
         advanceUntilIdle()
@@ -468,27 +358,9 @@ class ProcessingViewModelTest {
         val imageProcessingStore = FakeImageProcessingStore().apply {
             failingUris += failedUri
         }
-        val viewModel = ProcessingViewModel(
-            logRepository = LogRepository(),
-            modelRepository = FakeModelProvider(
-                ModelInfo(
-                    name = "Real-ESRGANv3-anime-x2",
-                    scaleFactor = 2,
-                    inputChannels = 3,
-                    tileSize = 0,
-                    totalSize = 1024L,
-                    hash = "hash",
-                    paramPath = "/models/Real-ESRGANv3-anime-x2.param",
-                    binPath = "/models/Real-ESRGANv3-anime-x2.bin"
-                )
-            ),
+        val viewModel = makeViewModel(
             inputSourceRepository = inputSourceResolver,
-            batchOutputRepository = FakeBatchOutputStore(),
-            checkpointRepository = FakeCheckpointStore(null),
-            queueRepository = FakeQueueStore(),
-            nativeImageProcessingRepository = imageProcessingStore,
-            ioDispatcher = mainDispatcherRule.testDispatcher,
-            defaultDispatcher = mainDispatcherRule.testDispatcher
+            nativeImageProcessingRepository = imageProcessingStore
         )
 
         advanceUntilIdle()
@@ -566,27 +438,10 @@ class ProcessingViewModelTest {
             register(source, listOf("content://images/ignored.jpg"))
         }
         val imageProcessingStore = FakeImageProcessingStore()
-        val viewModel = ProcessingViewModel(
-            logRepository = LogRepository(),
-            modelRepository = FakeModelProvider(
-                ModelInfo(
-                    name = "Real-ESRGANv3-anime-x2",
-                    scaleFactor = 2,
-                    inputChannels = 3,
-                    tileSize = 0,
-                    totalSize = 1024L,
-                    hash = "hash",
-                    paramPath = "/models/Real-ESRGANv3-anime-x2.param",
-                    binPath = "/models/Real-ESRGANv3-anime-x2.bin"
-                )
-            ),
+        val viewModel = makeViewModel(
             inputSourceRepository = inputSourceResolver,
-            batchOutputRepository = FakeBatchOutputStore(),
             checkpointRepository = checkpointStore,
-            queueRepository = FakeQueueStore(),
-            nativeImageProcessingRepository = imageProcessingStore,
-            ioDispatcher = mainDispatcherRule.testDispatcher,
-            defaultDispatcher = mainDispatcherRule.testDispatcher
+            nativeImageProcessingRepository = imageProcessingStore
         )
 
         advanceUntilIdle()
@@ -652,27 +507,10 @@ class ProcessingViewModelTest {
         }
         val imageProcessingStore = FakeImageProcessingStore()
 
-        val viewModel = ProcessingViewModel(
-            logRepository = LogRepository(),
-            modelRepository = FakeModelProvider(
-                ModelInfo(
-                    name = "Real-ESRGANv3-anime-x2",
-                    scaleFactor = 2,
-                    inputChannels = 3,
-                    tileSize = 0,
-                    totalSize = 1024L,
-                    hash = "hash",
-                    paramPath = "/models/Real-ESRGANv3-anime-x2.param",
-                    binPath = "/models/Real-ESRGANv3-anime-x2.bin"
-                )
-            ),
+        val viewModel = makeViewModel(
             inputSourceRepository = inputSourceResolver,
-            batchOutputRepository = FakeBatchOutputStore(),
             checkpointRepository = checkpointStore,
-            queueRepository = FakeQueueStore(),
-            nativeImageProcessingRepository = imageProcessingStore,
-            ioDispatcher = mainDispatcherRule.testDispatcher,
-            defaultDispatcher = mainDispatcherRule.testDispatcher
+            nativeImageProcessingRepository = imageProcessingStore
         )
 
         advanceUntilIdle()
@@ -704,29 +542,12 @@ class ProcessingViewModelTest {
             register(source, listOf(uri))
         }
         val initialQueueStore = FakeQueueStore()
-        val modelProvider = FakeModelProvider(
-            ModelInfo(
-                name = "Real-ESRGANv3-anime-x2",
-                scaleFactor = 2,
-                inputChannels = 3,
-                tileSize = 0,
-                totalSize = 1024L,
-                hash = "hash",
-                paramPath = "/models/Real-ESRGANv3-anime-x2.param",
-                binPath = "/models/Real-ESRGANv3-anime-x2.bin"
-            )
-        )
+        val modelProvider = FakeModelProvider(testModel())
 
-        val firstViewModel = ProcessingViewModel(
-            logRepository = LogRepository(),
+        val firstViewModel = makeViewModel(
             modelRepository = modelProvider,
             inputSourceRepository = inputSourceResolver,
-            batchOutputRepository = FakeBatchOutputStore(),
-            checkpointRepository = FakeCheckpointStore(null),
-            queueRepository = initialQueueStore,
-            nativeImageProcessingRepository = FakeImageProcessingStore(),
-            ioDispatcher = mainDispatcherRule.testDispatcher,
-            defaultDispatcher = mainDispatcherRule.testDispatcher
+            queueRepository = initialQueueStore
         )
 
         advanceUntilIdle()
@@ -744,16 +565,10 @@ class ProcessingViewModelTest {
         assertEquals(PersistedQueueItemStatus.PENDING, persistedSnapshot.items.first().status)
 
         val restoredQueueStore = FakeQueueStore(initialSnapshot = persistedSnapshot)
-        val restoredViewModel = ProcessingViewModel(
-            logRepository = LogRepository(),
+        val restoredViewModel = makeViewModel(
             modelRepository = modelProvider,
             inputSourceRepository = inputSourceResolver,
-            batchOutputRepository = FakeBatchOutputStore(),
-            checkpointRepository = FakeCheckpointStore(null),
-            queueRepository = restoredQueueStore,
-            nativeImageProcessingRepository = FakeImageProcessingStore(),
-            ioDispatcher = mainDispatcherRule.testDispatcher,
-            defaultDispatcher = mainDispatcherRule.testDispatcher
+            queueRepository = restoredQueueStore
         )
 
         advanceUntilIdle()
@@ -775,29 +590,12 @@ class ProcessingViewModelTest {
         val inputSourceResolver = FakeInputSourceResolver().apply {
             register(source, listOf(uri))
         }
-        val modelProvider = FakeModelProvider(
-            ModelInfo(
-                name = "Real-ESRGANv3-anime-x2",
-                scaleFactor = 2,
-                inputChannels = 3,
-                tileSize = 0,
-                totalSize = 1024L,
-                hash = "hash",
-                paramPath = "/models/Real-ESRGANv3-anime-x2.param",
-                binPath = "/models/Real-ESRGANv3-anime-x2.bin"
-            )
-        )
+        val modelProvider = FakeModelProvider(testModel())
         val queueStore = ProcessingQueueRepository(context, LogRepository())
-        val firstViewModel = ProcessingViewModel(
-            logRepository = LogRepository(),
+        val firstViewModel = makeViewModel(
             modelRepository = modelProvider,
             inputSourceRepository = inputSourceResolver,
-            batchOutputRepository = FakeBatchOutputStore(),
-            checkpointRepository = FakeCheckpointStore(null),
-            queueRepository = queueStore,
-            nativeImageProcessingRepository = FakeImageProcessingStore(),
-            ioDispatcher = mainDispatcherRule.testDispatcher,
-            defaultDispatcher = mainDispatcherRule.testDispatcher
+            queueRepository = queueStore
         )
 
         advanceUntilIdle()
@@ -811,16 +609,10 @@ class ProcessingViewModelTest {
         assertTrue(queueFile.exists())
 
         val restoredQueueStore = ProcessingQueueRepository(context, LogRepository())
-        val restoredViewModel = ProcessingViewModel(
-            logRepository = LogRepository(),
+        val restoredViewModel = makeViewModel(
             modelRepository = modelProvider,
             inputSourceRepository = inputSourceResolver,
-            batchOutputRepository = FakeBatchOutputStore(),
-            checkpointRepository = FakeCheckpointStore(null),
-            queueRepository = restoredQueueStore,
-            nativeImageProcessingRepository = FakeImageProcessingStore(),
-            ioDispatcher = mainDispatcherRule.testDispatcher,
-            defaultDispatcher = mainDispatcherRule.testDispatcher
+            queueRepository = restoredQueueStore
         )
 
         advanceUntilIdle()
@@ -833,6 +625,35 @@ class ProcessingViewModelTest {
 
         queueFile.delete()
     }
+
+    private fun testModel() = ModelInfo(
+        name = "Real-ESRGANv3-anime-x2",
+        scaleFactor = 2,
+        inputChannels = 3,
+        tileSize = 0,
+        totalSize = 1024L,
+        hash = "hash",
+        paramPath = "/models/Real-ESRGANv3-anime-x2.param",
+        binPath = "/models/Real-ESRGANv3-anime-x2.bin"
+    )
+
+    private fun makeViewModel(
+        modelRepository: ModelProvider = FakeModelProvider(testModel()),
+        inputSourceRepository: InputSourceResolver = FakeInputSourceResolver(),
+        checkpointRepository: ProcessingCheckpointStore = FakeCheckpointStore(null),
+        queueRepository: ProcessingQueueStore = FakeQueueStore(),
+        nativeImageProcessingRepository: ImageProcessingStore = FakeImageProcessingStore()
+    ): ProcessingViewModel = ProcessingViewModel(
+        logRepository = LogRepository(),
+        modelRepository = modelRepository,
+        inputSourceRepository = inputSourceRepository,
+        batchOutputRepository = FakeBatchOutputStore(),
+        checkpointRepository = checkpointRepository,
+        queueRepository = queueRepository,
+        nativeImageProcessingRepository = nativeImageProcessingRepository,
+        ioDispatcher = mainDispatcherRule.testDispatcher,
+        defaultDispatcher = mainDispatcherRule.testDispatcher
+    )
 
     private class FakeModelProvider(
         private val modelInfo: ModelInfo
@@ -989,10 +810,6 @@ class ProcessingViewModelTest {
 
         override fun loadQueue(): ProcessingQueueSnapshot {
             return state.value
-        }
-
-        override fun clearQueue() {
-            state.value = ProcessingQueueSnapshot()
         }
     }
 

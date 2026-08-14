@@ -61,8 +61,6 @@ class PairingRepository(
         }.getOrNull()
     }
 
-    fun isPaired(host: String, port: Int): Boolean = getTrustedPC(host, port) != null
-
     /**
      * Persist the single "last paired PC" record used for next-launch
      * auto-reconnect. Overwrites any previous entry. Kept in sync with the
@@ -100,10 +98,6 @@ class PairingRepository(
             val fp = obj.optString("fp").trim().ifBlank { null }
             LastPairedPC(host = host, port = port, identityPubKey = pk, fingerprint = fp)
         }.getOrNull()
-    }
-
-    fun clearLastPairedPC() {
-        prefs.edit().remove(KEY_LAST_PAIRED_PC).apply()
     }
 
     private fun keyFor(host: String, port: Int): String = "paired:$host:$port"

@@ -73,8 +73,6 @@ interface ProcessingQueueStore {
     fun saveQueue(snapshot: ProcessingQueueSnapshot)
 
     fun loadQueue(): ProcessingQueueSnapshot
-
-    fun clearQueue()
 }
 
 interface ImageProcessingSession : AutoCloseable {

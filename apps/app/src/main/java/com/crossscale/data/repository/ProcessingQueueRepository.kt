@@ -35,7 +35,6 @@ data class PersistedQueueItem(
     val overwriteOriginal: Boolean = false,
     val backupOriginal: Boolean = true,
     val processNestedFolders: Boolean = true,
-    val submittedAt: Long = System.currentTimeMillis(),
     val createdAtEpochMs: Long,
     val expectedItems: Int? = null,
     val status: PersistedQueueItemStatus = PersistedQueueItemStatus.PENDING,
@@ -103,20 +102,6 @@ class ProcessingQueueRepository(
         return loadedQueue
     }
 
-    override fun clearQueue() {
-        runCatching {
-            if (queueFile.exists()) {
-                queueFile.delete()
-            }
-        }.onFailure { throwable ->
-            logRepository.error(
-                "ProcessingQueueRepository",
-                "Failed to clear queue: ${throwable.message}"
-            )
-        }
-        _queue.value = ProcessingQueueSnapshot()
-    }
-
     private fun loadQueueFromDisk(): ProcessingQueueSnapshot {
         if (!queueFile.exists()) {
             return ProcessingQueueSnapshot()
@@ -154,7 +139,6 @@ class ProcessingQueueRepository(
                     overwriteOriginal = item.overwriteOriginal,
                     backupOriginal = item.backupOriginal,
                     processNestedFolders = item.processNestedFolders,
-                    submittedAt = item.submittedAt,
                     createdAtEpochMs = item.createdAtEpochMs,
                     expectedItems = item.expectedItems?.coerceAtLeast(0),
                     status = item.status,
@@ -212,7 +196,6 @@ class ProcessingQueueRepository(
                                 put("overwriteOriginal", item.overwriteOriginal)
                                 put("backupOriginal", item.backupOriginal)
                                 put("processNestedFolders", item.processNestedFolders)
-                                put("submittedAt", item.submittedAt)
                                 put("createdAtEpochMs", item.createdAtEpochMs)
                                 item.expectedItems?.let { expectedItems ->
                                     put("expectedItems", expectedItems)
@@ -257,8 +240,7 @@ class ProcessingQueueRepository(
                     outputDirectoryUri = item["outputDirectoryUri"]?.jsonPrimitive?.contentOrNull,
                     overwriteOriginal = item["overwriteOriginal"]?.jsonPrimitive?.booleanOrNull ?: false,
                     backupOriginal = item["backupOriginal"]?.jsonPrimitive?.booleanOrNull ?: true,
-                    processNestedFolders = item["processNestedFolders"]?.jsonPrimitive?.booleanOrNull ?: true,
-                    submittedAt = item["submittedAt"]?.jsonPrimitive?.longOrNull ?: 0L,
+                        processNestedFolders = item["processNestedFolders"]?.jsonPrimitive?.booleanOrNull ?: true,
                     createdAtEpochMs = item["createdAtEpochMs"]?.jsonPrimitive?.longOrNull ?: 0L,
                     expectedItems = item["expectedItems"]?.jsonPrimitive?.intOrNull,
                     status = parsedStatus,

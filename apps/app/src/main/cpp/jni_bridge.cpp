@@ -4,7 +4,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <cctype>
 #include <cstring>
 #include <exception>
 #include <limits>
@@ -13,10 +12,7 @@
 #include <new>
 #include <optional>
 #include <sstream>
-#include <thread>
 #include <vector>
-#include <filesystem>
-#include <chrono>
 
 #include "core/config.hpp"
 #include "core/engine.hpp"
@@ -29,7 +25,6 @@
 
 #define LOG_TAG "CrossScale"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
@@ -49,44 +44,9 @@ void set_jni_last_error(const std::string& error_message) {
     g_jni_last_error = error_message;
 }
 
-void clear_jni_last_error() {
-    set_jni_last_error("");
-}
-
 auto get_jni_last_error() -> std::string {
     std::lock_guard<std::mutex> lock(g_jni_error_mutex);
     return g_jni_last_error;
-}
-
-auto infer_scale_factor_from_model_name(const std::string& model_name) -> int {
-    if (model_name.empty()) {
-        return 2;
-    }
-
-    auto extract_scale = [&](size_t marker_pos) -> int {
-        if (marker_pos == std::string::npos || marker_pos + 2 >= model_name.size()) {
-            return -1;
-        }
-        const char next_char = model_name[marker_pos + 2];
-        if (!std::isdigit(static_cast<unsigned char>(next_char))) {
-            return -1;
-        }
-        return std::max(1, next_char - '0');
-    };
-
-    const auto underscore_marker = model_name.find("_x");
-    const int underscore_scale = extract_scale(underscore_marker);
-    if (underscore_scale > 0) {
-        return underscore_scale;
-    }
-
-    const auto dash_marker = model_name.find("-x");
-    const int dash_scale = extract_scale(dash_marker);
-    if (dash_scale > 0) {
-        return dash_scale;
-    }
-
-    return 2;
 }
 
 // Process-wide long-term Ed25519 identity. Loaded once via nativeLoadIdentity;
@@ -258,8 +218,7 @@ auto run_client_handshake(
 // ── 新连接配对流程: CONNECT_REQUEST/RESPONSE(握手后立即调用) ──────────────────
 // PC 协调器在 ECDH 握手成功后读取下一个加密帧并预期它是 CONNECT_REQUEST。
 // 可信 peer 自动批准, 首次 peer 阻塞在 PC 侧 stdin [y/n] 提示。返回 true 表示
-// approved=1; 此时 session 已按 response.stream_encrypted 设定 stream_plaintext。
-// 失败返回 false 并设置 error_msg(approved=0 / 网络 / MAC / 协议错误)。
+// approved=1。失败返回 false 并设置 error_msg(approved=0 / 网络 / MAC / 协议错误)。
 auto perform_connect_request(
     crossscale::TCPSocket& socket,
     crossscale::EncryptedSession& session,
@@ -327,8 +286,8 @@ auto perform_connect_request(
         error_msg = "PC denied the connection";
         return false;
     }
-    // 按 PC 协商后的最终流加密模式设定 session(min(pc, mobile))。
-    session.set_stream_plaintext(resp->stream_encrypted == 0);
+    // Stream encryption was removed (all frames are sealed); resp->stream_encrypted
+    // is now always 0 and ignored. The session stays in its default sealed mode.
     return true;
 }
 
@@ -365,7 +324,7 @@ Java_com_crossscale_native_NCNNEngine_nativeInit(
         LOGW("GPU unavailable, falling back to CPU for engine processing");
     }
 
-    clear_jni_last_error();
+    set_jni_last_error("");
     LOGI("Engine initialized with device type: %d", device_type);
     return reinterpret_cast<jlong>(engine.release());
 }
@@ -409,7 +368,7 @@ Java_com_crossscale_native_NCNNEngine_nativeLoadModel(
         return JNI_FALSE;
     }
 
-    clear_jni_last_error();
+    set_jni_last_error("");
     
     return JNI_TRUE;
 }
@@ -731,6 +690,9 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
     submit_request.tile_size = static_cast<uint32_t>(std::max(tile_size, 16));
     submit_request.tile_overlap = static_cast<uint32_t>(std::max(tile_overlap, 0));
     submit_request.image_data_length = static_cast<uint32_t>(input_bytes.size());
+    std::strncpy(submit_request.output_format, output_format_str.c_str(),
+                 sizeof(submit_request.output_format) - 1);
+    submit_request.output_quality = static_cast<uint8_t>(normalized_quality);
 
     std::vector<uint8_t> plaintext(sizeof(submit_request) + input_bytes.size());
     std::memcpy(plaintext.data(), &submit_request, sizeof(submit_request));
@@ -806,44 +768,21 @@ Java_com_crossscale_native_NCNNEngine_nativeProcessImageDistributed(
         set_jni_last_error("Distributed result payload truncated");
         return nullptr;
     }
-    std::vector<uint8_t> processed_raw(
-        result_payload.begin() + resp_hdr_size,
-        result_payload.begin() + resp_hdr_size + task_response->result_data_length
-    );
-
-    const int scale_factor = infer_scale_factor_from_model_name(model_str);
-    const int output_width = width * std::max(scale_factor, 1);
-    const int output_height = height * std::max(scale_factor, 1);
-    const int64_t expected_output_size =
-        static_cast<int64_t>(output_width) * static_cast<int64_t>(output_height) * static_cast<int64_t>(channels);
-    if (expected_output_size <= 0 ||
-        expected_output_size != static_cast<int64_t>(processed_raw.size())) {
-        set_jni_last_error("Distributed result size mismatch");
-        return nullptr;
-    }
-
-    crossscale::Image output_image(output_width, output_height, channels);
-    std::copy(processed_raw.begin(), processed_raw.end(), output_image.data());
-    auto encoded_result = output_image.save_to_memory(output_format_str, normalized_quality);
-    if (!encoded_result.has_value()) {
-        set_jni_last_error("Distributed output encode failed: " + encoded_result.error().message);
-        return nullptr;
-    }
-
-    const auto& encoded_bytes = encoded_result.value();
-    jbyteArray encoded_array = env->NewByteArray(static_cast<jsize>(encoded_bytes.size()));
+    // The PC encodes the upscaled result in the requested format before
+    // transport (raw RGB doesn't scale — a camera photo at x2 is hundreds of
+    // MB). Forward the encoded bytes straight to Kotlin; its
+    // decodeOutputBounds()/writeOutputBytes() handle them.
+    const size_t result_len = task_response->result_data_length;
+    jbyteArray encoded_array = env->NewByteArray(static_cast<jsize>(result_len));
     if (encoded_array == nullptr) {
         set_jni_last_error("Distributed output allocation failed");
         return nullptr;
     }
     env->SetByteArrayRegion(
-        encoded_array,
-        0,
-        static_cast<jsize>(encoded_bytes.size()),
-        reinterpret_cast<const jbyte*>(encoded_bytes.data())
-    );
+        encoded_array, 0, static_cast<jsize>(result_len),
+        reinterpret_cast<const jbyte*>(result_payload.data() + resp_hdr_size));
 
-    clear_jni_last_error();
+    set_jni_last_error("");
     return encoded_array;
 }
 
@@ -911,7 +850,7 @@ Java_com_crossscale_native_NativeWorker_nativeRequestConnection(
     jboolean wants_encrypted_stream
 ) {
     (void)thiz;
-    clear_jni_last_error();
+    set_jni_last_error("");
 
     if (host == nullptr) {
         set_jni_last_error("requestConnection host is null");
@@ -1001,9 +940,8 @@ Java_com_crossscale_native_NativeWorker_nativeRequestConnection(
         : peer_pubkey_b64_str;
     const auto& result_pubkey_arr = tofu_mode ? learned_peer_pub : peer_pk;
 
-    LOGI("Pairing approved for %s:%d (stream_encrypted=%d, tofu=%d, fp=%s)",
-         host_str.c_str(), port, session->stream_plaintext() ? 0 : 1,
-         tofu_mode ? 1 : 0,
+    LOGI("Pairing approved for %s:%d (tofu=%d, fp=%s)",
+         host_str.c_str(), port, tofu_mode ? 1 : 0,
          crossscale::fingerprint(result_pubkey_arr).c_str());
     return env->NewStringUTF(result_pubkey_b64.c_str());
 }
@@ -1030,7 +968,7 @@ Java_com_crossscale_native_NativeWorker_nativeLoadIdentity(
     try {
         g_identity.emplace(crossscale::IdentityKey::load_or_create(path_str));
         LOGI("Identity loaded from %s, fingerprint will be derived on connect", path_str.c_str());
-        clear_jni_last_error();
+        set_jni_last_error("");
         return JNI_TRUE;
     } catch (const std::exception& e) {
         set_jni_last_error(std::string("failed to load/create identity: ") + e.what());
