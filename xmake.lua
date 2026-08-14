@@ -34,6 +34,8 @@ add_requires("ncnn 20260113", {configs = {vulkan = true}})
 add_requires("libwebp")
 add_requires("libpng")
 add_requires("libjpeg")
+-- System-only require: pkg-config discovery, never a source build.
+add_requires("libdeflate", {system = true})
 add_requires("glaze")
 add_requires("qr-code-generator-cpp")
 add_requires("cli11")
