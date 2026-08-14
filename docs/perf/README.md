@@ -20,7 +20,7 @@
 1. **单图瓶颈是固定开销，不是推理**：单图 `crossscale process` 中 Vulkan init (39%) + model load (19%) 占 60%，GPU 优势被淹没。→ 直接催生 **serve daemon**（复用热引擎，单图 2-15× 加速）。
 2. **批量场景 GPU 优势爆发**：7 图批量 GPU 1.22s vs CPU 4.91s（4.1×），因为引擎只初始化一次。→ 目录模式 + EnginePool 多引擎并发。
 3. **tile_size 默认 256** 是实测最优（256 vs 128/384/512 对比）。
-4. **fp16 是 GPU 核心加速来源**，但默认关闭保精度（`CROSSSCALE_GPU_FAST_MATH=1` 开启）。
+4. **fp16 是 GPU 核心加速来源**，默认开启；驱动 bug 时用 `CROSSSCALE_GPU_DISABLE_FP16=1` 关闭。
 
 > 注：这些报告引用的是当时的代码状态（如 `process` 单图、submit 序列化）。
 > 部分瓶颈（如 submit 序列化）已通过并发多引擎优化解决，阅读时注意时间线。

@@ -308,6 +308,20 @@ cli/src/
 serve daemon `start()` 和 worker `connect()` 各有一套"create_ncnn_engine → initialize →
 scan_models → load_model"序列。抽自由函数复用（具体省行数待实现时实测）。
 
+> **✅ 已执行（Layer 4 §5.1，commit `19327f8`）**：抽出 `setup_engine()` 自由函数
+> （`share/core/engine_setup.{hpp,cpp}`）。
+> **范围修正**：原 spec 只列 serve + worker 两站，实测核查后发现：
+> - **采用 helper 的站点（2）**：`serve/daemon.cpp` start()、`cli/cmd_process.cpp` 单文件
+>   路径——这两站执行完整的 create→init→scan→select→load 五步序列。
+> - **未采用 helper 的站点（7）**：
+>   - `cmd_worker.cpp`：多 worker 分布式角色已删（commit `e026fcb`），文件不再存在。
+>   - `coordinator.cpp ensure_engine_ready()`：create+init（GPU→CPU 回退）+ 模型经
+>     `get_model` 懒加载，不经 scan，模式不同，helper 不适用。
+>   - `process_batch.cpp` 两处（jobs≤1 + async）：caller 已预选模型，helper 会重复 scan。
+>   - `engine_pool.cpp`：构造器直接收 `param_path`/`bin_path`，不经 scan。
+>   - `jni_bridge.cpp` 三处：NDK 构建未在本层 A/B 验证范围内，留待 Android 侧后续采用。
+>   - perf 测试 4 处：测试脚手架，保持现状。
+
 ### 5.2 GPU 调参环境变量收敛
 
 CLI 有 5 个 `CROSSSCALE_GPU_SUBMIT_QUEUE*` env（每个 getenv→stoul→catch→clamp 样板，
@@ -316,10 +330,21 @@ CLI 有 5 个 `CROSSSCALE_GPU_SUBMIT_QUEUE*` env（每个 getenv→stoul→catch
 **决策**：删所有 env 读取，硬编码合理默认（queue depth = `clamp(hw_concurrency, 2, 4)`），
 动态批逻辑退化为固定。省 ~95 行（待实测确认）。
 
+> **✅ 已执行（Layer 4 §5.2，commit `fa95bba` + `0cd15d7`）**：实测删除 9 个 env vars
+> （6 个 queue env + 3 个 pipeline env `_SUBMIT_TILES_PER_TASK`/`_SUBMIT_MB`/`_SUBMIT_BUDGET`）
+> + ~65 行动态批逻辑（wait window / prep_fill 预估 / tiles-target cap / 两个累积器）
+> + ~84 行 budget 算术，共 ~180 行；`submit_budget` 恒为 1（blend RAW/WAR hazard）。
+> 保留下来的 escape hatches（`CROSSSCALE_GPU_DISABLE_FP16` 等 5 个驱动 bug 变量、
+> 4 个 tile-override 变量、`CROSSSCALE_PROGRESS`）不受影响。
+
 ### 5.3 第4层验收标准
 
 - `EngineSetup` 抽出后，serve 与 worker 的初始化路径行为不变。
+  ✅ serve `start()` 已采用 helper（错误码 2/3/4/5/6 折叠为 2，唯一调用方只判 `!= 0`）；
+  worker 路径已随多 worker 角色删除，无对应初始化。
 - 删 GPU env 后，目录模式批量处理性能不退化（perf 框架 benchmark 对比）。
+  ✅ 实测 `process --gpu` 单图 1024x512→2048x1024 成功；2 图目录批量 2/2 成功，
+  queue 日志 `GPU submit queue enabled, depth=3`，无回退告警。
 
 ---
 

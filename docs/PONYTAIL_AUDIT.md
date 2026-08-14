@@ -11,8 +11,8 @@
 
 | 状态 | 项数 | 说明 |
 |------|------|------|
-| ✅ 已闭环 | 21 | 死代码已删 / 已替换为标准库 |
-| ⏳ 待办 | 5 | 仍存在于代码，需评估后处理 |
+| ✅ 已闭环 | 22 | 死代码已删 / 已替换为标准库 |
+| ⏳ 待办 | 4 | 仍存在于代码，需评估后处理 |
 
 ---
 
@@ -47,23 +47,7 @@
 
 ### A. CLI GPU queue env 调参 [yagni] ~省 95 行
 
-**当前状态**：仍在 `cli/src/process_batch.cpp:212-267`。共 6 个 env：
-
-```
-CROSSSCALE_PROGRESS
-CROSSSCALE_GPU_SUBMIT_QUEUE
-CROSSSCALE_GPU_SUBMIT_QUEUE_MIN
-CROSSSCALE_GPU_SUBMIT_QUEUE_DYNAMIC
-CROSSSCALE_GPU_SUBMIT_QUEUE_TARGET_TILES
-CROSSSCALE_GPU_MIN_SUBMIT_BATCH
-CROSSSCALE_GPU_BATCH_WAIT_MS
-```
-
-每个都是 `getenv→stoul→catch→clamp` 样板。无文档、无默认值以外的预设、用户无从得知这些 env 存在。
-
-**建议**：删所有 env 读取，硬编码合理默认（queue depth = clamp(hw,2,4)），动态批逻辑退化为固定。
-
-> 注：`process_batch.cpp` 是 Layer 2 拆分后的文件，原审计引用的 `main.cpp:536-593` 行号已失效。
+**当前状态**：✅ 已在 Layer 4 §5.2 删除。6 个 `CROSSSCALE_GPU_SUBMIT_QUEUE*` / `_MIN_SUBMIT_BATCH` / `_BATCH_WAIT_MS` env 读取（`getenv→stoul→catch→clamp` 样板）已删（commit `fa95bba`），动态批大小 + batch-fill wait + `last_avg_tiles_per_image`/`batch_tiles_total` 累积器已折叠为固定深度（commit `0cd15d7`）；`ncnn_gpu_pipeline.cpp` 侧 3 个 `CROSSSCALE_GPU_SUBMIT_*` env + ~84 行 budget 算术同批删除，`submit_budget` 恒为 1。
 
 ### B. `TileSizeOptimizer` 投机部分 [yagni] ~省 100 行
 

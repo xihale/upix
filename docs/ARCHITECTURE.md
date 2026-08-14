@@ -76,7 +76,7 @@
 **关键实现细节**：
 - GPU 优先初始化，Vulkan 失败回退 CPU；GPU 实例创建时枚举所有 GPU 打分选最优
 - HWC↔CHW 转换全部在 GPU 上用自写 Vulkan compute shader 完成，避免 CPU↔GPU 往返
-- fp16 受 `CROSSSCALE_GPU_FAST_MATH=1` 控制，默认关闭保精度
+- fp16 默认开启；驱动 bug（Adreno/Mali NaN、全零输出）时用 `CROSSSCALE_GPU_DISABLE_FP16=1` 关闭保精度
 - 全局互斥锁串行化 Vulkan 实例/模型加载（ncnn 的 Vulkan 状态是进程级单例）
 - GPU tile 流水线最高档 `process_tiles_gpu_u8_queue`：整图 u8 上传一次，在 GPU 上 crop + 推理 + 量化 + 拼回
 

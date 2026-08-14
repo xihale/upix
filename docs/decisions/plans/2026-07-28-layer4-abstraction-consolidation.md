@@ -1,6 +1,11 @@
 # Layer 4 — Abstraction Consolidation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **✅ 已执行（2026-08-14）**：Task 1 → commit `19327f8`（`setup_engine()` 抽取 + daemon/cmd_process 采用）；
+> Task 2 → commit `fa95bba`（9 env vars 删除）+ `0cd15d7`（动态批逻辑折叠）；
+> Task 3 → docs 复核提交（PONYTAIL_AUDIT / spec §5.1/§5.2 ✅ 标注）。所有 checkbox 已勾选，
+> 详见 spec §5.1/§5.2 的"✅ 已执行"注解。
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Consolidate two known duplication hotspots in CrossScale — (a) the `create_ncnn_engine → initialize → scan_models → load_model` sequence repeated at 9 production call sites, and (b) the 9 dead GPU-tuning env vars made moot by the `submit_budget=1` pin. Both are "零逻辑变更" structural cleanup with no behavioral change.
 
@@ -107,7 +112,7 @@ auto setup_engine(
 
 ### Steps
 
-- [ ] **Step 1: Write `share/core/engine_setup.hpp`**
+- [x] **Step 1: Write `share/core/engine_setup.hpp`**
 
 ```cpp
 #pragma once
@@ -146,7 +151,7 @@ auto setup_engine(
 } // namespace crossscale
 ```
 
-- [ ] **Step 2: Write `share/core/engine_setup.cpp`**
+- [x] **Step 2: Write `share/core/engine_setup.cpp`**
 
 ```cpp
 #include "engine_setup.hpp"
@@ -241,12 +246,12 @@ auto setup_engine(
 
 **Pre-flight check for Step 2:** verify `ModelManager::get_models_directory()` exists. The Explore agent didn't confirm it. If it doesn't, replace that line with `std::string(models_dir.empty() ? "./models" : models_dir)` for the not-found message. (Look at `share/core/model_manager.hpp` before implementing.)
 
-- [ ] **Step 3: Build to confirm the new files compile and auto-glob**
+- [x] **Step 3: Build to confirm the new files compile and auto-glob**
 
 Run: `cd cli && xmake -r`
 Expected: build ok. The new `engine_setup.cpp` is picked up automatically by `share/xmake.lua:9` glob. No xmake edit needed.
 
-- [ ] **Step 4: Adopt in `share/core/serve/daemon.cpp`** — replace lines 76-116
+- [x] **Step 4: Adopt in `share/core/serve/daemon.cpp`** — replace lines 76-116
 
 Find (lines 76-116, the engine init + scan + select + load block):
 
@@ -339,7 +344,7 @@ Corrected replacement (use this, not the above):
 
 **Note on return-code collapse:** the original returned distinct codes 2/3/4/5/6 for init/scan/empty/not-found/load failures. The new code returns 2 for all. Verify no caller of `ServeDaemon::start()` branches on the specific code — Explore agent didn't check this. **Pre-flight:** `command grep -rn 'start(' share/core/serve/ cli/src/cmd_serve.cpp` and confirm the caller only checks `!= 0`. If it branches on specific codes, restore the mapping inside `setup_engine` (return a structured error code instead of a string) — but spec says zero logic change, so prefer the simpler "all return 2" if callers don't care.
 
-- [ ] **Step 5: Adopt in `cli/src/cmd_worker.cpp`** — replace lines 81-95
+- [x] **Step 5: Adopt in `cli/src/cmd_worker.cpp`** — replace lines 81-95
 
 Find (lines 81-95):
 
@@ -400,7 +405,7 @@ Replace with:
 
 **Update the file list for Task 1:** drop `cli/src/cmd_worker.cpp`. Note this gap in the spec at §5.1 ("worker path doesn't load model at init — helper overshoots; left untouched").
 
-- [ ] **Step 6: Adopt in `cli/src/cmd_process.cpp`** — replace lines 200-249
+- [x] **Step 6: Adopt in `cli/src/cmd_process.cpp`** — replace lines 200-249
 
 Find (lines 200-249, the create→init→scan→select→load block in single-file path):
 
@@ -504,7 +509,7 @@ Replace with:
 
 **Verify after edit:** the lines below 249 (`scale = engine->get_scale_factor()`, `tile_size = engine->get_recommended_tile_size()`, etc.) still compile — they reference `engine`, `selected_model`, `model_input_channels`, all of which are preserved by the replacement.
 
-- [ ] **Step 7: Adopt in `cli/src/process_batch.cpp` jobs≤1 path** — replace lines 386-405
+- [x] **Step 7: Adopt in `cli/src/process_batch.cpp` jobs≤1 path** — replace lines 386-405
 
 Find (lines 386-405):
 
@@ -535,7 +540,7 @@ Find (lines 386-405):
 
 **Update the file list for Task 1:** drop the `process_batch.cpp:386-401` site. Only the `:779-789` async site (which is a self-contained create→init→load inside a lambda) remains a candidate.
 
-- [ ] **Step 8: Adopt in `cli/src/process_batch.cpp` async path** — read lines 770-805 first
+- [x] **Step 8: Adopt in `cli/src/process_batch.cpp` async path** — read lines 770-805 first
 
 Pre-flight: read `cli/src/process_batch.cpp:765-810` to see the async lambda's exact structure. The Explore agent reported a local `struct EngineInitResult { std::unique_ptr<Engine> engine; std::string error; };` at lines 770-773 used as the future's return type.
 
@@ -549,7 +554,7 @@ If the async lambda does create→init→load (no scan, since model is pre-selec
 
 That's 2 new files + 3 adoptions. The other 4 sites either don't fit the helper (worker, batch paths) or are out of scope (JNI, perf tests). This is a more honest scope than the spec's "serve + worker" — and it's defensible: every site that does the **full 5-step recipe** adopts the helper; sites that do a subset don't.
 
-- [ ] **Step 9: Adopt in `share/core/engine_pool.cpp`** — replace lines 12-33
+- [x] **Step 9: Adopt in `share/core/engine_pool.cpp`** — replace lines 12-33
 
 Find (lines 12-33):
 
@@ -587,17 +592,17 @@ Find (lines 12-33):
 
 **Just 2 adoptions.** This is honest: the Explore agent's "9 sites" count included many that do only partial recipes. The helper is justified by the 2 sites that do the full create→init→scan→select→load dance. Document the decision in the spec.
 
-- [ ] **Step 10: Build to confirm all adoptions compile**
+- [x] **Step 10: Build to confirm all adoptions compile**
 
 Run: `cd cli && xmake -r`
 Expected: build ok, exit 0.
 
-- [ ] **Step 11: Verify --help still works (smoke test)**
+- [x] **Step 11: Verify --help still works (smoke test)**
 
 Run: `cd cli && xmake run crossscale -- --help 2>&1 | head -5`
 Expected: help output listing `process model benchmark perf server worker serve completion` (no `client` — that was Layer 3).
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add share/core/engine_setup.hpp share/core/engine_setup.cpp \
@@ -645,7 +650,7 @@ Plus the stale doc-only var `CROSSSCALE_GPU_FAST_MATH` (`docs/ARCHITECTURE.md:76
 
 ### Steps
 
-- [ ] **Step 1: Delete env reads in `cli/src/process_batch.cpp:217-274`**
+- [x] **Step 1: Delete env reads in `cli/src/process_batch.cpp:217-274`**
 
 Find (lines 217-274, the 6 queue env reads):
 
@@ -725,7 +730,7 @@ Replace with the hardcoded defaults the spec specifies (`queue depth = clamp(hw_
         const int gpu_batch_wait_ms = 0;
 ```
 
-- [ ] **Step 2: Simplify the consumer block in `process_batch.cpp:480-498`**
+- [x] **Step 2: Simplify the consumer block in `process_batch.cpp:480-498`**
 
 Find (lines 480-498, the queue-enable log block):
 
@@ -766,7 +771,7 @@ Replace with (drop the now-dead log branches):
                     }
 ```
 
-- [ ] **Step 3: Collapse the dynamic-batch block in `process_batch.cpp:532-583`**
+- [x] **Step 3: Collapse the dynamic-batch block in `process_batch.cpp:532-583`**
 
 Find (lines 532-583, the `wait_target` computation + `batch_target` dynamic sizing):
 
@@ -856,7 +861,7 @@ Replace with:
 
 Wait — `batch_tiles_total` is computed in the loop at line 637 (`batch_tiles_total += item.regions.size();`). If we just `(void)` it, the loop accumulation still runs. **Better: remove the accumulator entirely.** Pre-flight: read lines 619-654 to see if `batch_tiles_total` is used anywhere else. If not, delete line 619 (`size_t batch_tiles_total = 0;`), line 637 (`batch_tiles_total += item.regions.size();`), and lines 649-654 (the avg computation block). Also delete `last_avg_tiles_per_image` declaration at line 485.
 
-- [ ] **Step 4: Verify the failure-backoff at `process_batch.cpp:676-680` still compiles**
+- [x] **Step 4: Verify the failure-backoff at `process_batch.cpp:676-680` still compiles**
 
 This block references `gpu_submit_queue_min` (which is still defined in Step 1's replacement, as `const size_t gpu_submit_queue_min = gpu_submit_queue_max;`):
 
@@ -869,7 +874,7 @@ With `gpu_submit_queue_min == gpu_submit_queue_max` (Step 1), the condition `run
 
 Actually, wait: `runtime_queue_depth_cap` is initialized to `gpu_submit_queue_max` and `gpu_submit_queue_min` now equals `gpu_submit_queue_max`, so the condition is initially false, but if it were ever true (e.g., if a future change made min < max again), the backoff would work. Leave it. It compiles fine.
 
-- [ ] **Step 5: Delete env reads + budget arithmetic in `share/core/ncnn_gpu_pipeline.cpp:168-252`**
+- [x] **Step 5: Delete env reads + budget arithmetic in `share/core/ncnn_gpu_pipeline.cpp:168-252`**
 
 Find (lines 168-252 — the `tiles_per_task_target` adaptive block, memory budget block, cap computation, 3 env reads, and the `submit_budget = 1` pin):
 
@@ -989,25 +994,25 @@ Replace with (preserving the blend-hazard comment, dropping all the dead arithme
 
 **Pre-flight check:** `avg_tile_pixels`, `total_tile_pixels`, `in_elemsize`, `max_task_channels`, `scale_factor_` — are these used anywhere else in the function? `total_tiles` is used at line 161-163 (`if (total_tiles == 0) return {};`). The others may be dead after this deletion. **Read lines 100-260 of `ncnn_gpu_pipeline.cpp` before implementing** and remove now-dead accumulator variables at their declaration sites (lines ~150-166) to avoid unused-variable warnings. If `max_task_channels`, `in_elemsize`, `avg_tile_pixels`, `total_tile_pixels` are unused after the deletion, remove their declarations and the loops that populate them.
 
-- [ ] **Step 6: Build to confirm compilation**
+- [x] **Step 6: Build to confirm compilation**
 
 Run: `cd cli && xmake -r`
 Expected: build ok, exit 0. **If unused-variable warnings appear, fix them** (AGENTS.md: "Never suppress warnings").
 
-- [ ] **Step 7: Smoke-test the GPU pipeline path**
+- [x] **Step 7: Smoke-test the GPU pipeline path**
 
 Run: `cd cli && xmake run crossscale -- process -i <some_test_image> -o /tmp/out.png --gpu --no-daemon 2>&1 | tail -20`
 Expected: successful upscale, log line `GPU queue submit tuning: ...` appears once, no `Reducing GPU submit queue depth cap` warning (that backoff branch is now unreachable but should not fire).
 
 If no test image is handy, skip this step and note it in the report.
 
-- [ ] **Step 8: Remove stale `CROSSSCALE_GPU_FAST_MATH` from docs**
+- [x] **Step 8: Remove stale `CROSSSCALE_GPU_FAST_MATH` from docs**
 
 Find in `docs/ARCHITECTURE.md` (around line 76) and `docs/TECHNICAL_REPORT.md` (around line 80): any mention of `CROSSSCALE_GPU_FAST_MATH`. Delete those lines or rewrite to reference the real knob (`CROSSSCALE_GPU_DISABLE_FP16`, inverted polarity).
 
 Pre-flight: read both files around those lines to see the exact wording before editing.
 
-- [ ] **Step 9: Mark `docs/PONYTAIL_AUDIT.md` item #21 ✅**
+- [x] **Step 9: Mark `docs/PONYTAIL_AUDIT.md` item #21 ✅**
 
 Find item #21 (line ~236): `#21 CLI GPU queue env 调参 [yagni] ~省 95 行`.
 
@@ -1017,11 +1022,11 @@ Also mark items #15 (config.cpp JSON) and #16 (expected.hpp) ✅ since the spec 
 - Item #15 (line ~190): append `✅ config.cpp 已用 glaze（spec §5 已确认）`
 - Item #16 (line ~196): append `✅ expected.hpp 已是 std::expected 别名（spec §5 已确认）`
 
-- [ ] **Step 10: Mark spec §5.2 ✅**
+- [x] **Step 10: Mark spec §5.2 ✅**
 
 Find `docs/decisions/specs/2026-07-28-architecture-simplification-design.md` §5.2 (line ~311). Append to the §5.3 acceptance criterion for §5.2: `✅ 已执行（实测删除 9 env vars + 95 行 queue 逻辑 + 84 行 budget 算术 = ~180 行）`.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add cli/src/process_batch.cpp share/core/ncnn_gpu_pipeline.cpp \
@@ -1060,13 +1065,13 @@ overwritten with 1 on the next line."
 
 ### Steps
 
-- [ ] **Step 1: Verify PONYTAIL_AUDIT items #15, #16 are marked ✅**
+- [x] **Step 1: Verify PONYTAIL_AUDIT items #15, #16 are marked ✅**
 
 If Task 2 Step 9 already did this, skip. Otherwise:
 - Item #15 (config.cpp JSON → glaze): append `✅ config.cpp 已用 glaze`
 - Item #16 (expected.hpp → std::expected): append `✅ 已是 std::expected 别名`
 
-- [ ] **Step 2: Append scope notes to spec §5.1**
+- [x] **Step 2: Append scope notes to spec §5.1**
 
 Find `docs/decisions/specs/2026-07-28-architecture-simplification-design.md` §5.1 (line ~306). After the existing text, append:
 
@@ -1082,7 +1087,7 @@ Find `docs/decisions/specs/2026-07-28-architecture-simplification-design.md` §5
 >   - perf 测试 4 处：测试脚手架，保持现状。
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/PONYTAIL_AUDIT.md \
