@@ -60,6 +60,7 @@ public:
     int get_scale_factor() const override;
 
     void set_scale_factor(int scale) override;
+    void set_inference_threads(int threads) override;
     auto get_memory_info() const -> std::pair<size_t, size_t> override;
     int get_recommended_tile_size() const override;
 
@@ -123,6 +124,8 @@ private:
     std::string model_name_;
     int scale_factor_ = 2;
     int input_channels_ = 3;
+    // Per-engine CPU inference thread cap; 0 = ncnn default (all logical CPUs).
+    int inference_threads_ = 0;
 };
 
 } // namespace crossscale

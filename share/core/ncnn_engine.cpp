@@ -186,6 +186,12 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             net_->opt.use_fp16_storage = false;
             net_->opt.use_fp16_arithmetic = false;
             net_->opt.use_int8_storage = false;
+            // CPU engines created by EnginePool divide the machine's physical
+            // cores across sibling engines; standalone engines keep ncnn's
+            // default (one thread per logical CPU).
+            if (inference_threads_ > 0) {
+                net_->opt.num_threads = inference_threads_;
+            }
         }
 #else
         net_->opt.use_vulkan_compute = false;
@@ -193,6 +199,9 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
         net_->opt.use_fp16_storage = false;
         net_->opt.use_fp16_arithmetic = false;
         net_->opt.use_int8_storage = false;
+        if (inference_threads_ > 0) {
+            net_->opt.num_threads = inference_threads_;
+        }
 #endif
         
         // Load param file
@@ -915,6 +924,10 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
 
     void NCNNEngineImpl::set_scale_factor(int scale) {
         if (scale > 0) scale_factor_ = scale;
+    }
+
+    void NCNNEngineImpl::set_inference_threads(int threads) {
+        if (threads > 0) inference_threads_ = threads;
     }
 
     auto NCNNEngineImpl::get_memory_info() const -> std::pair<size_t, size_t> {

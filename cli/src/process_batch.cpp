@@ -708,46 +708,52 @@ int run_batch(const args::Process& a) {
                 LOG_INFO("CLI", "Processing summary: " + std::to_string(success_count) + "/" + std::to_string(tasks.size()) + " succeeded");
                 return success_count == tasks.size() ? 0 : 1;
             } else {
-                // CPU EnginePool
-                crossscale::EnginePool pool(static_cast<size_t>(jobs), param_path, bin_path, crossscale::DeviceType::CPU);
-                LOG_INFO("Engine", "Created engine pool with " + std::to_string(jobs) + " CPU engines");
+                // CPU EnginePool: fixed worker pool pulling tasks via an atomic
+                // index (same shape as the GPU jobs>1 branch). One std::async
+                // per file would race acquire() with more tasks than engines
+                // and stack N engines' default ncnn thread armies.
+                size_t requested_workers = static_cast<size_t>(std::max(1, jobs));
+                size_t worker_count = std::min(requested_workers, tasks.size());
+                crossscale::EnginePool pool(worker_count, param_path, bin_path, crossscale::DeviceType::CPU);
+                LOG_INFO("Engine", "Created engine pool with " + std::to_string(worker_count) + " CPU engines");
 
-                std::vector<std::future<bool>> futures;
-                futures.reserve(tasks.size());
+                std::atomic<size_t> next_task{0};
+                std::atomic<size_t> success_count{0};
+                std::vector<std::thread> workers;
+                workers.reserve(worker_count);
 
-                for (const auto& task : tasks) {
-                    futures.emplace_back(std::async(std::launch::async, [&, task]() -> bool {
-                        crossscale::Engine* eng = pool.acquire();
-                        if (!eng) {
-                            LOG_ERROR("Engine", "Failed to acquire engine from pool");
-                            return false;
-                        }
-                        bool ok = false;
-                        try {
-                            ok = process_one(task.first, task.second, *eng);
-                        } catch (const std::exception& e) {
-                            LOG_ERROR("Engine", std::string("Task processing exception: ") + e.what());
-                            ok = false;
-                        } catch (...) {
-                            LOG_ERROR("Engine", "Task processing unknown exception");
-                            ok = false;
-                        }
-                        try {
+                for (size_t i = 0; i < worker_count; ++i) {
+                    workers.emplace_back([&]() {
+                        while (!g_cancel_requested.load()) {
+                            size_t idx = next_task.fetch_add(1);
+                            if (idx >= tasks.size()) {
+                                break;
+                            }
+                            crossscale::Engine* eng = pool.acquire();
+                            bool ok = false;
+                            try {
+                                ok = process_one(tasks[idx].first, tasks[idx].second, *eng);
+                            } catch (const std::exception& e) {
+                                LOG_ERROR("Engine", std::string("Task processing exception: ") + e.what());
+                                ok = false;
+                            } catch (...) {
+                                LOG_ERROR("Engine", "Task processing unknown exception");
+                                ok = false;
+                            }
                             pool.release(eng);
-                        } catch (...) {
-                            LOG_ERROR("Engine", "Failed to release engine back to pool");
+                            if (ok) {
+                                success_count.fetch_add(1);
+                            }
                         }
-                        return ok;
-                    }));
+                    });
                 }
 
-                size_t success_count = 0;
-                for (auto& fut : futures) {
-                    if (fut.get()) success_count++;
+                for (auto& w : workers) {
+                    w.join();
                 }
 
-                LOG_INFO("CLI", "Processing summary: " + std::to_string(success_count) + "/" + std::to_string(tasks.size()) + " succeeded");
-                return success_count == tasks.size() ? 0 : 1;
+                LOG_INFO("CLI", "Processing summary: " + std::to_string(success_count.load()) + "/" + std::to_string(tasks.size()) + " succeeded");
+                return success_count.load() == tasks.size() ? 0 : 1;
             }
         }
 }

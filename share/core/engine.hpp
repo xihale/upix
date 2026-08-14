@@ -142,6 +142,12 @@ public:
     // Called after load_model(). No-op for engines without a mutable scale.
     virtual void set_scale_factor(int /*scale*/) {}
 
+    // Cap inference threads for CPU engines. A pool of engines divides the
+    // machine's physical cores among its engines so N concurrent engines do
+    // not each spawn a thread per logical CPU. Must be called before
+    // load_model(); <= 0 or unset keeps the engine default.
+    virtual void set_inference_threads(int /*threads*/) {}
+
     // Get recommended tile size based on GPU VRAM (0 = not available)
     virtual int get_recommended_tile_size() const { return 256; }
 
