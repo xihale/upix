@@ -43,9 +43,16 @@ apps/app/src/main/jniLibs/
 apps/app/src/main/cpp/third_party/
 
 # Models (large files)
-models/*.bin
-models/*.param
+*.bin
+*.param
+*.onnx
+*.tflite
+*.ncnn
+models/**/*.bin
+models/**/*.param
+cli/models/
 !models/README.md
+!cli/models/README.md
 
 # Logs
 *.log
