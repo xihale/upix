@@ -1,0 +1,61 @@
+package com.crossscale.data.thumbnails
+
+import android.util.LruCache
+import androidx.compose.ui.graphics.ImageBitmap
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
+
+private const val THUMBNAIL_DECODE_PARALLELISM = 2
+
+internal object ThumbnailMemoryCache {
+    private const val THUMBNAIL_CACHE_SIZE = 96
+    private const val SOURCE_CANDIDATE_CACHE_SIZE = 128
+    private val thumbnailCache = LruCache<String, ImageBitmap>(THUMBNAIL_CACHE_SIZE)
+    private val sourceCandidateCache = LruCache<String, List<String>>(SOURCE_CANDIDATE_CACHE_SIZE)
+
+    fun getThumbnail(sourceKey: String): ImageBitmap? {
+        if (sourceKey.isBlank()) {
+            return null
+        }
+        return synchronized(this) {
+            thumbnailCache.get(sourceKey)
+        }
+    }
+
+    fun putThumbnail(sourceKey: String, bitmap: ImageBitmap) {
+        if (sourceKey.isBlank()) {
+            return
+        }
+        synchronized(this) {
+            thumbnailCache.put(sourceKey, bitmap)
+        }
+    }
+
+    fun getSourceCandidates(sourceKey: String): List<String>? {
+        if (sourceKey.isBlank()) {
+            return null
+        }
+        return synchronized(this) {
+            sourceCandidateCache.get(sourceKey)
+        }
+    }
+
+    fun putSourceCandidates(sourceKey: String, candidates: List<String>) {
+        if (sourceKey.isBlank() || candidates.isEmpty()) {
+            return
+        }
+        synchronized(this) {
+            sourceCandidateCache.put(sourceKey, candidates)
+        }
+    }
+}
+
+internal object ThumbnailDecodeLimiter {
+    private val semaphore = Semaphore(THUMBNAIL_DECODE_PARALLELISM)
+
+    suspend fun <T> withPermit(block: () -> T): T {
+        return semaphore.withPermit {
+            block()
+        }
+    }
+}

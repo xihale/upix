@@ -27,6 +27,10 @@ import com.crossscale.ui.screens.HomeScreen
 import com.crossscale.ui.screens.LogsScreen
 import com.crossscale.ui.screens.ModelsScreen
 import com.crossscale.ui.screens.SettingsScreen
+import com.crossscale.ui.screens.home.HomeCheckpointActions
+import com.crossscale.ui.screens.home.HomeConnection
+import com.crossscale.ui.screens.home.HomeQueueActions
+import com.crossscale.ui.screens.home.HomeSetupActions
 import com.crossscale.viewmodel.DeviceUiState
 import com.crossscale.viewmodel.DeviceViewModel
 import com.crossscale.viewmodel.MainUiState
@@ -112,36 +116,44 @@ fun CrossScaleNavigation(
                 HomeScreen(
                     state = mainUiState,
                     processingUiState = processingUiState,
-                    connectionState = connectionState,
-                    connectedEndpoint = connectedEndpoint,
-                    remoteFallbackMessage = remoteFallbackMessage,
-                    onClearRemoteFallbackMessage = processingViewModel::clearRemoteFallbackMessage,
-                    onSelectModel = onSelectModel,
-                    onSelectImages = onSelectImages,
-                    onSelectImageFolder = onSelectImageFolder,
-                    onClearInputSources = onClearInputSources,
-                    onRemoveInputSource = onRemoveInputSource,
-                    onMoveInputSourceUp = onMoveInputSourceUp,
-                    onMoveInputSourceDown = onMoveInputSourceDown,
-                    onSelectOutputFolder = onSelectOutputFolder,
-                    onUseDefaultOutputFolder = onUseDefaultOutputFolder,
-                    onToggleOverwriteOriginal = onToggleOverwriteOriginal,
-                    onToggleBackupOriginal = onToggleBackupOriginal,
-                    onToggleProcessNestedFolders = onToggleProcessNestedFolders,
-                    onStartProcessing = onStartProcessing,
-                    onStartBatchQueue = onStartBatchQueue,
-                    onPauseBatchQueue = onPauseBatchQueue,
-                    onRetryQueuedBatch = onRetryQueuedBatch,
-                    onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
-                    onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,
-                    onRemoveQueuedBatch = onRemoveQueuedBatch,
-                    onClearBatchQueue = onClearBatchQueue,
-                    onResumeProcessing = onResumeProcessing,
-                    onRetryFailedItems = onRetryFailedItems,
-                    onResumePendingItem = onResumePendingItem,
-                    onRetryFailedItem = onRetryFailedItem,
-                    onDiscardCheckpoint = onDiscardCheckpoint,
-                    onCancelProcessing = onCancelProcessing,
+                    connection = HomeConnection(
+                        connectionState = connectionState,
+                        connectedEndpoint = connectedEndpoint,
+                        remoteFallbackMessage = remoteFallbackMessage,
+                        onClearRemoteFallbackMessage = processingViewModel::clearRemoteFallbackMessage
+                    ),
+                    setupActions = HomeSetupActions(
+                        onSelectModel = onSelectModel,
+                        onSelectImages = onSelectImages,
+                        onSelectImageFolder = onSelectImageFolder,
+                        onClearInputSources = onClearInputSources,
+                        onRemoveInputSource = onRemoveInputSource,
+                        onMoveInputSourceUp = onMoveInputSourceUp,
+                        onMoveInputSourceDown = onMoveInputSourceDown,
+                        onSelectOutputFolder = onSelectOutputFolder,
+                        onUseDefaultOutputFolder = onUseDefaultOutputFolder,
+                        onToggleOverwriteOriginal = onToggleOverwriteOriginal,
+                        onToggleBackupOriginal = onToggleBackupOriginal,
+                        onToggleProcessNestedFolders = onToggleProcessNestedFolders
+                    ),
+                    queueActions = HomeQueueActions(
+                        onStartProcessing = onStartProcessing,
+                        onStartBatchQueue = onStartBatchQueue,
+                        onPauseBatchQueue = onPauseBatchQueue,
+                        onRetryQueuedBatch = onRetryQueuedBatch,
+                        onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
+                        onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,
+                        onRemoveQueuedBatch = onRemoveQueuedBatch,
+                        onClearBatchQueue = onClearBatchQueue,
+                        onCancelProcessing = onCancelProcessing
+                    ),
+                    checkpointActions = HomeCheckpointActions(
+                        onResumeProcessing = onResumeProcessing,
+                        onRetryFailedItems = onRetryFailedItems,
+                        onResumePendingItem = onResumePendingItem,
+                        onRetryFailedItem = onRetryFailedItem,
+                        onDiscardCheckpoint = onDiscardCheckpoint
+                    ),
                     hasBackupAvailable = hasBackupAvailable,
                     onRestoreBackup = onRestoreBackup
                 )
