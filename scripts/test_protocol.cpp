@@ -56,13 +56,11 @@ int main() {
     }
     std::printf("OK header round-trip for all message types\n");
 
-    // ── 2. Checksum is deterministic + payload-sensitive ──────────────────
-    // NOTE: Protocol::serialize currently writes the checksum into the middle
-    // of the header ([11..14]) and computes it over a region that excludes the
-    // last 4 payload bytes, and no receiver verifies it — so the checksum is
-    // effectively write-only. We therefore assert the properties the wire
-    // format actually guarantees (determinism, payload sensitivity) rather than
-    // pinning the internal algorithm, which would cement the latent bug.
+    // ── 2. Checksum covers the full frame ─────────────────────────────────
+    // Contract: crc32 over the ENTIRE frame ([0, total_size)) computed while
+    // the checksum slot [11..14] is zero, then stored into [11..14]. A
+    // verifier zeros the slot, recomputes crc32 over the whole frame, and
+    // compares against the stored value.
     {
         MessageHeader h;
         h.type = MessageType::MSG_CLIENT_SUBMIT;
@@ -74,23 +72,48 @@ int main() {
         CHECK(w1 == w2);  // deterministic
         CHECK(w1.size() == Protocol::HEADER_SIZE + 64);
 
-        // Checksum field ([11..14]) must be populated for this payload.
-        uint32_t cs1{};
-        std::memcpy(&cs1, w1.data() + 11, 4);
-        CHECK(cs1 != 0);
+        // 1. Recompute: zero the checksum slot in a copy, crc32 the whole
+        //    frame, compare against the stored value (read from offset 11).
+        uint32_t stored{};
+        std::memcpy(&stored, w1.data() + 11, 4);
+        CHECK(stored != 0);  // populated for this payload
+        auto recompute = w1;
+        std::memset(recompute.data() + 11, 0, 4);
+        CHECK(Protocol::compute_checksum(recompute.data(), recompute.size()) == stored);
+
+        // 2. Tampering the FIRST payload byte must change the checksum that
+        //    serialize stores.
+        auto pl_first = pl;
+        pl_first[0] ^= 0xFF;
+        auto w_first = Protocol::serialize(h, pl_first.data());
+        uint32_t cs_first{};
+        std::memcpy(&cs_first, w_first.data() + 11, 4);
+        CHECK(cs_first != stored);
+
+        // 3. Regression guard for the original bug: flipping the LAST payload
+        //    byte must also change the checksum. The old code computed over a
+        //    total_size-4 prefix that excluded the last 4 payload bytes, so
+        //    this flip left the checksum unchanged; the corrected full-frame
+        //    crc32 must catch it.
+        auto pl_last = pl;
+        pl_last[pl_last.size() - 1] ^= 0xFF;
+        auto w_last = Protocol::serialize(h, pl_last.data());
+        uint32_t cs_last{};
+        std::memcpy(&cs_last, w_last.data() + 11, 4);
+        CHECK(cs_last != stored);
 
         // A different payload must yield a different checksum.
         std::vector<uint8_t> pl2(64, 0xCD);
         auto w3 = Protocol::serialize(h, pl2.data());
         uint32_t cs3{};
         std::memcpy(&cs3, w3.data() + 11, 4);
-        CHECK(cs3 != cs1);
+        CHECK(cs3 != stored);
 
         // compute_checksum is itself deterministic.
         CHECK(Protocol::compute_checksum(pl.data(), pl.size()) ==
               Protocol::compute_checksum(pl.data(), pl.size()));
     }
-    std::printf("OK checksum deterministic + payload-sensitive\n");
+    std::printf("OK checksum = full-frame crc32; tamper first/last payload byte\n");
 
     // ── 3. parse_header rejection paths ───────────────────────────────────
     {

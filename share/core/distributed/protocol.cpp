@@ -24,7 +24,10 @@ auto Protocol::serialize(const MessageHeader& header, const void* payload)
         std::memcpy(ptr + 4, payload, header.payload_length);
     }
     
-    uint32_t checksum = compute_checksum(buffer.data(), total_size - 4);
+    // crc32 over the ENTIRE frame [0, total_size). The checksum slot [11..14]
+    // is still zero here (buffer is value-initialized), so the checksum covers
+    // every header field and payload byte while excluding its own bytes.
+    uint32_t checksum = compute_checksum(buffer.data(), total_size);
     std::memcpy(ptr, &checksum, 4);
     
     return buffer;
