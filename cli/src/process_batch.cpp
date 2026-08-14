@@ -681,6 +681,16 @@ int run_batch(const args::Process& a) {
                 }
                 LOG_INFO("Engine", "GPU engine workers ready: " + std::to_string(worker_count));
 
+                // Same auto tile-size selection as the jobs<=1 path: without
+                // this, jobs>1 silently used the CLI default (256) while
+                // jobs=1 used the engine recommendation, so the tile grid —
+                // and therefore the output — depended on --jobs.
+                if (!tile_size_explicit && !auto_tile) {
+                    tile_size = gpu_engines[0]->get_recommended_tile_size();
+                    config.tile_size = tile_size;
+                    LOG_INFO("Engine", "Auto-selected tile size: " + std::to_string(tile_size));
+                }
+
                 std::atomic<size_t> next_task{0};
                 std::atomic<size_t> success_count{0};
                 std::vector<std::thread> workers;
@@ -716,6 +726,18 @@ int run_batch(const args::Process& a) {
                 size_t worker_count = std::min(requested_workers, tasks.size());
                 crossscale::EnginePool pool(worker_count, param_path, bin_path, crossscale::DeviceType::CPU);
                 LOG_INFO("Engine", "Created engine pool with " + std::to_string(worker_count) + " CPU engines");
+
+                // Same auto tile-size selection as the jobs<=1 path: without
+                // this, jobs>1 silently used the CLI default (256) while
+                // jobs=1 used the engine recommendation (128 on CPU), so the
+                // tile grid — and therefore the output — depended on --jobs.
+                if (!tile_size_explicit && !auto_tile) {
+                    crossscale::Engine* probe = pool.acquire();
+                    tile_size = probe->get_recommended_tile_size();
+                    pool.release(probe);
+                    config.tile_size = tile_size;
+                    LOG_INFO("Engine", "Auto-selected tile size: " + std::to_string(tile_size));
+                }
 
                 std::atomic<size_t> next_task{0};
                 std::atomic<size_t> success_count{0};
