@@ -3,8 +3,12 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
+#include <thread>
 #include <fstream>
 #include <string_view>
 
@@ -96,8 +100,8 @@ namespace {
     // 1-4 channels, non-interlaced (load strips 16-bit and expands palettes,
     // so every in-memory Image qualifies). Fixed AVG row filter (matches the
     // previous libpng configuration) + libdeflate zlib stream + libdeflate
-    // CRC32. Returns false so the caller can fall back to the libpng writer
-    // when libdeflate cannot allocate or the stream does not compress.
+    // CRC32. Returns false only on invalid dimensions or compressor
+    // allocation/compress failure (OOM-class).
     auto save_png_libdeflate(const Image& image, std::vector<uint8_t>& out, int level) -> bool {
         const int width = image.width();
         const int height = image.height();
@@ -112,17 +116,44 @@ namespace {
 
         // AVG-filter every row: dst = raw - floor((left + up) / 2), modulo 256.
         // Filter choice affects only encoded size, never decoded pixels.
-        std::vector<uint8_t> filtered((stride + 1) * static_cast<size_t>(height));
+        // Rows are independent (each reads two *raw* source rows), so large
+        // images filter in parallel; the buffers are written in full below,
+        // so they are allocated uninitialized to skip a ~600 MB memset each.
+        const auto filter_start = std::chrono::steady_clock::now();
+        const auto filtered_bytes = (stride + 1) * static_cast<size_t>(height);
+        auto filtered = std::make_unique_for_overwrite<uint8_t[]>(filtered_bytes);
         const uint8_t* src = image.data();
-        for (int y = 0; y < height; ++y) {
-            const uint8_t* row = src + static_cast<size_t>(y) * stride;
-            const uint8_t* prev = y > 0 ? row - stride : nullptr;
-            uint8_t* dst = filtered.data() + static_cast<size_t>(y) * (stride + 1);
-            dst[0] = 3;  // PNG filter type Average (0=none 1=sub 2=up 3=avg 4=paeth)
-            for (size_t x = 0; x < stride; ++x) {
-                const int left = x >= static_cast<size_t>(channels) ? row[x - channels] : 0;
-                const int up = prev != nullptr ? prev[x] : 0;
-                dst[1 + x] = static_cast<uint8_t>(row[x] - ((left + up) >> 1));
+        auto filter_rows = [&](int y_begin, int y_end) {
+            for (int y = y_begin; y < y_end; ++y) {
+                const uint8_t* row = src + static_cast<size_t>(y) * stride;
+                const uint8_t* prev = y > 0 ? row - stride : nullptr;
+                uint8_t* dst = filtered.get() + static_cast<size_t>(y) * (stride + 1);
+                dst[0] = 3;  // PNG filter type Average (0=none 1=sub 2=up 3=avg 4=paeth)
+                for (size_t x = 0; x < stride; ++x) {
+                    const int left = x >= static_cast<size_t>(channels) ? row[x - channels] : 0;
+                    const int up = prev != nullptr ? prev[x] : 0;
+                    dst[1 + x] = static_cast<uint8_t>(row[x] - ((left + up) >> 1));
+                }
+            }
+        };
+        {
+            const auto hw = std::thread::hardware_concurrency();
+            const size_t parallel_threshold = 16u << 20;  // filter cost ~bandwidth-bound
+            if (hw > 1 && filtered_bytes >= parallel_threshold) {
+                const int threads = static_cast<int>(std::min<size_t>(hw, 8u));
+                std::vector<std::thread> pool;
+                pool.reserve(threads - 1);
+                for (int t = 1; t < threads; ++t) {
+                    const int y_begin = static_cast<int>(1LL * height * t / threads);
+                    const int y_end = static_cast<int>(1LL * height * (t + 1) / threads);
+                    pool.emplace_back(filter_rows, y_begin, y_end);
+                }
+                filter_rows(0, static_cast<int>(1LL * height / threads));
+                for (auto& th : pool) {
+                    th.join();
+                }
+            } else {
+                filter_rows(0, height);
             }
         }
 
@@ -130,10 +161,21 @@ namespace {
         if (compressor == nullptr) {
             return false;
         }
-        std::vector<uint8_t> compressed(libdeflate_zlib_compress_bound(compressor, filtered.size()));
+        const auto filter_done = std::chrono::steady_clock::now();
+        const auto bound = libdeflate_zlib_compress_bound(compressor, filtered_bytes);
+        auto compressed = std::make_unique_for_overwrite<uint8_t[]>(bound);
         const size_t compressed_size = libdeflate_zlib_compress(
-            compressor, filtered.data(), filtered.size(), compressed.data(), compressed.size());
+            compressor, filtered.get(), filtered_bytes, compressed.get(), bound);
         libdeflate_free_compressor(compressor);
+        const auto compress_done = std::chrono::steady_clock::now();
+        if (std::getenv("CROSSSCALE_PIPELINE_TIMER") != nullptr) {
+            std::fprintf(stderr, "[PERF] png save %dx%d: filter=%zums compress=%zums\n",
+                         width, height,
+                         static_cast<size_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                             filter_done - filter_start).count()),
+                         static_cast<size_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                             compress_done - filter_done).count()));
+        }
         if (compressed_size == 0) {
             return false;
         }
@@ -160,7 +202,7 @@ namespace {
         ihdr[11] = 0;  // filter: adaptive (per-row bytes carry the actual type)
         ihdr[12] = 0;  // interlace: none
         write_png_chunk(out, "IHDR", ihdr, sizeof(ihdr));
-        write_png_chunk(out, "IDAT", compressed.data(), compressed_size);
+        write_png_chunk(out, "IDAT", compressed.get(), compressed_size);
         write_png_chunk(out, "IEND", nullptr, 0);
         return true;
     }
@@ -266,15 +308,13 @@ namespace {
         Image img(width, height, channels);
         
         while (cinfo.output_scanline < cinfo.output_height) {
-            // Capture the row index BEFORE the call: jpeg_read_scanlines
-            // increments output_scanline, so using it afterward writes every
-            // row one position too far (buffer overflow past the image).
+            // jpeg_read_scanlines increments output_scanline, so capture the
+            // row index before the call and decode straight into the image
+            // buffer — no per-row temporary.
             const int row_index = cinfo.output_scanline;
-            JSAMPLE* row = new JSAMPLE[width * channels];
-            JSAMPARRAY buffer = &row;
-            jpeg_read_scanlines(&cinfo, buffer, 1);
-            std::memcpy(img.data() + row_index * width * channels, row, width * channels);
-            delete[] row;
+            JSAMPROW row = img.data() + row_index * width * channels;
+            JSAMPARRAY scanlines = &row;
+            jpeg_read_scanlines(&cinfo, scanlines, 1);
         }
         
         jpeg_finish_decompress(&cinfo);
@@ -300,7 +340,10 @@ namespace {
 
 Image::Image(int width, int height, int channels)
     : width_(width), height_(height), channels_(channels) {
-    data_.resize(static_cast<size_t>(width) * height * channels);
+    // +16 slack: the Vulkan upload path (ncnn record_clone on a 1-D u8 Mat)
+    // copies rounded-up-to-16 bytes, which reads past a exactly-sized buffer.
+    // size() stays w*h*c; the tail is never part of the image.
+    data_.resize(static_cast<size_t>(width) * height * channels + 16);
 }
 
 Image::Image(Image&& other) noexcept
@@ -371,76 +414,15 @@ auto Image::save_to_memory(const std::string& format, int quality) const
 
     try {
         if (output_format == "png") {
-            // Fast path: libdeflate-backed writer for the 8-bit 1-4 channel
-            // images this codebase produces (2.6x faster than libpng+zlib,
-            // ~8% smaller files). Falls through to the libpng writer below
-            // for anything it cannot handle.
+            // libdeflate-backed writer for the 8-bit 1-4 channel images this
+            // codebase produces (2.6x faster than libpng+zlib, ~8% smaller
+            // files). Failures are compressor-alloc/zero-size-compress cases
+            // (OOM-class); return the error instead of falling back.
             std::vector<uint8_t> encoded;
-            if (save_png_libdeflate(
+            if (!save_png_libdeflate(
                     *this, encoded, png_libdeflate_level_from_quality(clamped_quality))) {
-                return encoded;
+                return std::unexpected(ImageError{20, "PNG encode failed (libdeflate)"});
             }
-            const size_t estimated_size = static_cast<size_t>(width_) * height_ * channels_ / 2 + 4096;
-            encoded.reserve(estimated_size);
-
-            png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
-            if (!png) return std::unexpected(ImageError{20, "Failed to create PNG write struct"});
-
-            png_infop info = png_create_info_struct(png);
-            if (!info) {
-                png_destroy_write_struct(&png, nullptr);
-                return std::unexpected(ImageError{20, "Failed to create PNG info struct"});
-            }
-
-            if (setjmp(png_jmpbuf(png))) {
-                png_destroy_write_struct(&png, &info);
-                return std::unexpected(ImageError{20, "Error during PNG memory writing"});
-            }
-
-            png_set_write_fn(
-                png,
-                &encoded,
-                [](png_structp png_ptr, png_bytep data, png_size_t length) {
-                    auto* out = static_cast<std::vector<uint8_t>*>(png_get_io_ptr(png_ptr));
-                    const size_t size = out->size();
-                    if (size + length > out->capacity()) {
-                        out->reserve(std::max(size + length, size * 2));
-                    }
-                    out->insert(out->end(), data, data + length);
-                },
-                nullptr
-            );
-
-            png_byte color_type;
-            if (channels_ == 1) color_type = PNG_COLOR_TYPE_GRAY;
-            else if (channels_ == 2) color_type = PNG_COLOR_TYPE_GRAY_ALPHA;
-            else if (channels_ == 3) color_type = PNG_COLOR_TYPE_RGB;
-            else if (channels_ == 4) color_type = PNG_COLOR_TYPE_RGBA;
-            else {
-                png_destroy_write_struct(&png, &info);
-                return std::unexpected(ImageError{14, "Unsupported channel count for PNG: " + std::to_string(channels_)});
-            }
-
-            png_set_compression_level(png, png_compression_level_from_quality(clamped_quality));
-            png_set_compression_strategy(png, PNG_Z_DEFAULT_STRATEGY);
-            // Fixed row filter: libpng's default adaptive heuristic evaluates all
-            // five filters per row, which measured ~32% of PNG encode time, while
-            // a fixed AVG filter stays size-neutral (within +/-1% of adaptive) on
-            // super-resolution output. Filtering choice never affects decoded pixels.
-            png_set_filter(png, PNG_FILTER_TYPE_BASE, PNG_FILTER_AVG);
-            png_set_IHDR(
-                png, info, width_, height_, 8, color_type, PNG_INTERLACE_NONE,
-                PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT
-            );
-
-            png_write_info(png, info);
-            std::vector<png_bytep> row_pointers(height_);
-            for (int y = 0; y < height_; ++y) {
-                row_pointers[y] = const_cast<png_bytep>(&data_[static_cast<size_t>(y) * width_ * channels_]);
-            }
-            png_write_image(png, row_pointers.data());
-            png_write_end(png, nullptr);
-            png_destroy_write_struct(&png, &info);
             return encoded;
         }
 

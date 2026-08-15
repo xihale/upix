@@ -27,10 +27,60 @@
 #include <cstdlib>
 #include <limits>
 #include <mutex>
+#include <optional>
 #include <sstream>
+#include <string_view>
 #include <thread>
 
 namespace crossscale {
+
+#if NCNN_VULKAN
+namespace {
+
+// Full-output GPU buffers shared by all tile pipelines: a float HWC
+// accumulator, a float weight map, optionally the u8 output staging. They
+// scale with the OUTPUT image, not the tile size — this term is what makes
+// x4 on large inputs unrunnable on small heaps.
+size_t full_output_gpu_bytes(size_t out_width, size_t out_height, int channels,
+                             bool with_u8_staging) {
+    const size_t px = out_width * out_height;
+    return px * channels * 4 + px * 4 + (with_u8_staging ? px * channels : 0);
+}
+
+// Per-tile inference working set: input tile + fp16 feature maps (~64ch,
+// ~16 live blobs in light mode), times the in-flight batch. Rough, on
+// purpose — the runtime fallback ladder catches underestimates.
+size_t tile_working_set_bytes(const TileConfig& config, int channels) {
+    const double t = static_cast<double>(config.tile_size) + 2 * std::max(0, config.overlap);
+    const double batch = std::max(1, config.batch_size);
+    return static_cast<size_t>(t * t * 64 * 2 * 16 * batch + t * t * channels * 2 * batch);
+}
+
+// Preflight device allocations before anything big is created: refuse with a
+// clean OOM error (nothing allocated yet) instead of letting VkMat::create
+// silently return empty mats that later dispatch garbage.
+auto check_gpu_memory_budget(const NCNNEngineImpl& engine, size_t need_bytes,
+                             std::string_view what) -> std::optional<EngineError> {
+    const size_t budget_mb = engine.get_device_memory_budget_mb();
+    if (budget_mb == 0) return std::nullopt;  // unknown budget → let the device decide
+    if (need_bytes <= budget_mb * 1024 * 1024) return std::nullopt;
+    std::ostringstream oss;
+    oss << "out of GPU memory for " << what << ": need ~" << need_bytes / (1024 * 1024)
+        << "MB, heap budget " << budget_mb << "MB";
+    return EngineError{kErrOutOfMemory, oss.str()};
+}
+
+// VkMat::create fails silently (empty mat) when the allocator refuses — turn
+// that into the same OOM error so callers can fall back. Tests `data`, not
+// buffer(): VkMat::buffer() dereferences data unconditionally.
+auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
+    -> std::optional<EngineError> {
+    if (mat.data != nullptr) return std::nullopt;
+    return EngineError{kErrOutOfMemory, "out of GPU memory allocating " + std::string(what)};
+}
+
+} // namespace
+#endif
 
     auto NCNNEngineImpl::process_tiles_gpu_u8_queue(
         const std::vector<GPUTileTaskU8>& tasks,
@@ -119,6 +169,7 @@ namespace crossscale {
         std::vector<std::vector<TilePadInfo>> task_pad_infos;
         task_pad_infos.reserve(tasks.size());
         size_t total_tiles = 0;
+        size_t total_need_bytes = 0;
         for (const auto& task : tasks) {
             if (task.input_data == nullptr || task.output_data == nullptr || task.regions == nullptr) {
                 return std::unexpected(EngineError{205, "GPU queue task has null buffers"});
@@ -139,9 +190,6 @@ namespace crossscale {
                 return std::unexpected(EngineError{203, "Output image too large for Vulkan tile pipeline"});
             }
 
-            state.out_gpu_hwc.create(static_cast<int>(state.out_total), 4u, blob_vkallocator);
-            state.out_gpu_weight.create(static_cast<int>(state.out_total_pixels), 4u, blob_vkallocator);
-            state.out_gpu_u8.create(static_cast<int>(state.out_total), 1u, blob_vkallocator);
             state.progress.total_tiles = static_cast<int>(task.regions->size());
             state.progress.completed_tiles = 0;
             states.emplace_back(std::move(state));
@@ -156,6 +204,34 @@ namespace crossscale {
         }
         if (total_tiles == 0) {
             return {};
+        }
+
+        // OOM preflight: full-output accumulators + weight maps + u8 staging +
+        // the u8 input upload + the per-tile working set, summed over tasks.
+        // Nothing has been allocated yet — a refusal here is free.
+        for (size_t i = 0; i < tasks.size(); ++i) {
+            const auto& task = tasks[i];
+            total_need_bytes +=
+                full_output_gpu_bytes(states[i].out_width, states[i].out_height, task.channels, true) +
+                static_cast<size_t>(task.input_width) * task.input_height * task.channels +
+                tile_working_set_bytes(task.config, task.channels);
+        }
+        if (auto oom = check_gpu_memory_budget(*this, total_need_bytes, "u8 queue pipeline")) {
+            return std::unexpected(*oom);
+        }
+        for (auto& state : states) {
+            state.out_gpu_hwc.create(static_cast<int>(state.out_total), 4u, blob_vkallocator);
+            state.out_gpu_weight.create(static_cast<int>(state.out_total_pixels), 4u, blob_vkallocator);
+            state.out_gpu_u8.create(static_cast<int>(state.out_total), 1u, blob_vkallocator);
+            if (auto oom = check_vkmat_allocated(state.out_gpu_hwc, "u8 queue output accumulator")) {
+                return std::unexpected(*oom);
+            }
+            if (auto oom = check_vkmat_allocated(state.out_gpu_weight, "u8 queue weight map")) {
+                return std::unexpected(*oom);
+            }
+            if (auto oom = check_vkmat_allocated(state.out_gpu_u8, "u8 queue output staging")) {
+                return std::unexpected(*oom);
+            }
         }
         const size_t in_elemsize = opt.use_fp16_storage ? 2u : 4u;
         // Multi-Task Concurrent Tile Scheduling:
@@ -591,10 +667,27 @@ namespace crossscale {
         opt.workspace_vkallocator = blob_vkallocator;
         opt.staging_vkallocator = staging_vkallocator;
 
+        // OOM preflight (full-output accumulator + weight map + float input
+        // upload + per-tile working set) — before any big allocation.
+        if (auto oom = check_gpu_memory_budget(
+                *this,
+                full_output_gpu_bytes(out_width, out_height, channels, false) +
+                    static_cast<size_t>(input_width) * input_height * channels * 4 +
+                    tile_working_set_bytes(config, channels),
+                "float tile pipeline")) {
+            return std::unexpected(*oom);
+        }
+
         ncnn::VkMat out_gpu_hwc;
         out_gpu_hwc.create(static_cast<int>(out_total), 4u, blob_vkallocator);
         ncnn::VkMat out_gpu_weight;
         out_gpu_weight.create(static_cast<int>(out_total_pixels), 4u, blob_vkallocator);
+        if (auto oom = check_vkmat_allocated(out_gpu_hwc, "float tile output accumulator")) {
+            return std::unexpected(*oom);
+        }
+        if (auto oom = check_vkmat_allocated(out_gpu_weight, "float tile weight map")) {
+            return std::unexpected(*oom);
+        }
 
         {
             ncnn::VkCompute cmd(vkdev_);
@@ -1098,10 +1191,28 @@ namespace crossscale {
         opt.workspace_vkallocator = blob_vkallocator;
         opt.staging_vkallocator = staging_vkallocator;
 
+        // OOM preflight (full-output accumulator + weight map + u8 download
+        // staging + per-tile working set) — before any big allocation. The
+        // u8 staging is created late (last batch) but sized like the output,
+        // so it is budgeted up front.
+        if (auto oom = check_gpu_memory_budget(
+                *this,
+                full_output_gpu_bytes(out_width, out_height, channels, true) +
+                    tile_working_set_bytes(config, channels),
+                "u8 tile pipeline")) {
+            return std::unexpected(*oom);
+        }
+
         ncnn::VkMat out_gpu_hwc;
         out_gpu_hwc.create(static_cast<int>(out_total), 4u, blob_vkallocator);
         ncnn::VkMat out_gpu_weight;
         out_gpu_weight.create(static_cast<int>(out_total_pixels), 4u, blob_vkallocator);
+        if (auto oom = check_vkmat_allocated(out_gpu_hwc, "u8 tile output accumulator")) {
+            return std::unexpected(*oom);
+        }
+        if (auto oom = check_vkmat_allocated(out_gpu_weight, "u8 tile weight map")) {
+            return std::unexpected(*oom);
+        }
 
         {
             ncnn::VkCompute cmd(vkdev_);
@@ -1415,6 +1526,9 @@ namespace crossscale {
                     ncnn::VkMat out_gpu_u8;
                     if (is_last_batch) {
                         out_gpu_u8.create(static_cast<int>(out_total), 1u, blob_vkallocator);
+                        if (auto oom = check_vkmat_allocated(out_gpu_u8, "u8 tile download staging")) {
+                            return std::unexpected(*oom);
+                        }
                         record_normalize_quantize_download(cmd, out_gpu_u8);
                     }
 
@@ -1559,6 +1673,9 @@ namespace crossscale {
                 const bool is_last_batch = (current_batch->end == regions.size());
                 if (is_last_batch) {
                     out_gpu_u8.create(static_cast<int>(out_total), 1u, blob_vkallocator);
+                    if (auto oom = check_vkmat_allocated(out_gpu_u8, "u8 tile download staging")) {
+                        return std::unexpected(*oom);
+                    }
                     record_normalize_quantize_download(cmd, out_gpu_u8);
                 }
 
@@ -1596,6 +1713,9 @@ namespace crossscale {
             ncnn::VkCompute cmd(vkdev_);
             ncnn::VkMat out_gpu_u8;
             out_gpu_u8.create(static_cast<int>(out_total), 1u, blob_vkallocator);
+            if (auto oom = check_vkmat_allocated(out_gpu_u8, "u8 tile download staging")) {
+                return std::unexpected(*oom);
+            }
             record_normalize_quantize_download(cmd, out_gpu_u8);
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
@@ -2076,178 +2196,6 @@ namespace crossscale {
         if (ret != 0) {
             return std::unexpected(EngineError{17, "Vulkan submit failed (error " + std::to_string(ret) + ")"});
         }
-
-        return {};
-    }
-
-    auto NCNNEngineImpl::process_vulkan_with_gpu_layout_u8(
-        const uint8_t* input,
-        uint8_t* output,
-        int width,
-        int height,
-        int channels,
-        const std::atomic<bool>& cancel_flag
-    ) -> expected<void, EngineError> {
-        if (vkdev_ == nullptr || preproc_hwc_u8_to_chw_ == nullptr || postproc_chw_to_hwc_u8_ == nullptr) {
-            const std::string detail = format_vulkan_runtime_snapshot("u8_layout_not_initialized", width, height, channels);
-            LOG_ERROR("Engine", "Vulkan u8 layout pipeline not initialized: " + detail);
-            return std::unexpected(EngineError{19, "Vulkan u8 layout pipeline not initialized; " + detail});        }
-        if (channels <= 0 || width <= 0 || height <= 0) {
-            return std::unexpected(EngineError{11, "Invalid input dimensions"});
-        }
-        if (channels != 1 && channels != 3 && channels != 4) {
-            return std::unexpected(EngineError{12, "Unsupported channel count for Vulkan layout path"});
-        }
-        if (cancel_flag) {
-            return std::unexpected(EngineError{3, "Processing cancelled"});
-        }
-
-        const int out_width = width * scale_factor_;
-        const int out_height = height * scale_factor_;
-        const size_t in_total = static_cast<size_t>(width) * height * channels;
-        const size_t out_total = static_cast<size_t>(out_width) * out_height * channels;
-        if (in_total > static_cast<size_t>(std::numeric_limits<int>::max()) ||
-            out_total > static_cast<size_t>(std::numeric_limits<int>::max())) {
-            return std::unexpected(EngineError{13, "Image too large for Vulkan layout path"});
-        }
-        LOG_INFO("Engine", "Starting Vulkan u8 layout path: " + format_vulkan_runtime_snapshot("u8_layout_begin", width, height, channels));
-
-        ncnn::VkAllocator* blob_vkallocator = vkdev_->acquire_blob_allocator();
-        ncnn::VkAllocator* staging_vkallocator = vkdev_->acquire_staging_allocator();
-        detail::VkAllocGuard alloc_guard{vkdev_, blob_vkallocator, staging_vkallocator};
-
-        ncnn::Option opt = net_->opt;
-        opt.blob_vkallocator = blob_vkallocator;
-        opt.workspace_vkallocator = blob_vkallocator;
-        opt.staging_vkallocator = staging_vkallocator;
-
-        ncnn::VkCompute cmd(vkdev_);
-
-        ncnn::Mat in_cpu(static_cast<int>(in_total), const_cast<uint8_t*>(input), 1u);
-        ncnn::VkMat in_gpu_hwc;
-        cmd.record_clone(in_cpu, in_gpu_hwc, opt);
-
-        const size_t in_elemsize = opt.use_fp16_storage ? 2u : 4u;
-        ncnn::VkMat in_gpu_chw;
-        in_gpu_chw.create(width, height, channels, in_elemsize, 1, blob_vkallocator);
-        if (in_gpu_chw.empty()) {
-            const std::string detail = format_vulkan_runtime_snapshot("u8_in_gpu_chw_alloc_failed", width, height, channels);
-            LOG_ERROR("Engine", "Failed to allocate Vulkan input CHW buffer: " + detail);
-            return std::unexpected(EngineError{210, "Failed to allocate Vulkan input CHW buffer; " + detail});        }
-
-        std::vector<ncnn::VkMat> pre_bindings(2);
-        pre_bindings[0] = in_gpu_hwc;
-        pre_bindings[1] = in_gpu_chw;
-
-        std::vector<ncnn::vk_constant_type> pre_constants(4);
-        pre_constants[0].i = width;
-        pre_constants[1].i = height;
-        pre_constants[2].i = channels;
-        pre_constants[3].i = static_cast<int>(in_gpu_chw.cstep);
-
-        ncnn::VkMat pre_dispatcher;
-        pre_dispatcher.w = width;
-        pre_dispatcher.h = height;
-        pre_dispatcher.c = channels;
-        cmd.record_pipeline(preproc_hwc_u8_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
-
-        if (cancel_flag) {
-            return std::unexpected(EngineError{3, "Processing cancelled"});
-        }
-
-        ncnn::Extractor ex = net_->create_extractor();
-        ex.set_light_mode(true);
-        ex.set_blob_vkallocator(blob_vkallocator);
-        ex.set_workspace_vkallocator(blob_vkallocator);
-        ex.set_staging_vkallocator(staging_vkallocator);
-
-        int input_idx = -1;
-        int output_idx = -1;
-        if (!net_->input_indexes().empty()) {
-            input_idx = net_->input_indexes()[0];
-        }
-        if (!net_->output_indexes().empty()) {
-            output_idx = net_->output_indexes()[0];
-        }
-
-        int ret = 0;
-        if (input_idx >= 0) {
-            ret = ex.input(input_idx, in_gpu_chw);
-        } else {
-            ret = ex.input("data", in_gpu_chw);
-        }
-        if (ret != 0) {
-            return std::unexpected(EngineError{14, "Failed to set Vulkan input (error " + std::to_string(ret) + ")"});
-        }
-
-        if (cancel_flag) {
-            return std::unexpected(EngineError{3, "Processing cancelled"});
-        }
-
-        ncnn::VkMat out_gpu;
-        if (output_idx >= 0) {
-            ret = ex.extract(output_idx, out_gpu, cmd);
-        } else {
-            ret = ex.extract("output", out_gpu, cmd);
-            if (ret != 0) {
-                ret = ex.extract("out", out_gpu, cmd);
-                if (ret != 0) {
-                    return std::unexpected(EngineError{15, "Failed to extract Vulkan output (error " + std::to_string(ret) + ")"});
-                }
-            }
-        }
-
-        if (cancel_flag) {
-            return std::unexpected(EngineError{3, "Processing cancelled"});
-        }
-
-        if (out_gpu.elempack != 1) {
-            ncnn::VkMat out_unpacked;
-            vkdev_->convert_packing(out_gpu, out_unpacked, 1, cmd, opt);
-            out_gpu = out_unpacked;
-        }
-
-        if (out_gpu.w != out_width || out_gpu.h != out_height || out_gpu.c != channels) {
-            return std::unexpected(EngineError{16, "Vulkan output shape mismatch"});
-        }
-
-        ncnn::VkMat out_gpu_hwc_u8;
-        out_gpu_hwc_u8.create(static_cast<int>(out_total), 1u, blob_vkallocator);
-        if (out_gpu_hwc_u8.empty()) {
-            const std::string detail = format_vulkan_runtime_snapshot("u8_out_gpu_hwc_alloc_failed", width, height, channels);
-            LOG_ERROR("Engine", "Failed to allocate Vulkan output u8 buffer: " + detail);
-            return std::unexpected(EngineError{211, "Failed to allocate Vulkan output u8 buffer; " + detail});        }
-
-        std::vector<ncnn::VkMat> post_bindings(2);
-        post_bindings[0] = out_gpu;
-        post_bindings[1] = out_gpu_hwc_u8;
-
-        std::vector<ncnn::vk_constant_type> post_constants(4);
-        post_constants[0].i = out_width;
-        post_constants[1].i = out_height;
-        post_constants[2].i = channels;
-        post_constants[3].i = static_cast<int>(out_gpu.cstep);
-
-        ncnn::VkMat post_dispatcher;
-        post_dispatcher.w = out_width;
-        post_dispatcher.h = out_height;
-        post_dispatcher.c = channels;
-        cmd.record_pipeline(postproc_chw_to_hwc_u8_.get(), post_bindings, post_constants, post_dispatcher);
-
-        if (cancel_flag) {
-            return std::unexpected(EngineError{3, "Processing cancelled"});
-        }
-
-        ncnn::Mat out_cpu(static_cast<int>(out_total), output, 1u);
-        cmd.record_clone(out_gpu_hwc_u8, out_cpu, opt);
-
-        ret = cmd.submit_and_wait();
-        if (ret != 0) {
-            const std::string detail = format_vulkan_runtime_snapshot("u8_submit_failed", width, height, channels);
-            LOG_ERROR("Engine", "Vulkan u8 submit failed error=" + std::to_string(ret) + ", " + detail);
-            return std::unexpected(EngineError{17, "Vulkan submit failed (error " + std::to_string(ret) + "); " + detail});        }
-
-        LOG_INFO("Engine", "Finished Vulkan u8 layout path: " + format_vulkan_runtime_snapshot("u8_layout_done", width, height, channels));
 
         return {};
     }

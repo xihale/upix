@@ -414,6 +414,81 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
         return {};
     }
 
+namespace {
+
+// TileConfig defaults + CROSSSCALE_*_TILE_* env overrides, shared by the u8
+// GPU queue pipeline, the float Vulkan fallback, and the CPU path. The three
+// call sites differ in defaults, clamp bounds, and which env vars they honor
+// (the CPU path reads only the tile size), so those are passed in. A null
+// overlap/batch env name means that variable is not honored.
+TileConfig tile_config_from_env(
+    int default_tile_size,
+    int default_overlap,
+    int default_batch_size,
+    const char* tile_size_env,
+    const char* tile_overlap_env,
+    const char* tile_batch_env,
+    int tile_size_lo,
+    int tile_size_hi,
+    int batch_size_hi) {
+    TileConfig tile_config;
+    tile_config.tile_size = default_tile_size;
+    tile_config.overlap = default_overlap;
+    tile_config.batch_size = default_batch_size;
+    if (const char* tile_size_env_value = std::getenv(tile_size_env)) {
+        try { tile_config.tile_size = std::clamp(std::stoi(tile_size_env_value), tile_size_lo, tile_size_hi); } catch (...) {}
+    }
+    if (tile_overlap_env != nullptr) {
+        if (const char* tile_overlap_env_value = std::getenv(tile_overlap_env)) {
+            try { tile_config.overlap = std::clamp(std::stoi(tile_overlap_env_value), 0, std::max(1, tile_config.tile_size / 2)); } catch (...) {}
+        }
+    }
+    if (tile_batch_env != nullptr) {
+        if (const char* tile_batch_env_value = std::getenv(tile_batch_env)) {
+            try { tile_config.batch_size = std::clamp(std::stoi(tile_batch_env_value), 1, batch_size_hi); } catch (...) {}
+        }
+    }
+    return tile_config;
+}
+
+// Whole-buffer u8 → float ([0,1]) conversion.
+std::vector<float> u8_to_float_buffer(const uint8_t* input, size_t count) {
+    std::vector<float> output_float(count);
+    constexpr float kInv255 = 1.0f / 255.0f;
+    for (size_t i = 0; i < count; ++i) {
+        output_float[i] = static_cast<float>(input[i]) * kInv255;
+    }
+    return output_float;
+}
+
+// Whole-buffer float ([0,1]) → u8 conversion with non-finite rejection.
+auto float_to_u8_checked(const float* input, uint8_t* output, size_t count)
+    -> expected<void, EngineError> {
+    for (size_t i = 0; i < count; ++i) {
+        const float value = input[i];
+        if (!std::isfinite(value)) {
+            return std::unexpected(EngineError{20, "Non-finite output value detected"});
+        }
+        const float v = std::clamp(value * 255.0f, 0.0f, 255.0f);
+        output[i] = static_cast<uint8_t>(std::lround(v));
+    }
+    return {};
+}
+
+// Host RAM preflight for full-image float buffers; refuses with a clean OOM
+// error instead of throwing std::bad_alloc mid-run.
+auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_info)
+    -> std::optional<EngineError> {
+    if (mem_info.second == 0) return std::nullopt;  // unknown → let it throw/succeed
+    if (need_bytes <= mem_info.second * 1024 * 1024) return std::nullopt;
+    std::ostringstream oss;
+    oss << "out of host memory: need ~" << need_bytes / (1024 * 1024)
+        << "MB, available " << mem_info.second << "MB";
+    return EngineError{kErrOutOfMemory, oss.str()};
+}
+
+} // namespace
+
     auto NCNNEngineImpl::process_u8(const uint8_t* input, uint8_t* output, int width, int height, int channels,
                     const std::atomic<bool>& cancel_flag)
         -> expected<void, EngineError> {
@@ -440,20 +515,10 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             if (supports_gpu_tile_pipeline_u8_queue()) {
                 LOG_INFO("Engine", "Processing u8 input through optimized Vulkan U8 queue pipeline");
 
-                TileConfig tile_config;
-                tile_config.tile_size = get_recommended_tile_size();
-                tile_config.overlap = 16;
-                tile_config.batch_size = 4; // Increased batch size
-                
-                if (const char* tile_size_env = std::getenv("CROSSSCALE_GPU_TILE_SIZE")) {
-                    try { tile_config.tile_size = std::clamp(std::stoi(tile_size_env), 64, 2048); } catch (...) {}
-                }
-                if (const char* tile_overlap_env = std::getenv("CROSSSCALE_GPU_TILE_OVERLAP")) {
-                    try { tile_config.overlap = std::clamp(std::stoi(tile_overlap_env), 0, tile_config.tile_size / 2); } catch (...) {}
-                }
-                if (const char* tile_batch_env = std::getenv("CROSSSCALE_GPU_TILE_BATCH")) {
-                    try { tile_config.batch_size = std::clamp(std::stoi(tile_batch_env), 1, 32); } catch (...) {}
-                }
+                TileConfig tile_config = tile_config_from_env(
+                    get_recommended_tile_size(), 16, 4,
+                    "CROSSSCALE_GPU_TILE_SIZE", "CROSSSCALE_GPU_TILE_OVERLAP", "CROSSSCALE_GPU_TILE_BATCH",
+                    64, 2048, 32);
 
                 std::vector<TileRegion> regions;
                 const int step = std::max(1, tile_config.tile_size - tile_config.overlap);
@@ -482,32 +547,41 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
 
                 auto u8_result = process_tiles_gpu_u8_queue({task}, cancel_flag);
                 if (!u8_result.has_value()) {
-                    return u8_result;
-                }
-
-                // Adreno/Mali drivers with int8_storage + fp16_arithmetic have been
-                // observed to submit successfully but produce all-zero output on some
-                // shapes. Detect that and fall through to the float tile pipeline
-                // rather than handing back a black image.
-                const size_t out_bytes = static_cast<size_t>(width) * height *
-                                         scale_factor_ * scale_factor_ * channels;
-                bool all_zero = true;
-                for (size_t i = 0; i < out_bytes; i += 4096) {
-                    if (output[i] != 0) {
-                        all_zero = false;
-                        break;
+                    if (!is_oom_error(u8_result.error())) {
+                        return u8_result;
                     }
-                }
-                if (all_zero && out_bytes > 0 && output[out_bytes - 1] == 0) {
-                    LOG_WARNING("Engine",
-                        "U8 queue pipeline produced all-zero output (bytes=" +
-                        std::to_string(out_bytes) +
-                        "), falling back to float tile pipeline");
+                    // OOM in the queue pipeline (full-output buffers): the
+                    // float pipeline needs slightly less device memory, and
+                    // the CPU tile path after it needs none at all.
+                    LOG_WARNING("Engine", u8_result.error().message +
+                        ", falling back to float tile pipeline");
                 } else {
-                    return u8_result;
+
+                    // Adreno/Mali drivers with int8_storage + fp16_arithmetic have been
+                    // observed to submit successfully but produce all-zero output on some
+                    // shapes. Detect that and fall through to the float tile pipeline
+                    // rather than handing back a black image.
+                    const size_t out_bytes = static_cast<size_t>(width) * height *
+                                             scale_factor_ * scale_factor_ * channels;
+                    bool all_zero = true;
+                    for (size_t i = 0; i < out_bytes; i += 4096) {
+                        if (output[i] != 0) {
+                            all_zero = false;
+                            break;
+                        }
+                    }
+                    if (all_zero && out_bytes > 0 && output[out_bytes - 1] == 0) {
+                        LOG_WARNING("Engine",
+                            "U8 queue pipeline produced all-zero output (bytes=" +
+                            std::to_string(out_bytes) +
+                            "), falling back to float tile pipeline");
+                    } else {
+                        return u8_result;
+                    }
                 }
             }
 
+            bool fell_back_to_cpu = false;
             if (gpu_tile_pipeline_ready_) {
                 LOG_INFO("Engine", "Processing u8 input through Vulkan float tile pipeline (fallback)");
 
@@ -516,37 +590,17 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
                 const int out_height = height * scale_factor_;
                 const size_t out_total = static_cast<size_t>(out_width) * out_height * channels;
 
-                std::vector<float> input_float(in_total);
-                constexpr float kInv255 = 1.0f / 255.0f;
-                for (size_t i = 0; i < in_total; ++i) {
-                    input_float[i] = static_cast<float>(input[i]) * kInv255;
+                if (auto oom = check_host_memory((in_total + out_total) * sizeof(float), get_memory_info())) {
+                    return std::unexpected(*oom);
                 }
+                std::vector<float> input_float = u8_to_float_buffer(input, in_total);
 
                 std::vector<float> output_float(out_total, 0.0f);
 
-                TileConfig tile_config;
-                tile_config.tile_size = 256;
-                tile_config.overlap = 16;
-                tile_config.batch_size = 2;
-                if (const char* tile_size_env = std::getenv("CROSSSCALE_GPU_TILE_SIZE")) {
-                    try {
-                        tile_config.tile_size = std::clamp(std::stoi(tile_size_env), 64, 1024);
-                    } catch (...) {
-                    }
-                }
-                if (const char* tile_overlap_env = std::getenv("CROSSSCALE_GPU_TILE_OVERLAP")) {
-                    try {
-                        const int max_overlap = std::max(1, tile_config.tile_size / 2);
-                        tile_config.overlap = std::clamp(std::stoi(tile_overlap_env), 0, max_overlap);
-                    } catch (...) {
-                    }
-                }
-                if (const char* tile_batch_env = std::getenv("CROSSSCALE_GPU_TILE_BATCH")) {
-                    try {
-                        tile_config.batch_size = std::clamp(std::stoi(tile_batch_env), 1, 8);
-                    } catch (...) {
-                    }
-                }
+                TileConfig tile_config = tile_config_from_env(
+                    256, 16, 2,
+                    "CROSSSCALE_GPU_TILE_SIZE", "CROSSSCALE_GPU_TILE_OVERLAP", "CROSSSCALE_GPU_TILE_BATCH",
+                    64, 1024, 8);
 
                 std::vector<TileRegion> regions;
                 const int effective_tile_size = std::max(1, tile_config.tile_size);
@@ -595,78 +649,62 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
                     cancel_flag
                 );
                 if (!tile_result.has_value()) {
-                    return std::unexpected(EngineError{24, "Vulkan float tile pipeline failed: " + tile_result.error().message});
-                }
-
-                for (size_t i = 0; i < out_total; ++i) {
-                    const float value = output_float[i];
-                    if (!std::isfinite(value)) {
-                        return std::unexpected(EngineError{20, "Non-finite output value detected"});
+                    if (!is_oom_error(tile_result.error())) {
+                        return std::unexpected(EngineError{24, "Vulkan float tile pipeline failed: " + tile_result.error().message});
                     }
-                    const float v = std::clamp(value * 255.0f, 0.0f, 255.0f);
-                    output[i] = static_cast<uint8_t>(std::lround(v));
+                    // GPU full-output buffers still do not fit — skip the
+                    // whole-image compatibility path (it needs even more)
+                    // and continue to the CPU tile path below.
+                    LOG_WARNING("Engine", tile_result.error().message +
+                        ", falling back to CPU tile pipeline");
+                    fell_back_to_cpu = true;
+                } else {
+                    return float_to_u8_checked(output_float.data(), output, out_total);
+                }
+            }
+
+            if (!fell_back_to_cpu) {
+                LOG_WARNING("Engine", "Vulkan tile pipeline unavailable, switching to non-tile Vulkan float compatibility path");
+
+                const size_t in_total = static_cast<size_t>(width) * height * channels;
+                const int out_width = width * scale_factor_;
+                const int out_height = height * scale_factor_;
+                const size_t out_total = static_cast<size_t>(out_width) * out_height * channels;
+
+                std::vector<float> input_float = u8_to_float_buffer(input, in_total);
+
+                std::vector<float> output_float(out_total);
+                auto vk_result = process_vulkan_with_gpu_layout(
+                    input_float.data(),
+                    output_float.data(),
+                    width,
+                    height,
+                    channels,
+                    cancel_flag
+                );
+                if (!vk_result.has_value()) {
+                    return std::unexpected(EngineError{24, "Vulkan float compatibility path failed: " + vk_result.error().message});
                 }
 
-                return {};
+                return float_to_u8_checked(output_float.data(), output, out_total);
             }
-
-            LOG_WARNING("Engine", "Vulkan tile pipeline unavailable, switching to non-tile Vulkan float compatibility path");
-
-            const size_t in_total = static_cast<size_t>(width) * height * channels;
-            const int out_width = width * scale_factor_;
-            const int out_height = height * scale_factor_;
-            const size_t out_total = static_cast<size_t>(out_width) * out_height * channels;
-
-            std::vector<float> input_float(in_total);
-            constexpr float kInv255 = 1.0f / 255.0f;
-            for (size_t i = 0; i < in_total; ++i) {
-                input_float[i] = static_cast<float>(input[i]) * kInv255;
-            }
-
-            std::vector<float> output_float(out_total);
-            auto vk_result = process_vulkan_with_gpu_layout(
-                input_float.data(),
-                output_float.data(),
-                width,
-                height,
-                channels,
-                cancel_flag
-            );
-            if (!vk_result.has_value()) {
-                return std::unexpected(EngineError{24, "Vulkan float compatibility path failed: " + vk_result.error().message});
-            }
-
-            for (size_t i = 0; i < out_total; ++i) {
-                const float value = output_float[i];
-                if (!std::isfinite(value)) {
-                    return std::unexpected(EngineError{20, "Non-finite output value detected"});
-                }
-                const float v = std::clamp(value * 255.0f, 0.0f, 255.0f);
-                output[i] = static_cast<uint8_t>(std::lround(v));
-            }
-
-            return {};
         }
 #endif
         // CPU path: tile the image to avoid OOM on large photos.
         const int out_width = width * scale_factor_;
         const int out_height = height * scale_factor_;
         const size_t in_total = static_cast<size_t>(width) * height * channels;
-        std::vector<float> input_float(in_total);
-        constexpr float kInv255 = 1.0f / 255.0f;
-        for (size_t i = 0; i < in_total; ++i) {
-            input_float[i] = static_cast<float>(input[i]) * kInv255;
-        }
         const size_t out_total = static_cast<size_t>(out_width) * out_height * channels;
+        if (auto oom = check_host_memory((in_total + out_total) * sizeof(float), get_memory_info())) {
+            return std::unexpected(*oom);
+        }
+        std::vector<float> input_float = u8_to_float_buffer(input, in_total);
         std::vector<float> output_float(out_total);
 
-        TileConfig tile_config;
-        tile_config.tile_size = get_recommended_tile_size();
-        tile_config.overlap = 16;
-        tile_config.batch_size = 1;
-        if (const char* tile_size_env = std::getenv("CROSSSCALE_CPU_TILE_SIZE")) {
-            try { tile_config.tile_size = std::clamp(std::stoi(tile_size_env), 32, 1024); } catch (...) {}
-        }
+        TileConfig tile_config = tile_config_from_env(
+            get_recommended_tile_size(), 16, 1,
+            "CROSSSCALE_CPU_TILE_SIZE", nullptr, nullptr,
+            32, 1024, 1);
 
         TileProcessor tp;
         auto tile_result = tp.process_image(
@@ -678,16 +716,7 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             return std::unexpected(EngineError{25, "CPU tile pipeline failed: " + tile_result.error().message});
         }
 
-        for (size_t i = 0; i < out_total; ++i) {
-            const float value = output_float[i];
-            if (!std::isfinite(value)) {
-                return std::unexpected(EngineError{20, "Non-finite output value detected"});
-            }
-            const float v = std::clamp(value * 255.0f, 0.0f, 255.0f);
-            output[i] = static_cast<uint8_t>(std::lround(v));
-        }
-
-        return {};
+        return float_to_u8_checked(output_float.data(), output, out_total);
     }
 
     auto NCNNEngineImpl::process_batch(
@@ -932,18 +961,27 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
 
     auto NCNNEngineImpl::get_memory_info() const -> std::pair<size_t, size_t> {
 #if defined(__linux__)
+        // Prefer MemAvailable (includes reclaimable cache); sysinfo.freeram
+        // understates what a big allocation can actually use.
+        std::ifstream meminfo("/proc/meminfo");
+        std::string key;
+        size_t value_kb = 0;
+        std::string unit;
+        size_t total_kb = 0;
+        size_t avail_kb = 0;
+        while (meminfo >> key >> value_kb >> unit) {
+            if (key == "MemTotal:") total_kb = value_kb;
+            if (key == "MemAvailable:") avail_kb = value_kb;
+            meminfo.ignore(1 << 20, '\n');
+        }
+        if (total_kb > 0 && avail_kb > 0) {
+            return {total_kb / 1024, avail_kb / 1024};
+        }
         struct sysinfo info;
         if (sysinfo(&info) == 0) {
             size_t total = info.totalram * info.mem_unit / (1024 * 1024);
             size_t avail = info.freeram * info.mem_unit / (1024 * 1024);
             return {total, avail};
-        }
-#elif defined(_WIN32)
-        MEMORYSTATUSEX status;
-        status.dwLength = sizeof(status);
-        if (GlobalMemoryStatusEx(&status)) {
-            return {status.ullTotalPhys / (1024 * 1024),
-                    status.ullAvailPhys / (1024 * 1024)};
         }
 #elif defined(__APPLE__)
         mach_port_t host = mach_host_self();
@@ -972,7 +1010,7 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
         if (vkdev_ == nullptr) return 128;
 
         // Use NCNN's built-in heap budget query (MB)
-        const size_t heap_budget_mb = static_cast<size_t>(vkdev_->get_heap_budget());
+        const size_t heap_budget_mb = get_device_memory_budget_mb();
 
         // Detect mobile GPU families for conservative tiling
         const char* device_name = vkdev_->info.device_name();
@@ -997,6 +1035,18 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             tilesize = 32;  // extremely constrained
         }
 
+        // The per-tile feature-map working set scales with tile²; shrink until
+        // its estimate fits within 1/8 of the heap budget. For the RRDB family
+        // this is ~(t+2*16)² × 64 ch × 2 B (fp16) × ~16 live blobs × batch 2.
+        while (tilesize > 32) {
+            const double t = static_cast<double>(tilesize) + 2 * 16;
+            const double working_set_mb = t * t * 64 * 2 * 16 * 2 / (1024.0 * 1024.0);
+            if (working_set_mb <= static_cast<double>(heap_budget_mb) / 8.0) {
+                break;
+            }
+            tilesize /= 2;
+        }
+
         LOG_INFO("Engine", "Auto tile size: " + std::to_string(tilesize) +
                  " (VRAM " + std::to_string(heap_budget_mb) + "MB" +
                  (is_mobile_gpu ? ", mobile GPU" : "") + ")");
@@ -1004,6 +1054,20 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
 #else
         return 128;
 #endif
+    }
+
+    size_t NCNNEngineImpl::get_device_memory_budget_mb() const {
+#if NCNN_VULKAN
+        // Testing hook: pretend the device has less VRAM than it does, so the
+        // OOM preflight / fallback ladder can be exercised on a big machine.
+        if (const char* forced = std::getenv("CROSSSCALE_GPU_FORCE_BUDGET_MB")) {
+            try { return static_cast<size_t>(std::max(0, std::stoi(forced))); } catch (...) {}
+        }
+        if (current_device_ == DeviceType::GPU_VULKAN && vkdev_ != nullptr) {
+            return static_cast<size_t>(vkdev_->get_heap_budget());
+        }
+#endif
+        return 0;
     }
 
 std::unique_ptr<Engine> create_ncnn_engine() {

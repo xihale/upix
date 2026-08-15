@@ -46,7 +46,8 @@ auto build_app() -> std::unique_ptr<CLI::App> {
         ->check(tile_range)->capture_default_str();
     proc->add_option("--max-tile", proc_args.max_tile, "Maximum auto-tile size")
         ->check(tile_range)->capture_default_str();
-    proc->add_option("-j,--jobs", proc_args.jobs, "Parallel workers for directory mode")
+    auto* jobs_opt = proc->add_option("-j,--jobs", proc_args.jobs,
+                                      "Parallel workers for directory mode")
         ->check(CLI::Range(1, 1024))->capture_default_str();
     proc->add_flag("--gpu", proc_args.use_gpu, "Force GPU for directory mode");
     proc->add_flag("--no-daemon", proc_args.no_daemon, "Skip serve-daemon delegation");
@@ -57,8 +58,9 @@ auto build_app() -> std::unique_ptr<CLI::App> {
                      "Output format (default: auto from extension)")
         ->check(CLI::IsMember({"png", "jpg", "jpeg", "webp"}));
     proc->add_option("--config", proc_args.config_file, "Config file path");
-    proc->callback([tile_size_opt] {
+    proc->callback([tile_size_opt, jobs_opt] {
         proc_args.tile_size_explicit = tile_size_opt->count() > 0;
+        proc_args.jobs_explicit = jobs_opt != nullptr && jobs_opt->count() > 0;
         g_exit_code = cmd_process(proc_args);
     });
 
@@ -132,10 +134,12 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     sstart->add_option("-p", server_args.port, "Port")->capture_default_str();
     sstart->add_flag("--auto-approve", server_args.auto_approve,
                      "Auto-approve all pairing requests without prompting (for automated testing/CI)");
-    sstart->callback([] { g_exit_code = cmd_server(server_args); server_args.subcommand = "start"; });
+    sstart->callback([] { server_args.subcommand = "start";
+                          g_exit_code = cmd_server(server_args); });
     auto* sinfo = server->add_subcommand("info", "Print the connection card (IP/QR/key)");
     sinfo->add_option("-p", server_args.port, "Port")->capture_default_str();
-    sinfo->callback([] { g_exit_code = cmd_server(server_args); server_args.subcommand = "info"; });
+    sinfo->callback([] { server_args.subcommand = "info";
+                         g_exit_code = cmd_server(server_args); });
 
     // ── serve ───────────────────────────────────────────────────────────────
     // Flags are shared by start/stop. We register them on each nested
@@ -174,18 +178,5 @@ auto build_app() -> std::unique_ptr<CLI::App> {
         }
     });
 
-    // ── completion ──────────────────────────────────────────────────────────
-    static args::Completion completion_args;
-    auto* completion = app->add_subcommand("completion", "Print shell completion script");
-    completion->add_option("shell", completion_args.shell, "bash / zsh / fish")
-        ->required()->check(CLI::IsMember({"bash", "zsh", "fish"}));
-    completion->callback([] { g_exit_code = cmd_completion(completion_args); });
-
     return app;
 }
-
-// Stub implementations — replaced one-by-one in cmd_*.cpp. Keeping them here
-// (rather than in separate files yet) lets the skeleton link and lets us verify
-// the command tree compiles and --help renders correctly before any real logic
-// is wired. Each cmd_*.cpp will supply its own definition, shadowing these.
-// All cmd_* implementations now live in their own cmd_*.cpp — no stubs left.

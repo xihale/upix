@@ -127,8 +127,13 @@ int cmd_process(const args::Process& a) {
                 return 1;
             }
             if (rparsed->payload_length > MAX_NETWORK_PAYLOAD) {
-                LOG_ERROR("Engine", "daemon response too large");
-                return 1;
+                // Oversized output (large-image ×2/×4 exceeds the shared
+                // protocol cap): the daemon finished fine, but hauling the
+                // pixels over the socket is off the table. Fall back to the
+                // inline path instead of failing — the result is identical,
+                // only the warm-engine reuse is lost.
+                LOG_WARNING("Engine", "daemon response too large, falling back to inline processing");
+                return std::nullopt;
             }
             std::vector<uint8_t> rpayload(rparsed->payload_length);
             if (!sock.receive_all(rpayload.data(), rpayload.size())) {

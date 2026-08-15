@@ -13,12 +13,14 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "args.hpp"
@@ -38,6 +40,54 @@
 
 namespace fs = std::filesystem;
 
+namespace {
+
+// Header-only dimension sniff (PNG IHDR / JPEG SOF) for the VRAM admission
+// control in the GPU directory path. Returns {0,0} when the format is
+// unknown — callers treat that as "no estimate" and rely on the runtime OOM
+// ladder instead.
+std::pair<uint32_t, uint32_t> sniff_image_dimensions(const fs::path& path) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return {0, 0};
+    unsigned char sig[24] = {};
+    f.read(reinterpret_cast<char*>(sig), 24);
+    const auto got = static_cast<size_t>(f.gcount());
+
+    static const unsigned char kPngSig[8] = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
+    if (got >= 24 && std::equal(sig, sig + 8, kPngSig)) {
+        const auto be32 = [&](int o) {
+            return (static_cast<uint32_t>(sig[o]) << 24) |
+                   (static_cast<uint32_t>(sig[o + 1]) << 16) |
+                   (static_cast<uint32_t>(sig[o + 2]) << 8) | sig[o + 3];
+        };
+        return {be32(16), be32(20)};
+    }
+
+    if (got >= 2 && sig[0] == 0xFF && sig[1] == 0xD8) {
+        f.seekg(2);
+        while (f) {
+            unsigned char m[4];
+            f.read(reinterpret_cast<char*>(m), 4);  // FF marker len_hi len_lo
+            if (f.gcount() < 4 || m[0] != 0xFF) break;
+            const bool is_sof = m[1] >= 0xC0 && m[1] <= 0xCF &&
+                                m[1] != 0xC4 && m[1] != 0xC8 && m[1] != 0xCC;
+            const size_t seg_len = (static_cast<size_t>(m[2]) << 8) | m[3];
+            if (is_sof) {
+                unsigned char sof[5];  // precision + height + width
+                f.read(reinterpret_cast<char*>(sof), 5);
+                if (f.gcount() < 5) break;
+                const uint32_t h = (static_cast<uint32_t>(sof[1]) << 8) | sof[2];
+                const uint32_t w = (static_cast<uint32_t>(sof[3]) << 8) | sof[4];
+                return {w, h};
+            }
+            f.seekg(static_cast<std::streamoff>(seg_len) - 2, std::ios::cur);
+        }
+    }
+    return {0, 0};
+}
+
+} // namespace
+
 #include "process_batch.hpp"
 
 int run_batch(const args::Process& a) {
@@ -54,6 +104,7 @@ int run_batch(const args::Process& a) {
     int max_tile = a.max_tile;
     int batch_size = a.batch_size;
     int jobs = a.jobs;
+    bool jobs_explicit = a.jobs_explicit;  // set by cli_app.cpp
     bool use_gpu = a.use_gpu;
     int cli_output_quality = a.output_quality;
     const std::string& cli_output_format = a.output_format;
@@ -90,6 +141,16 @@ int run_batch(const args::Process& a) {
             return 0;
         }
         LOG_INFO("CLI", "Found " + std::to_string(tasks.size()) + " images to process");
+
+        // Largest-first (LPT) scheduling: the biggest image dominates the
+        // critical path, so it must start first when workers run in
+        // parallel; for a single worker the order does not change the total.
+        std::sort(tasks.begin(), tasks.end(), [](const auto& a, const auto& b) {
+            std::error_code ea, eb;
+            const auto sa = fs::file_size(a.first, ea);
+            const auto sb = fs::file_size(b.first, eb);
+            return std::make_pair(sa, a.first) > std::make_pair(sb, b.first);
+        });
 
         // Model selection
         crossscale::ModelManager manager(models_dir);
@@ -214,13 +275,6 @@ int run_batch(const args::Process& a) {
         }
         // Track processing start time for ETA
         auto batch_start_time = std::chrono::steady_clock::now();
-        // GPU submit-queue tuning was driven by 6 CROSSSCALE_GPU_SUBMIT_QUEUE*
-        // env vars, but the queue path's payoff (multi-task pipeline parallelism)
-        // is disabled by the submit_budget=1 pin in ncnn_gpu_pipeline.cpp (blend
-        // RAW/WAR hazard — see commit d5c8605). Hardcode the former defaults;
-        // dynamic sizing is gone.
-        const size_t gpu_submit_queue_max = 3;
-        const size_t gpu_submit_queue_min = 1;  // kept for the failure backoff below
 
         struct ProcessedTask {
             std::string out_path;
@@ -331,7 +385,12 @@ int run_batch(const args::Process& a) {
             return save_processed_task(std::move(processed.value()));
         };
 
-        if (jobs <= 1) {
+        // GPU directory mode defaults to VRAM-sized multi-engine concurrency
+        // (decided inside that branch, where engine #0 reports the budget);
+        // an explicit -j 1 still pins the pipelined single-engine path.
+        const bool single_engine_mode =
+            jobs <= 1 && !(use_gpu && !jobs_explicit && tasks.size() > 1);
+        if (single_engine_mode) {
             auto engine = crossscale::create_ncnn_engine();
             auto device_type = use_gpu ? crossscale::DeviceType::GPU_VULKAN : crossscale::DeviceType::CPU;
             auto init_result = engine->initialize(device_type);
@@ -425,10 +484,6 @@ int run_batch(const args::Process& a) {
                 }
 
                 std::thread process_thread([&]() {
-                    crossscale::TileProcessor queue_processor;
-                    const bool use_gpu_submit_queue = false;
-                    size_t runtime_queue_depth_cap = 1;
-
                     auto enqueue_processed = [&](ProcessedTask&& processed) {
                         std::unique_lock<std::mutex> lock(processed_mutex);
                         while (processed_queue.size() >= processed_queue_limit && !g_cancel_requested.load()) {
@@ -461,125 +516,21 @@ int run_batch(const args::Process& a) {
                                 break;
                             }
 
-                            // Dynamic batch sizing + batch-fill wait were tied to
-                            // the (now-removed) CROSSSCALE_GPU_SUBMIT_QUEUE_DYNAMIC
-                            // / _MIN_SUBMIT_BATCH / _BATCH_WAIT_MS env vars. With
-                            // submit_budget pinned to 1 inside the engine, batching
-                            // gains nothing — drain whatever is ready, up to cap.
-                            const size_t batch_target = use_gpu_submit_queue
-                                ? runtime_queue_depth_cap
-                                : static_cast<size_t>(1);
-
+                            // Batch sizing + fill wait were tied to the (now-removed)
+                            // CROSSSCALE_GPU_SUBMIT_QUEUE* env vars. With submit_budget
+                            // pinned to 1 inside the engine, batching gains nothing —
+                            // take one prepared task at a time.
                             prepared_batch.emplace_back(std::move(prepared_queue.front()));
                             prepared_queue.pop_front();
-                            while (prepared_batch.size() < batch_target && !prepared_queue.empty()) {
-                                prepared_batch.emplace_back(std::move(prepared_queue.front()));
-                                prepared_queue.pop_front();
-                            }
                         }
                         prepared_cv.notify_all();
 
-                        if (!use_gpu_submit_queue) {
-                            for (auto& prepared : prepared_batch) {
-                                auto processed = infer_prepared_task(std::move(prepared), *engine);
-                                if (!processed.has_value()) {
-                                    continue;
-                                }
-                                if (!enqueue_processed(std::move(processed.value()))) {
-                                    break;
-                                }
-                            }
-                            if (g_cancel_requested.load()) {
-                                break;
-                            }
-                            continue;
-                        }
-
-                        struct QueueBatchItem {
-                            PreparedTask prepared;
-                            ProcessedTask processed;
-                            std::vector<crossscale::TileRegion> regions;
-                            crossscale::TileConfig tile_config;
-                        };
-                        std::vector<QueueBatchItem> queue_items;
-                        queue_items.reserve(prepared_batch.size());
-
                         for (auto& prepared : prepared_batch) {
-                            if (enable_progress_log) {
-                                LOG_INFO("Engine", "Processing image: " + prepared.in_path);
+                            auto processed = infer_prepared_task(std::move(prepared), *engine);
+                            if (!processed.has_value()) {
+                                continue;
                             }
-
-                            crossscale::TileConfig tile_config;
-                            tile_config.tile_size = config.tile_size;
-                            tile_config.overlap = config.tile_overlap;
-                            tile_config.batch_size = config.batch_size;
-
-                            QueueBatchItem item;
-                            item.prepared = std::move(prepared);
-                            item.tile_config = tile_config;
-                            item.regions = queue_processor.compute_tile_layout(
-                                item.prepared.width, item.prepared.height, tile_config
-                            );
-                            item.processed.out_path = item.prepared.out_path;
-                            item.processed.out_width = item.prepared.width * engine->get_scale_factor();
-                            item.processed.out_height = item.prepared.height * engine->get_scale_factor();
-                            item.processed.channels = item.prepared.channels;
-                            item.processed.output_image = crossscale::Image(
-                                item.processed.out_width,
-                                item.processed.out_height,
-                                item.processed.channels
-                            );
-                            queue_items.emplace_back(std::move(item));
-                        }
-
-                        std::vector<crossscale::GPUTileTaskU8> gpu_tasks;
-                        gpu_tasks.reserve(queue_items.size());
-                        for (auto& item : queue_items) {
-                            gpu_tasks.push_back(crossscale::GPUTileTaskU8{
-                                .input_data = item.prepared.input_image.data(),
-                                .output_data = item.processed.output_image.data(),
-                                .input_width = item.prepared.width,
-                                .input_height = item.prepared.height,
-                                .channels = item.prepared.channels,
-                                .regions = &item.regions,
-                                .config = item.tile_config,
-                                .progress_callback = {}
-                            });
-                        }
-
-                        auto queue_result = engine->process_tiles_gpu_u8_queue(gpu_tasks, g_cancel_requested);
-                        if (!queue_result.has_value()) {
-                            if (g_cancel_requested.load()) {
-                                break;
-                            }
-                            if (prepared_batch.size() > 1 && runtime_queue_depth_cap > gpu_submit_queue_min) {
-                                runtime_queue_depth_cap = std::max(gpu_submit_queue_min, runtime_queue_depth_cap - 1);
-                                LOG_WARNING("Engine", "Reducing GPU submit queue depth cap to " +
-                                                      std::to_string(runtime_queue_depth_cap));
-                            }
-                            LOG_WARNING("Engine", "GPU submit queue failed, fallback to single image path: " +
-                                                  queue_result.error().message);
-                            for (auto& item : queue_items) {
-                                auto processed = infer_prepared_task(std::move(item.prepared), *engine);
-                                if (!processed.has_value()) {
-                                    continue;
-                                }
-                                if (!enqueue_processed(std::move(processed.value()))) {
-                                    break;
-                                }
-                            }
-                            if (g_cancel_requested.load()) {
-                                break;
-                            }
-                            continue;
-                        }
-                        if (runtime_queue_depth_cap < gpu_submit_queue_max &&
-                            prepared_batch.size() >= runtime_queue_depth_cap) {
-                            runtime_queue_depth_cap++;
-                        }
-
-                        for (auto& item : queue_items) {
-                            if (!enqueue_processed(std::move(item.processed))) {
+                            if (!enqueue_processed(std::move(processed.value()))) {
                                 break;
                             }
                         }
@@ -643,42 +594,106 @@ int run_batch(const args::Process& a) {
             return success_count == tasks.size() ? 0 : 1;
         } else {
             if (use_gpu) {
-                size_t requested_workers = static_cast<size_t>(std::max(1, jobs));
-                size_t worker_count = std::min(requested_workers, tasks.size());
-
                 struct EngineInitResult {
                     std::unique_ptr<crossscale::Engine> engine;
                     std::string error;
                 };
+                auto init_engine = [&](size_t i) -> EngineInitResult {
+                    auto engine = crossscale::create_ncnn_engine();
+                    auto init_result = engine->initialize(crossscale::DeviceType::GPU_VULKAN);
+                    if (!init_result.has_value()) {
+                        return {nullptr, "Failed to initialize GPU engine #" + std::to_string(i)};
+                    }
+                    auto load_result = engine->load_model(param_path, bin_path);
+                    if (!load_result.has_value()) {
+                        return {nullptr, "Failed to load model into GPU engine #" + std::to_string(i) +
+                                            ": " + load_result.error().message};
+                    }
+                    return {std::move(engine), ""};
+                };
 
-                std::vector<std::future<EngineInitResult>> init_futures;
-                init_futures.reserve(worker_count);
-                for (size_t i = 0; i < worker_count; ++i) {
-                    init_futures.emplace_back(std::async(std::launch::async, [&, i]() -> EngineInitResult {
-                        auto engine = crossscale::create_ncnn_engine();
-                        auto init_result = engine->initialize(crossscale::DeviceType::GPU_VULKAN);
-                        if (!init_result.has_value()) {
-                            return {nullptr, "Failed to initialize GPU engine #" + std::to_string(i)};
-                        }
-                        auto load_result = engine->load_model(param_path, bin_path);
-                        if (!load_result.has_value()) {
-                            return {nullptr, "Failed to load model into GPU engine #" + std::to_string(i) +
-                                                ": " + load_result.error().message};
-                        }
-                        return {std::move(engine), ""};
-                    }));
+                // Engine #0 first: it reports the VRAM budget that sizes the
+                // default worker count (when -j was not given).
+                auto primary = init_engine(0);
+                if (!primary.engine) {
+                    LOG_ERROR("Engine", primary.error);
+                    return 1;
                 }
+
+                size_t requested_workers = static_cast<size_t>(std::max(1, jobs));
+                // Admission control (applies to explicit -j too — an
+                // overcommitted worker count fails mid-run when concurrent
+                // full-output buffers exhaust VRAM, which is far worse than
+                // running with fewer workers): with W workers the peak
+                // device memory is roughly the sum of the W largest images'
+                // full-output buffers (LPT order starts the biggest first).
+                // Pick the largest W ≤ 4 whose projected peak fits 90% of
+                // the heap budget; the per-image OOM ladder covers estimate
+                // errors.
+                const size_t budget_mb = primary.engine->get_device_memory_budget_mb();
+                const int scale = primary.engine->get_scale_factor();
+                if (budget_mb > 0) {
+                    std::vector<size_t> needs_mb;
+                    needs_mb.reserve(tasks.size());
+                    for (const auto& t : tasks) {
+                        const auto [w, h] = sniff_image_dimensions(t.first);
+                        if (w == 0 || h == 0) continue;
+                        // float accumulator + weight map + u8 staging:
+                        // ~20 B per output pixel (C=3), 5% headroom.
+                        const double out_px = static_cast<double>(w) * h * scale * scale;
+                        needs_mb.push_back(static_cast<size_t>(out_px * 21.0 / (1024.0 * 1024.0)));
+                    }
+                    std::sort(needs_mb.rbegin(), needs_mb.rend());
+                    size_t peak_mb = 0;
+                    size_t fit = 1;
+                    for (size_t w = 0; w < needs_mb.size() && w < 4; ++w) {
+                        peak_mb += needs_mb[w];
+                        if (peak_mb > budget_mb * 9 / 10) break;
+                        fit = w + 1;
+                    }
+                    if (!jobs_explicit) {
+                        requested_workers = fit;
+                        LOG_INFO("Engine", "Auto-selected jobs=" + std::to_string(fit) +
+                                 " from VRAM budget " + std::to_string(budget_mb) +
+                                 "MB (projected peak " + std::to_string(peak_mb) +
+                                 "MB with 4 workers; use -j to override)");
+                    } else if (requested_workers > fit) {
+                        LOG_WARNING("Engine", "jobs=" + std::to_string(requested_workers) +
+                                    " would overcommit VRAM (projected peak " +
+                                    std::to_string(peak_mb) + "MB vs budget " +
+                                    std::to_string(budget_mb) + "MB), capping to " +
+                                    std::to_string(fit) + " workers");
+                        requested_workers = fit;
+                    }
+                }
+                size_t worker_count = std::min(requested_workers, tasks.size());
 
                 std::vector<std::unique_ptr<crossscale::Engine>> gpu_engines;
                 gpu_engines.reserve(worker_count);
-                for (auto& init_future : init_futures) {
-                    auto init_result = init_future.get();
-                    if (!init_result.engine) {
-                        LOG_ERROR("Engine", init_result.error);
-                        return 1;
+                gpu_engines.push_back(std::move(primary.engine));
+
+                if (worker_count > 1) {
+                    std::vector<std::future<EngineInitResult>> init_futures;
+                    init_futures.reserve(worker_count - 1);
+                    for (size_t i = 1; i < worker_count; ++i) {
+                        init_futures.emplace_back(std::async(std::launch::async,
+                                                             [&, i]() { return init_engine(i); }));
                     }
-                    gpu_engines.push_back(std::move(init_result.engine));
+                    // Degrade to the engines that did come up instead of
+                    // failing the whole run: VRAM exhaustion on init of the
+                    // Nth engine leaves 1..N-1 perfectly usable.
+                    for (auto& init_future : init_futures) {
+                        auto init_result = init_future.get();
+                        if (!init_result.engine) {
+                            LOG_WARNING("Engine", init_result.error +
+                                        ", continuing with " +
+                                        std::to_string(gpu_engines.size()) + " workers");
+                            break;
+                        }
+                        gpu_engines.push_back(std::move(init_result.engine));
+                    }
                 }
+                worker_count = gpu_engines.size();
                 LOG_INFO("Engine", "GPU engine workers ready: " + std::to_string(worker_count));
 
                 // Same auto tile-size selection as the jobs<=1 path: without

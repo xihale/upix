@@ -63,6 +63,7 @@ public:
     void set_inference_threads(int threads) override;
     auto get_memory_info() const -> std::pair<size_t, size_t> override;
     int get_recommended_tile_size() const override;
+    size_t get_device_memory_budget_mb() const override;
 
     bool supports_gpu_tile_pipeline() const override;
     bool supports_gpu_tile_pipeline_u8() const override;
@@ -93,8 +94,6 @@ private:
     bool init_gpu_tile_pipelines();
     auto process_vulkan_with_gpu_layout(const float* input, float* output, int width, int height,
         int channels, const std::atomic<bool>& cancel_flag) -> expected<void, EngineError>;
-    auto process_vulkan_with_gpu_layout_u8(const uint8_t* input, uint8_t* output, int width,
-        int height, int channels, const std::atomic<bool>& cancel_flag) -> expected<void, EngineError>;
     bool try_init_vulkan();
     void detect_model_info(const std::string& param_path);
 

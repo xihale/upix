@@ -25,6 +25,8 @@ struct Process {
     int max_tile = 512;
     int batch_size = 1;
     int jobs = 1;
+    bool jobs_explicit = false;     // set by cli_app.cpp when -j/--jobs is given
+                                    // (unset: GPU dir mode sizes workers by VRAM)
     // -1 = "not set"; downstream treats unset as quality 95. CLI11's
     // capture_default_str would print "-1" in help, which is misleading, so the
     // option is registered without capture_default_str and help text spells it out.
@@ -71,11 +73,6 @@ struct Serve {
     std::string socket_path;        // empty = default_serve_socket_path()
     bool force_cpu = false;
     bool foreground = false;
-};
-
-// `completion <shell>`.
-struct Completion {
-    std::string shell;              // bash / zsh / fish
 };
 
 }  // namespace args

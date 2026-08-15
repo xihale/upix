@@ -58,76 +58,88 @@ auto TileProcessor::compute_tile_layout(int image_width, int image_height,
     return regions;
 }
 
-auto TileProcessor::process_image(const float* input_data, float* output_data,
-                                    int input_width, int input_height, int channels,
-                                    Engine& engine, const TileConfig& config,
-                                    std::function<void(const ProcessingProgress&)> progress_callback,
-                                    const std::atomic<bool>& cancel_flag)
-    -> expected<void, TileProcessorError> {
+namespace {
 
-    auto regions = compute_tile_layout(input_width, input_height, config);
-    int scale_factor = engine.get_scale_factor();
-    
+// Shared plumbing for the CPU tiled pipelines used by process_image (float)
+// and process_image_u8. The two entry points differ only in tile extraction
+// (float memcpy vs u8→float) and the final normalize/store step; batching,
+// engine invocation, blending and error handling are identical.
+
+// One batch of same-sized tiles staged between the load/proc/blend stages.
+struct BatchWork {
+    size_t begin = 0;
+    size_t end = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    std::vector<std::vector<float>> input_buffers;
+    std::vector<const float*> batch_inputs;
+    std::vector<std::vector<float>> output_buffers;
+    std::vector<float*> batch_outputs;
+};
+
+// A processed batch handed from the proc stage to the blend stage.
+struct CompletedBatch {
+    size_t begin = 0;
+    std::vector<std::vector<float>> output_buffers;
+};
+
+// Driver for the CPU tile pipeline. ExtractFn extracts one tile as floats:
+//   std::vector<float>(int image_width, int channels, const TileRegion&).
+// FinalizeFn consumes the accumulated float output after blending:
+//   void(std::vector<float>& output_buffer, const std::vector<float>& weight_buffer).
+// UseLoadThread selects the scheduling shape, which differs between the two
+// entry points and is preserved exactly:
+//   true  — three stages: dedicated load thread feeding a bounded ready queue
+//           (capacity 2), main-thread engine processing, blend thread
+//           (float path).
+//   false — two stages: one-ahead batch prefetch via std::async on the main
+//           thread, blend thread (u8 path).
+template <bool UseLoadThread, typename ExtractFn, typename FinalizeFn>
+auto run_tiled_cpu_pipeline(
+    TileProcessor& processor,
+    Engine& engine,
+    const std::vector<TileRegion>& regions,
+    const TileConfig& config,
+    int input_width,
+    int input_height,
+    int channels,
+    const std::function<void(const ProcessingProgress&)>& progress_callback,
+    const std::atomic<bool>& cancel_flag,
+    ExtractFn extract_tile_fn,
+    FinalizeFn finalize_fn
+) -> expected<void, TileProcessorError> {
+    const int scale_factor = engine.get_scale_factor();
+    const int output_width = input_width * scale_factor;
+    const int output_height = input_height * scale_factor;
+
+    // Host RAM preflight for the full-output float accumulator + weight map:
+    // refuse with a clean error instead of std::bad_alloc mid-run.
+    {
+        const auto [total_mb, avail_mb] = engine.get_memory_info();
+        if (avail_mb > 0) {
+            const size_t host_need = static_cast<size_t>(output_width) * output_height *
+                                     (static_cast<size_t>(channels) + 1) * sizeof(float);
+            if (host_need > avail_mb * 1024 * 1024) {
+                return std::unexpected(TileProcessorError{
+                    kErrOutOfMemory,
+                    "out of host memory: need ~" + std::to_string(host_need / (1024 * 1024)) +
+                        "MB, available " + std::to_string(avail_mb) + "MB"});
+            }
+        }
+    }
+
+    std::vector<float> output_buffer(static_cast<size_t>(output_width) * output_height * channels, 0.0f);
+    std::vector<float> weight_buffer(static_cast<size_t>(output_width) * output_height, 0.0f);
+
     ProcessingProgress progress;
     progress.total_tiles = static_cast<int>(regions.size());
     progress.completed_tiles = 0;
 
-    if (engine.supports_gpu_tile_pipeline()) {
-        TileConfig gpu_config = config;
-        if (gpu_config.batch_size < 1) {
-            gpu_config.batch_size = 1;
-        }
-        if (engine.current_device() == DeviceType::GPU_VULKAN && gpu_config.batch_size == 1) {
-            gpu_config.batch_size = 2;
-        }
-        auto result = engine.process_tiles_gpu(
-            input_data,
-            output_data,
-            input_width,
-            input_height,
-            channels,
-            regions,
-            gpu_config,
-            progress_callback,
-            cancel_flag
-        );
-        if (!result.has_value()) {
-            return std::unexpected(TileProcessorError{1, "GPU tile processing failed: " + result.error().message});
-        }
-        return {};
-    }
-    
-    int output_width = input_width * scale_factor;
-    int output_height = input_height * scale_factor;
-    
-    std::vector<float> output_buffer(output_width * output_height * channels, 0.0f);
-    std::vector<float> weight_buffer(static_cast<size_t>(output_width) * output_height, 0.0f);
-    
     int effective_batch_size = std::max(1, config.batch_size);
     if (effective_batch_size == 1 && engine.current_device() == DeviceType::GPU_VULKAN) {
         // A small implicit batch helps keep GPU busy when callers keep the default batch_size.
         effective_batch_size = 2;
     }
-
-    // --- Three-stage pipeline: Load | Proc | Save ---
-    // Load thread extracts tiles, Proc (main thread) processes via engine, Save thread blends.
-    // Bounded queues connect stages to keep all hardware busy.
-
-    struct BatchWork {
-        size_t begin = 0;
-        size_t end = 0;
-        uint32_t width = 0;
-        uint32_t height = 0;
-        std::vector<std::vector<float>> input_buffers;
-        std::vector<const float*> batch_inputs;
-        std::vector<std::vector<float>> output_buffers;
-        std::vector<float*> batch_outputs;
-    };
-
-    struct CompletedBatch {
-        size_t begin = 0;
-        std::vector<std::vector<float>> output_buffers;
-    };
 
     auto build_batch = [&](size_t start_idx) -> std::optional<BatchWork> {
         if (start_idx >= regions.size() || cancel_flag) {
@@ -154,9 +166,7 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
         batch.batch_outputs.reserve(batch_count);
 
         for (size_t j = batch.begin; j < batch.end; ++j) {
-            batch.input_buffers.push_back(
-                extract_tile(input_data, input_width, channels, regions[j])
-            );
+            batch.input_buffers.push_back(extract_tile_fn(input_width, channels, regions[j]));
             batch.batch_inputs.push_back(batch.input_buffers.back().data());
 
             int tile_out_w = static_cast<int>(regions[j].width) * scale_factor;
@@ -168,49 +178,15 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
         return batch;
     };
 
-    // Bounded queue for Load → Proc pipeline (capacity 2: one processing, one ready)
-    constexpr size_t kReadyQueueCapacity = 2;
-    std::deque<std::optional<BatchWork>> ready_queue;
-    std::mutex ready_mutex;
-    std::condition_variable ready_cv;
-    bool load_done = false;
-
-    // Bounded queue for Proc → Save pipeline
+    // Proc → blend handoff queue.
     std::deque<CompletedBatch> completed_queue;
     std::mutex completed_mutex;
     std::condition_variable completed_cv;
     bool process_done = false;
     std::string process_error;
 
-    // --- Stage 1: Load thread (tile extraction) ---
-    std::thread load_thread([&]() {
-        size_t next_idx = 0;
-        while (!cancel_flag) {
-            auto batch = build_batch(next_idx);
-            if (!batch.has_value()) {
-                break;
-            }
-            next_idx = batch->end;
-
-            {
-                std::unique_lock<std::mutex> lock(ready_mutex);
-                ready_cv.wait(lock, [&]() {
-                    return ready_queue.size() < kReadyQueueCapacity || cancel_flag;
-                });
-                if (cancel_flag) break;
-                ready_queue.emplace_back(std::move(batch));
-            }
-            ready_cv.notify_one();
-        }
-        {
-            std::lock_guard<std::mutex> lock(ready_mutex);
-            load_done = true;
-        }
-        ready_cv.notify_one();
-    });
-
-    // --- Stage 3: Save thread (blend) ---
-    std::thread save_thread([&]() {
+    // --- Blend stage (blend/save thread) ---
+    std::thread blend_thread([&]() {
         while (true) {
             CompletedBatch completed_batch;
             {
@@ -227,9 +203,9 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
 
             for (size_t idx = 0; idx < completed_batch.output_buffers.size(); ++idx) {
                 const auto& region = regions[completed_batch.begin + idx];
-                blend_tile(completed_batch.output_buffers[idx].data(), output_buffer.data(),
-                           weight_buffer.data(),
-                           output_width, output_height, channels, region, scale_factor, config.overlap);
+                processor.blend_tile(completed_batch.output_buffers[idx].data(), output_buffer.data(),
+                                     weight_buffer.data(),
+                                     output_width, output_height, channels, region, scale_factor, config.overlap);
                 progress.completed_tiles++;
                 progress.current_tile_x = region.x;
                 progress.current_tile_y = region.y;
@@ -238,82 +214,239 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
         }
     });
 
-    // --- Stage 2: Proc (main thread) - process batches through engine ---
-    while (!cancel_flag) {
-        std::optional<BatchWork> current_batch;
-        {
-            std::unique_lock<std::mutex> lock(ready_mutex);
-            ready_cv.wait(lock, [&]() {
-                return !ready_queue.empty() || load_done;
-            });
-            if (ready_queue.empty() && load_done) {
+    if constexpr (UseLoadThread) {
+        // --- Three-stage pipeline: Load | Proc | Save ---
+        // Load thread extracts tiles, Proc (main thread) processes via engine,
+        // blend thread blends. Bounded queues connect stages to keep all
+        // hardware busy.
+
+        // Bounded queue for Load → Proc pipeline (capacity 2: one processing, one ready)
+        constexpr size_t kReadyQueueCapacity = 2;
+        std::deque<std::optional<BatchWork>> ready_queue;
+        std::mutex ready_mutex;
+        std::condition_variable ready_cv;
+        bool load_done = false;
+
+        // --- Stage 1: Load thread (tile extraction) ---
+        std::thread load_thread([&]() {
+            size_t next_idx = 0;
+            while (!cancel_flag) {
+                auto batch = build_batch(next_idx);
+                if (!batch.has_value()) {
+                    break;
+                }
+                next_idx = batch->end;
+
+                {
+                    std::unique_lock<std::mutex> lock(ready_mutex);
+                    ready_cv.wait(lock, [&]() {
+                        return ready_queue.size() < kReadyQueueCapacity || cancel_flag;
+                    });
+                    if (cancel_flag) break;
+                    ready_queue.emplace_back(std::move(batch));
+                }
+                ready_cv.notify_one();
+            }
+            {
+                std::lock_guard<std::mutex> lock(ready_mutex);
+                load_done = true;
+            }
+            ready_cv.notify_one();
+        });
+
+        // --- Stage 2: Proc (main thread) - process batches through engine ---
+        while (!cancel_flag) {
+            std::optional<BatchWork> current_batch;
+            {
+                std::unique_lock<std::mutex> lock(ready_mutex);
+                ready_cv.wait(lock, [&]() {
+                    return !ready_queue.empty() || load_done;
+                });
+                if (ready_queue.empty() && load_done) {
+                    break;
+                }
+                if (!ready_queue.empty()) {
+                    current_batch = std::move(ready_queue.front());
+                    ready_queue.pop_front();
+                }
+            }
+            ready_cv.notify_one();  // Signal load thread to fill the queue
+
+            if (!current_batch.has_value()) {
                 break;
             }
-            if (!ready_queue.empty()) {
-                current_batch = std::move(ready_queue.front());
-                ready_queue.pop_front();
+
+            auto result = engine.process_batch(
+                current_batch->batch_inputs,
+                current_batch->batch_outputs,
+                static_cast<int>(current_batch->width),
+                static_cast<int>(current_batch->height),
+                channels,
+                cancel_flag
+            );
+            if (!result.has_value()) {
+                process_error = "Batch processing failed: " + result.error().message;
+                break;
             }
-        }
-        ready_cv.notify_one();  // Signal load thread to fill the queue
 
-        if (!current_batch.has_value()) {
-            break;
-        }
-
-        auto result = engine.process_batch(
-            current_batch->batch_inputs,
-            current_batch->batch_outputs,
-            static_cast<int>(current_batch->width),
-            static_cast<int>(current_batch->height),
-            channels,
-            cancel_flag
-        );
-        if (!result.has_value()) {
-            process_error = "Batch processing failed: " + result.error().message;
-            break;
+            CompletedBatch completed_batch;
+            completed_batch.begin = current_batch->begin;
+            completed_batch.output_buffers = std::move(current_batch->output_buffers);
+            {
+                std::lock_guard<std::mutex> lock(completed_mutex);
+                completed_queue.emplace_back(std::move(completed_batch));
+            }
+            completed_cv.notify_one();
         }
 
-        CompletedBatch completed_batch;
-        completed_batch.begin = current_batch->begin;
-        completed_batch.output_buffers = std::move(current_batch->output_buffers);
+        // Shutdown pipeline
         {
             std::lock_guard<std::mutex> lock(completed_mutex);
-            completed_queue.emplace_back(std::move(completed_batch));
+            process_done = true;
         }
-        completed_cv.notify_one();
+        completed_cv.notify_all();
+        load_thread.join();
+    } else {
+        // --- Two-stage pipeline: one-ahead batch prefetch | blend ---
+        auto current_batch = build_batch(0);
+        while (current_batch.has_value() && !cancel_flag) {
+            std::future<std::optional<BatchWork>> next_batch_future;
+            if (current_batch->end < regions.size()) {
+                size_t next_start = current_batch->end;
+                next_batch_future = std::async(std::launch::async, [&, next_start]() {
+                    return build_batch(next_start);
+                });
+            }
+
+            auto result = engine.process_batch(
+                current_batch->batch_inputs,
+                current_batch->batch_outputs,
+                static_cast<int>(current_batch->width),
+                static_cast<int>(current_batch->height),
+                channels,
+                cancel_flag
+            );
+            if (!result.has_value()) {
+                process_error = "Batch processing failed: " + result.error().message;
+                break;
+            }
+
+            CompletedBatch completed_batch;
+            completed_batch.begin = current_batch->begin;
+            completed_batch.output_buffers = std::move(current_batch->output_buffers);
+            {
+                std::lock_guard<std::mutex> lock(completed_mutex);
+                completed_queue.emplace_back(std::move(completed_batch));
+            }
+            completed_cv.notify_one();
+
+            if (next_batch_future.valid()) {
+                current_batch = next_batch_future.get();
+            } else {
+                current_batch = std::nullopt;
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lock(completed_mutex);
+            process_done = true;
+        }
+        completed_cv.notify_all();
     }
 
-    // Shutdown pipeline
-    {
-        std::lock_guard<std::mutex> lock(completed_mutex);
-        process_done = true;
-    }
-    completed_cv.notify_all();
-    load_thread.join();
-    save_thread.join();
+    blend_thread.join();
 
     if (!process_error.empty()) {
         return std::unexpected(TileProcessorError{1, process_error});
     }
-    
+
     if (cancel_flag) {
         return std::unexpected(TileProcessorError{2, "Processing cancelled"});
     }
 
-    const size_t pixel_count = static_cast<size_t>(output_width) * output_height;
-    for (size_t p = 0; p < pixel_count; ++p) {
-        const float w = weight_buffer[p];
-        if (w <= 1e-6f) {
-            continue;
+    finalize_fn(output_buffer, weight_buffer);
+    return {};
+}
+
+} // namespace
+
+auto TileProcessor::process_image(const float* input_data, float* output_data,
+                                    int input_width, int input_height, int channels,
+                                    Engine& engine, const TileConfig& config,
+                                    std::function<void(const ProcessingProgress&)> progress_callback,
+                                    const std::atomic<bool>& cancel_flag)
+    -> expected<void, TileProcessorError> {
+
+    auto regions = compute_tile_layout(input_width, input_height, config);
+
+    if (engine.supports_gpu_tile_pipeline()) {
+        TileConfig gpu_config = config;
+        if (gpu_config.batch_size < 1) {
+            gpu_config.batch_size = 1;
         }
-        const size_t base = p * static_cast<size_t>(channels);
-        for (int c = 0; c < channels; ++c) {
-            output_buffer[base + static_cast<size_t>(c)] /= w;
+        if (engine.current_device() == DeviceType::GPU_VULKAN && gpu_config.batch_size == 1) {
+            gpu_config.batch_size = 2;
+        }
+        // OOM ladder: shrink the tile (the per-tile working set scales with
+        // tile²); when that stops helping, fall through to the CPU pipeline
+        // below, where the full-output accumulator lives in host RAM.
+        while (true) {
+            auto result = engine.process_tiles_gpu(
+                input_data,
+                output_data,
+                input_width,
+                input_height,
+                channels,
+                regions,
+                gpu_config,
+                progress_callback,
+                cancel_flag
+            );
+            if (result.has_value()) {
+                return {};
+            }
+            if (!is_oom_error(result.error())) {
+                return std::unexpected(TileProcessorError{1, "GPU tile processing failed: " + result.error().message});
+            }
+            if (gpu_config.tile_size <= 64) {
+                LOG_WARNING("TileProcessor",
+                    "GPU out of memory at tile_size=64, falling back to CPU blending");
+                break;
+            }
+            gpu_config.tile_size = std::max(64, gpu_config.tile_size / 2);
+            gpu_config.overlap = std::min(gpu_config.overlap, gpu_config.tile_size / 4);
+            LOG_WARNING("TileProcessor",
+                "GPU out of memory, retrying with tile_size=" + std::to_string(gpu_config.tile_size));
+            regions = compute_tile_layout(input_width, input_height, gpu_config);
         }
     }
 
-    std::copy(output_buffer.begin(), output_buffer.end(), output_data);
-    return {};
+    const int output_width = input_width * engine.get_scale_factor();
+    const int output_height = input_height * engine.get_scale_factor();
+
+    // CPU float path: dedicated load thread + bounded ready queue (deep
+    // prefetch keeps the engine fed), memcpy tile extraction, float normalize.
+    return run_tiled_cpu_pipeline</*UseLoadThread=*/true>(
+        *this, engine, regions, config, input_width, input_height, channels,
+        progress_callback, cancel_flag,
+        [&](int image_width, int ch, const TileRegion& region) {
+            return extract_tile(input_data, image_width, ch, region);
+        },
+        [&](std::vector<float>& output_buffer, const std::vector<float>& weight_buffer) {
+            const size_t pixel_count = static_cast<size_t>(output_width) * output_height;
+            for (size_t p = 0; p < pixel_count; ++p) {
+                const float w = weight_buffer[p];
+                if (w <= 1e-6f) {
+                    continue;
+                }
+                const size_t base = p * static_cast<size_t>(channels);
+                for (int c = 0; c < channels; ++c) {
+                    output_buffer[base + static_cast<size_t>(c)] /= w;
+                }
+            }
+
+            std::copy(output_buffer.begin(), output_buffer.end(), output_data);
+        });
 }
 
 auto TileProcessor::process_image_u8(
@@ -342,21 +475,37 @@ auto TileProcessor::process_image_u8(
             gpu_config.batch_size = 2;
         }
 
-        auto result = engine.process_tiles_gpu_u8(
-            input_data,
-            output_data,
-            input_width,
-            input_height,
-            channels,
-            regions,
-            gpu_config,
-            progress_callback,
-            cancel_flag
-        );
-        if (!result.has_value()) {
-            return std::unexpected(TileProcessorError{1, "GPU u8 tile processing failed: " + result.error().message});
+        // OOM ladder (same as the float path): shrink the tile, then blend on
+        // the CPU with only tile-sized GPU work.
+        while (true) {
+            auto result = engine.process_tiles_gpu_u8(
+                input_data,
+                output_data,
+                input_width,
+                input_height,
+                channels,
+                regions,
+                gpu_config,
+                progress_callback,
+                cancel_flag
+            );
+            if (result.has_value()) {
+                return {};
+            }
+            if (!is_oom_error(result.error())) {
+                return std::unexpected(TileProcessorError{1, "GPU u8 tile processing failed: " + result.error().message});
+            }
+            if (gpu_config.tile_size <= 64) {
+                LOG_WARNING("TileProcessor",
+                    "GPU out of memory at tile_size=64, falling back to CPU blending");
+                break;
+            }
+            gpu_config.tile_size = std::max(64, gpu_config.tile_size / 2);
+            gpu_config.overlap = std::min(gpu_config.overlap, gpu_config.tile_size / 4);
+            LOG_WARNING("TileProcessor",
+                "GPU out of memory, retrying with tile_size=" + std::to_string(gpu_config.tile_size));
+            regions = compute_tile_layout(input_width, input_height, gpu_config);
         }
-        return {};
     }
 
     // Per-tile CPU path: extract from u8, convert to float per-tile, process, blend.
@@ -364,17 +513,12 @@ auto TileProcessor::process_image_u8(
     const int scale_factor = engine.get_scale_factor();
     const int output_width = input_width * scale_factor;
     const int output_height = input_height * scale_factor;
-    const size_t output_size = static_cast<size_t>(output_width) * output_height * channels;
-
-    // Float accumulation buffer for weighted blending (required for quality)
-    std::vector<float> output_float(output_size, 0.0f);
 
     // Alpha channel bicubic bypass for RGBA images (saves 25% GPU compute)
-    std::vector<uint8_t> alpha_input;
     std::vector<uint8_t> alpha_output;
     const bool has_alpha = (channels == 4);
     if (has_alpha && enable_alpha_bicubic) {
-        alpha_input.resize(static_cast<size_t>(input_width) * input_height);
+        std::vector<uint8_t> alpha_input(static_cast<size_t>(input_width) * input_height);
         for (size_t i = 0; i < alpha_input.size(); ++i) {
             alpha_input[i] = input_data[i * 4 + 3];
         }
@@ -384,186 +528,38 @@ auto TileProcessor::process_image_u8(
         LOG_INFO("TileProcessor", "Alpha channel bypassed neural network (bicubic)");
     }
 
-    // Use the existing process_image infrastructure but with u8 extraction
-    // We reuse the float path's blending logic by providing a thin adapter
-    ProcessingProgress progress;
-    progress.total_tiles = static_cast<int>(regions.size());
-    progress.completed_tiles = 0;
-
-    std::vector<float> weight_buffer(static_cast<size_t>(output_width) * output_height, 0.0f);
-
-    int effective_batch_size = std::max(1, config.batch_size);
-    if (effective_batch_size == 1 && engine.current_device() == DeviceType::GPU_VULKAN) {
-        effective_batch_size = 2;
-    }
-
-    struct BatchWork {
-        size_t begin = 0;
-        size_t end = 0;
-        uint32_t width = 0;
-        uint32_t height = 0;
-        std::vector<std::vector<float>> input_buffers;
-        std::vector<const float*> batch_inputs;
-        std::vector<std::vector<float>> output_buffers;
-        std::vector<float*> batch_outputs;
-    };
-
-    struct CompletedBatch {
-        size_t begin = 0;
-        std::vector<std::vector<float>> output_buffers;
-    };
-
-    auto build_batch = [&](size_t start_idx) -> std::optional<BatchWork> {
-        if (start_idx >= regions.size() || cancel_flag) {
-            return std::nullopt;
-        }
-
-        BatchWork batch;
-        batch.begin = start_idx;
-        batch.width = regions[start_idx].width;
-        batch.height = regions[start_idx].height;
-        batch.end = start_idx + 1;
-
-        while (batch.end < regions.size() &&
-               batch.end - start_idx < static_cast<size_t>(effective_batch_size) &&
-               regions[batch.end].width == batch.width &&
-               regions[batch.end].height == batch.height) {
-            ++batch.end;
-        }
-
-        size_t batch_count = batch.end - batch.begin;
-        batch.input_buffers.reserve(batch_count);
-        batch.batch_inputs.reserve(batch_count);
-        batch.output_buffers.reserve(batch_count);
-        batch.batch_outputs.reserve(batch_count);
-
-        for (size_t j = batch.begin; j < batch.end; ++j) {
+    // CPU u8 path: one-ahead batch prefetch (per-tile u8→float extraction keeps
+    // the memory footprint low), u8 normalize/quantize on the way out.
+    return run_tiled_cpu_pipeline</*UseLoadThread=*/false>(
+        *this, engine, regions, config, input_width, input_height, channels,
+        progress_callback, cancel_flag,
+        [&](int image_width, int ch, const TileRegion& region) {
             // Per-tile u8→float extraction (avoids full-image float copy)
-            batch.input_buffers.push_back(
-                extract_tile_u8(input_data, input_width, channels, regions[j])
-            );
-            batch.batch_inputs.push_back(batch.input_buffers.back().data());
-
-            int tile_out_w = static_cast<int>(regions[j].width) * scale_factor;
-            int tile_out_h = static_cast<int>(regions[j].height) * scale_factor;
-            batch.output_buffers.emplace_back(static_cast<size_t>(tile_out_w) * tile_out_h * channels);
-            batch.batch_outputs.push_back(batch.output_buffers.back().data());
-        }
-
-        return batch;
-    };
-
-    std::deque<CompletedBatch> completed_queue;
-    std::mutex completed_mutex;
-    std::condition_variable completed_cv;
-    bool process_done = false;
-    std::string process_error;
-
-    std::thread blend_thread([&]() {
-        while (true) {
-            CompletedBatch completed_batch;
-            {
-                std::unique_lock<std::mutex> lock(completed_mutex);
-                completed_cv.wait(lock, [&]() {
-                    return !completed_queue.empty() || process_done;
-                });
-                if (completed_queue.empty() && process_done) {
-                    break;
+            return extract_tile_u8(input_data, image_width, ch, region);
+        },
+        [&](std::vector<float>& output_float, const std::vector<float>& weight_buffer) {
+            // Normalize and convert float output to u8
+            const size_t pixel_count = static_cast<size_t>(output_width) * output_height;
+            for (size_t p = 0; p < pixel_count; ++p) {
+                const float w = weight_buffer[p];
+                if (w <= 1e-6f) {
+                    continue;
                 }
-                completed_batch = std::move(completed_queue.front());
-                completed_queue.pop_front();
+                const size_t base = p * static_cast<size_t>(channels);
+                for (int c = 0; c < channels; ++c) {
+                    const float v = std::clamp((output_float[base + c] / w) * 255.0f, 0.0f, 255.0f);
+                    output_data[base + c] = static_cast<uint8_t>(v);
+                }
             }
 
-            for (size_t idx = 0; idx < completed_batch.output_buffers.size(); ++idx) {
-                const auto& region = regions[completed_batch.begin + idx];
-                blend_tile(completed_batch.output_buffers[idx].data(), output_float.data(),
-                           weight_buffer.data(),
-                           output_width, output_height, channels, region, scale_factor, config.overlap);
-                progress.completed_tiles++;
-                progress.current_tile_x = region.x;
-                progress.current_tile_y = region.y;
-                if (progress_callback) progress_callback(progress);
+            // Replace alpha with bicubic-scaled alpha (bypasses neural network for alpha)
+            if (has_alpha && enable_alpha_bicubic && !alpha_output.empty()) {
+                for (size_t i = 0; i < pixel_count; ++i) {
+                    output_data[i * 4 + 3] = alpha_output[i];
+                }
+                LOG_INFO("TileProcessor", "Merged bicubic alpha into output");
             }
-        }
-    });
-
-    auto current_batch = build_batch(0);
-    while (current_batch.has_value() && !cancel_flag) {
-        std::future<std::optional<BatchWork>> next_batch_future;
-        if (current_batch->end < regions.size()) {
-            size_t next_start = current_batch->end;
-            next_batch_future = std::async(std::launch::async, [&, next_start]() {
-                return build_batch(next_start);
-            });
-        }
-
-        auto result = engine.process_batch(
-            current_batch->batch_inputs,
-            current_batch->batch_outputs,
-            static_cast<int>(current_batch->width),
-            static_cast<int>(current_batch->height),
-            channels,
-            cancel_flag
-        );
-        if (!result.has_value()) {
-            process_error = "Batch processing failed: " + result.error().message;
-            break;
-        }
-
-        CompletedBatch completed_batch;
-        completed_batch.begin = current_batch->begin;
-        completed_batch.output_buffers = std::move(current_batch->output_buffers);
-        {
-            std::lock_guard<std::mutex> lock(completed_mutex);
-            completed_queue.emplace_back(std::move(completed_batch));
-        }
-        completed_cv.notify_one();
-
-        if (next_batch_future.valid()) {
-            current_batch = next_batch_future.get();
-        } else {
-            current_batch = std::nullopt;
-        }
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(completed_mutex);
-        process_done = true;
-    }
-    completed_cv.notify_all();
-    blend_thread.join();
-
-    if (!process_error.empty()) {
-        return std::unexpected(TileProcessorError{1, process_error});
-    }
-
-    if (cancel_flag) {
-        return std::unexpected(TileProcessorError{2, "Processing cancelled"});
-    }
-
-    // Normalize and convert float output to u8
-    const size_t pixel_count = static_cast<size_t>(output_width) * output_height;
-    for (size_t p = 0; p < pixel_count; ++p) {
-        const float w = weight_buffer[p];
-        if (w <= 1e-6f) {
-            continue;
-        }
-        const size_t base = p * static_cast<size_t>(channels);
-        for (int c = 0; c < channels; ++c) {
-            const float v = std::clamp((output_float[base + c] / w) * 255.0f, 0.0f, 255.0f);
-            output_data[base + c] = static_cast<uint8_t>(v);
-        }
-    }
-
-    // Replace alpha with bicubic-scaled alpha (bypasses neural network for alpha)
-    if (has_alpha && enable_alpha_bicubic && !alpha_output.empty()) {
-        for (size_t i = 0; i < pixel_count; ++i) {
-            output_data[i * 4 + 3] = alpha_output[i];
-        }
-        LOG_INFO("TileProcessor", "Merged bicubic alpha into output");
-    }
-
-    return {};
+        });
 }
 
 auto TileProcessor::extract_tile(const float* image_data, int image_width,

@@ -30,6 +30,15 @@ struct EngineError {
     std::string message;
 };
 
+// Error code reserved for "allocation refused by preflight or the device ran
+// out of memory mid-run". Callers use is_oom_error() to trigger the shrink /
+// fallback ladder instead of failing the whole job.
+inline constexpr int kErrOutOfMemory = 230;
+
+inline bool is_oom_error(const EngineError& e) {
+    return e.code == kErrOutOfMemory || e.message.find("out of memory") != std::string::npos;
+}
+
 struct GPUTileTaskU8 {
     const uint8_t* input_data = nullptr;
     uint8_t* output_data = nullptr;
@@ -150,6 +159,12 @@ public:
 
     // Get recommended tile size based on GPU VRAM (0 = not available)
     virtual int get_recommended_tile_size() const { return 256; }
+
+    // Device memory available for allocations, in MB (0 = unknown). Used by
+    // the OOM preflight to size the full-output buffers and by callers to
+    // pick a default worker count. Honors CROSSSCALE_GPU_FORCE_BUDGET_MB
+    // (testing: simulate a weaker device).
+    virtual size_t get_device_memory_budget_mb() const { return 0; }
 
     // Get memory info: {total_mb, available_mb}
     virtual auto get_memory_info() const -> std::pair<size_t, size_t> {

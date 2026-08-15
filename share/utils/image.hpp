@@ -46,7 +46,10 @@ public:
     int width() const { return width_; }
     int height() const { return height_; }
     int channels() const { return channels_; }
-    size_t size() const { return data_.size(); }
+    // Pixel bytes (w*h*c) — NOT data_.size(), which carries +16 upload slack.
+    size_t size() const {
+        return static_cast<size_t>(width_) * height_ * channels_;
+    }
 
     // Check if valid
     bool valid() const { return !data_.empty() && width_ > 0 && height_ > 0; }
