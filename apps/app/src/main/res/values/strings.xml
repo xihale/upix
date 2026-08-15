@@ -61,6 +61,31 @@
     <string name="hero_image_corrupted">图片损坏</string>
     <string name="hero_no_preview">暂无可预览图像</string>
     <string name="hero_thumbnail_hint">长按缩略图可预览，单击缩略图可删除</string>
+    <string name="hero_stage_empty_title">把图片放大，交给 CrossScale</string>
+    <string name="hero_stage_empty_subtitle">选择单张图片或整个文件夹，本地或连接 PC 处理</string>
+    <string name="hero_pick_image">选择图片</string>
+    <string name="hero_pick_folder">选择文件夹</string>
+    <string name="hero_add_image_cd">添加图片</string>
+    <string name="hero_add_folder_cd">添加文件夹</string>
+    <string name="hero_clear_all_cd">清空已选</string>
+    <string name="hero_thumbnail_remove_cd">移除此图片</string>
+
+    <!-- Home parameter card -->
+    <string name="config_mode_local">本地</string>
+    <string name="config_mode_connecting">连接中</string>
+    <string name="config_mode_remote">远程</string>
+    <string name="config_mode_endpoint">端点 %1$s</string>
+    <string name="config_label_scale">放大倍率</string>
+    <string name="config_label_spec">模型规格</string>
+    <string name="config_scale_value">x%1$d</string>
+    <string name="config_model_spec_value">x%1$d · tile %2$d · %3$d 通道</string>
+    <string name="config_advanced_title">高级设置</string>
+    <string name="config_resume_last_task">恢复上次任务</string>
+
+    <!-- Queue bottom sheet -->
+    <string name="queue_sheet_title">处理队列</string>
+    <string name="queue_sheet_summary">待 %1$d · 失败 %2$d</string>
+    <string name="queue_close_cd">关闭队列</string>
 
     <!-- Queue bottom sheet -->
     <string name="queue_running">运行中</string>
@@ -179,6 +204,7 @@
     <string name="progress_recent_attributions">近期分配: %1$s</string>
     <string name="progress_output_directory">输出目录: %1$s</string>
     <string name="progress_last_error">最近错误: %1$s</string>
+    <string name="progress_compact_summary">%1$d%% · 待 %2$d/%3$d · 失败 %4$d</string>
     <!-- Processing run messages (resolved by ProcessingRunPlanner / ProcessingRunEngine) -->
     <string name="processing_processor_local">本机</string>
     <string name="processing_processor_remote_node">远端节点</string>

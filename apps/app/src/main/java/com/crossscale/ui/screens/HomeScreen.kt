@@ -1,23 +1,26 @@
 package com.crossscale.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -31,25 +34,28 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.model.ConnectionState
-import com.crossscale.ui.components.ProcessingProgress
-import com.crossscale.ui.components.SettingsRow
 import com.crossscale.ui.components.SheetActionItem
-import com.crossscale.ui.components.SwitchRow
-import com.crossscale.ui.screens.home.BottomActionBar
+import com.crossscale.ui.components.StageProgressOverlay
+import com.crossscale.ui.screens.home.BottomActionDock
 import com.crossscale.ui.screens.home.CheckpointSection
 import com.crossscale.ui.screens.home.HomeCheckpointActions
 import com.crossscale.ui.screens.home.HomeConnection
 import com.crossscale.ui.screens.home.HomeQueueActions
 import com.crossscale.ui.screens.home.HomeSetupActions
-import com.crossscale.ui.screens.home.HeroArea
+import com.crossscale.ui.screens.home.ImageStage
+import com.crossscale.ui.screens.home.ParameterCard
 import com.crossscale.ui.screens.home.PreviewBottomSheet
 import com.crossscale.ui.screens.home.QueueBottomSheetContent
 import com.crossscale.ui.screens.home.countFailedQueueItems
 import com.crossscale.ui.screens.home.countPendingQueueItems
-import com.crossscale.ui.theme.BorderlessTokens
+import com.crossscale.ui.theme.Spacing
 import com.crossscale.viewmodel.MainUiState
 import com.crossscale.viewmodel.ProcessingUiState
 
+/**
+ * Home「聚焦工作台」：图片舞台是唯一视觉焦点，UI 退后。
+ * 顶部标识条 → 图片舞台 → 参数卡 → 断点续传卡 → 底部悬浮 Dock。
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HomeScreen(
@@ -73,7 +79,6 @@ fun HomeScreen(
 
     val selectedInputs = state.selectedInputSources
     val corruptedSources = state.corruptedInputSources
-    val selectedModel = state.selectedModel?.name ?: notSelectedLabel
     val selectedOutput = abbreviatePath(state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/CrossScale")
     val queueItems = processingUiState.queueItems
     val pendingQueueCount = remember(queueItems) { countPendingQueueItems(queueItems) }
@@ -82,7 +87,7 @@ fun HomeScreen(
     var showModelSheet by rememberSaveable { mutableStateOf(false) }
     var queueSheetVisible by rememberSaveable { mutableStateOf(false) }
     var previewSource by rememberSaveable { mutableStateOf<String?>(null) }
-    val queueSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val queueSheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     val snackbarHostState = remember { SnackbarHostState() }
     val prevConnectionState = remember { mutableStateOf(connectionState) }
@@ -121,82 +126,54 @@ fun HomeScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = BorderlessTokens.ScreenPaddingHorizontal)
-                .padding(bottom = 180.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp)
+                .padding(horizontal = Spacing.xl)
+                .padding(bottom = 140.dp),
+            verticalArrangement = Arrangement.spacedBy(Spacing.lg)
         ) {
-            Spacer(modifier = Modifier.height(6.dp))
+            HomeIdentityBar(
+                connectionState = connectionState,
+                connectedEndpoint = connectedEndpoint
+            )
 
-            HeroArea(
+            ImageStage(
                 selectedInputs = selectedInputs,
                 corruptedSources = corruptedSources,
+                isProcessing = isProcessing,
                 onAddImage = setupActions.onSelectImages,
                 onAddFolder = setupActions.onSelectImageFolder,
                 onClearInput = setupActions.onClearInputSources,
                 onRemoveInput = setupActions.onRemoveInputSource,
-                onPreviewInput = { source -> previewSource = source }
+                onPreviewInput = { source -> previewSource = source },
+                overlay = if (isProcessing) {
+                    {
+                        StageProgressOverlay(
+                            uiState = processingUiState,
+                            onCancel = queueActions.onCancelProcessing
+                        )
+                    }
+                } else {
+                    null
+                }
             )
 
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    text = stringResource(R.string.home_parameters_section),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = BorderlessTokens.SectionTitleWeight
-                )
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerStrongAlpha)
-                )
+            ParameterCard(
+                connectionState = connectionState,
+                connectedEndpoint = connectedEndpoint,
+                selectedModel = state.selectedModel,
+                notSelectedLabel = notSelectedLabel,
+                outputDirectoryLabel = selectedOutput,
+                overwriteOriginal = state.overwriteOriginalImage,
+                backupOriginal = state.backupOriginalImage,
+                processNestedFolders = state.processNestedFolders,
+                onPickModel = { showModelSheet = true },
+                onSelectOutputFolder = setupActions.onSelectOutputFolder,
+                onUseDefaultOutputFolder = setupActions.onUseDefaultOutputFolder,
+                onToggleOverwriteOriginal = setupActions.onToggleOverwriteOriginal,
+                onToggleBackupOriginal = setupActions.onToggleBackupOriginal,
+                onToggleProcessNestedFolders = setupActions.onToggleProcessNestedFolders
+            )
 
-                SettingsRow(
-                    title = stringResource(R.string.home_model_setting_label),
-                    value = selectedModel,
-                    onClick = { showModelSheet = true }
-                )
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha)
-                )
-
-                SettingsRow(
-                    title = stringResource(R.string.home_output_path_label),
-                    value = selectedOutput,
-                    onClick = setupActions.onSelectOutputFolder,
-                    trailing = {
-                        TextButton(onClick = setupActions.onUseDefaultOutputFolder) {
-                            Text(stringResource(R.string.home_use_default_output))
-                        }
-                    }
-                )
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha)
-                )
-
-                SwitchRow(
-                    title = stringResource(R.string.common_overwrite_original),
-                    checked = state.overwriteOriginalImage,
-                    onCheckedChange = setupActions.onToggleOverwriteOriginal
-                )
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha)
-                )
-
-                SwitchRow(
-                    title = stringResource(R.string.home_backup_original),
-                    checked = state.backupOriginalImage,
-                    enabled = state.overwriteOriginalImage,
-                    onCheckedChange = setupActions.onToggleBackupOriginal
-                )
-                HorizontalDivider(
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha)
-                )
-
-                SwitchRow(
-                    title = stringResource(R.string.home_include_subdirectories),
-                    checked = state.processNestedFolders,
-                    onCheckedChange = setupActions.onToggleProcessNestedFolders
-                )
-            }
-
-            if (!processingUiState.isProcessing && processingUiState.checkpointSummary != null) {
+            if (!isProcessing && processingUiState.checkpointSummary != null) {
                 CheckpointSection(
                     processingUiState = processingUiState,
                     onResumeProcessing = checkpointActions.onResumeProcessing,
@@ -206,40 +183,40 @@ fun HomeScreen(
                     onDiscardCheckpoint = checkpointActions.onDiscardCheckpoint
                 )
             }
-
-            ProcessingProgress(uiState = processingUiState)
         }
 
-        BottomActionBar(
+        BottomActionDock(
             modifier = Modifier.align(Alignment.BottomCenter),
-            isProcessing = processingUiState.isProcessing,
+            isProcessing = isProcessing,
             pendingQueueCount = pendingQueueCount,
             failedQueueCount = failedQueueCount,
-            hasBackupAvailable = hasBackupAvailable && !processingUiState.isProcessing && queueItems.isEmpty(),
-            connectionState = connectionState,
-            connectedEndpoint = connectedEndpoint,
+            hasBackupAvailable = hasBackupAvailable,
+            hasQueueItems = queueItems.isNotEmpty(),
             onShowQueue = {
                 queueSheetVisible = true
             },
             onStart = queueActions.onStartProcessing,
-            onRestore = onRestoreBackup,
-            onCancel = queueActions.onCancelProcessing
+            onRestore = onRestoreBackup
         )
 
         SnackbarHost(
             hostState = snackbarHostState,
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 150.dp)
+                .padding(bottom = 120.dp)
         )
     }
 
     if (showModelSheet) {
-        ModalBottomSheet(onDismissRequest = { showModelSheet = false }) {
+        ModalBottomSheet(
+            onDismissRequest = { showModelSheet = false },
+            shape = MaterialTheme.shapes.extraLarge,
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
             Text(
                 text = stringResource(R.string.home_select_model_sheet_title),
                 style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)
+                modifier = Modifier.padding(horizontal = Spacing.xl, vertical = Spacing.sm)
             )
             state.models.forEach { model ->
                 SheetActionItem(
@@ -250,13 +227,15 @@ fun HomeScreen(
                     setupActions.onSelectModel(model)
                 }
             }
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(Spacing.xl))
         }
     }
 
     if (queueSheetVisible) {
         ModalBottomSheet(
             sheetState = queueSheetState,
+            shape = MaterialTheme.shapes.extraLarge,
+            containerColor = MaterialTheme.colorScheme.surface,
             scrimColor = MaterialTheme.colorScheme.scrim.copy(alpha = 0.18f),
             onDismissRequest = {
                 queueSheetVisible = false
@@ -270,7 +249,8 @@ fun HomeScreen(
                 onRetryQueuedBatchFailedOnly = queueActions.onRetryQueuedBatchFailedOnly,
                 onOpenQueuedBatchOutput = queueActions.onOpenQueuedBatchOutput,
                 onRemoveQueuedBatch = queueActions.onRemoveQueuedBatch,
-                onClearBatchQueue = queueActions.onClearBatchQueue
+                onClearBatchQueue = queueActions.onClearBatchQueue,
+                onDismiss = { queueSheetVisible = false }
             )
         }
     }
@@ -281,6 +261,60 @@ fun HomeScreen(
             isCorrupted = source in corruptedSources,
             onDismiss = { previewSource = null }
         )
+    }
+}
+
+/** 顶部标识条：品牌名 + 连接状态 pill（直接消费 HomeConnection 现成数据）。 */
+@Composable
+private fun HomeIdentityBar(
+    connectionState: ConnectionState,
+    connectedEndpoint: com.crossscale.data.model.RemoteEndpoint?
+) {
+    val (pillLabelRes, pillColor) = when (connectionState) {
+        ConnectionState.CONNECTED -> R.string.config_mode_remote to MaterialTheme.colorScheme.primary
+        ConnectionState.DISCONNECTED -> R.string.config_mode_local to MaterialTheme.colorScheme.onSurfaceVariant
+        ConnectionState.CONNECTING -> R.string.config_mode_connecting to MaterialTheme.colorScheme.tertiary
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = Spacing.md, bottom = Spacing.xs),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = stringResource(R.string.app_name),
+            style = MaterialTheme.typography.titleLarge
+        )
+        Surface(
+            shape = CircleShape,
+            color = pillColor.copy(alpha = 0.14f),
+            contentColor = pillColor
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.xs),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .background(color = pillColor, shape = CircleShape)
+                )
+                val pillLabel = stringResource(pillLabelRes)
+                val endpoint = connectedEndpoint?.let { "${it.host}:${it.port}" }
+                Text(
+                    text = if (connectionState == ConnectionState.CONNECTED && endpoint != null) {
+                        "$pillLabel $endpoint"
+                    } else {
+                        pillLabel
+                    },
+                    style = MaterialTheme.typography.labelMedium,
+                    maxLines = 1
+                )
+            }
+        }
     }
 }
 

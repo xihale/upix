@@ -13,14 +13,24 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Pause
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
@@ -38,7 +48,8 @@ import com.crossscale.R
 import com.crossscale.data.repository.InputSourceSpec
 import com.crossscale.data.repository.PersistedQueueItemStatus
 import com.crossscale.data.thumbnails.decodeQueueThumbnailWithLimit
-import com.crossscale.ui.theme.BorderlessTokens
+import com.crossscale.ui.theme.Spacing
+import com.crossscale.ui.theme.ValueMono
 import com.crossscale.viewmodel.ProcessingQueueItemSummary
 import com.crossscale.viewmodel.ProcessingUiState
 
@@ -50,6 +61,10 @@ internal fun countFailedQueueItems(queueItems: List<ProcessingQueueItemSummary>)
     return queueItems.count { item -> item.status == PersistedQueueItemStatus.FAILED }
 }
 
+/**
+ * 处理队列 sheet：头部（标题/数量/启停/清空）+ 紧凑列表项。
+ * 每项右侧最多 2 个图标操作；条目间用留白，不再使用 Divider / 按钮墙。
+ */
 @Composable
 internal fun QueueBottomSheetContent(
     processingUiState: ProcessingUiState,
@@ -59,56 +74,67 @@ internal fun QueueBottomSheetContent(
     onRetryQueuedBatchFailedOnly: (String) -> Unit,
     onOpenQueuedBatchOutput: (String) -> Unit,
     onRemoveQueuedBatch: (String) -> Unit,
-    onClearBatchQueue: () -> Unit
+    onClearBatchQueue: () -> Unit,
+    onDismiss: () -> Unit
 ) {
     val queueItems = processingUiState.queueItems
     val pendingQueueCount = remember(queueItems) { countPendingQueueItems(queueItems) }
     val failedQueueCount = remember(queueItems) { countFailedQueueItems(queueItems) }
-    val queueRunningLabel = if (processingUiState.isQueueRunning) {
-        stringResource(R.string.queue_running)
-    } else {
-        stringResource(R.string.queue_paused)
-    }
 
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(min = 300.dp, max = 640.dp)
-            .padding(horizontal = BorderlessTokens.ScreenPaddingHorizontal),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+            .heightIn(min = 240.dp, max = 640.dp)
+            .padding(horizontal = Spacing.xl),
+        verticalArrangement = Arrangement.spacedBy(Spacing.sm)
     ) {
-        Text(
-            text = stringResource(R.string.queue_details_title),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = BorderlessTokens.SectionTitleWeight
-        )
-        Text(
-            text = stringResource(R.string.queue_status_summary, queueRunningLabel, pendingQueueCount, failedQueueCount),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            OutlinedButton(
-                onClick = onStartBatchQueue,
-                enabled = !processingUiState.isProcessing && pendingQueueCount > 0,
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = stringResource(R.string.queue_sheet_title),
+                style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.weight(1f)
-            ) {
-                Text(stringResource(R.string.queue_start))
+            )
+            Text(
+                text = stringResource(
+                    R.string.queue_sheet_summary,
+                    pendingQueueCount,
+                    failedQueueCount
+                ),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            IconButton(onClick = onStartBatchQueue, enabled = !processingUiState.isProcessing && pendingQueueCount > 0) {
+                Icon(
+                    imageVector = Icons.Outlined.PlayArrow,
+                    contentDescription = stringResource(R.string.queue_start),
+                    modifier = Modifier.size(20.dp)
+                )
             }
-            OutlinedButton(
-                onClick = onPauseBatchQueue,
-                enabled = processingUiState.isQueueRunning,
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(stringResource(R.string.queue_pause))
+            IconButton(onClick = onPauseBatchQueue, enabled = processingUiState.isQueueRunning) {
+                Icon(
+                    imageVector = Icons.Outlined.Pause,
+                    contentDescription = stringResource(R.string.queue_pause),
+                    modifier = Modifier.size(20.dp)
+                )
             }
-            OutlinedButton(
-                onClick = onClearBatchQueue,
-                enabled = queueItems.isNotEmpty(),
-                modifier = Modifier.weight(1f)
-            ) {
-                Text(stringResource(R.string.queue_clear))
+            IconButton(onClick = onClearBatchQueue, enabled = queueItems.isNotEmpty()) {
+                Icon(
+                    imageVector = Icons.Outlined.DeleteSweep,
+                    contentDescription = stringResource(R.string.queue_clear),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+            IconButton(onClick = onDismiss) {
+                Icon(
+                    imageVector = Icons.Outlined.Close,
+                    contentDescription = stringResource(R.string.queue_close_cd),
+                    modifier = Modifier.size(20.dp)
+                )
             }
         }
 
@@ -117,12 +143,12 @@ internal fun QueueBottomSheetContent(
                 text = stringResource(R.string.queue_empty),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(vertical = 16.dp)
+                modifier = Modifier.padding(vertical = Spacing.lg)
             )
         } else {
             LazyColumn(
                 modifier = Modifier.fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
+                verticalArrangement = Arrangement.spacedBy(Spacing.xs)
             ) {
                 itemsIndexed(items = queueItems, key = { _, item -> item.id }) { index, queueItem ->
                     QueueItemRow(
@@ -134,14 +160,11 @@ internal fun QueueBottomSheetContent(
                         onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,
                         onRemoveQueuedBatch = onRemoveQueuedBatch
                     )
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha)
-                    )
                 }
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(Spacing.lg))
     }
 }
 
@@ -155,12 +178,6 @@ private fun QueueItemRow(
     onOpenQueuedBatchOutput: (String) -> Unit,
     onRemoveQueuedBatch: (String) -> Unit
 ) {
-    val queueItemStatusRes = when (queueItem.status) {
-        PersistedQueueItemStatus.PENDING -> R.string.queue_status_pending
-        PersistedQueueItemStatus.RUNNING -> R.string.common_status_processing
-        PersistedQueueItemStatus.FAILED -> R.string.common_status_failed
-        PersistedQueueItemStatus.COMPLETED -> R.string.common_status_completed
-    }
     val canOpenOutput = queueItem.status == PersistedQueueItemStatus.COMPLETED &&
         !queueItem.lastOutputUri.isNullOrBlank()
     val unnamedInputLabel = stringResource(R.string.queue_unnamed_input)
@@ -174,58 +191,146 @@ private fun QueueItemRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(enabled = canOpenOutput) { onOpenQueuedBatchOutput(queueItem.id) }
-            .padding(vertical = 6.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp)
+            .padding(vertical = Spacing.xs),
+        verticalArrangement = Arrangement.spacedBy(Spacing.xs)
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             QueueItemThumbnail(source = queueItem.source)
-            Column(modifier = Modifier.weight(1f)) {
-                Text(text = "#${index + 1} $sourceLabel", style = MaterialTheme.typography.bodyMedium)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    text = "#${index + 1} $sourceLabel",
+                    style = ValueMono,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
                 Text(
                     text = stringResource(R.string.queue_allocation_label, allocationSummary(queueItem)),
-                    style = MaterialTheme.typography.bodySmall,
-                    maxLines = 2,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
+            QueueStatusChip(status = queueItem.status)
         }
-
-        Text(
-            text = stringResource(R.string.queue_status_label, stringResource(queueItemStatusRes)),
-            style = MaterialTheme.typography.bodySmall
-        )
 
         if (queueItem.status == PersistedQueueItemStatus.FAILED) {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedButton(onClick = { onRetryQueuedBatch(queueItem.id) }, enabled = !isProcessing) {
-                    Text(stringResource(R.string.common_retry))
-                }
-                OutlinedButton(onClick = { onRetryQueuedBatchFailedOnly(queueItem.id) }, enabled = !isProcessing) {
-                    Text(stringResource(R.string.queue_retry_failed_only))
-                }
-            }
-        }
-        if (canOpenOutput) {
-            OutlinedButton(onClick = { onOpenQueuedBatchOutput(queueItem.id) }) {
-                Text(stringResource(R.string.queue_open_output))
-            }
-        }
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            OutlinedButton(
-                onClick = { onRemoveQueuedBatch(queueItem.id) },
-                enabled = queueItem.status != PersistedQueueItemStatus.RUNNING
-            ) {
-                Text(stringResource(R.string.queue_remove))
-            }
-            Spacer(modifier = Modifier.width(8.dp))
             Text(
-                text = queueItem.source,
-                style = MaterialTheme.typography.bodySmall,
+                text = queueItem.lastErrorMessage.orEmpty(),
+                style = ValueMono.copy(fontSize = MaterialTheme.typography.labelSmall.fontSize),
+                color = MaterialTheme.colorScheme.error,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.padding(start = 68.dp)
             )
         }
+
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (queueItem.status == PersistedQueueItemStatus.FAILED) {
+                TextButton(
+                    onClick = { onRetryQueuedBatchFailedOnly(queueItem.id) },
+                    enabled = !isProcessing,
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = Spacing.sm)
+                ) {
+                    Text(
+                        text = stringResource(R.string.queue_retry_failed_only),
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.weight(1f))
+            if (queueItem.status == PersistedQueueItemStatus.FAILED) {
+                QueueItemAction(
+                    iconVector = Icons.Outlined.Refresh,
+                    contentDescriptionRes = R.string.common_retry,
+                    onClick = { onRetryQueuedBatch(queueItem.id) },
+                    enabled = !isProcessing
+                )
+            }
+            if (canOpenOutput) {
+                QueueItemAction(
+                    iconVector = Icons.Outlined.FolderOpen,
+                    contentDescriptionRes = R.string.queue_open_output,
+                    onClick = { onOpenQueuedBatchOutput(queueItem.id) }
+                )
+            }
+            QueueItemAction(
+                iconVector = Icons.Outlined.Close,
+                contentDescriptionRes = R.string.queue_remove,
+                onClick = { onRemoveQueuedBatch(queueItem.id) },
+                enabled = queueItem.status != PersistedQueueItemStatus.RUNNING
+            )
+        }
+
+        if (queueItem.status == PersistedQueueItemStatus.RUNNING) {
+            LinearProgressIndicator(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(4.dp)
+                    .clip(MaterialTheme.shapes.extraSmall)
+            )
+        }
+    }
+}
+
+@Composable
+private fun QueueItemAction(
+    iconVector: androidx.compose.ui.graphics.vector.ImageVector,
+    contentDescriptionRes: Int,
+    onClick: () -> Unit,
+    enabled: Boolean = true
+) {
+    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(32.dp)) {
+        Icon(
+            imageVector = iconVector,
+            contentDescription = stringResource(contentDescriptionRes),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(18.dp)
+        )
+    }
+}
+
+/** 小号状态 chip：排队=surfaceVariant / 进行中=primary / 完成=primary 淡 / 失败=error 淡。 */
+@Composable
+private fun QueueStatusChip(status: PersistedQueueItemStatus) {
+    val (container, content, labelRes) = when (status) {
+        PersistedQueueItemStatus.PENDING -> Triple(
+            MaterialTheme.colorScheme.surfaceVariant,
+            MaterialTheme.colorScheme.onSurfaceVariant,
+            R.string.queue_status_pending
+        )
+        PersistedQueueItemStatus.RUNNING -> Triple(
+            MaterialTheme.colorScheme.primary,
+            MaterialTheme.colorScheme.onPrimary,
+            R.string.common_status_processing
+        )
+        PersistedQueueItemStatus.COMPLETED -> Triple(
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
+            MaterialTheme.colorScheme.primary,
+            R.string.common_status_completed
+        )
+        PersistedQueueItemStatus.FAILED -> Triple(
+            MaterialTheme.colorScheme.error.copy(alpha = 0.16f),
+            MaterialTheme.colorScheme.error,
+            R.string.common_status_failed
+        )
+    }
+    Surface(shape = MaterialTheme.shapes.extraSmall, color = container, contentColor = content) {
+        Text(
+            text = stringResource(labelRes),
+            style = MaterialTheme.typography.labelSmall,
+            modifier = Modifier.padding(horizontal = Spacing.sm, vertical = 2.dp)
+        )
     }
 }
 
@@ -240,9 +345,8 @@ private fun QueueItemThumbnail(source: String) {
 
     Box(
         modifier = Modifier
-            .height(56.dp)
-            .fillMaxWidth(0.22f)
-            .clip(RoundedCornerShape(8.dp)),
+            .size(56.dp)
+            .clip(MaterialTheme.shapes.small),
         contentAlignment = Alignment.Center
     ) {
         val imageBitmap = bitmapState
@@ -254,7 +358,7 @@ private fun QueueItemThumbnail(source: String) {
                 contentScale = ContentScale.Crop
             )
         } else {
-            Text(text = stringResource(R.string.queue_no_image), style = MaterialTheme.typography.bodySmall)
+            Text(text = stringResource(R.string.queue_no_image), style = MaterialTheme.typography.labelSmall)
         }
     }
 }

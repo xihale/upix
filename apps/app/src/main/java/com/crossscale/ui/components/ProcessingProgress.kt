@@ -1,127 +1,123 @@
 package com.crossscale.ui.components
 
 import androidx.annotation.StringRes
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.model.ProcessingStatus
+import com.crossscale.ui.theme.Spacing
+import com.crossscale.ui.theme.ValueMono
 import com.crossscale.viewmodel.ProcessingUiState
 import kotlin.math.roundToInt
 
+/**
+ * 舞台遮罩进度：处理中覆盖在图片舞台之上。
+ * 大号进度条 + 一句话阶段 + 已完成/总数 + 取消；细节字段收成单行 mono。
+ */
 @Composable
-fun ProcessingProgress(uiState: ProcessingUiState) {
+fun StageProgressOverlay(
+    uiState: ProcessingUiState,
+    onCancel: () -> Unit
+) {
     val task = uiState.task ?: return
 
-    Column(
+    Box(
         modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(8.dp)
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
     ) {
-        Text(
-            text = stringResource(R.string.progress_task_status, stringResource(task.status.toDisplayLabelRes())),
-            style = MaterialTheme.typography.titleSmall
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(
+                            MaterialTheme.colorScheme.surface.copy(alpha = 0.0f),
+                            MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)
+                        )
+                    )
+                )
         )
-        LinearProgressIndicator(
-            progress = task.progress.coerceIn(0.0f, 1.0f),
-            modifier = Modifier.fillMaxWidth()
-        )
-        Text(
-            text = stringResource(R.string.progress_progress_percent, (task.progress * 100.0f).roundToInt()),
-            style = MaterialTheme.typography.bodyMedium
-        )
-        Text(
-            text = stringResource(R.string.progress_completed_items, task.completedItems, task.totalItems),
-            style = MaterialTheme.typography.bodyMedium
-        )
-        Text(
-            text = stringResource(R.string.progress_pending_items, task.pendingItems, task.totalItems),
-            style = MaterialTheme.typography.bodyMedium
-        )
-        Text(
-            text = stringResource(R.string.progress_failed_count, task.failedItems),
-            style = MaterialTheme.typography.bodyMedium
-        )
-        if (task.failedItemNames.isNotEmpty()) {
-            val previewNames = task.failedItemNames.take(5)
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .padding(horizontal = Spacing.lg, vertical = Spacing.lg),
+            verticalArrangement = Arrangement.spacedBy(Spacing.sm)
+        ) {
+            LinearProgressIndicator(
+                progress = task.progress.coerceIn(0.0f, 1.0f),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Text(
+                text = stringResource(task.status.toDisplayLabelRes()),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface
+            )
             Text(
                 text = stringResource(
-                    R.string.progress_failed_files,
-                    previewNames.size,
-                    task.failedItemNames.size,
-                    previewNames.joinToString(separator = ", ")
+                    R.string.progress_completed_items,
+                    task.completedItems,
+                    task.totalItems
                 ),
-                style = MaterialTheme.typography.bodySmall
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
             )
-        }
-        if (task.failureDetails.isNotEmpty()) {
-            Text(
-                text = stringResource(R.string.progress_failure_details),
-                style = MaterialTheme.typography.bodyMedium
-            )
-            val previewFailures = task.failureDetails.take(3)
-            previewFailures.forEach { detail ->
-                Text(
-                    text = stringResource(
-                        R.string.progress_failure_detail_item,
-                        detail.displayName.ifBlank { detail.uri },
-                        detail.errorMessage,
-                        detail.attempts
-                    ),
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-            if (task.failureDetails.size > previewFailures.size) {
-                val moreCount = task.failureDetails.size - previewFailures.size
-                Text(
-                    text = stringResource(R.string.progress_more_failures, moreCount),
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
-        }
-        task.currentItemName?.let { itemName ->
-            Text(
-                text = stringResource(R.string.progress_current_file, itemName),
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-        task.lastProcessedItemName?.let { itemName ->
-            val processorLabel = task.lastProcessorLabel ?: stringResource(R.string.progress_unknown_node)
-            Text(
-                text = stringResource(R.string.progress_last_completed, itemName, processorLabel),
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-        if (task.recentProcessorAttributions.isNotEmpty()) {
-            val previewAttributions = task.recentProcessorAttributions.takeLast(3)
             Text(
                 text = stringResource(
-                    R.string.progress_recent_attributions,
-                    previewAttributions.joinToString(separator = " | ")
+                    R.string.progress_compact_summary,
+                    (task.progress * 100.0f).roundToInt(),
+                    task.pendingItems,
+                    task.totalItems,
+                    task.failedItems
                 ),
-                style = MaterialTheme.typography.bodySmall
+                style = ValueMono.copy(fontSize = MaterialTheme.typography.labelSmall.fontSize),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
             )
-        }
-        task.outputDirectory?.let { outputDirectory ->
-            Text(
-                text = stringResource(R.string.progress_output_directory, outputDirectory),
-                style = MaterialTheme.typography.bodySmall
-            )
-        }
-        task.lastErrorMessage?.let { errorMessage ->
-            Text(
-                text = stringResource(R.string.progress_last_error, errorMessage),
-                style = MaterialTheme.typography.bodySmall
-            )
+            task.currentItemName?.let { itemName ->
+                Text(
+                    text = itemName,
+                    style = ValueMono.copy(fontSize = MaterialTheme.typography.labelSmall.fontSize),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            task.lastErrorMessage?.let { errorMessage ->
+                Text(
+                    text = errorMessage,
+                    style = ValueMono.copy(fontSize = MaterialTheme.typography.labelSmall.fontSize),
+                    color = MaterialTheme.colorScheme.error,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            TextButton(
+                onClick = onCancel,
+                colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                    contentColor = MaterialTheme.colorScheme.error
+                )
+            ) {
+                Text(stringResource(R.string.common_cancel))
+            }
         }
     }
 }

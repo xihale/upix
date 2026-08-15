@@ -70,3 +70,8 @@ val Typography = Typography(
  * 本阶段仅定义，消费在后续阶段接入。
  */
 val LogMonoStyle = Typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
+
+/**
+ * 配置值等宽样式：文件名 / 路径 / 数字等机器可读取值使用。
+ */
+val ValueMono = Typography.titleSmall.copy(fontFamily = FontFamily.Monospace)
