@@ -2,7 +2,6 @@ package com.crossscale.ui.theme
 
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
@@ -14,7 +13,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
@@ -22,7 +20,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import kotlinx.coroutines.delay
 
 /**
  * 统一动效规范（克制、可预期）：
@@ -98,24 +95,6 @@ fun Modifier.pressable(
             enabled = enabled,
             onClick = onClick
         )
-}
-
-/**
- * 首帧组合的一次性轻量入场：alpha 0→1 + 上移 8dp，按 index 以 30ms 递增延迟。
- * 只用于数量少（3~5 项）的静态分组；LazyColumn 长列表勿用。
- */
-@Composable
-fun Modifier.staggeredEnter(index: Int): Modifier {
-    val alpha = remember { Animatable(0f) }
-    LaunchedEffect(alpha) {
-        delay(index * 30L)
-        alpha.animateTo(targetValue = 1f, animationSpec = EnterMotionSpec)
-    }
-    return graphicsLayer {
-        val progress = alpha.value
-        this.alpha = progress
-        translationY = (1f - progress) * 8.dp.toPx()
-    }
 }
 
 /**
