@@ -4,6 +4,9 @@ import androidx.annotation.StringRes
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
+import androidx.compose.material.icons.filled.Devices
+import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.ModelTraining
@@ -14,24 +17,28 @@ import com.crossscale.R
 sealed class AppScreen(
     val route: String,
     @StringRes val titleRes: Int,
-    val icon: ImageVector
+    val icon: ImageVector,
+    val selectedIcon: ImageVector = icon
 ) {
     data object Home : AppScreen(
         route = "home",
         titleRes = R.string.nav_home,
-        icon = Icons.Outlined.Home
+        icon = Icons.Outlined.Home,
+        selectedIcon = Icons.Filled.Home
     )
 
     data object Devices : AppScreen(
         route = "devices",
         titleRes = R.string.nav_connection,
-        icon = Icons.Outlined.Devices
+        icon = Icons.Outlined.Devices,
+        selectedIcon = Icons.Filled.Devices
     )
 
     data object Settings : AppScreen(
         route = "settings",
         titleRes = R.string.common_settings,
-        icon = Icons.Outlined.Settings
+        icon = Icons.Outlined.Settings,
+        selectedIcon = Icons.Filled.Settings
     )
 
     data object Help : AppScreen(

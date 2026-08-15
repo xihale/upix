@@ -8,18 +8,36 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.HelpOutline
+import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
 import com.crossscale.R
-import com.crossscale.ui.theme.BorderlessTokens
+import com.crossscale.ui.components.SectionHeader
+import com.crossscale.ui.theme.Spacing
+import com.crossscale.ui.theme.ValueMono
 
+/**
+ * 设置屏：分组卡列表（组间留白 Spacing.lg，组内行间留白，不用 Divider）。
+ */
 @Composable
 fun SettingsScreen(
     modelDirectoryPath: String,
@@ -33,18 +51,15 @@ fun SettingsScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(
-                horizontal = BorderlessTokens.ScreenPaddingHorizontal,
-                vertical = BorderlessTokens.ScreenPaddingVertical
-            ),
-        verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = Spacing.xl)
+            .padding(top = Spacing.md, bottom = Spacing.xxl),
+        verticalArrangement = Arrangement.spacedBy(Spacing.sm)
     ) {
         Text(
             text = stringResource(R.string.common_settings),
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = BorderlessTokens.SectionTitleWeight
+            style = MaterialTheme.typography.titleLarge
         )
-
         Text(
             text = stringResource(
                 R.string.settings_current_model,
@@ -54,73 +69,117 @@ fun SettingsScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerStrongAlpha))
-
-        SettingsLine(
-            title = stringResource(R.string.common_model_management),
-            subtitle = stringResource(R.string.settings_model_management_subtitle),
-            onClick = onOpenModels
-        )
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha))
-
-        SettingsLine(
-            title = stringResource(R.string.common_logs),
-            subtitle = stringResource(R.string.settings_logs_subtitle),
-            onClick = onOpenLogs
-        )
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha))
-
-        SettingsLine(
-            title = stringResource(R.string.common_help),
-            subtitle = stringResource(R.string.settings_help_subtitle),
-            onClick = onOpenHelp
-        )
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha))
-
-        // 加密数据流传输开关: 控制图像/结果数据流是否加密(吞吐优先时关闭)。
-        // 控制帧始终加密; 仅大 payload 走 stream 路径。
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = BorderlessTokens.InteractiveRowMinHeight)
-                .padding(vertical = BorderlessTokens.ListItemVerticalPadding),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing / 2)
-            ) {
-                Text(
-                    text = stringResource(R.string.settings_stream_encryption_title),
-                    style = MaterialTheme.typography.bodyLarge
-                )
-                Text(
-                    text = stringResource(R.string.settings_stream_encryption_subtitle),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            Switch(
-                checked = isStreamEncrypted,
-                onCheckedChange = onStreamEncryptedChange
+        SectionHeader(text = stringResource(R.string.settings_section_general))
+        SettingsGroupCard {
+            SettingsEntryRow(
+                icon = Icons.Outlined.Memory,
+                title = stringResource(R.string.common_model_management),
+                subtitle = stringResource(R.string.settings_model_management_subtitle),
+                onClick = onOpenModels
+            )
+            SettingsEntryRow(
+                icon = Icons.AutoMirrored.Outlined.ReceiptLong,
+                title = stringResource(R.string.common_logs),
+                subtitle = stringResource(R.string.settings_logs_subtitle),
+                onClick = onOpenLogs
+            )
+            SettingsEntryRow(
+                icon = Icons.AutoMirrored.Outlined.HelpOutline,
+                title = stringResource(R.string.common_help),
+                subtitle = stringResource(R.string.settings_help_subtitle),
+                onClick = onOpenHelp
             )
         }
 
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerMediumAlpha))
-        Text(
-            text = stringResource(R.string.common_model_directory, modelDirectoryPath),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        SectionHeader(text = stringResource(R.string.settings_section_transfer))
+        SettingsGroupCard {
+            // 加密数据流传输开关: 控制图像/结果数据流是否加密(吞吐优先时关闭)。
+            // 控制帧始终加密; 仅大 payload 走 stream 路径。
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .padding(horizontal = Spacing.md, vertical = Spacing.sm),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Lock,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = Spacing.md),
+                    verticalArrangement = Arrangement.spacedBy(1.dp)
+                ) {
+                    Text(
+                        text = stringResource(R.string.settings_stream_encryption_title),
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    Text(
+                        text = stringResource(R.string.settings_stream_encryption_subtitle),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Switch(
+                    checked = isStreamEncrypted,
+                    onCheckedChange = onStreamEncryptedChange
+                )
+            }
+        }
+
+        SectionHeader(text = stringResource(R.string.settings_section_about))
+        SettingsGroupCard {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .padding(horizontal = Spacing.md, vertical = Spacing.sm),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.FolderOpen,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+                Text(
+                    text = stringResource(R.string.common_model_directory, modelDirectoryPath),
+                    style = ValueMono,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = Spacing.md, end = Spacing.sm)
+                )
+            }
+        }
     }
 }
 
 @Composable
-private fun SettingsLine(
+private fun SettingsGroupCard(content: @Composable () -> Unit) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainer
+    ) {
+        Column(
+            modifier = Modifier.padding(vertical = Spacing.sm),
+            verticalArrangement = Arrangement.spacedBy(Spacing.xs)
+        ) {
+            content()
+        }
+    }
+}
+
+@Composable
+private fun SettingsEntryRow(
+    icon: ImageVector,
     title: String,
     subtitle: String,
     onClick: () -> Unit
@@ -129,26 +188,37 @@ private fun SettingsLine(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .heightIn(min = BorderlessTokens.InteractiveRowMinHeight)
-            .padding(vertical = BorderlessTokens.ListItemVerticalPadding),
-        horizontalArrangement = Arrangement.SpaceBetween,
+            .heightIn(min = 48.dp)
+            .padding(horizontal = Spacing.md, vertical = Spacing.sm),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp)
+        )
         Column(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing / 2)
+            modifier = Modifier
+                .weight(1f)
+                .padding(start = Spacing.md),
+            verticalArrangement = Arrangement.spacedBy(1.dp)
         ) {
-            Text(text = title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                text = title,
+                style = MaterialTheme.typography.bodyLarge
+            )
             Text(
                 text = subtitle,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
-        Text(
-            text = stringResource(R.string.settings_enter),
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.primary
+        Icon(
+            imageVector = Icons.Outlined.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.size(20.dp)
         )
     }
 }

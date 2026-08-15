@@ -3,82 +3,28 @@ package com.crossscale.ui.components
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.crossscale.ui.theme.BorderlessTokens
+import com.crossscale.ui.theme.Spacing
 
-@Composable
-fun SettingsRow(
-    title: String,
-    value: String,
-    onClick: () -> Unit,
-    trailing: (@Composable () -> Unit)? = null
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .heightIn(min = BorderlessTokens.InteractiveRowMinHeight)
-            .padding(vertical = BorderlessTokens.RowVerticalPadding),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(text = title, style = MaterialTheme.typography.bodyLarge)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                text = value,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.width(158.dp)
-            )
-            trailing?.invoke()
-        }
-    }
-}
-
-@Composable
-fun SwitchRow(
-    title: String,
-    checked: Boolean,
-    enabled: Boolean = true,
-    onCheckedChange: (Boolean) -> Unit
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .heightIn(min = BorderlessTokens.InteractiveRowMinHeight)
-            .padding(vertical = BorderlessTokens.ListItemVerticalPadding),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(text = title, style = MaterialTheme.typography.bodyLarge)
-        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
-    }
-}
-
+/**
+ * Bottom sheet 内的动作项：主标签 + 可选副标签，点击涟漪保留。
+ * （原 SettingsRow/SwitchRow 无调用点，已由 ConfigRow/ConfigSwitchRow 取代并删除。）
+ */
 @Composable
 fun SheetActionItem(label: String, subtitle: String? = null, onClick: () -> Unit) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(
-                horizontal = BorderlessTokens.ScreenPaddingHorizontal,
-                vertical = BorderlessTokens.RowVerticalPadding
-            )
+            .heightIn(min = 48.dp)
+            .padding(horizontal = Spacing.xl, vertical = Spacing.sm)
     ) {
         Text(text = label, style = MaterialTheme.typography.bodyLarge)
         subtitle?.let {

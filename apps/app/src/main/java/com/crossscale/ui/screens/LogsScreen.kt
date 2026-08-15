@@ -2,31 +2,32 @@ package com.crossscale.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import com.crossscale.R
 import com.crossscale.data.model.LogEntry
 import com.crossscale.data.model.LogLevel
 import com.crossscale.ui.components.LogViewer
-import com.crossscale.ui.theme.BorderlessTokens
+import com.crossscale.ui.theme.Spacing
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,23 +60,28 @@ fun LogsScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(
-                horizontal = BorderlessTokens.ScreenPaddingHorizontal,
-                vertical = BorderlessTokens.ScreenPaddingVertical
-            ),
-        verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing)
+            .padding(horizontal = Spacing.xl)
+            .padding(top = Spacing.md, bottom = Spacing.md),
+        verticalArrangement = Arrangement.spacedBy(Spacing.md)
     ) {
-        Text(
-            text = stringResource(R.string.common_logs),
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = BorderlessTokens.SectionTitleWeight
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Text(
+                text = stringResource(R.string.common_logs),
+                style = MaterialTheme.typography.titleLarge
+            )
+            OutlinedButton(onClick = onClearLogs) {
+                Text(stringResource(R.string.logs_clear))
+            }
+        }
         Text(
             text = stringResource(R.string.logs_result_count, filteredLogs.size),
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             style = MaterialTheme.typography.bodySmall
         )
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerStrongAlpha))
 
         OutlinedTextField(
             value = query,
@@ -85,7 +91,7 @@ fun LogsScreen(
             singleLine = true
         )
 
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing)) {
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
             item {
                 FilterChip(
                     selected = selectedLevel == null,
@@ -102,16 +108,15 @@ fun LogsScreen(
             }
         }
 
-        OutlinedButton(
-            onClick = onClearLogs,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = BorderlessTokens.InteractiveRowMinHeight)
+        Surface(
+            modifier = Modifier.fillMaxSize(),
+            shape = MaterialTheme.shapes.extraSmall,
+            color = MaterialTheme.colorScheme.surfaceContainerLow
         ) {
-            Text(stringResource(R.string.logs_clear))
+            LogViewer(
+                logs = filteredLogs,
+                modifier = Modifier.padding(Spacing.md)
+            )
         }
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerStrongAlpha))
-        LogViewer(logs = filteredLogs)
     }
 }

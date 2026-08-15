@@ -51,7 +51,6 @@
     <string name="home_mode_connecting">🔄 连接 PC 中…</string>
 
     <!-- Home hero area -->
-    <string name="hero_add_hint">添加图片或文件夹</string>
     <string name="hero_selected_count">已选择 %1$d 项</string>
     <string name="hero_add_more">继续添加</string>
     <string name="hero_clear_selection_cd">清除已选图片</string>
@@ -130,7 +129,9 @@
     <string name="models_import_rules">导入规则：必须成对同名 .param + .bin；zip 支持多模型与多层文件夹。</string>
     <string name="models_empty_hint">未发现模型，请将 .param/.bin 放入模型目录</string>
     <string name="models_current">当前</string>
-    <string name="models_card_summary">放大倍率: %1$dx · 大小: %2$dMB</string>
+    <string name="models_spec_tile">tile %1$d</string>
+    <string name="models_spec_channels">%1$d 通道</string>
+    <string name="models_spec_size">%1$dMB</string>
     <string name="models_selected">已选择</string>
     <string name="models_select">选择</string>
     <string name="models_delete">删除</string>
@@ -167,14 +168,16 @@
     <!-- Connection screen -->
     <string name="connection_title">连接 PC</string>
     <string name="connection_ignore">忽略</string>
-    <string name="connection_connected_title">✅ 已连接 PC</string>
     <string name="connection_fingerprint">指纹：%1$s</string>
     <string name="connection_disconnect">断开连接</string>
     <string name="connection_connecting_title">正在连接 PC…</string>
     <string name="connection_connecting_hint">首次连接需在 PC 端批准并核对指纹。</string>
-    <string name="connection_scan_qr">📷 扫码连接</string>
+    <string name="connection_status_connected">已连接 PC</string>
+    <string name="connection_status_disconnected">未连接 PC</string>
+    <string name="connection_status_disconnected_hint">连接后图片将交由 PC 的 GPU 超分处理，速度更快</string>
+    <string name="connection_usage_section">使用说明</string>
+    <string name="connection_scan_qr">扫码连接</string>
     <string name="connection_manual_input">手动输入 IP:port</string>
-    <string name="connection_usage_title">ℹ️ 使用说明</string>
     <string name="connection_usage_body">连接 PC 后，图片将发送到 PC 用 GPU 超分辨率处理（更快）；未连接时手机本地处理。首次连接需在 PC 端批准并核对指纹。下次启动 App 会自动重连上次使用的 PC。</string>
     <string name="connection_host_label">PC IP 地址</string>
     <string name="connection_port_label">端口</string>
@@ -222,15 +225,22 @@
     <string name="settings_help_subtitle">快速开始与常见问题</string>
     <string name="settings_stream_encryption_title">加密数据流传输 (图像/结果)</string>
     <string name="settings_stream_encryption_subtitle">关闭可提升吞吐; 控制帧始终加密</string>
-    <string name="settings_enter">进入</string>
+    <string name="settings_section_general">通用</string>
+    <string name="settings_section_transfer">传输</string>
+    <string name="settings_section_about">关于</string>
 
     <!-- Help screen -->
-    <string name="help_step_1">1. 在主页顶部点击“添加图片或文件夹”。</string>
-    <string name="help_step_2">2. 选择超分模型与输出路径。</string>
-    <string name="help_step_3">3. 根据需要开启“覆盖原图 / 备份原图”。</string>
-    <string name="help_step_4">4. 点击底部“开始超分”，并可上拉队列查看进度与失败原因。</string>
-    <string name="help_step_5">5. 文件与模型导入统一使用系统文件选择器。</string>
+    <string name="help_step_1">在主页顶部点击“添加图片或文件夹”。</string>
+    <string name="help_step_2">选择超分模型与输出路径。</string>
+    <string name="help_step_3">根据需要开启“覆盖原图 / 备份原图”。</string>
+    <string name="help_step_4">点击底部“开始超分”，并可上拉队列查看进度与失败原因。</string>
+    <string name="help_step_5">文件与模型导入统一使用系统文件选择器。</string>
     <string name="help_tip">提示：若开启覆盖原图，建议同时开启备份原图。</string>
+    <string name="help_faq_q1">如何添加图片？</string>
+    <string name="help_faq_q2">如何选择模型与输出路径？</string>
+    <string name="help_faq_q3">覆盖原图 / 备份原图怎么用？</string>
+    <string name="help_faq_q4">如何查看进度与失败原因？</string>
+    <string name="help_faq_q5">文件与模型如何导入？</string>
 
     <!-- Logs screen -->
     <string name="logs_result_count">当前结果：%1$d 条</string>

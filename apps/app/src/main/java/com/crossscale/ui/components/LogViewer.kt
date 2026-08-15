@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -17,28 +16,28 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import com.crossscale.data.model.LogEntry
 import com.crossscale.data.model.LogLevel
-import com.crossscale.ui.theme.BorderlessTokens
 import com.crossscale.ui.theme.LogMonoStyle
+import com.crossscale.ui.theme.Spacing
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
 @Composable
-fun LogViewer(logs: List<LogEntry>) {
+fun LogViewer(logs: List<LogEntry>, modifier: Modifier = Modifier) {
     // Pattern parsing + zone lookup is non-trivial; hoist out of recomposition.
     val formatter = remember {
         DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault())
     }
 
     LazyColumn(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(BorderlessTokens.ListItemSpacing)
+        modifier = modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(Spacing.sm)
     ) {
         items(items = logs, key = { it.id }) { logEntry ->
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = BorderlessTokens.SectionCompactSpacing),
-                verticalArrangement = Arrangement.spacedBy(BorderlessTokens.SectionCompactSpacing / 2)
+                    .padding(vertical = Spacing.xs),
+                verticalArrangement = Arrangement.spacedBy(Spacing.xs)
             ) {
                 Text(
                     text = "[${formatter.format(logEntry.timestamp)}] [${logEntry.tag}]",
@@ -50,7 +49,6 @@ fun LogViewer(logs: List<LogEntry>) {
                     color = levelColor(logEntry.level),
                     style = LogMonoStyle
                 )
-                HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerSubtleAlpha))
             }
         }
     }
