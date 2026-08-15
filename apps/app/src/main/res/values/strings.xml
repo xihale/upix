@@ -27,7 +27,6 @@
     <string name="home_snackbar_connected">已连接 PC，使用远程处理</string>
     <string name="home_snackbar_pc_unreachable_switched">PC 不可达，已切换本地处理</string>
     <string name="home_snackbar_pc_unreachable_local">PC 不可达，使用本地处理</string>
-    <string name="home_parameters_section">参数</string>
     <string name="home_model_setting_label">超分模型</string>
     <string name="home_output_path_label">输出路径</string>
     <string name="home_use_default_output">默认</string>
@@ -39,27 +38,14 @@
     <string name="home_restore_backup_result_partial">恢复了 %1$d 个备份，失败 %2$d 个</string>
     <string name="home_continue_queue">继续队列</string>
     <string name="home_start_upscaling">开始超分</string>
-    <string name="home_stop">停止</string>
-    <string name="home_queue_title">队列</string>
-    <string name="home_queue_summary">待处理 %1$d · 失败 %2$d</string>
     <string name="home_open_queue_cd">打开队列</string>
-    <string name="home_badge_failed">%1$d 失败</string>
-    <string name="home_badge_pending">%1$d 待处理</string>
-    <string name="home_badge_empty">空</string>
-    <string name="home_mode_remote">🖥️ 远程 · PC 处理 · %1$s</string>
-    <string name="home_mode_local">📱 本地 · 手机处理</string>
-    <string name="home_mode_connecting">🔄 连接 PC 中…</string>
 
     <!-- Home hero area -->
-    <string name="hero_selected_count">已选择 %1$d 项</string>
-    <string name="hero_add_more">继续添加</string>
-    <string name="hero_clear_selection_cd">清除已选图片</string>
     <string name="hero_thumbnail_corrupted">损坏</string>
     <string name="hero_thumbnail_preview">预览</string>
     <string name="hero_preview_title">预览 · %1$s</string>
     <string name="hero_image_corrupted">图片损坏</string>
     <string name="hero_no_preview">暂无可预览图像</string>
-    <string name="hero_thumbnail_hint">长按缩略图可预览，单击缩略图可删除</string>
     <string name="hero_stage_empty_title">把图片放大，交给 CrossScale</string>
     <string name="hero_stage_empty_subtitle">选择单张图片或整个文件夹，本地或连接 PC 处理</string>
     <string name="hero_pick_image">选择图片</string>
@@ -87,16 +73,11 @@
     <string name="queue_close_cd">关闭队列</string>
 
     <!-- Queue bottom sheet -->
-    <string name="queue_running">运行中</string>
-    <string name="queue_paused">已暂停</string>
-    <string name="queue_details_title">队列详情</string>
-    <string name="queue_status_summary">状态：%1$s · 待处理 %2$d · 失败 %3$d</string>
     <string name="queue_start">启动</string>
     <string name="queue_pause">暂停</string>
     <string name="queue_clear">清空</string>
     <string name="queue_empty">队列为空</string>
     <string name="queue_status_pending">未开始</string>
-    <string name="queue_status_label">状态：%1$s</string>
     <string name="queue_retry_failed_only">仅失败项</string>
     <string name="queue_open_output">打开结果</string>
     <string name="queue_remove">移除</string>
@@ -190,23 +171,9 @@
     <string name="dialog_fingerprint_confirm">指纹一致, 确认</string>
 
     <!-- Processing progress panel -->
-    <string name="progress_task_status">任务状态: %1$s</string>
     <string name="progress_status_idle">空闲</string>
     <string name="progress_status_canceled">已取消</string>
-    <string name="progress_progress_percent">进度: %1$d%%</string>
     <string name="progress_completed_items">已处理: %1$d/%2$d</string>
-    <string name="progress_pending_items">待处理: %1$d/%2$d</string>
-    <string name="progress_failed_count">失败: %1$d</string>
-    <string name="progress_failed_files">失败文件(%1$d/%2$d): %3$s</string>
-    <string name="progress_failure_details">失败详情:</string>
-    <string name="progress_failure_detail_item">• %1$s: %2$s (%3$d次)</string>
-    <string name="progress_more_failures">还有 %1$d 条失败记录</string>
-    <string name="progress_current_file">当前文件: %1$s</string>
-    <string name="progress_last_completed">最近完成: %1$s · 处理节点: %2$s</string>
-    <string name="progress_unknown_node">未知节点</string>
-    <string name="progress_recent_attributions">近期分配: %1$s</string>
-    <string name="progress_output_directory">输出目录: %1$s</string>
-    <string name="progress_last_error">最近错误: %1$s</string>
     <string name="progress_compact_summary">%1$d%% · 待 %2$d/%3$d · 失败 %4$d</string>
     <!-- Processing run messages (resolved by ProcessingRunPlanner / ProcessingRunEngine) -->
     <string name="processing_processor_local">本机</string>

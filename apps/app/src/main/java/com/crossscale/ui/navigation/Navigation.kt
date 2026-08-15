@@ -72,6 +72,7 @@ fun CrossScaleNavigation(
     onRetryFailedItem: (String) -> Unit,
     onDiscardCheckpoint: () -> Unit,
     onCancelProcessing: () -> Unit,
+    modifier: Modifier = Modifier,
     hasBackupAvailable: Boolean = false,
     onRestoreBackup: () -> Unit = {},
     onRefreshModels: () -> Unit,
@@ -87,8 +88,7 @@ fun CrossScaleNavigation(
     isStreamEncrypted: Boolean,
     onClearLogs: () -> Unit,
     onOpenModelRelease: () -> Unit,
-    onOpenHelp: () -> Unit,
-    modifier: Modifier = Modifier
+    onOpenHelp: () -> Unit
 ) {
     // 1:1 phone<->PC: the nav graph no longer takes connectionState /
     // connectedEndpoint / onDisconnect as threaded callback params. It pulls the
