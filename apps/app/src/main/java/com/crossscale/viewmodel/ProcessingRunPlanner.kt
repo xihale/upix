@@ -205,7 +205,7 @@ class ProcessingRunPlanner(
         )
     }
 
-    fun saveCheckpointSnapshot(
+    suspend fun saveCheckpointSnapshot(
         taskId: String,
         imagePath: String,
         modelName: String,
@@ -232,7 +232,7 @@ class ProcessingRunPlanner(
         val orderedFailures = failureDetails.values
             .sortedWith(compareBy({ it.displayName.lowercase() }, { it.uri }))
 
-        checkpointRepository.saveCheckpoint(
+        checkpointRepository.persistCheckpoint(
             ProcessingCheckpoint(
                 taskId = taskId,
                 source = imagePath,

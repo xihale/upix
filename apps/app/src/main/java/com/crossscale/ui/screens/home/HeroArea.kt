@@ -50,6 +50,11 @@ import com.crossscale.data.thumbnails.decodeQueueThumbnailWithLimit
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.pressable
 
+// 320dp 舞台 / 全屏预览 sheet 的解码目标：默认 192px 缩略图在放大 3-5 倍后
+// 明显发糊；按展示区域给更高的解码尺寸（缓存 key 已含尺寸，互不污染）。
+private const val STAGE_THUMBNAIL_TARGET_SIZE_PX = 640
+private const val PREVIEW_THUMBNAIL_TARGET_SIZE_PX = 960
+
 /**
  * 图片舞台：超分工具的唯一视觉焦点。
  * 空态展示品牌 motif + 两个显式入口；已选态大图铺满 + 数量角标；
@@ -178,7 +183,11 @@ private fun SelectedStage(
     val stageBitmap by produceState<ImageBitmap?>(initialValue = null, firstSource) {
         value = firstSource?.let { source ->
             runCatching {
-                decodeQueueThumbnailWithLimit(context = context, source = source)
+                decodeQueueThumbnailWithLimit(
+                    context = context,
+                    source = source,
+                    targetSizePx = STAGE_THUMBNAIL_TARGET_SIZE_PX
+                )
             }.getOrNull()
         }
     }
@@ -369,7 +378,11 @@ internal fun PreviewBottomSheet(
     val context = LocalContext.current
     val previewBitmap by produceState<ImageBitmap?>(initialValue = null, source) {
         value = runCatching {
-            decodeQueueThumbnailWithLimit(context = context, source = source)
+            decodeQueueThumbnailWithLimit(
+                context = context,
+                source = source,
+                targetSizePx = PREVIEW_THUMBNAIL_TARGET_SIZE_PX
+            )
         }.getOrNull()
     }
     val previewFallbackTitle = stringResource(R.string.hero_thumbnail_preview)

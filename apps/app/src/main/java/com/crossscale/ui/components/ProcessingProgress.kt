@@ -21,22 +21,23 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.model.ProcessingStatus
+import com.crossscale.data.model.ProcessingTask
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
 import com.crossscale.ui.theme.smoothProgress
-import com.crossscale.viewmodel.ProcessingUiState
 import kotlin.math.roundToInt
 
 /**
  * 舞台遮罩进度：处理中覆盖在图片舞台之上。
  * 大号进度条 + 一句话阶段 + 已完成/总数 + 取消；细节字段收成单行 mono。
+ * 只接收 [task]（而非整个 UI state）以缩小上游重组面。
  */
 @Composable
 fun StageProgressOverlay(
-    uiState: ProcessingUiState,
+    task: ProcessingTask?,
     onCancel: () -> Unit
 ) {
-    val task = uiState.task ?: return
+    val task = task ?: return
 
     Box(
         modifier = Modifier

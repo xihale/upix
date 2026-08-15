@@ -20,6 +20,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
 // State-exchange surface between ProcessingRunEngine and the ViewModel that
@@ -223,23 +224,6 @@ internal class ProcessingRunEngine(
             return true
         }
 
-        planner.saveCheckpointSnapshot(
-            taskId = taskId,
-            imagePath = imagePath,
-            modelName = modelName,
-            distributedMode = effectiveDistributedMode,
-            totalItems = totalItems,
-            completedItems = completedCount,
-            outputDirectory = outputDirectory.displayPath,
-            outputDirectoryUri = outputDirectory.outputDirectoryUri,
-            overwriteOriginal = outputDirectory.overwriteOriginal,
-            backupOriginal = outputDirectory.backupOriginal,
-            createdAtEpochMs = createdAt,
-            pendingImages = pendingImages,
-            failureDetails = initialFailures,
-            lastErrorMessage = initialLastError
-        )
-
         host.updateUiState { state ->
             state.copy(
                     task = ProcessingTask(
@@ -283,6 +267,25 @@ internal class ProcessingRunEngine(
             // batch runs natively without re-trying a dead link each image.
             var remoteRouting = effectiveDistributedMode
             var processingSession: ImageProcessingSession? = null
+
+            // Initial checkpoint (moved into the run coroutine so the disk
+            // write happens off the main thread via persistCheckpoint).
+            planner.saveCheckpointSnapshot(
+                taskId = taskId,
+                imagePath = imagePath,
+                modelName = modelName,
+                distributedMode = effectiveDistributedMode,
+                totalItems = totalItems,
+                completedItems = completedCount,
+                outputDirectory = outputDirectory.displayPath,
+                outputDirectoryUri = outputDirectory.outputDirectoryUri,
+                overwriteOriginal = outputDirectory.overwriteOriginal,
+                backupOriginal = outputDirectory.backupOriginal,
+                createdAtEpochMs = createdAt,
+                pendingImages = pendingImages,
+                failureDetails = initialFailures,
+                lastErrorMessage = initialLastError
+            )
 
             try {
                 if (remoteRouting) {
@@ -595,22 +598,26 @@ internal class ProcessingRunEngine(
                     }
                 }
             } catch (cancellationException: CancellationException) {
-                planner.saveCheckpointSnapshot(
-                    taskId = taskId,
-                    imagePath = imagePath,
-                    modelName = modelName,
-                    distributedMode = effectiveDistributedMode,
-                    totalItems = totalItems,
-                    completedItems = successfulCount,
-                    outputDirectory = outputDirectory.displayPath,
-                    outputDirectoryUri = outputDirectory.outputDirectoryUri,
-                    overwriteOriginal = outputDirectory.overwriteOriginal,
-                    backupOriginal = outputDirectory.backupOriginal,
-                    createdAtEpochMs = createdAt,
-                    pendingImages = pendingByUri.values.toList(),
-                    failureDetails = failureDetailsByUri,
-                    lastErrorMessage = lastError
-                )
+                // The coroutine is already cancelled; wrap in NonCancellable so
+                // the final checkpoint still reaches disk before rethrowing.
+                withContext(NonCancellable) {
+                    planner.saveCheckpointSnapshot(
+                        taskId = taskId,
+                        imagePath = imagePath,
+                        modelName = modelName,
+                        distributedMode = effectiveDistributedMode,
+                        totalItems = totalItems,
+                        completedItems = successfulCount,
+                        outputDirectory = outputDirectory.displayPath,
+                        outputDirectoryUri = outputDirectory.outputDirectoryUri,
+                        overwriteOriginal = outputDirectory.overwriteOriginal,
+                        backupOriginal = outputDirectory.backupOriginal,
+                        createdAtEpochMs = createdAt,
+                        pendingImages = pendingByUri.values.toList(),
+                        failureDetails = failureDetailsByUri,
+                        lastErrorMessage = lastError
+                    )
+                }
                 logRepository.warning("ProcessingViewModel", "Task $taskId canceled")
                 throw cancellationException
             } catch (throwable: Throwable) {

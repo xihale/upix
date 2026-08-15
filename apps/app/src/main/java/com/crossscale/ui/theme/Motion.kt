@@ -1,10 +1,14 @@
 package com.crossscale.ui.theme
 
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.CubicBezierEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -34,6 +38,9 @@ const val PressTween = 120
 const val EnterTween = 200
 const val ExpandTween = 250
 
+/** NavHost 目的地退场 fade（90ms，快进快出，不与进场抢注意力）。 */
+const val NavExitTween = 90
+
 /** 按压缩放（120ms）。 */
 val PressMotionSpec = tween<Float>(PressTween, easing = EmphasizedEasing)
 
@@ -48,6 +55,12 @@ val EnterSizeSpec = tween<IntSize>(EnterTween, easing = EmphasizedEasing)
 
 /** AnimatedContent 换内容的位移 spec（200ms）。 */
 val EnterOffsetSpec = tween<IntOffset>(EnterTween, easing = EmphasizedEasing)
+
+/** NavHost 目的地进入：fade-in（200ms，EmphasizedEasing），替代默认 700ms fade。 */
+val NavEnterTransition: EnterTransition = fadeIn(tween(EnterTween, easing = EmphasizedEasing))
+
+/** NavHost 目的地退出：fade-out（90ms）。 */
+val NavExitTransition: ExitTransition = fadeOut(tween(NavExitTween))
 
 /**
  * 给定 interactionSource，按下时缩到 0.97（graphicsLayer，仅 transform）。

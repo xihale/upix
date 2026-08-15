@@ -74,6 +74,15 @@ interface ProcessingCheckpointStore {
 
     fun saveCheckpoint(checkpoint: ProcessingCheckpoint)
 
+    /**
+     * Off-main-thread save: serialization + disk write run on Dispatchers.IO.
+     * Default implementation falls back to the synchronous save so lightweight
+     * fakes keep working without extra boilerplate.
+     */
+    suspend fun persistCheckpoint(checkpoint: ProcessingCheckpoint) {
+        saveCheckpoint(checkpoint)
+    }
+
     fun loadCheckpoint(): ProcessingCheckpoint?
 
     fun clearCheckpoint()
@@ -83,6 +92,15 @@ interface ProcessingQueueStore {
     val queue: StateFlow<ProcessingQueueSnapshot>
 
     fun saveQueue(snapshot: ProcessingQueueSnapshot)
+
+    /**
+     * Off-main-thread save: serialization + disk write run on Dispatchers.IO.
+     * Default implementation falls back to the synchronous save so lightweight
+     * fakes keep working without extra boilerplate.
+     */
+    suspend fun persistQueue(snapshot: ProcessingQueueSnapshot) {
+        saveQueue(snapshot)
+    }
 
     fun loadQueue(): ProcessingQueueSnapshot
 }

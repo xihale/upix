@@ -2,9 +2,12 @@ package com.crossscale.data.repository
 
 import android.content.Context
 import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -56,43 +59,54 @@ class ProcessingQueueRepository(
     private val _queue = MutableStateFlow(ProcessingQueueSnapshot())
     override val queue: StateFlow<ProcessingQueueSnapshot> = _queue.asStateFlow()
 
+    // Synchronous path retained for direct callers (unit tests). All production
+    // flows go through [persistQueue] so JSON serialization + file writes stay
+    // off the main thread.
     override fun saveQueue(snapshot: ProcessingQueueSnapshot) {
+        runBlocking { persistQueue(snapshot) }
+    }
+
+    override suspend fun persistQueue(snapshot: ProcessingQueueSnapshot) {
         val normalizedSnapshot = snapshot.normalizedForSave()
         if (normalizedSnapshot.items.isEmpty() && !normalizedSnapshot.isQueueRunning) {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    if (queueFile.exists()) {
+                        queueFile.delete()
+                    }
+                    _queue.value = normalizedSnapshot
+                }.onFailure { throwable ->
+                    logRepository.error(
+                        "ProcessingQueueRepository",
+                        "Failed to clear queue: ${throwable.message}"
+                    )
+                }
+            }
+            return
+        }
+
+        withContext(Dispatchers.IO) {
             runCatching {
+                val payload = Json.encodeToString(
+                    JsonObject.serializer(),
+                    normalizedSnapshot.toJsonObject()
+                )
+                val tempFile = File(queueFile.parentFile, "${queueFile.name}.tmp")
+                tempFile.writeText(payload)
                 if (queueFile.exists()) {
                     queueFile.delete()
+                }
+                val renameSuccess = tempFile.renameTo(queueFile)
+                if (!renameSuccess) {
+                    throw IllegalStateException("Failed to replace queue file")
                 }
                 _queue.value = normalizedSnapshot
             }.onFailure { throwable ->
                 logRepository.error(
                     "ProcessingQueueRepository",
-                    "Failed to clear queue: ${throwable.message}"
+                    "Failed to save queue: ${throwable.message}"
                 )
             }
-            return
-        }
-
-        runCatching {
-            val payload = Json.encodeToString(
-                JsonObject.serializer(),
-                normalizedSnapshot.toJsonObject()
-            )
-            val tempFile = File(queueFile.parentFile, "${queueFile.name}.tmp")
-            tempFile.writeText(payload)
-            if (queueFile.exists()) {
-                queueFile.delete()
-            }
-            val renameSuccess = tempFile.renameTo(queueFile)
-            if (!renameSuccess) {
-                throw IllegalStateException("Failed to replace queue file")
-            }
-            _queue.value = normalizedSnapshot
-        }.onFailure { throwable ->
-            logRepository.error(
-                "ProcessingQueueRepository",
-                "Failed to save queue: ${throwable.message}"
-            )
         }
     }
 

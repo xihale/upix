@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -124,23 +125,47 @@ class ProcessingViewModel(
         restorePersistedCheckpointAsync()
 
         viewModelScope.launch {
-            checkpointRepository.checkpoint.collectLatest { checkpoint ->
-                _uiState.update { state ->
-                    state.copy(
+            // Project the raw checkpoint into UI-facing values first so that
+            // data-class equality (ProcessingCheckpointSummary is a data class
+            // with data-class elements) can dedupe unchanged snapshots before
+            // they ever touch _uiState; conflate drops intermediate values if
+            // the collector falls behind.
+            checkpointRepository.checkpoint
+                .map { checkpoint ->
+                    CheckpointUiProjection(
                         canResume = checkpoint != null,
-                        checkpointSummary = checkpoint?.toUiSummary(stringProvider),
+                        summary = checkpoint?.toUiSummary(stringProvider),
                         canRetryFailedOnly = checkpoint?.canRetryFailedOnly() == true
                     )
                 }
-            }
+                .distinctUntilChanged()
+                .conflate()
+                .collect { projection ->
+                    _uiState.update { state ->
+                        state.copy(
+                            canResume = projection.canResume,
+                            checkpointSummary = projection.summary,
+                            canRetryFailedOnly = projection.canRetryFailedOnly
+                        )
+                    }
+                }
         }
 
         viewModelScope.launch {
             uiState
                 .map { state -> state.toQueueSnapshot() }
                 .distinctUntilChanged()
+                .conflate()
                 .collectLatest { snapshot ->
-                    queueRepository.saveQueue(snapshot)
+                    // Runs on the injected IO dispatcher (test dispatcher in
+                    // unit tests, Dispatchers.IO in production); inside the
+                    // repository the serialization + write are additionally
+                    // wrapped in withContext(Dispatchers.IO). collectLatest
+                    // cancels an in-flight stale save so only the newest
+                    // snapshot hits disk.
+                    withContext(ioDispatcher) {
+                        queueRepository.saveQueue(snapshot)
+                    }
                 }
         }
     }
@@ -512,3 +537,13 @@ class ProcessingViewModel(
         }
     }
 }
+
+// Dedup key for the checkpoint -> UI projection: data-class equality over the
+// summary (itself a data class of data-class elements) makes
+// distinctUntilChanged effective even when the repository emits fresh
+// ProcessingCheckpoint instances with identical UI content.
+private data class CheckpointUiProjection(
+    val canResume: Boolean,
+    val summary: ProcessingCheckpointSummary?,
+    val canRetryFailedOnly: Boolean
+)

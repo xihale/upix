@@ -2,9 +2,12 @@ package com.crossscale.data.repository
 
 import android.content.Context
 import java.io.File
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -58,24 +61,33 @@ class ProcessingCheckpointRepository(
     private val _checkpoint = MutableStateFlow<ProcessingCheckpoint?>(null)
     override val checkpoint: StateFlow<ProcessingCheckpoint?> = _checkpoint.asStateFlow()
 
+    // Synchronous path retained for direct callers (unit tests). All production
+    // flows go through [persistCheckpoint] so JSON serialization + file writes
+    // stay off the main thread.
     override fun saveCheckpoint(checkpoint: ProcessingCheckpoint) {
-        runCatching {
-            val payload = checkpoint.toJsonObject()
-            val tempFile = File(checkpointFile.parentFile, "${checkpointFile.name}.tmp")
-            tempFile.writeText(Json.encodeToString(JsonObject.serializer(), payload))
-            if (checkpointFile.exists()) {
-                checkpointFile.delete()
+        runBlocking { persistCheckpoint(checkpoint) }
+    }
+
+    override suspend fun persistCheckpoint(checkpoint: ProcessingCheckpoint) {
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val payload = checkpoint.toJsonObject()
+                val tempFile = File(checkpointFile.parentFile, "${checkpointFile.name}.tmp")
+                tempFile.writeText(Json.encodeToString(JsonObject.serializer(), payload))
+                if (checkpointFile.exists()) {
+                    checkpointFile.delete()
+                }
+                val renameSuccess = tempFile.renameTo(checkpointFile)
+                if (!renameSuccess) {
+                    throw IllegalStateException("Failed to replace checkpoint file")
+                }
+                _checkpoint.value = checkpoint
+            }.onFailure { throwable ->
+                logRepository.error(
+                    "ProcessingCheckpointRepository",
+                    "Failed to save checkpoint: ${throwable.message}"
+                )
             }
-            val renameSuccess = tempFile.renameTo(checkpointFile)
-            if (!renameSuccess) {
-                throw IllegalStateException("Failed to replace checkpoint file")
-            }
-            _checkpoint.value = checkpoint
-        }.onFailure { throwable ->
-            logRepository.error(
-                "ProcessingCheckpointRepository",
-                "Failed to save checkpoint: ${throwable.message}"
-            )
         }
     }
 

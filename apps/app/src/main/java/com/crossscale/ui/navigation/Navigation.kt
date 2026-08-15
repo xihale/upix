@@ -31,6 +31,8 @@ import com.crossscale.ui.screens.home.HomeCheckpointActions
 import com.crossscale.ui.screens.home.HomeConnection
 import com.crossscale.ui.screens.home.HomeQueueActions
 import com.crossscale.ui.screens.home.HomeSetupActions
+import com.crossscale.ui.theme.NavEnterTransition
+import com.crossscale.ui.theme.NavExitTransition
 import com.crossscale.viewmodel.DeviceUiState
 import com.crossscale.viewmodel.DeviceViewModel
 import com.crossscale.viewmodel.MainUiState
@@ -109,7 +111,11 @@ fun CrossScaleNavigation(
     NavHost(
         navController = navController,
         startDestination = AppScreen.Home.route,
-        modifier = modifier
+        modifier = modifier,
+        enterTransition = { NavEnterTransition },
+        exitTransition = { NavExitTransition },
+        popEnterTransition = { NavEnterTransition },
+        popExitTransition = { NavExitTransition }
     ) {
         composable(AppScreen.Home.route) {
             DestinationContainer {

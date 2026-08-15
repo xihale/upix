@@ -188,6 +188,10 @@ private fun QueueItemRow(
     val sourceLabel = remember(queueItem.source, unnamedInputLabel) {
         inputSourceLabel(queueItem.source, unnamedInputLabel)
     }
+    // Allocation summary resolves 5-6 string resources and formats them;
+    // resolve the resources outside remember, then cache the assembled string
+    // keyed on the item fields + resolved labels.
+    val allocationSummary = rememberAllocationSummary(queueItem)
 
     Column(
         modifier = modifier
@@ -197,7 +201,7 @@ private fun QueueItemRow(
         verticalArrangement = Arrangement.spacedBy(Spacing.xs)
     ) {
         Row(
-            horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+            horizontalArrangement = Arrangement.spacedBy(Spacing.lg),
             verticalAlignment = Alignment.CenterVertically
         ) {
             QueueItemThumbnail(source = queueItem.source)
@@ -213,7 +217,7 @@ private fun QueueItemRow(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = stringResource(R.string.queue_allocation_label, allocationSummary(queueItem)),
+                    text = stringResource(R.string.queue_allocation_label, allocationSummary),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
@@ -230,7 +234,7 @@ private fun QueueItemRow(
                 color = MaterialTheme.colorScheme.error,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(start = 68.dp)
+                modifier = Modifier.padding(start = 72.dp)
             )
         }
 
@@ -365,27 +369,43 @@ private fun QueueItemThumbnail(source: String) {
     }
 }
 
+/**
+ * allocation summary 缓存：stringResource 只能在 composable 上下文调用，
+ * 因此先在 remember 外解析全部资源串，再用纯函数拼接并按 item 字段缓存，
+ * 避免每次重组重复 5-6 次资源查找 + 格式化。
+ */
 @Composable
-private fun allocationSummary(item: ProcessingQueueItemSummary): String {
-    val mode = if (item.distributedMode) {
-        stringResource(R.string.queue_mode_distributed)
-    } else {
-        stringResource(R.string.queue_mode_standalone)
+private fun rememberAllocationSummary(item: ProcessingQueueItemSummary): String {
+    val modeDistributed = stringResource(R.string.queue_mode_distributed)
+    val modeStandalone = stringResource(R.string.queue_mode_standalone)
+    val expectedCountPattern = stringResource(R.string.queue_expected_count)
+    val expectedPending = stringResource(R.string.queue_expected_pending)
+    val overwriteOriginalLabel = stringResource(R.string.common_overwrite_original)
+    val writeToOutputLabel = stringResource(R.string.queue_write_to_output)
+    val backupSuffixLabel = stringResource(R.string.queue_backup_suffix)
+    val summaryPattern = stringResource(R.string.queue_allocation_summary)
+    return remember(
+        item.distributedMode,
+        item.expectedItems,
+        item.overwriteOriginal,
+        item.backupOriginal,
+        modeDistributed,
+        modeStandalone,
+        expectedCountPattern,
+        expectedPending,
+        overwriteOriginalLabel,
+        writeToOutputLabel,
+        backupSuffixLabel,
+        summaryPattern
+    ) {
+        val mode = if (item.distributedMode) modeDistributed else modeStandalone
+        val expected = item.expectedItems
+            ?.let { count -> String.format(expectedCountPattern, count) }
+            ?: expectedPending
+        val overwrite = if (item.overwriteOriginal) overwriteOriginalLabel else writeToOutputLabel
+        val backup = if (item.overwriteOriginal && item.backupOriginal) backupSuffixLabel else ""
+        String.format(summaryPattern, mode, expected, overwrite, backup)
     }
-    val expected = item.expectedItems?.let { count ->
-        stringResource(R.string.queue_expected_count, count)
-    } ?: stringResource(R.string.queue_expected_pending)
-    val overwrite = if (item.overwriteOriginal) {
-        stringResource(R.string.common_overwrite_original)
-    } else {
-        stringResource(R.string.queue_write_to_output)
-    }
-    val backup = if (item.overwriteOriginal && item.backupOriginal) {
-        stringResource(R.string.queue_backup_suffix)
-    } else {
-        ""
-    }
-    return stringResource(R.string.queue_allocation_summary, mode, expected, overwrite, backup)
 }
 
 private fun inputSourceLabel(source: String, unnamedInputLabel: String): String {

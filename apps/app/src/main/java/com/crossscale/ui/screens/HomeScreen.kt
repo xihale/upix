@@ -155,7 +155,7 @@ fun HomeScreen(
                 overlay = {
                     StageProcessingOverlay(
                         visible = isProcessing,
-                        uiState = processingUiState,
+                        task = processingUiState.task,
                         onCancel = queueActions.onCancelProcessing
                     )
                 }
@@ -274,11 +274,11 @@ fun HomeScreen(
     }
 }
 
-/** 舞台处理 scrim/覆盖层：出现/消失做 fade（200ms ease-out）。 */
+/** 舞台处理 scrim/覆盖层：出现/消失做 fade（200ms ease-out）。只接收 task，避免整包 UI state 参与 overlay 重组。 */
 @Composable
 private fun BoxScope.StageProcessingOverlay(
     visible: Boolean,
-    uiState: ProcessingUiState,
+    task: com.crossscale.data.model.ProcessingTask?,
     onCancel: () -> Unit
 ) {
     androidx.compose.animation.AnimatedVisibility(
@@ -287,7 +287,7 @@ private fun BoxScope.StageProcessingOverlay(
         exit = fadeOut(EnterMotionSpec)
     ) {
         StageProgressOverlay(
-            uiState = uiState,
+            task = task,
             onCancel = onCancel
         )
     }

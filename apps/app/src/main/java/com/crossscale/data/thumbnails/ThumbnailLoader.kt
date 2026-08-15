@@ -16,16 +16,17 @@ private const val THUMBNAIL_TARGET_SIZE_PX = 192
 
 private fun decodeQueueThumbnail(
     context: Context,
-    source: String
+    source: String,
+    targetSizePx: Int
 ): ImageBitmap? {
-    val sourceKey = thumbnailCacheKey(source)
+    val sourceKey = thumbnailCacheKey(source, targetSizePx)
     ThumbnailMemoryCache.getThumbnail(sourceKey)?.let { cachedBitmap ->
         return cachedBitmap
     }
 
     val thumbnailSources = resolveThumbnailCandidateSources(context = context, source = source)
     for (thumbnailSource in thumbnailSources) {
-        val candidateKey = thumbnailCacheKey(thumbnailSource)
+        val candidateKey = thumbnailCacheKey(thumbnailSource, targetSizePx)
         ThumbnailMemoryCache.getThumbnail(candidateKey)?.let { cachedBitmap ->
             ThumbnailMemoryCache.putThumbnail(sourceKey, cachedBitmap)
             return cachedBitmap
@@ -49,7 +50,7 @@ private fun decodeQueueThumbnail(
         }
 
         val decodeOptions = BitmapFactory.Options().apply {
-            inSampleSize = calculateInSampleSize(sourceWidth, sourceHeight, THUMBNAIL_TARGET_SIZE_PX)
+            inSampleSize = calculateInSampleSize(sourceWidth, sourceHeight, targetSizePx)
             inPreferredConfig = Bitmap.Config.RGB_565
         }
 
@@ -67,11 +68,12 @@ private fun decodeQueueThumbnail(
 
 internal suspend fun decodeQueueThumbnailWithLimit(
     context: Context,
-    source: String
+    source: String,
+    targetSizePx: Int = THUMBNAIL_TARGET_SIZE_PX
 ): ImageBitmap? {
     return withContext(Dispatchers.IO) {
         ThumbnailDecodeLimiter.withPermit {
-            decodeQueueThumbnail(context = context, source = source)
+            decodeQueueThumbnail(context = context, source = source, targetSizePx = targetSizePx)
         }
     }
 }
@@ -199,6 +201,9 @@ private fun calculateInSampleSize(
     return sampleSize.coerceAtLeast(1)
 }
 
-private fun thumbnailCacheKey(source: String): String {
-    return source.trim()
+// Cache keys must encode the decode size: the same source is decoded at
+// different target sizes (queue rows vs. stage vs. preview) and must never
+// alias onto each other's cache entries.
+private fun thumbnailCacheKey(source: String, targetSizePx: Int): String {
+    return "${source.trim()}#$targetSizePx"
 }
