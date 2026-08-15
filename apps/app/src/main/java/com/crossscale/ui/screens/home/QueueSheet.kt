@@ -2,7 +2,6 @@ package com.crossscale.ui.screens.home
 
 import android.net.Uri
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +49,7 @@ import com.crossscale.data.repository.PersistedQueueItemStatus
 import com.crossscale.data.thumbnails.decodeQueueThumbnailWithLimit
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
+import com.crossscale.ui.theme.pressable
 import com.crossscale.viewmodel.ProcessingQueueItemSummary
 import com.crossscale.viewmodel.ProcessingUiState
 
@@ -155,6 +155,7 @@ internal fun QueueBottomSheetContent(
                         index = index,
                         queueItem = queueItem,
                         isProcessing = processingUiState.isProcessing,
+                        modifier = Modifier.animateItem(),
                         onRetryQueuedBatch = onRetryQueuedBatch,
                         onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
                         onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,
@@ -173,6 +174,7 @@ private fun QueueItemRow(
     index: Int,
     queueItem: ProcessingQueueItemSummary,
     isProcessing: Boolean,
+    modifier: Modifier = Modifier,
     onRetryQueuedBatch: (String) -> Unit,
     onRetryQueuedBatchFailedOnly: (String) -> Unit,
     onOpenQueuedBatchOutput: (String) -> Unit,
@@ -188,9 +190,9 @@ private fun QueueItemRow(
     }
 
     Column(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .clickable(enabled = canOpenOutput) { onOpenQueuedBatchOutput(queueItem.id) }
+            .pressable(enabled = canOpenOutput) { onOpenQueuedBatchOutput(queueItem.id) }
             .padding(vertical = Spacing.xs),
         verticalArrangement = Arrangement.spacedBy(Spacing.xs)
     ) {

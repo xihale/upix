@@ -1,6 +1,5 @@
 package com.crossscale.ui.components
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,6 +20,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
+import com.crossscale.ui.theme.pressable
 
 /**
  * 参数卡内的统一行组件：leading 图标 + 标签 + 右侧 trailing slot。
@@ -39,7 +39,13 @@ fun ConfigRow(
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .then(
+                if (onClick != null) {
+                    Modifier.pressable(onClick = onClick)
+                } else {
+                    Modifier
+                }
+            )
             .heightIn(min = 48.dp)
             .padding(vertical = Spacing.sm),
         horizontalArrangement = Arrangement.spacedBy(Spacing.md),

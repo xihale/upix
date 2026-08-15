@@ -38,6 +38,7 @@ import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.model.RemoteEndpoint
 import com.crossscale.ui.components.ConfigRow
 import com.crossscale.ui.components.ConfigSwitchRow
+import com.crossscale.ui.theme.ExpandSizeSpec
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
 
@@ -72,7 +73,8 @@ internal fun ParameterCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .animateContentSize(),
+            // 高级设置折叠区展开（250ms ease-out，统一 spec）。
+            .animateContentSize(ExpandSizeSpec),
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surfaceContainer
     ) {

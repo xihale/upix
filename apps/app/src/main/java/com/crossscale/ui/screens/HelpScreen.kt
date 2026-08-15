@@ -15,6 +15,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import com.crossscale.R
 import com.crossscale.ui.theme.Spacing
+import com.crossscale.ui.theme.staggeredEnter
 
 @Composable
 fun HelpScreen() {
@@ -33,23 +34,28 @@ fun HelpScreen() {
 
         FaqCard(
             question = stringResource(R.string.help_faq_q1),
-            answer = stringResource(R.string.help_step_1)
+            answer = stringResource(R.string.help_step_1),
+            staggerIndex = 0
         )
         FaqCard(
             question = stringResource(R.string.help_faq_q2),
-            answer = stringResource(R.string.help_step_2)
+            answer = stringResource(R.string.help_step_2),
+            staggerIndex = 1
         )
         FaqCard(
             question = stringResource(R.string.help_faq_q3),
-            answer = stringResource(R.string.help_step_3)
+            answer = stringResource(R.string.help_step_3),
+            staggerIndex = 2
         )
         FaqCard(
             question = stringResource(R.string.help_faq_q4),
-            answer = stringResource(R.string.help_step_4)
+            answer = stringResource(R.string.help_step_4),
+            staggerIndex = 3
         )
         FaqCard(
             question = stringResource(R.string.help_faq_q5),
-            answer = stringResource(R.string.help_step_5)
+            answer = stringResource(R.string.help_step_5),
+            staggerIndex = 4
         )
 
         Surface(
@@ -68,9 +74,12 @@ fun HelpScreen() {
 }
 
 @Composable
-private fun FaqCard(question: String, answer: String) {
+private fun FaqCard(question: String, answer: String, staggerIndex: Int) {
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        // FAQ 卡一次性入场：alpha + 8dp 上滑，按 index 以 30ms 递增延迟。
+        modifier = Modifier
+            .fillMaxWidth()
+            .staggeredEnter(staggerIndex),
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainer
     ) {

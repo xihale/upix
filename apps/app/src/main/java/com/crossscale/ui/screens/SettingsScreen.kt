@@ -34,6 +34,7 @@ import com.crossscale.R
 import com.crossscale.ui.components.SectionHeader
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
+import com.crossscale.ui.theme.staggeredEnter
 
 /**
  * 设置屏：分组卡列表（组间留白 Spacing.lg，组内行间留白，不用 Divider）。
@@ -70,7 +71,7 @@ fun SettingsScreen(
         )
 
         SectionHeader(text = stringResource(R.string.settings_section_general))
-        SettingsGroupCard {
+        SettingsGroupCard(staggerIndex = 0) {
             SettingsEntryRow(
                 icon = Icons.Outlined.Memory,
                 title = stringResource(R.string.common_model_management),
@@ -92,7 +93,7 @@ fun SettingsScreen(
         }
 
         SectionHeader(text = stringResource(R.string.settings_section_transfer))
-        SettingsGroupCard {
+        SettingsGroupCard(staggerIndex = 1) {
             // 加密数据流传输开关: 控制图像/结果数据流是否加密(吞吐优先时关闭)。
             // 控制帧始终加密; 仅大 payload 走 stream 路径。
             Row(
@@ -132,7 +133,7 @@ fun SettingsScreen(
         }
 
         SectionHeader(text = stringResource(R.string.settings_section_about))
-        SettingsGroupCard {
+        SettingsGroupCard(staggerIndex = 2) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -162,9 +163,15 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun SettingsGroupCard(content: @Composable () -> Unit) {
+private fun SettingsGroupCard(
+    staggerIndex: Int,
+    content: @Composable () -> Unit
+) {
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        // 分组卡一次性入场：alpha + 8dp 上滑，按 index 以 30ms 递增延迟。
+        modifier = Modifier
+            .fillMaxWidth()
+            .staggeredEnter(staggerIndex),
         shape = MaterialTheme.shapes.large,
         color = MaterialTheme.colorScheme.surfaceContainer
     ) {

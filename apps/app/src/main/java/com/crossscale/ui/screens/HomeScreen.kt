@@ -1,8 +1,14 @@
 package com.crossscale.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -48,6 +54,8 @@ import com.crossscale.ui.screens.home.PreviewBottomSheet
 import com.crossscale.ui.screens.home.QueueBottomSheetContent
 import com.crossscale.ui.screens.home.countFailedQueueItems
 import com.crossscale.ui.screens.home.countPendingQueueItems
+import com.crossscale.ui.theme.EnterMotionSpec
+import com.crossscale.ui.theme.EnterSizeSpec
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.viewmodel.MainUiState
 import com.crossscale.viewmodel.ProcessingUiState
@@ -144,15 +152,12 @@ fun HomeScreen(
                 onClearInput = setupActions.onClearInputSources,
                 onRemoveInput = setupActions.onRemoveInputSource,
                 onPreviewInput = { source -> previewSource = source },
-                overlay = if (isProcessing) {
-                    {
-                        StageProgressOverlay(
-                            uiState = processingUiState,
-                            onCancel = queueActions.onCancelProcessing
-                        )
-                    }
-                } else {
-                    null
+                overlay = {
+                    StageProcessingOverlay(
+                        visible = isProcessing,
+                        uiState = processingUiState,
+                        onCancel = queueActions.onCancelProcessing
+                    )
                 }
             )
 
@@ -173,7 +178,12 @@ fun HomeScreen(
                 onToggleProcessNestedFolders = setupActions.onToggleProcessNestedFolders
             )
 
-            if (!isProcessing && processingUiState.checkpointSummary != null) {
+            // 断点续传卡：存在/消失做 fade + 纵向展开/收起（200ms ease-out）。
+            AnimatedVisibility(
+                visible = !isProcessing && processingUiState.checkpointSummary != null,
+                enter = fadeIn(EnterMotionSpec) + expandVertically(EnterSizeSpec),
+                exit = shrinkVertically(EnterSizeSpec) + fadeOut(EnterMotionSpec)
+            ) {
                 CheckpointSection(
                     processingUiState = processingUiState,
                     onResumeProcessing = checkpointActions.onResumeProcessing,
@@ -264,8 +274,26 @@ fun HomeScreen(
     }
 }
 
-/** 顶部标识条：品牌名 + 连接状态 pill（直接消费 HomeConnection 现成数据）。 */
+/** 舞台处理 scrim/覆盖层：出现/消失做 fade（200ms ease-out）。 */
 @Composable
+private fun BoxScope.StageProcessingOverlay(
+    visible: Boolean,
+    uiState: ProcessingUiState,
+    onCancel: () -> Unit
+) {
+    androidx.compose.animation.AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(EnterMotionSpec),
+        exit = fadeOut(EnterMotionSpec)
+    ) {
+        StageProgressOverlay(
+            uiState = uiState,
+            onCancel = onCancel
+        )
+    }
+}
+
+/** 顶部标识条：品牌名 + 连接状态 pill（直接消费 HomeConnection 现成数据）。 */@Composable
 private fun HomeIdentityBar(
     connectionState: ConnectionState,
     connectedEndpoint: com.crossscale.data.model.RemoteEndpoint?

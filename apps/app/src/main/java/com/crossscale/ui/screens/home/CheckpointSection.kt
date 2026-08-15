@@ -34,6 +34,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
+import com.crossscale.ui.theme.ExpandSizeSpec
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
 import com.crossscale.viewmodel.ProcessingCheckpointSummary
@@ -59,7 +60,8 @@ internal fun CheckpointSection(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .animateContentSize(),
+            // 明细折叠区展开（250ms ease-out，与参数卡折叠一致）。
+            .animateContentSize(ExpandSizeSpec),
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainer
     ) {

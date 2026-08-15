@@ -23,6 +23,7 @@ import com.crossscale.R
 import com.crossscale.data.model.ProcessingStatus
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
+import com.crossscale.ui.theme.smoothProgress
 import com.crossscale.viewmodel.ProcessingUiState
 import kotlin.math.roundToInt
 
@@ -61,8 +62,10 @@ fun StageProgressOverlay(
                 .padding(horizontal = Spacing.lg, vertical = Spacing.lg),
             verticalArrangement = Arrangement.spacedBy(Spacing.sm)
         ) {
+            // 进度数值做 300ms 线性平滑（lambda 版 API）；百分比文字保持即时。
+            val animatedProgress = smoothProgress(task.progress.coerceIn(0.0f, 1.0f))
             LinearProgressIndicator(
-                progress = task.progress.coerceIn(0.0f, 1.0f),
+                progress = { animatedProgress },
                 modifier = Modifier.fillMaxWidth()
             )
             Text(

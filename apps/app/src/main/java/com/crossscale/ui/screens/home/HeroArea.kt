@@ -3,7 +3,6 @@ package com.crossscale.ui.screens.home
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -49,6 +48,7 @@ import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.thumbnails.decodeQueueThumbnailWithLimit
 import com.crossscale.ui.theme.Spacing
+import com.crossscale.ui.theme.pressable
 
 /**
  * 图片舞台：超分工具的唯一视觉焦点。
@@ -287,7 +287,7 @@ private fun StageThumbnail(
                 .fillMaxSize()
                 .clip(MaterialTheme.shapes.small)
                 .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                .clickable(onClick = onPreview),
+                .pressable(onClick = onPreview),
             contentAlignment = Alignment.Center
         ) {
             val bitmap = bitmapState
@@ -347,7 +347,7 @@ private fun StageActionTile(
             .size(64.dp)
             .clip(MaterialTheme.shapes.small)
             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-            .clickable(onClick = onClick),
+            .pressable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
         Icon(
