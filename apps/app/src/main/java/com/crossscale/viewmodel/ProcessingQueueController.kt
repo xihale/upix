@@ -506,7 +506,7 @@ internal class ProcessingQueueController(
                 handleQueuedRunFinished(
                     queueItemId = nextBatch.id,
                     status = ProcessingStatus.FAILED,
-                    lastErrorMessage = "No matching checkpoint with failed items for failed-only retry"
+                    lastErrorMessage = "没有可重试的失败项"
                 )
                 return
             }
@@ -555,7 +555,7 @@ internal class ProcessingQueueController(
             handleQueuedRunFinished(
                 queueItemId = nextBatch.id,
                 status = ProcessingStatus.FAILED,
-                lastErrorMessage = "Unable to start queued batch"
+                lastErrorMessage = "无法启动该批次"
             )
             return
         }
@@ -604,9 +604,9 @@ internal class ProcessingQueueController(
             ProcessingStatus.CANCELED,
             ProcessingStatus.IDLE -> {
                 val failureMessage = lastErrorMessage ?: when (normalizedStatus) {
-                    ProcessingStatus.CANCELED -> "Canceled by user"
-                    ProcessingStatus.IDLE -> "Batch not fully completed"
-                    else -> "Queued batch failed"
+                    ProcessingStatus.CANCELED -> "已取消"
+                    ProcessingStatus.IDLE -> "批次未完成"
+                    else -> "批次失败"
                 }
                 host.updateUiState { state ->
                     state.copy(

@@ -13,7 +13,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import com.crossscale.data.model.LogEntry
 import com.crossscale.data.model.LogLevel
 import com.crossscale.ui.theme.LogMonoStyle
@@ -45,8 +48,13 @@ fun LogViewer(logs: List<LogEntry>, modifier: Modifier = Modifier) {
                     fontWeight = FontWeight.Medium
                 )
                 Text(
-                    text = "[${logEntry.level}] ${logEntry.message}",
-                    color = levelColor(logEntry.level),
+                    text = buildAnnotatedString {
+                        // 仅级别标签着色，正文保持中性色，避免 E 级整行红底过重。
+                        withStyle(SpanStyle(color = levelColor(logEntry.level))) {
+                            append("[${logEntry.level}] ")
+                        }
+                        append(logEntry.message)
+                    },
                     style = LogMonoStyle
                 )
             }

@@ -167,9 +167,9 @@ class CoordinatorClient(
                 ?.trim()
                 .orEmpty()
             val message = if (reason.isNotBlank()) {
-                "PC 不可达，已切换本地处理: $reason"
+                "PC 不可达，已切换为本地处理：$reason"
             } else {
-                "PC 不可达，已切换本地处理"
+                "PC 不可达，已切换为本地处理"
             }
             logRepository.error("CoordinatorClient", message)
             return Result.failure(IllegalStateException(message))
