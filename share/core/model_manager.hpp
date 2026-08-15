@@ -14,9 +14,7 @@ struct ModelInfo {
     std::filesystem::path bin_path;
     int scale_factor = 2;
     int input_channels = 3;
-    int tile_size = 256;
     size_t total_size = 0;
-    std::string hash;
 };
 
 struct ModelManagerError {
@@ -33,7 +31,6 @@ public:
     auto scan_models() -> expected<std::vector<ModelInfo>, ModelManagerError>;
     
     auto get_model(const std::string& name) const -> std::optional<ModelInfo>;
-    auto has_model(const std::string& name) const -> bool;
 
     auto models_directory() const -> const std::filesystem::path& { return models_dir_; }
     auto available_models() const -> const std::vector<ModelInfo>& { return models_; }

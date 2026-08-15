@@ -7,12 +7,12 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.crossscale.AppContainer
+import com.crossscale.data.model.ProcessingStatus
 import com.crossscale.data.repository.BatchOutputStore
 import com.crossscale.data.repository.ImageProcessingStore
 import com.crossscale.data.repository.InputSourceResolver
-import com.crossscale.data.repository.ModelProvider
-import com.crossscale.data.model.ProcessingStatus
 import com.crossscale.data.repository.LogRepository
+import com.crossscale.data.repository.ModelProvider
 import com.crossscale.data.repository.ProcessingCheckpoint
 import com.crossscale.data.repository.ProcessingCheckpointStore
 import com.crossscale.data.repository.ProcessingQueueStore
@@ -36,6 +36,10 @@ import kotlinx.coroutines.withContext
 
 // Observable state lives in StateFlow properties; the class itself never
 // mutates through public API, so it is safe to mark @Stable.
+//
+// The run engine and queue controller (both internal, constructed only here)
+// operate on this ViewModel directly through the internal hooks below; they
+// never hold _uiState, processingJob or activeQueueItemId themselves.
 @Stable
 class ProcessingViewModel(
     private val logRepository: LogRepository,
@@ -49,7 +53,7 @@ class ProcessingViewModel(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val stringProvider: StringProvider
-) : ViewModel(), ProcessingRunEngineHost, ProcessingQueueControllerHost {
+) : ViewModel() {
     private val _uiState = MutableStateFlow(ProcessingUiState())
     val uiState: StateFlow<ProcessingUiState> = _uiState.asStateFlow()
 
@@ -63,39 +67,15 @@ class ProcessingViewModel(
         _remoteFallbackMessage.value = null
     }
 
-    private val backupRestore = BackupRestoreManager(
-        inputSourceRepository = inputSourceRepository,
-        batchOutputRepository = batchOutputRepository,
-        logRepository = logRepository,
-        scope = viewModelScope,
-        ioDispatcher = ioDispatcher
-    )
-
-    private val inputCountEstimator = InputCountEstimator(
-        inputSourceRepository = inputSourceRepository,
-        scope = viewModelScope,
-        ioDispatcher = ioDispatcher,
-        onEstimatingStarted = {
-            _uiState.update { state -> state.copy(isEstimatingInputCount = true) }
-        },
-        onResult = { expectedTotal, estimating ->
-            _uiState.update { state ->
-                state.copy(expectedTotalItems = expectedTotal, isEstimatingInputCount = estimating)
-            }
-        }
-    )
-
     private val runPlanner = ProcessingRunPlanner(
         inputSourceRepository = inputSourceRepository,
         batchOutputRepository = batchOutputRepository,
         checkpointRepository = checkpointRepository,
-        logRepository = logRepository,
-        stringProvider = stringProvider,
-        coordinatorClient = coordinatorClient
+        logRepository = logRepository
     )
 
     private val runEngine = ProcessingRunEngine(
-        host = this,
+        viewModel = this,
         planner = runPlanner,
         modelRepository = modelRepository,
         nativeImageProcessingRepository = nativeImageProcessingRepository,
@@ -108,7 +88,7 @@ class ProcessingViewModel(
     )
 
     private val queueController = ProcessingQueueController(
-        host = this,
+        viewModel = this,
         inputSourceRepository = inputSourceRepository,
         checkpointRepository = checkpointRepository,
         logRepository = logRepository,
@@ -133,7 +113,6 @@ class ProcessingViewModel(
             checkpointRepository.checkpoint
                 .map { checkpoint ->
                     CheckpointUiProjection(
-                        canResume = checkpoint != null,
                         summary = checkpoint?.toUiSummary(stringProvider),
                         canRetryFailedOnly = checkpoint?.canRetryFailedOnly() == true
                     )
@@ -143,7 +122,6 @@ class ProcessingViewModel(
                 .collect { projection ->
                     _uiState.update { state ->
                         state.copy(
-                            canResume = projection.canResume,
                             checkpointSummary = projection.summary,
                             canRetryFailedOnly = projection.canRetryFailedOnly
                         )
@@ -164,7 +142,7 @@ class ProcessingViewModel(
                     // cancels an in-flight stale save so only the newest
                     // snapshot hits disk.
                     withContext(ioDispatcher) {
-                        queueRepository.saveQueue(snapshot)
+                        queueRepository.persistQueue(snapshot)
                     }
                 }
         }
@@ -278,10 +256,65 @@ class ProcessingViewModel(
         }
     }
 
-    fun refreshExpectedTotal(imagePath: String?) =
-        inputCountEstimator.refreshExpectedTotal(imagePath)
-
     fun resumeLastProcessing() {
+        runFromCheckpoint(retryFailedOnly = false)
+    }
+
+    fun retryFailedItems() {
+        if (processingJob?.isActive == true) {
+            return
+        }
+        val checkpoint = checkpointRepository.loadCheckpoint()
+        if (checkpoint != null) {
+            if (!checkpoint.canRetryFailedOnly()) {
+                logRepository.warning("ProcessingViewModel", "No failed items available in checkpoint")
+                return
+            }
+            runFromCheckpoint(retryFailedOnly = true)
+            return
+        }
+        // No checkpoint: fall back to rerunning the whole source of the
+        // in-memory task.
+        queueController.pauseBatchQueueForManualRun()
+        val task = _uiState.value.task
+        if (task == null || task.failedItems <= 0) {
+            logRepository.warning("ProcessingViewModel", "No failed items available for retry")
+            return
+        }
+        startProcessing(
+            imagePath = task.imagePath,
+            modelName = task.modelName,
+            distributedMode = task.distributedMode,
+            outputDirectoryUri = task.outputDirectoryUri,
+            overwriteOriginal = task.overwriteOriginal,
+            backupOriginal = task.backupOriginal,
+            processNestedFolders = task.processNestedFolders
+        )
+    }
+
+    fun resumePendingItem(uri: String) {
+        val normalizedUri = uri.trim()
+        if (normalizedUri.isBlank()) {
+            return
+        }
+        runFromCheckpoint(retryFailedOnly = false, resumePendingUris = setOf(normalizedUri))
+    }
+
+    fun retryFailedItem(uri: String) {
+        val normalizedUri = uri.trim()
+        if (normalizedUri.isBlank()) {
+            return
+        }
+        runFromCheckpoint(retryFailedOnly = true, resumePendingUris = setOf(normalizedUri))
+    }
+
+    // Shared body of the manual resume/retry entry points: refuses to start
+    // while a run is active, pauses a running batch queue, loads the persisted
+    // checkpoint and (re)starts it.
+    private fun runFromCheckpoint(
+        retryFailedOnly: Boolean,
+        resumePendingUris: Set<String>? = null
+    ) {
         if (processingJob?.isActive == true) {
             return
         }
@@ -300,108 +333,8 @@ class ProcessingViewModel(
             backupOriginal = checkpoint.backupOriginal,
             processNestedFolders = checkpoint.processNestedFolders,
             resumeCheckpoint = checkpoint,
-            retryFailedOnly = false,
-            resumePendingUris = null,
-            queueItemId = checkpoint.taskId
-        )
-    }
-
-    fun retryFailedItems() {
-        if (processingJob?.isActive == true) {
-            return
-        }
-        queueController.pauseBatchQueueForManualRun()
-        val checkpoint = checkpointRepository.loadCheckpoint()
-        if (checkpoint != null) {
-            if (!checkpoint.canRetryFailedOnly()) {
-                logRepository.warning("ProcessingViewModel", "No failed items available in checkpoint")
-                return
-            }
-            startProcessingInternal(
-                imagePath = checkpoint.source,
-                modelName = checkpoint.modelName,
-                distributedMode = checkpoint.distributedMode,
-                outputDirectoryUri = checkpoint.outputDirectoryUri,
-                overwriteOriginal = checkpoint.overwriteOriginal,
-                backupOriginal = checkpoint.backupOriginal,
-                processNestedFolders = checkpoint.processNestedFolders,
-                resumeCheckpoint = checkpoint,
-                retryFailedOnly = true,
-                resumePendingUris = null,
-                queueItemId = checkpoint.taskId
-            )
-            return
-        }
-        val task = _uiState.value.task
-        if (task == null || task.failedItems <= 0) {
-            logRepository.warning("ProcessingViewModel", "No failed items available for retry")
-            return
-        }
-        startProcessing(
-            imagePath = task.imagePath,
-            modelName = task.modelName,
-            distributedMode = task.distributedMode,
-            outputDirectoryUri = task.outputDirectoryUri,
-            overwriteOriginal = task.overwriteOriginal,
-            backupOriginal = task.backupOriginal,
-            processNestedFolders = task.processNestedFolders
-        )
-    }
-
-    fun resumePendingItem(uri: String) {
-        if (processingJob?.isActive == true) {
-            return
-        }
-        queueController.pauseBatchQueueForManualRun()
-        val normalizedUri = uri.trim()
-        if (normalizedUri.isBlank()) {
-            return
-        }
-        val checkpoint = checkpointRepository.loadCheckpoint()
-        if (checkpoint == null) {
-            logRepository.warning("ProcessingViewModel", "No checkpoint found to resume item")
-            return
-        }
-        startProcessingInternal(
-            imagePath = checkpoint.source,
-            modelName = checkpoint.modelName,
-            distributedMode = checkpoint.distributedMode,
-            outputDirectoryUri = checkpoint.outputDirectoryUri,
-            overwriteOriginal = checkpoint.overwriteOriginal,
-            backupOriginal = checkpoint.backupOriginal,
-            processNestedFolders = checkpoint.processNestedFolders,
-            resumeCheckpoint = checkpoint,
-            retryFailedOnly = false,
-            resumePendingUris = setOf(normalizedUri),
-            queueItemId = checkpoint.taskId
-        )
-    }
-
-    fun retryFailedItem(uri: String) {
-        if (processingJob?.isActive == true) {
-            return
-        }
-        queueController.pauseBatchQueueForManualRun()
-        val normalizedUri = uri.trim()
-        if (normalizedUri.isBlank()) {
-            return
-        }
-        val checkpoint = checkpointRepository.loadCheckpoint()
-        if (checkpoint == null) {
-            logRepository.warning("ProcessingViewModel", "No checkpoint found to retry failed item")
-            return
-        }
-        startProcessingInternal(
-            imagePath = checkpoint.source,
-            modelName = checkpoint.modelName,
-            distributedMode = checkpoint.distributedMode,
-            outputDirectoryUri = checkpoint.outputDirectoryUri,
-            overwriteOriginal = checkpoint.overwriteOriginal,
-            backupOriginal = checkpoint.backupOriginal,
-            processNestedFolders = checkpoint.processNestedFolders,
-            resumeCheckpoint = checkpoint,
-            retryFailedOnly = true,
-            resumePendingUris = setOf(normalizedUri),
+            retryFailedOnly = retryFailedOnly,
+            resumePendingUris = resumePendingUris,
             queueItemId = checkpoint.taskId
         )
     }
@@ -419,13 +352,37 @@ class ProcessingViewModel(
         logRepository.info("ProcessingViewModel", "Discarded processing checkpoint")
     }
 
-    suspend fun hasBackupFor(imagePath: String, nested: Boolean) =
-        backupRestore.hasBackupFor(imagePath, nested)
+    suspend fun hasBackupFor(imagePath: String, nested: Boolean): Boolean = withContext(ioDispatcher) {
+        inputSourceRepository.resolveImageInputs(source = imagePath, nested = nested)
+            .any { input -> batchOutputRepository.hasBackup(input) }
+    }
 
-    fun restoreBackup(imagePath: String, nested: Boolean, onComplete: (Int, Int) -> Unit) =
-        backupRestore.restoreBackup(imagePath, nested, onComplete)
+    fun restoreBackup(imagePath: String, nested: Boolean, onComplete: (Int, Int) -> Unit) {
+        viewModelScope.launch {
+            var restored = 0
+            var failed = 0
+            withContext(ioDispatcher) {
+                val inputs = inputSourceRepository.resolveImageInputs(source = imagePath, nested = nested)
+                for (input in inputs) {
+                    if (batchOutputRepository.hasBackup(input)) {
+                        batchOutputRepository.restoreBackup(input).fold(
+                            onSuccess = { restored++ },
+                            onFailure = {
+                                failed++
+                                logRepository.error("ProcessingViewModel", "Failed to restore backup for ${input.displayName}: ${it.message}")
+                            }
+                        )
+                    }
+                }
+            }
+            if (restored > 0 || failed > 0) {
+                logRepository.info("ProcessingViewModel", "Restore completed. Restored: $restored, Failed: $failed")
+            }
+            onComplete(restored, failed)
+        }
+    }
 
-    override fun startProcessingInternal(
+    internal fun startProcessingInternal(
         imagePath: String,
         modelName: String,
         distributedMode: Boolean,
@@ -451,30 +408,31 @@ class ProcessingViewModel(
         queueItemId = queueItemId
     )
 
-    // ---- ProcessingRunEngineHost ----
+    // ---- Internal hooks for ProcessingRunEngine / ProcessingQueueController ----
     // The ViewModel keeps owning _uiState, processingJob, activeQueueItemId and
-    // the queue chain; the run engine touches them only through these hooks.
+    // the queue chain; the run engine and queue controller touch them only
+    // through these hooks.
 
-    override fun updateUiState(transform: (ProcessingUiState) -> ProcessingUiState) {
+    internal fun updateUiState(transform: (ProcessingUiState) -> ProcessingUiState) {
         _uiState.update(transform)
     }
 
-    override fun currentUiState(): ProcessingUiState = _uiState.value
+    internal fun currentUiState(): ProcessingUiState = _uiState.value
 
-    override fun isProcessingJobActive(): Boolean = processingJob?.isActive == true
+    internal fun isProcessingJobActive(): Boolean = processingJob?.isActive == true
 
-    override fun currentActiveQueueItemId(): String? = activeQueueItemId
+    internal fun currentActiveQueueItemId(): String? = activeQueueItemId
 
-    override fun emitRemoteFallbackMessage(message: String) {
+    internal fun emitRemoteFallbackMessage(message: String) {
         _remoteFallbackMessage.value = message
     }
 
-    override fun launch(queueItemId: String?, block: suspend CoroutineScope.() -> Unit) {
+    internal fun launchRun(queueItemId: String?, block: suspend CoroutineScope.() -> Unit) {
         processingJob = viewModelScope.launch(block = block)
         activeQueueItemId = queueItemId
     }
 
-    override fun onRunFinished() {
+    internal fun onRunFinished() {
         val completedQueueItemId = activeQueueItemId
         processingJob = null
         activeQueueItemId = null
@@ -514,11 +472,6 @@ class ProcessingViewModel(
 
     fun outputUriForQueuedBatch(batchId: String): String? = queueController.outputUriForQueuedBatch(batchId)
 
-    override fun onCleared() {
-        inputCountEstimator.cancel()
-        super.onCleared()
-    }
-
     companion object {
         fun factory(container: AppContainer): ViewModelProvider.Factory = viewModelFactory {
             initializer {
@@ -543,7 +496,6 @@ class ProcessingViewModel(
 // distinctUntilChanged effective even when the repository emits fresh
 // ProcessingCheckpoint instances with identical UI content.
 private data class CheckpointUiProjection(
-    val canResume: Boolean,
     val summary: ProcessingCheckpointSummary?,
     val canRetryFailedOnly: Boolean
 )

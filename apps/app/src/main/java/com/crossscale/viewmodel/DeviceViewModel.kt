@@ -1,6 +1,5 @@
 package com.crossscale.viewmodel
 
-import android.content.Context
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
 import androidx.lifecycle.ViewModel
@@ -12,6 +11,7 @@ import com.crossscale.AppContainer
 import com.crossscale.R
 import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.RemoteEndpoint
+import com.crossscale.data.repository.AppSettingsRepository
 import com.crossscale.data.repository.DeviceRepository
 import com.crossscale.data.repository.LogRepository
 import com.crossscale.data.repository.PairingRepository
@@ -46,8 +46,6 @@ data class PendingFingerprintConfirm(
 @Immutable
 data class DeviceUiState(
     val showManualConnectDialog: Boolean = false,
-    val manualConnectHost: String = "",
-    val manualConnectPort: String = "9527",
     val connectionError: String? = null,
     val pendingFingerprintConfirm: PendingFingerprintConfirm? = null
 )
@@ -59,8 +57,8 @@ class DeviceViewModel(
     private val deviceRepository: DeviceRepository,
     private val pairingRepository: PairingRepository,
     private val coordinatorClient: CoordinatorClient,
+    private val appSettingsRepository: AppSettingsRepository,
     private val logRepository: LogRepository,
-    private val appContext: Context,
     private val stringProvider: StringProvider
 ) : ViewModel() {
 
@@ -228,10 +226,6 @@ class DeviceViewModel(
 
     fun showManualConnectDialog(show: Boolean) {
         _showManualConnectDialog.value = show
-        if (!show) {
-            _manualConnectHost.value = ""
-            _manualConnectPort.value = "9527"
-        }
     }
 
     fun clearConnectionError() {
@@ -241,22 +235,16 @@ class DeviceViewModel(
     // ---- dialog / error state (kept for the connection UI) ----
 
     private val _showManualConnectDialog = MutableStateFlow(false)
-    private val _manualConnectHost = MutableStateFlow("")
-    private val _manualConnectPort = MutableStateFlow("9527")
     private val _connectionError = MutableStateFlow<String?>(null)
     private val _pendingFingerprintConfirm = MutableStateFlow<PendingFingerprintConfirm?>(null)
 
     val uiState: StateFlow<DeviceUiState> = combine(
         _showManualConnectDialog,
-        _manualConnectHost,
-        _manualConnectPort,
         _connectionError,
         _pendingFingerprintConfirm
-    ) { show, host, port, error, pending ->
+    ) { show, error, pending ->
         DeviceUiState(
             showManualConnectDialog = show,
-            manualConnectHost = host,
-            manualConnectPort = port,
             connectionError = error,
             pendingFingerprintConfirm = pending
         )
@@ -269,8 +257,7 @@ class DeviceViewModel(
     // ---- internals ----
 
     private fun isStreamEncryptionEnabled(): Boolean {
-        return appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getBoolean(PREF_STREAM_ENCRYPTED, false)
+        return appSettingsRepository.isStreamEncrypted()
     }
 
     /**
@@ -343,17 +330,14 @@ class DeviceViewModel(
     }
 
     companion object {
-        private const val PREFS_NAME = "crossscale_settings"
-        private const val PREF_STREAM_ENCRYPTED = "stream_encrypted"
-
         fun factory(container: AppContainer): ViewModelProvider.Factory = viewModelFactory {
             initializer {
                 DeviceViewModel(
                     deviceRepository = container.deviceRepository,
                     pairingRepository = container.pairingRepository,
                     coordinatorClient = container.coordinatorClient,
+                    appSettingsRepository = container.appSettingsRepository,
                     logRepository = container.logRepository,
-                    appContext = container.appContext,
                     stringProvider = container.stringProvider
                 )
             }

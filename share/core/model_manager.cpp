@@ -70,10 +70,6 @@ auto ModelManager::get_model(const std::string& name) const -> std::optional<Mod
     return std::nullopt;
 }
 
-bool ModelManager::has_model(const std::string& name) const {
-    return get_model(name).has_value();
-}
-
 auto ModelManager::parse_param_file(const std::filesystem::path& path)
     -> expected<ModelInfo, ModelManagerError> {
     
@@ -107,7 +103,6 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
     }
     
     info.input_channels = 3;
-    info.tile_size = 256;
 
     std::string line;
     std::getline(file, line);

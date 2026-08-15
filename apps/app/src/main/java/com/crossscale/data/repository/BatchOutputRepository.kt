@@ -38,6 +38,14 @@ class BatchOutputRepository(
         ?: File(appContext.filesDir, OUTPUT_ROOT_DIR)
     private val tempOutputRootDir = File(appContext.cacheDir, TEMP_OUTPUT_ROOT_DIR)
 
+    /**
+     * 输出格式设置：由设置层（MainViewModel）写入，生成输出文件名时读取。
+     * 输出名在处理时逐项生成，因此设置变更对已入队未处理的项同样生效；
+     * 覆盖原图模式下输出写回原路径，该设置被忽略（见 [outputNameFor]）。
+     */
+    @Volatile
+    var requestedOutputFormat: OutputImageFormat = OutputImageFormat.FOLLOW
+
     override fun prepareOutputDirectory(
         source: String,
         modelName: String,
@@ -51,7 +59,7 @@ class BatchOutputRepository(
         resumeBackupOriginal: Boolean?
     ): BatchOutputDirectory {
         val batchId = batchIdFor(source = source, modelName = modelName)
-        val layout = resolveOutputLayout(source)
+        val sourceFolderName = sourceFolderName(source)
         val resolvedOverwrite = resumeOverwriteOriginal ?: overwriteOriginal
         val resolvedBackup = if (resolvedOverwrite) (resumeBackupOriginal ?: backupOriginal) else false
         val normalizedResumeUri = resumeOutputDirectoryUri.orEmpty().trim()
@@ -89,7 +97,7 @@ class BatchOutputRepository(
 
         val preferredUri = parseUri(preferredTreeUri.orEmpty().trim())
         if (preferredUri != null) {
-            val outputDirectoryUri = when (val sourceFolderName = layout.sourceFolderName) {
+            val outputDirectoryUri = when (sourceFolderName) {
                 null -> rootDocumentUriFromTreeUri(preferredUri)
                 else -> ensureSubDirectory(
                     rootTreeUri = preferredUri,
@@ -113,7 +121,7 @@ class BatchOutputRepository(
             normalizedResumeDirectory.isBlank() -> defaultOutputRootDir()
             else -> File(normalizedResumeDirectory)
         }
-        val internalDirectory = when (val sourceFolderName = layout.sourceFolderName) {
+        val internalDirectory = when (sourceFolderName) {
             null -> baseInternalDirectory
             else -> File(baseInternalDirectory, sourceFolderName)
         }
@@ -135,7 +143,7 @@ class BatchOutputRepository(
         outputDirectory: BatchOutputDirectory,
         input: ResolvedImageInput
     ): File {
-        val outputName = outputNameFor(input)
+        val outputName = outputNameFor(outputDirectory, input)
         val tempDir = File(tempOutputRootDir, outputDirectory.batchId)
         if (!tempDir.exists()) {
             tempDir.mkdirs()
@@ -150,7 +158,7 @@ class BatchOutputRepository(
         if (outputDirectory.overwriteOriginal) {
             return false
         }
-        val outputName = outputNameFor(input)
+        val outputName = outputNameFor(outputDirectory, input)
         val outputDirectoryUri = outputDirectory.outputDirectoryUri.orEmpty()
         if (outputDirectoryUri.isBlank()) {
             val internalDirectory = outputDirectory.internalDirectory ?: return false
@@ -184,7 +192,7 @@ class BatchOutputRepository(
         if (outputDirectoryUri.isBlank()) {
             val internalDirectory = outputDirectory.internalDirectory ?: return null
             inputs.forEach { input ->
-                val outputFile = File(internalDirectory, outputNameFor(input))
+                val outputFile = File(internalDirectory, outputNameFor(outputDirectory, input))
                 if (outputFile.exists()) {
                     return Uri.fromFile(outputFile).toString()
                 }
@@ -196,7 +204,7 @@ class BatchOutputRepository(
         inputs.forEach { input ->
             val outputUri = findChildDocumentUri(
                 parentDocumentUri = parsedDirectoryUri,
-                displayName = outputNameFor(input),
+                displayName = outputNameFor(outputDirectory, input),
                 expectDirectory = false
             )
             if (outputUri != null) {
@@ -206,29 +214,63 @@ class BatchOutputRepository(
         return null
     }
 
-    private fun hasBackupForInput(input: ResolvedImageInput): Boolean {
-        if (input.uri.scheme.equals("file", ignoreCase = true)) {
-            val sourceFile = File(requireNotNull(input.uri.path) { "Invalid file uri: ${input.uri}" })
-            val parentFile = sourceFile.parentFile ?: return false
-            val bakDir = File(parentFile, ".bak")
-            if (!bakDir.exists() || !bakDir.isDirectory) return false
-            val backupFile = File(bakDir, input.displayName)
-            return backupFile.exists() && backupFile.isFile
-        } else if (DocumentsContract.isDocumentUri(context, input.uri)) {
-             val parentUri = findParentDocumentUri(input.uri) ?: return false
-             val bakDirUri = findChildDocumentUri(
-                 parentDocumentUri = parentUri,
-                 displayName = ".bak",
-                 expectDirectory = true
-             ) ?: return false
-             val backupUri = findChildDocumentUri(
-                 parentDocumentUri = bakDirUri,
-                 displayName = input.displayName,
-                 expectDirectory = false
-             )
-             return backupUri != null
+    /** Where the .bak backup of [input] lives: file system or SAF documents. */
+    private sealed interface BackupTarget {
+        /** file:// input: original file plus its sibling .bak directory. */
+        data class FileSystem(val sourceFile: File, val backupDir: File) : BackupTarget
+
+        /** SAF document input: the parent document holding the .bak directory. */
+        data class Documents(val parentUri: Uri) : BackupTarget
+    }
+
+    /**
+     * Single place that derives the backup location for an input: file:// URIs
+     * back up into a sibling `.bak` directory next to the original; SAF document
+     * URIs back up into a `.bak` child of the parent document. Everything else
+     * (simple content URIs) has no addressable backup location and returns null.
+     */
+    private fun backupTargetFor(input: ResolvedImageInput): BackupTarget? {
+        return when {
+            input.uri.scheme.equals("file", ignoreCase = true) -> {
+                val sourceFile = File(
+                    requireNotNull(input.uri.path) { "Invalid file uri: ${input.uri}" }
+                )
+                val parentFile = sourceFile.parentFile ?: return null
+                BackupTarget.FileSystem(
+                    sourceFile = sourceFile,
+                    backupDir = File(parentFile, BACKUP_DIR_NAME)
+                )
+            }
+            DocumentsContract.isDocumentUri(context, input.uri) -> {
+                BackupTarget.Documents(
+                    parentUri = findParentDocumentUri(input.uri) ?: return null
+                )
+            }
+            else -> null
         }
-        return false // Fallback
+    }
+
+    private fun hasBackupForInput(input: ResolvedImageInput): Boolean {
+        return when (val target = backupTargetFor(input)) {
+            is BackupTarget.FileSystem -> {
+                if (!target.backupDir.exists() || !target.backupDir.isDirectory) return false
+                val backupFile = File(target.backupDir, input.displayName)
+                backupFile.exists() && backupFile.isFile
+            }
+            is BackupTarget.Documents -> {
+                val bakDirUri = findChildDocumentUri(
+                    parentDocumentUri = target.parentUri,
+                    displayName = BACKUP_DIR_NAME,
+                    expectDirectory = true
+                ) ?: return false
+                findChildDocumentUri(
+                    parentDocumentUri = bakDirUri,
+                    displayName = input.displayName,
+                    expectDirectory = false
+                ) != null
+            }
+            null -> false
+        }
     }
 
     override fun hasBackup(input: ResolvedImageInput): Boolean {
@@ -241,40 +283,47 @@ class BatchOutputRepository(
                 throw IOException("No backup found for ${input.displayName}")
             }
 
-            if (input.uri.scheme.equals("file", ignoreCase = true)) {
-                val sourceFile = File(requireNotNull(input.uri.path) { "Invalid file uri" })
-                val parentFile = sourceFile.parentFile ?: throw IOException("No parent dir")
-                val bakDir = File(parentFile, ".bak")
-                val backupFile = File(bakDir, input.displayName)
-                
-                // Copy backup over original
-                backupFile.copyTo(sourceFile, overwrite = true)
-                // Delete backup after restore
-                backupFile.delete()
-                
-                // Cleanup .bak folder if empty
-                if (bakDir.list()?.isEmpty() == true) {
-                    bakDir.delete()
+            when (val target = backupTargetFor(input)) {
+                is BackupTarget.FileSystem -> {
+                    val backupFile = File(target.backupDir, input.displayName)
+
+                    // Copy backup over original
+                    backupFile.copyTo(target.sourceFile, overwrite = true)
+                    // Delete backup after restore
+                    backupFile.delete()
+
+                    // Cleanup .bak folder if empty
+                    if (target.backupDir.list()?.isEmpty() == true) {
+                        target.backupDir.delete()
+                    }
                 }
-            } else if (DocumentsContract.isDocumentUri(context, input.uri)) {
-                val parentUri = findParentDocumentUri(input.uri) ?: throw IOException("No parent doc")
-                val bakDirUri = findChildDocumentUri(parentUri, ".bak", true) ?: throw IOException("No .bak dir")
-                val backupUri = findChildDocumentUri(bakDirUri, input.displayName, false)
-                    ?: throw IOException("No backup file")
+                is BackupTarget.Documents -> {
+                    val bakDirUri = findChildDocumentUri(
+                        parentDocumentUri = target.parentUri,
+                        displayName = BACKUP_DIR_NAME,
+                        expectDirectory = true
+                    ) ?: throw IOException("No .bak dir")
+                    val backupUri = findChildDocumentUri(
+                        parentDocumentUri = bakDirUri,
+                        displayName = input.displayName,
+                        expectDirectory = false
+                    ) ?: throw IOException("No backup file")
 
-                // Copy backup over original
-                contentResolver.openInputStream(backupUri)?.use { sourceStream ->
-                    contentResolver.openOutputStream(input.uri, "wt")?.use { sinkStream ->
-                        sourceStream.copyTo(sinkStream)
-                    } ?: throw IOException("Failed to write to original file")
-                } ?: throw IOException("Failed to read backup file")
+                    // Copy backup over original
+                    contentResolver.openInputStream(backupUri)?.use { sourceStream ->
+                        contentResolver.openOutputStream(input.uri, "wt")?.use { sinkStream ->
+                            sourceStream.copyTo(sinkStream)
+                        } ?: throw IOException("Failed to write to original file")
+                    } ?: throw IOException("Failed to read backup file")
 
-                // Delete backup after restore
-                DocumentsContract.deleteDocument(contentResolver, backupUri)
-                
-                // Directory cleanup is harder with SAF without extra queries, skip for now
-            } else {
-                throw UnsupportedOperationException("Restore not supported for scheme: ${input.uri.scheme}")
+                    // Delete backup after restore
+                    DocumentsContract.deleteDocument(contentResolver, backupUri)
+
+                    // Directory cleanup is harder with SAF without extra queries, skip for now
+                }
+                null -> throw UnsupportedOperationException(
+                    "Restore not supported for scheme: ${input.uri.scheme}"
+                )
             }
         }
     }
@@ -287,7 +336,22 @@ class BatchOutputRepository(
         if (outputDirectory.overwriteOriginal) {
             return commitOverwriteOriginal(outputDirectory = outputDirectory, input = input, outputFile = outputFile)
         }
-        val outputName = outputNameFor(input)
+        return commitAsNewOutput(
+            outputDirectory = outputDirectory,
+            outputName = outputNameFor(outputDirectory, input),
+            outputFile = outputFile
+        )
+    }
+
+    /**
+     * Saves [outputFile] as a new entry in the output directory: SAF document
+     * target when an output URI is configured, plain filesystem otherwise.
+     */
+    private fun commitAsNewOutput(
+        outputDirectory: BatchOutputDirectory,
+        outputName: String,
+        outputFile: File
+    ): Result<String> {
         val outputDirectoryUri = outputDirectory.outputDirectoryUri.orEmpty()
         if (outputDirectoryUri.isBlank()) {
             return commitToFilesystem(
@@ -298,23 +362,11 @@ class BatchOutputRepository(
         }
         val parsedDirectoryUri = parseUri(outputDirectoryUri)
             ?: return Result.failure(IllegalArgumentException("Invalid output URI: $outputDirectoryUri"))
-        return runCatching {
-            val outputDocumentUri = findOrCreateChildDocumentUri(
-                parentDocumentUri = parsedDirectoryUri,
-                displayName = outputName,
-                mimeType = mimeTypeForOutputName(outputName),
-                expectDirectory = false
-            )
-
-            openDocumentOutputStream(outputDocumentUri).use { outputStream ->
-                outputFile.inputStream().use { inputStream ->
-                    inputStream.copyTo(outputStream)
-                }
-            }
-
-            outputFile.delete()
-            outputDocumentUri.toString()
-        }
+        return commitToContentUri(
+            parentDirectoryUri = parsedDirectoryUri,
+            outputName = outputName,
+            outputFile = outputFile
+        )
     }
 
     private fun commitToFilesystem(
@@ -429,22 +481,32 @@ class BatchOutputRepository(
         }
     }
 
+    /**
+     * Copies the staged temp file into the stream opened by [open], then
+     * fsyncs (file streams) or flushes (provider streams). Shared by every
+     * commit path that funnels a temp file into an output stream.
+     */
+    private inline fun copyThenSync(src: File, open: () -> OutputStream) {
+        open().use { outputStream ->
+            src.inputStream().use { inputStream ->
+                inputStream.copyTo(outputStream)
+            }
+            if (outputStream is FileOutputStream) {
+                outputStream.fd.sync()
+            } else {
+                outputStream.flush()
+            }
+        }
+    }
+
     private fun writeTempToTarget(
         outputFile: File,
         targetFile: File
     ) {
         try {
-            outputFile.inputStream().use { inputStream ->
-                FileOutputStream(targetFile).use { outputStream ->
-                    inputStream.copyTo(outputStream)
-                    outputStream.fd.sync()
-                }
-            }
+            copyThenSync(src = outputFile) { FileOutputStream(targetFile) }
         } catch (throwable: Throwable) {
-            val isExistsConflict = throwable is IOException &&
-                (throwable.message?.contains("EEXIST", ignoreCase = true) == true ||
-                    throwable.message?.contains("File exists", ignoreCase = true) == true)
-            if (!isExistsConflict) {
+            if (!isExistsConflict(throwable)) {
                 throw throwable
             }
 
@@ -452,12 +514,7 @@ class BatchOutputRepository(
                 targetFile.deleteRecursively()
             }
 
-            outputFile.inputStream().use { inputStream ->
-                FileOutputStream(targetFile).use { outputStream ->
-                    inputStream.copyTo(outputStream)
-                    outputStream.fd.sync()
-                }
-            }
+            copyThenSync(src = outputFile) { FileOutputStream(targetFile) }
         }
     }
 
@@ -479,12 +536,17 @@ class BatchOutputRepository(
         return digest.take(8).joinToString("") { byte -> "%02x".format(byte) }
     }
 
-    private fun outputNameFor(input: ResolvedImageInput): String {
+    private fun outputNameFor(outputDirectory: BatchOutputDirectory, input: ResolvedImageInput): String {
         val baseName = input.displayName.substringBeforeLast('.', input.displayName)
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
             .take(64)
             .ifBlank { "image" }
-        val extension = normalizedOutputExtension(input.displayName)
+        val extension = if (outputDirectory.overwriteOriginal) {
+            // 覆盖原图：输出写回原路径，扩展名必须与原图一致，格式设置不生效。
+            normalizedOutputExtension(input.displayName)
+        } else {
+            requestedOutputFormat.forcedExtension ?: normalizedOutputExtension(input.displayName)
+        }
         return "$baseName.$extension"
     }
 
@@ -522,21 +584,9 @@ class BatchOutputRepository(
             } else {
                 // Photo Picker URIs are read-only and cannot be overwritten.
                 // Fallback to saving as a new file in the output directory.
-                val outputName = outputNameFor(input)
-                val outputDirectoryUri = outputDirectory.outputDirectoryUri.orEmpty()
-                if (outputDirectoryUri.isBlank()) {
-                    return commitToFilesystem(
-                        outputDirectory = outputDirectory,
-                        outputName = outputName,
-                        outputFile = outputFile
-                    )
-                }
-                val parsedDirectoryUri = parseUri(outputDirectoryUri)
-                    ?: return Result.failure(IllegalArgumentException("Invalid output URI: $outputDirectoryUri"))
-                
-                return commitToContentUri(
-                    parentDirectoryUri = parsedDirectoryUri,
-                    outputName = outputName,
+                return commitAsNewOutput(
+                    outputDirectory = outputDirectory,
+                    outputName = outputNameFor(outputDirectory, input),
                     outputFile = outputFile
                 )
             }
@@ -557,15 +607,8 @@ class BatchOutputRepository(
                 outputFile.delete()
                 targetUri.toString()
             } else {
-                openDocumentOutputStream(targetUri).use { outputStream ->
-                    outputFile.inputStream().use { inputStream ->
-                        inputStream.copyTo(outputStream)
-                    }
-                    if (outputStream is FileOutputStream) {
-                        outputStream.fd.sync()
-                    } else {
-                        outputStream.flush()
-                    }
+                copyThenSync(src = outputFile) {
+                    openDocumentOutputStream(targetUri)
                 }
                 outputFile.delete()
                 targetUri.toString()
@@ -638,15 +681,8 @@ class BatchOutputRepository(
                 expectDirectory = false
             )
 
-            openDocumentOutputStream(outputDocumentUri).use { outputStream ->
-                outputFile.inputStream().use { inputStream ->
-                    inputStream.copyTo(outputStream)
-                }
-                if (outputStream is FileOutputStream) {
-                    outputStream.fd.sync()
-                } else {
-                    outputStream.flush()
-                }
+            copyThenSync(src = outputFile) {
+                openDocumentOutputStream(outputDocumentUri)
             }
 
             outputFile.delete()
@@ -666,16 +702,10 @@ class BatchOutputRepository(
         }
 
         try {
-            contentResolver.openOutputStream(uri, "wt")?.use { outputStream ->
-                outputFile.inputStream().use { inputStream ->
-                    inputStream.copyTo(outputStream)
-                }
-                if (outputStream is FileOutputStream) {
-                    outputStream.fd.sync()
-                } else {
-                    outputStream.flush()
-                }
-            } ?: throw IOException("Unable to open output stream: $uri (pending=1)")
+            copyThenSync(src = outputFile) {
+                contentResolver.openOutputStream(uri, "wt")
+                    ?: throw IOException("Unable to open output stream: $uri (pending=1)")
+            }
         } finally {
             values.clear()
             values.put(MediaStore.Images.Media.IS_PENDING, 0)
@@ -691,62 +721,64 @@ class BatchOutputRepository(
         outputDirectory: BatchOutputDirectory,
         input: ResolvedImageInput
     ) {
-        if (input.uri.scheme.equals("file", ignoreCase = true)) {
-            val sourceFile = File(requireNotNull(input.uri.path) { "Invalid file uri: ${input.uri}" })
-            if (!sourceFile.exists()) {
-                throw IOException("Source file does not exist for backup: ${sourceFile.absolutePath}")
+        when (val target = backupTargetFor(input)) {
+            is BackupTarget.FileSystem -> {
+                if (!target.sourceFile.exists()) {
+                    throw IOException(
+                        "Source file does not exist for backup: ${target.sourceFile.absolutePath}"
+                    )
+                }
+                if (!target.backupDir.exists() && !target.backupDir.mkdirs()) {
+                    throw IOException("Failed to create backup directory: ${target.backupDir.absolutePath}")
+                }
+                val backupFile = resolveAvailableTargetFile(
+                    targetDirectory = target.backupDir,
+                    outputName = input.displayName
+                )
+                target.sourceFile.copyTo(backupFile, overwrite = false)
             }
-            val parentFile = sourceFile.parentFile
-                ?: throw IOException("Unable to determine parent directory for: ${sourceFile.absolutePath}")
-            
-            val bakDir = File(parentFile, ".bak")
-            if (!bakDir.exists() && !bakDir.mkdirs()) {
-                throw IOException("Failed to create backup directory: ${bakDir.absolutePath}")
+            is BackupTarget.Documents -> {
+                // For SAF (like tree selections)
+                val bakDirUri = findOrCreateChildDocumentUri(
+                    parentDocumentUri = target.parentUri,
+                    displayName = BACKUP_DIR_NAME,
+                    mimeType = DocumentsContract.Document.MIME_TYPE_DIR,
+                    expectDirectory = true,
+                    allowAlternateNameOnConflict = false
+                )
+                val mimeType = contentResolver.getType(input.uri) ?: "application/octet-stream"
+                val backupUri = findOrCreateChildDocumentUri(
+                    parentDocumentUri = bakDirUri,
+                    displayName = input.displayName,
+                    mimeType = mimeType,
+                    expectDirectory = false,
+                    allowAlternateNameOnConflict = true
+                )
+                val source = contentResolver.openInputStream(input.uri)
+                    ?: throw IOException("Unable to read original file for backup: ${input.uri}")
+                val sink = contentResolver.openOutputStream(backupUri)
+                    ?: throw IOException("Unable to open backup file for writing: $backupUri")
+                source.use { input ->
+                    sink.use { output ->
+                        input.copyTo(output)
+                    }
+                }
             }
-            val backupFile = resolveAvailableTargetFile(targetDirectory = bakDir, outputName = input.displayName)
-            sourceFile.copyTo(backupFile, overwrite = false)
-        } else if (DocumentsContract.isDocumentUri(context, input.uri)) {
-             // For SAF (like tree selections)
-             val parentUri = findParentDocumentUri(input.uri)
-                 ?: throw IOException("Unable to determine parent document for backup: ${input.uri}")
-             val bakDirUri = findOrCreateChildDocumentUri(
-                 parentDocumentUri = parentUri,
-                 displayName = ".bak",
-                 mimeType = DocumentsContract.Document.MIME_TYPE_DIR,
-                 expectDirectory = true,
-                 allowAlternateNameOnConflict = false
-             )
-             val mimeType = contentResolver.getType(input.uri) ?: "application/octet-stream"
-             val backupUri = findOrCreateChildDocumentUri(
-                 parentDocumentUri = bakDirUri,
-                 displayName = input.displayName,
-                 mimeType = mimeType,
-                 expectDirectory = false,
-                 allowAlternateNameOnConflict = true
-             )
-             val source = contentResolver.openInputStream(input.uri)
-                 ?: throw IOException("Unable to read original file for backup: ${input.uri}")
-             val sink = contentResolver.openOutputStream(backupUri)
-                 ?: throw IOException("Unable to open backup file for writing: $backupUri")
-             source.use { input ->
-                 sink.use { output ->
-                     input.copyTo(output)
-                 }
-             }
-        } else {
-            // Fallback for simple content URIs
-            val backupOutputRootDir = File(defaultOutputRootDir(), BACKUP_ROOT_DIR)
-            val backupDir = File(backupOutputRootDir, outputDirectory.batchId)
-            if (!backupDir.exists() && !backupDir.mkdirs()) {
-                throw IOException("Failed to create backup directory: ${backupDir.absolutePath}")
-            }
-            val backupFile = resolveAvailableTargetFile(targetDirectory = backupDir, outputName = input.displayName)
+            null -> {
+                // Fallback for simple content URIs
+                val backupOutputRootDir = File(defaultOutputRootDir(), BACKUP_ROOT_DIR)
+                val backupDir = File(backupOutputRootDir, outputDirectory.batchId)
+                if (!backupDir.exists() && !backupDir.mkdirs()) {
+                    throw IOException("Failed to create backup directory: ${backupDir.absolutePath}")
+                }
+                val backupFile = resolveAvailableTargetFile(targetDirectory = backupDir, outputName = input.displayName)
 
-            val source = contentResolver.openInputStream(input.uri)
-                ?: throw IOException("Unable to read original file for backup: ${input.uri}")
-            source.use { inputStream ->
-                backupFile.outputStream().use { sink ->
-                    inputStream.copyTo(sink)
+                val source = contentResolver.openInputStream(input.uri)
+                    ?: throw IOException("Unable to read original file for backup: ${input.uri}")
+                source.use { inputStream ->
+                    backupFile.outputStream().use { sink ->
+                        inputStream.copyTo(sink)
+                    }
                 }
             }
         }
@@ -793,10 +825,6 @@ class BatchOutputRepository(
             val rootDocumentId = DocumentsContract.getTreeDocumentId(rootTreeUri)
             DocumentsContract.buildDocumentUriUsingTree(rootTreeUri, rootDocumentId)
         }.getOrNull()
-    }
-
-    private fun resolveOutputLayout(source: String): OutputLayout {
-        return OutputLayout(sourceFolderName = sourceFolderName(source))
     }
 
     private fun sourceFolderName(source: String): String? {
@@ -1038,6 +1066,7 @@ class BatchOutputRepository(
     companion object {
         private const val OUTPUT_ROOT_DIR = "CrossScale"
         private const val BACKUP_ROOT_DIR = "original_backups"
+        private const val BACKUP_DIR_NAME = ".bak"
         private const val TEMP_OUTPUT_ROOT_DIR = "outputs_temp"
         private const val PNG_MIME_TYPE = "image/png"
         private const val JPEG_MIME_TYPE = "image/jpeg"
@@ -1045,8 +1074,4 @@ class BatchOutputRepository(
         private const val CONTENT_SCHEME_PREFIX = "content://"
         private const val MAX_CREATE_DOCUMENT_RETRIES = 99
     }
-
-    private data class OutputLayout(
-        val sourceFolderName: String?
-    )
 }

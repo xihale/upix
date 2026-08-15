@@ -120,23 +120,7 @@ auto ServeDaemon::start(const std::string& socket_path,
 
 auto ServeDaemon::ensure_model_loaded(const std::string& model_name) -> int {
     // Caller already holds engine_mutex_.
-    // Empty model name = "use whatever is currently loaded" (client didn't
-    // specify -m). This is the common case and avoids a needless reload.
-    if (model_name.empty() || model_name == loaded_model_name_) return 0;
-    auto info = models_->get_model(model_name);
-    if (!info) {
-        LOG_ERROR("Serve", "unknown model requested: " + model_name);
-        return 1;
-    }
-    auto res = engine_->load_model(info->param_path.string(),
-                                   info->bin_path.string());
-    if (!res) {
-        LOG_ERROR("Serve", "model reload failed: " + res.error().message);
-        return 2;
-    }
-    loaded_model_name_ = model_name;
-    LOG_INFO("Serve", "switched model to " + model_name);
-    return 0;
+    return switch_model(*engine_, *models_, loaded_model_name_, model_name, "Serve") ? 0 : 1;
 }
 
 auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {

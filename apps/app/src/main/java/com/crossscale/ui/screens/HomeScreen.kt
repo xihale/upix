@@ -36,14 +36,13 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.model.ConnectionState
+import com.crossscale.data.model.ModelInfo
+import com.crossscale.data.model.RemoteEndpoint
+import com.crossscale.data.repository.OutputImageFormat
 import com.crossscale.ui.components.SheetActionItem
 import com.crossscale.ui.components.StageProgressOverlay
 import com.crossscale.ui.screens.home.BottomActionDock
 import com.crossscale.ui.screens.home.CheckpointSection
-import com.crossscale.ui.screens.home.HomeCheckpointActions
-import com.crossscale.ui.screens.home.HomeConnection
-import com.crossscale.ui.screens.home.HomeQueueActions
-import com.crossscale.ui.screens.home.HomeSetupActions
 import com.crossscale.ui.screens.home.ImageStage
 import com.crossscale.ui.screens.home.ParameterCard
 import com.crossscale.ui.screens.home.PreviewBottomSheet
@@ -51,6 +50,7 @@ import com.crossscale.ui.screens.home.QueueBottomSheetContent
 import com.crossscale.ui.theme.EnterMotionSpec
 import com.crossscale.ui.theme.EnterSizeSpec
 import com.crossscale.ui.theme.Spacing
+import com.crossscale.ui.theme.ValueMono
 import com.crossscale.viewmodel.MainUiState
 import com.crossscale.viewmodel.ProcessingUiState
 
@@ -63,16 +63,39 @@ import com.crossscale.viewmodel.ProcessingUiState
 fun HomeScreen(
     state: MainUiState,
     processingUiState: ProcessingUiState,
-    connection: HomeConnection,
-    setupActions: HomeSetupActions,
-    queueActions: HomeQueueActions,
-    checkpointActions: HomeCheckpointActions,
+    connectionState: ConnectionState,
+    connectedEndpoint: RemoteEndpoint?,
+    remoteFallbackMessage: String?,
+    onClearRemoteFallbackMessage: () -> Unit,
+    onSelectModel: (ModelInfo) -> Unit,
+    onSelectScale: (Int) -> Unit,
+    onSelectImages: () -> Unit,
+    onSelectImageFolder: () -> Unit,
+    onClearInputSources: () -> Unit,
+    onRemoveInputSource: (String) -> Unit,
+    onSelectOutputFolder: () -> Unit,
+    onUseDefaultOutputFolder: () -> Unit,
+    onToggleOverwriteOriginal: (Boolean) -> Unit,
+    onToggleBackupOriginal: (Boolean) -> Unit,
+    onToggleProcessNestedFolders: (Boolean) -> Unit,
+    onSelectOutputFormat: (OutputImageFormat) -> Unit,
+    onStartProcessing: () -> Unit,
+    onStartBatchQueue: () -> Unit,
+    onPauseBatchQueue: () -> Unit,
+    onRetryQueuedBatch: (String) -> Unit,
+    onRetryQueuedBatchFailedOnly: (String) -> Unit,
+    onOpenQueuedBatchOutput: (String) -> Unit,
+    onRemoveQueuedBatch: (String) -> Unit,
+    onClearBatchQueue: () -> Unit,
+    onCancelProcessing: () -> Unit,
+    onResumeProcessing: () -> Unit,
+    onRetryFailedItems: () -> Unit,
+    onResumePendingItem: (String) -> Unit,
+    onRetryFailedItem: (String) -> Unit,
+    onDiscardCheckpoint: () -> Unit,
     hasBackupAvailable: Boolean = false,
     onRestoreBackup: () -> Unit = {}
 ) {
-    val connectionState = connection.connectionState
-    val connectedEndpoint = connection.connectedEndpoint
-    val remoteFallbackMessage = connection.remoteFallbackMessage
     val notSelectedLabel = stringResource(R.string.common_not_selected)
     val snackbarConnectingMessage = stringResource(R.string.home_snackbar_connecting)
     val snackbarConnectedMessage = stringResource(R.string.home_snackbar_connected)
@@ -83,8 +106,12 @@ fun HomeScreen(
     val corruptedSources = state.corruptedInputSources
     val selectedOutput = abbreviatePath(state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/CrossScale")
     val queueItems = processingUiState.queueItems
+    // 倍率由模型固有决定：可用倍率 = 已有模型倍率的升序去重集合。
+    val availableScales = state.models.map { model -> model.scaleFactor }.distinct().sorted()
 
     var showModelSheet by rememberSaveable { mutableStateOf(false) }
+    var showScaleSheet by rememberSaveable { mutableStateOf(false) }
+    var showFormatSheet by rememberSaveable { mutableStateOf(false) }
     var queueSheetVisible by rememberSaveable { mutableStateOf(false) }
     var previewSource by rememberSaveable { mutableStateOf<String?>(null) }
     val queueSheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -117,7 +144,7 @@ fun HomeScreen(
         val message = remoteFallbackMessage
         if (!message.isNullOrBlank()) {
             snackbarHostState.showSnackbar(message)
-            connection.onClearRemoteFallbackMessage()
+            onClearRemoteFallbackMessage()
         }
     }
 
@@ -139,16 +166,16 @@ fun HomeScreen(
                 selectedInputs = selectedInputs,
                 corruptedSources = corruptedSources,
                 isProcessing = isProcessing,
-                onAddImage = setupActions.onSelectImages,
-                onAddFolder = setupActions.onSelectImageFolder,
-                onClearInput = setupActions.onClearInputSources,
-                onRemoveInput = setupActions.onRemoveInputSource,
+                onAddImage = onSelectImages,
+                onAddFolder = onSelectImageFolder,
+                onClearInput = onClearInputSources,
+                onRemoveInput = onRemoveInputSource,
                 onPreviewInput = { source -> previewSource = source },
                 overlay = {
                     StageProcessingOverlay(
                         visible = isProcessing,
                         task = processingUiState.task,
-                        onCancel = queueActions.onCancelProcessing
+                        onCancel = onCancelProcessing
                     )
                 }
             )
@@ -160,12 +187,19 @@ fun HomeScreen(
                 overwriteOriginal = state.overwriteOriginalImage,
                 backupOriginal = state.backupOriginalImage,
                 processNestedFolders = state.processNestedFolders,
+                outputFormatLabel = outputFormatLabel(
+                    format = state.outputImageFormat,
+                    followLabel = stringResource(R.string.config_output_format_follow)
+                ),
+                availableScales = availableScales,
                 onPickModel = { showModelSheet = true },
-                onSelectOutputFolder = setupActions.onSelectOutputFolder,
-                onUseDefaultOutputFolder = setupActions.onUseDefaultOutputFolder,
-                onToggleOverwriteOriginal = setupActions.onToggleOverwriteOriginal,
-                onToggleBackupOriginal = setupActions.onToggleBackupOriginal,
-                onToggleProcessNestedFolders = setupActions.onToggleProcessNestedFolders
+                onPickScale = { showScaleSheet = true },
+                onPickFormat = { showFormatSheet = true },
+                onSelectOutputFolder = onSelectOutputFolder,
+                onUseDefaultOutputFolder = onUseDefaultOutputFolder,
+                onToggleOverwriteOriginal = onToggleOverwriteOriginal,
+                onToggleBackupOriginal = onToggleBackupOriginal,
+                onToggleProcessNestedFolders = onToggleProcessNestedFolders
             )
 
             // 断点续传卡：存在/消失做 fade + 纵向展开/收起（200ms ease-out）。
@@ -176,11 +210,11 @@ fun HomeScreen(
             ) {
                 CheckpointSection(
                     processingUiState = processingUiState,
-                    onResumeProcessing = checkpointActions.onResumeProcessing,
-                    onRetryFailedItems = checkpointActions.onRetryFailedItems,
-                    onResumePendingItem = checkpointActions.onResumePendingItem,
-                    onRetryFailedItem = checkpointActions.onRetryFailedItem,
-                    onDiscardCheckpoint = checkpointActions.onDiscardCheckpoint
+                    onResumeProcessing = onResumeProcessing,
+                    onRetryFailedItems = onRetryFailedItems,
+                    onResumePendingItem = onResumePendingItem,
+                    onRetryFailedItem = onRetryFailedItem,
+                    onDiscardCheckpoint = onDiscardCheckpoint
                 )
             }
         }
@@ -193,7 +227,7 @@ fun HomeScreen(
             onShowQueue = {
                 queueSheetVisible = true
             },
-            onStart = queueActions.onStartProcessing,
+            onStart = onStartProcessing,
             onRestore = onRestoreBackup
         )
 
@@ -219,10 +253,74 @@ fun HomeScreen(
             state.models.forEach { model ->
                 SheetActionItem(
                     label = model.name,
-                    subtitle = "x${model.scaleFactor} · tile ${model.tileSize}"
+                    subtitle = stringResource(R.string.home_model_subtitle, model.scaleFactor)
                 ) {
                     showModelSheet = false
-                    setupActions.onSelectModel(model)
+                    onSelectModel(model)
+                }
+            }
+            Spacer(modifier = Modifier.height(Spacing.xl))
+        }
+    }
+
+    if (showScaleSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showScaleSheet = false },
+            shape = MaterialTheme.shapes.extraLarge,
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            Text(
+                text = stringResource(R.string.home_select_scale_sheet_title),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = Spacing.xl, vertical = Spacing.sm)
+            )
+            availableScales.forEach { scale ->
+                val scaleModels = state.models.filter { model -> model.scaleFactor == scale }
+                val selectedModelName = state.selectedModel?.name
+                // 同倍率多个模型：当前选中模型属于该倍率则沿用，否则取第一个。
+                val targetModel = scaleModels.firstOrNull { model ->
+                    model.name == selectedModelName
+                } ?: scaleModels.firstOrNull()
+                SheetActionItem(
+                    label = stringResource(R.string.config_scale_value, scale),
+                    subtitle = targetModel?.name,
+                    selected = state.selectedModel?.scaleFactor == scale,
+                    labelStyle = ValueMono
+                ) {
+                    showScaleSheet = false
+                    onSelectScale(scale)
+                }
+            }
+            Text(
+                text = stringResource(R.string.config_scale_sheet_hint),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = Spacing.xl, vertical = Spacing.sm)
+            )
+            Spacer(modifier = Modifier.height(Spacing.xl))
+        }
+    }
+
+    if (showFormatSheet) {
+        val followLabel = stringResource(R.string.config_output_format_follow)
+        ModalBottomSheet(
+            onDismissRequest = { showFormatSheet = false },
+            shape = MaterialTheme.shapes.extraLarge,
+            containerColor = MaterialTheme.colorScheme.surface
+        ) {
+            Text(
+                text = stringResource(R.string.home_select_output_format_sheet_title),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(horizontal = Spacing.xl, vertical = Spacing.sm)
+            )
+            OutputImageFormat.entries.forEach { format ->
+                SheetActionItem(
+                    label = outputFormatLabel(format, followLabel),
+                    selected = state.outputImageFormat == format,
+                    labelStyle = ValueMono
+                ) {
+                    showFormatSheet = false
+                    onSelectOutputFormat(format)
                 }
             }
             Spacer(modifier = Modifier.height(Spacing.xl))
@@ -241,13 +339,13 @@ fun HomeScreen(
         ) {
             QueueBottomSheetContent(
                 processingUiState = processingUiState,
-                onStartBatchQueue = queueActions.onStartBatchQueue,
-                onPauseBatchQueue = queueActions.onPauseBatchQueue,
-                onRetryQueuedBatch = queueActions.onRetryQueuedBatch,
-                onRetryQueuedBatchFailedOnly = queueActions.onRetryQueuedBatchFailedOnly,
-                onOpenQueuedBatchOutput = queueActions.onOpenQueuedBatchOutput,
-                onRemoveQueuedBatch = queueActions.onRemoveQueuedBatch,
-                onClearBatchQueue = queueActions.onClearBatchQueue,
+                onStartBatchQueue = onStartBatchQueue,
+                onPauseBatchQueue = onPauseBatchQueue,
+                onRetryQueuedBatch = onRetryQueuedBatch,
+                onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
+                onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,
+                onRemoveQueuedBatch = onRemoveQueuedBatch,
+                onClearBatchQueue = onClearBatchQueue,
                 onDismiss = { queueSheetVisible = false }
             )
         }
@@ -281,7 +379,7 @@ private fun BoxScope.StageProcessingOverlay(
     }
 }
 
-/** 顶部标识条：品牌名 + 连接状态文本（直接消费 HomeConnection 现成数据）。 */@Composable
+/** 顶部标识条：品牌名 + 连接状态文本（直接消费现成连接数据）。 */@Composable
 private fun HomeIdentityBar(
     connectionState: ConnectionState,
     connectedEndpoint: com.crossscale.data.model.RemoteEndpoint?
@@ -324,4 +422,12 @@ private fun abbreviatePath(path: String): String {
         return normalized
     }
     return "${normalized.take(12)}...${normalized.takeLast(7)}"
+}
+
+/** 输出格式选项文本：「跟随原图」走资源，PNG/JPG/WebP 用常量。 */
+private fun outputFormatLabel(format: OutputImageFormat, followLabel: String): String = when (format) {
+    OutputImageFormat.FOLLOW -> followLabel
+    OutputImageFormat.PNG -> "PNG"
+    OutputImageFormat.JPG -> "JPG"
+    OutputImageFormat.WEBP -> "WebP"
 }

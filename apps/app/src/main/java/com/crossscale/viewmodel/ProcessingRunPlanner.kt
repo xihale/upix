@@ -1,7 +1,6 @@
 package com.crossscale.viewmodel
 
 import android.net.Uri
-import com.crossscale.R
 import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.model.ProcessingTask
 import com.crossscale.data.repository.BatchOutputStore
@@ -12,8 +11,6 @@ import com.crossscale.data.repository.ProcessingCheckpointStore
 import com.crossscale.data.repository.ProcessingFailureDetail
 import com.crossscale.data.repository.ProcessingPendingItem
 import com.crossscale.data.repository.ResolvedImageInput
-import com.crossscale.network.CoordinatorClient
-import com.crossscale.util.StringProvider
 
 // Run planning and checkpoint bookkeeping extracted from ProcessingViewModel.
 // The planner owns no state: every function is a computation over its arguments
@@ -24,9 +21,7 @@ class ProcessingRunPlanner(
     private val inputSourceRepository: InputSourceResolver,
     private val batchOutputRepository: BatchOutputStore,
     private val checkpointRepository: ProcessingCheckpointStore,
-    private val logRepository: LogRepository,
-    private val stringProvider: StringProvider,
-    private val coordinatorClient: CoordinatorClient? = null
+    private val logRepository: LogRepository
 ) {
     internal fun buildRunSetup(
         imagePath: String,
@@ -59,7 +54,11 @@ class ProcessingRunPlanner(
             )
         }
 
-        val processNestedFolders = activeTask?.processNestedFolders ?: true // Default to true if no active task
+        // Deliberately derived from the active task (falling back to nested
+        // scan), NOT from the processNestedFolders parameter above — that
+        // parameter only configures the output directory. Renamed so it no
+        // longer shadows the parameter.
+        val scanNestedFolders = activeTask?.processNestedFolders ?: true
 
         if (resumeCheckpoint != null && resumeCheckpoint.pendingItems.isNotEmpty()) {
             val pendingImagesFromCheckpoint = resumeCheckpoint.pendingItems.mapNotNull { pendingItem ->
@@ -173,16 +172,12 @@ class ProcessingRunPlanner(
             }
         }
 
-        val inputImages = inputSourceRepository.resolveImageInputs(source = imagePath, nested = processNestedFolders)
-        val validImages = inputImages.filter { input ->
-            // Add any validation logic here if needed
-            true
-        }
-        if (validImages.isEmpty()) {
+        val inputImages = inputSourceRepository.resolveImageInputs(source = imagePath, nested = scanNestedFolders)
+        if (inputImages.isEmpty()) {
             return null
         }
 
-        val pendingImages = validImages.filterNot { item ->
+        val pendingImages = inputImages.filterNot { item ->
             batchOutputRepository.isOutputReady(outputDirectory = outputDirectory, input = item)
         }
         val totalItems = inputImages.size
@@ -229,8 +224,6 @@ class ProcessingRunPlanner(
                 attempts = failureDetails[uri]?.attempts ?: 0
             )
         }
-        val orderedFailures = failureDetails.values
-            .sortedWith(compareBy({ it.displayName.lowercase() }, { it.uri }))
 
         checkpointRepository.persistCheckpoint(
             ProcessingCheckpoint(
@@ -248,7 +241,7 @@ class ProcessingRunPlanner(
                 updatedAtEpochMs = System.currentTimeMillis(),
                 lastErrorMessage = lastErrorMessage,
                 pendingItems = orderedPendingItems,
-                failureDetails = orderedFailures
+                failureDetails = orderedFailureDetails(failureDetails)
             )
         )
     }
@@ -259,15 +252,6 @@ class ProcessingRunPlanner(
         }
         return failureDetails.values
             .sortedWith(compareBy({ it.displayName.lowercase() }, { it.uri }))
-    }
-
-    fun failureNamesFromOrdered(failureDetails: List<ProcessingFailureDetail>): List<String> {
-        if (failureDetails.isEmpty()) {
-            return emptyList()
-        }
-        return failureDetails.map { detail ->
-            detail.displayName.ifBlank { detail.uri }
-        }
     }
 
     fun modelBasePathFor(modelInfo: ModelInfo): String {
@@ -283,22 +267,6 @@ class ProcessingRunPlanner(
             return 0.0f
         }
         return (completedItems.toFloat() / totalItems.toFloat()).coerceIn(0.0f, 1.0f)
-    }
-
-    fun resolveProcessorLabel(
-        explicitProcessor: String?,
-        distributedRemoteEnabled: Boolean
-    ): String {
-        val normalizedExplicitProcessor = explicitProcessor?.trim().orEmpty()
-        if (normalizedExplicitProcessor.isNotBlank()) {
-            return normalizedExplicitProcessor
-        }
-        if (!distributedRemoteEnabled) {
-            return stringProvider.getString(R.string.processing_processor_local)
-        }
-        return coordinatorClient?.activeDeviceId().orEmpty().ifBlank {
-            stringProvider.getString(R.string.processing_processor_remote_node)
-        }
     }
 
     companion object {

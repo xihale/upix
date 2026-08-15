@@ -13,8 +13,7 @@ target("crossscale-cli")
         "src/cmd_server.cpp",
         "src/cmd_serve.cpp",
         "src/cmd_process.cpp",
-        "src/process_batch.cpp",
-        "src/cmd_completion.cpp"
+        "src/process_batch.cpp"
     )
     
     after_install(function (target)

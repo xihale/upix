@@ -1,6 +1,9 @@
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.compose)
+    // Required for @Serializable (kotlinx-serialization-json is already a
+    // dependency); version must match the Kotlin toolchain version.
+    id("org.jetbrains.kotlin.plugin.serialization") version libs.versions.kotlin.get()
 }
 
 android {
@@ -127,7 +130,7 @@ dependencies {
 
     // Material icon vector sets. Not part of the Compose BOM; pinned via
     // libs.materialIcons (1.7.8, final release of the independent version line).
-    implementation(libs.androidx.compose.material.icons.core)
+    // material-icons-core comes in transitively via -extended.
     implementation(libs.androidx.compose.material.icons.extended)
 
     // ViewModel
@@ -159,8 +162,5 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.robolectric)
     androidTestImplementation(libs.androidx.test.ext.junit)
-    androidTestImplementation(libs.androidx.test.espresso.core)
-    androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     debugImplementation(libs.androidx.compose.ui.tooling)
-    debugImplementation(libs.androidx.compose.ui.test.manifest)
 }

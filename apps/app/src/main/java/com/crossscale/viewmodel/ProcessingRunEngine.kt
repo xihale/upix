@@ -18,48 +18,18 @@ import java.util.LinkedHashMap
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
-
-// State-exchange surface between ProcessingRunEngine and the ViewModel that
-// owns the run. The engine never holds _uiState, processingJob or
-// activeQueueItemId — those stay in the ViewModel and are read/written through
-// this interface so ownership and ordering stay exactly as they were when the
-// code lived inline in ProcessingViewModel.
-internal interface ProcessingRunEngineHost {
-    // Equivalent of MutableStateFlow.update on the VM's fused ui-state flow.
-    fun updateUiState(transform: (ProcessingUiState) -> ProcessingUiState)
-
-    // Snapshot read of the current fused ui-state.
-    fun currentUiState(): ProcessingUiState
-
-    // Whether a run coroutine is currently active (VM: processingJob?.isActive == true).
-    fun isProcessingJobActive(): Boolean
-
-    // One-shot signal for the remote-fallback snackbar/banner (VM: _remoteFallbackMessage).
-    fun emitRemoteFallbackMessage(message: String)
-
-    // Starts the run coroutine in the host scope and records it as the active
-    // processing job / active queue item (VM: processingJob = viewModelScope.launch
-    // followed by activeQueueItemId = queueItemId, in that order).
-    fun launch(queueItemId: String?, block: suspend CoroutineScope.() -> Unit)
-
-    // End-of-run bookkeeping: clears the processing job and active queue item
-    // and re-invokes the queue chain (handleQueuedRunFinished) if a queued
-    // batch was running. Queue chaining itself stays in the ViewModel.
-    fun onRunFinished()
-}
 
 // Execution engine for a single processing run, extracted verbatim from
 // ProcessingViewModel.startProcessingInternal. It validates inputs, asks the
 // planner for a ProcessingRunSetup, then drives the per-item loop (remote or
 // native routing with mid-run remote fallback), output commit/discard,
 // checkpointing and terminal state transitions — reporting every state change
-// through ProcessingRunEngineHost.
+// back to the owning ProcessingViewModel.
 internal class ProcessingRunEngine(
-    private val host: ProcessingRunEngineHost,
+    private val viewModel: ProcessingViewModel,
     private val planner: ProcessingRunPlanner,
     private val modelRepository: ModelProvider,
     private val nativeImageProcessingRepository: ImageProcessingStore,
@@ -101,7 +71,7 @@ internal class ProcessingRunEngine(
             )
             return false
         }
-        if (host.isProcessingJobActive()) {
+        if (viewModel.isProcessingJobActive()) {
             return false
         }
 
@@ -118,7 +88,7 @@ internal class ProcessingRunEngine(
                 R.string.processing_error_model_not_found, modelName
             )
             logRepository.error("ProcessingViewModel", errorMessage)
-            host.updateUiState { state ->
+            viewModel.updateUiState { state ->
                 state.copy(
                     task = ProcessingTask(
                         id = resumeCheckpoint?.taskId ?: UUID.randomUUID().toString(),
@@ -149,7 +119,7 @@ internal class ProcessingRunEngine(
             resumeCheckpoint = resumeCheckpoint,
             retryFailedOnly = retryFailedOnly,
             resumePendingUris = resumePendingUris,
-            activeTask = host.currentUiState().task
+            activeTask = viewModel.currentUiState().task
         )
         if (setup == null) {
             logRepository.warning("ProcessingViewModel", "Unable to prepare processing inputs: $imagePath")
@@ -168,13 +138,6 @@ internal class ProcessingRunEngine(
         val initialFailureList = planner.orderedFailureDetails(initialFailures)
         val initialLastError = resumeCheckpoint?.lastErrorMessage
 
-        host.updateUiState { state ->
-            state.copy(
-                expectedTotalItems = totalItems,
-                isEstimatingInputCount = false
-            )
-        }
-
         if (pendingImages.isEmpty()) {
             checkpointRepository.clearCheckpoint()
             if (!queueItemId.isNullOrBlank()) {
@@ -183,7 +146,7 @@ internal class ProcessingRunEngine(
                     inputs = allImages
                 )
                 if (!existingOutputUri.isNullOrBlank()) {
-                    host.updateUiState { state ->
+                    viewModel.updateUiState { state ->
                         state.copy(
                             queueItems = state.queueItems.map { item ->
                                 if (item.id == queueItemId) {
@@ -196,7 +159,7 @@ internal class ProcessingRunEngine(
                     }
                 }
             }
-            host.updateUiState { state ->
+            viewModel.updateUiState { state ->
                 state.copy(
                     task = ProcessingTask(
                         id = taskId,
@@ -224,7 +187,7 @@ internal class ProcessingRunEngine(
             return true
         }
 
-        host.updateUiState { state ->
+        viewModel.updateUiState { state ->
             state.copy(
                     task = ProcessingTask(
                         id = taskId,
@@ -235,11 +198,11 @@ internal class ProcessingRunEngine(
                         outputDirectoryUri = outputDirectory.outputDirectoryUri,
                         overwriteOriginal = outputDirectory.overwriteOriginal,
                         backupOriginal = outputDirectory.backupOriginal,
+                        processNestedFolders = outputDirectory.processNestedFolders,
                         currentItemName = runImages.firstOrNull()?.displayName,
                     completedItems = completedCount,
                     pendingItems = pendingImages.size,
                     failedItems = initialFailures.size,
-                    failedItemNames = planner.failureNamesFromOrdered(initialFailureList),
                     failureDetails = initialFailureList,
                     totalItems = totalItems,
                     progress = planner.progressOf(completedCount, totalItems),
@@ -256,7 +219,7 @@ internal class ProcessingRunEngine(
 
         val modelBasePath = planner.modelBasePathFor(modelInfo)
 
-        host.launch(queueItemId) {
+        viewModel.launchRun(queueItemId) {
             var successfulCount = completedCount
             var lastError: String? = initialLastError
             val pendingByUri = LinkedHashMap<String, ResolvedImageInput>()
@@ -268,30 +231,38 @@ internal class ProcessingRunEngine(
             var remoteRouting = effectiveDistributedMode
             var processingSession: ImageProcessingSession? = null
 
+            // Persists a checkpoint reflecting the run's current progress. The
+            // run-invariant fields are captured here; the mutable progress
+            // (successfulCount / pendingByUri / failureDetailsByUri / lastError)
+            // is read at invocation time, so every call site is a one-liner.
+            suspend fun saveCheckpointSnapshot() {
+                planner.saveCheckpointSnapshot(
+                    taskId = taskId,
+                    imagePath = imagePath,
+                    modelName = modelName,
+                    distributedMode = effectiveDistributedMode,
+                    totalItems = totalItems,
+                    completedItems = successfulCount,
+                    outputDirectory = outputDirectory.displayPath,
+                    outputDirectoryUri = outputDirectory.outputDirectoryUri,
+                    overwriteOriginal = outputDirectory.overwriteOriginal,
+                    backupOriginal = outputDirectory.backupOriginal,
+                    createdAtEpochMs = createdAt,
+                    pendingImages = pendingByUri.values.toList(),
+                    failureDetails = failureDetailsByUri,
+                    lastErrorMessage = lastError
+                )
+            }
+
             // Initial checkpoint (moved into the run coroutine so the disk
             // write happens off the main thread via persistCheckpoint).
-            planner.saveCheckpointSnapshot(
-                taskId = taskId,
-                imagePath = imagePath,
-                modelName = modelName,
-                distributedMode = effectiveDistributedMode,
-                totalItems = totalItems,
-                completedItems = completedCount,
-                outputDirectory = outputDirectory.displayPath,
-                outputDirectoryUri = outputDirectory.outputDirectoryUri,
-                overwriteOriginal = outputDirectory.overwriteOriginal,
-                backupOriginal = outputDirectory.backupOriginal,
-                createdAtEpochMs = createdAt,
-                pendingImages = pendingImages,
-                failureDetails = initialFailures,
-                lastErrorMessage = initialLastError
-            )
+            saveCheckpointSnapshot()
 
             try {
                 if (remoteRouting) {
                     // remoteRouting == true only when coordinatorClient != null
                     // (invariant: effectiveDistributedMode = coordinatorClient?.isConnected() == true).
-                    val endpoint = coordinatorClient.activeDeviceId().orEmpty()
+                    val endpoint = coordinatorClient?.activeDeviceId().orEmpty()
                     logRepository.info(
                         "ProcessingViewModel",
                         "Remote mode: routing tasks to coordinator $endpoint"
@@ -318,23 +289,8 @@ internal class ProcessingRunEngine(
                         )
                         lastError = errorMessage
                         logRepository.error("ProcessingViewModel", errorMessage)
-                        planner.saveCheckpointSnapshot(
-                            taskId = taskId,
-                            imagePath = imagePath,
-                            modelName = modelName,
-                            distributedMode = effectiveDistributedMode,
-                            totalItems = totalItems,
-                            completedItems = successfulCount,
-                            outputDirectory = outputDirectory.displayPath,
-                            outputDirectoryUri = outputDirectory.outputDirectoryUri,
-                            overwriteOriginal = outputDirectory.overwriteOriginal,
-                            backupOriginal = outputDirectory.backupOriginal,
-                            createdAtEpochMs = createdAt,
-                            pendingImages = pendingByUri.values.toList(),
-                            failureDetails = failureDetailsByUri,
-                            lastErrorMessage = lastError
-                        )
-                        host.updateUiState { state ->
+                        saveCheckpointSnapshot()
+                        viewModel.updateUiState { state ->
                             val currentTask = state.task ?: return@updateUiState state
                             val orderedFailures = planner.orderedFailureDetails(failureDetailsByUri)
                             state.copy(
@@ -343,23 +299,22 @@ internal class ProcessingRunEngine(
                                     currentItemName = null,
                                     pendingItems = pendingByUri.size,
                                     failedItems = orderedFailures.size,
-                                    failedItemNames = planner.failureNamesFromOrdered(orderedFailures),
                                     failureDetails = orderedFailures,
                                     lastErrorMessage = errorMessage
                                 ),
                                 isProcessing = false
                             )
                         }
-                        return@launch
+                        return@launchRun
                     }
                 }
 
                 for (item in runImages) {
                     if (!isActive) {
-                        return@launch
+                        return@launchRun
                     }
 
-                    host.updateUiState { state ->
+                    viewModel.updateUiState { state ->
                         val currentTask = state.task ?: return@updateUiState state
                         state.copy(
                             task = currentTask.copy(
@@ -395,7 +350,7 @@ internal class ProcessingRunEngine(
                     // rest of the batch, re-process THIS image natively, and emit a
                     // UI signal so the mode chip / snackbar can react.
                     if (remoteRouting && result.isFailure) {
-                        host.emitRemoteFallbackMessage(
+                        viewModel.emitRemoteFallbackMessage(
                             stringProvider.getString(R.string.processing_remote_fallback)
                         )
                         logRepository.warning(
@@ -419,8 +374,6 @@ internal class ProcessingRunEngine(
                     }
                     val elapsedMs = System.currentTimeMillis() - startedAt
                     val itemUri = item.uri.toString()
-                    var latestProcessorLabel: String? = null
-                    var latestAttributionEntry: String? = null
 
                     if (result.isSuccess) {
                         val commitResult = batchOutputRepository.commitOutput(
@@ -435,17 +388,12 @@ internal class ProcessingRunEngine(
                             val destination = commitResult.getOrNull()
                                 ?: result.getOrNull()?.outputFile?.absolutePath
                                 ?: outputFile.absolutePath
-                            latestProcessorLabel = planner.resolveProcessorLabel(
-                                explicitProcessor = result.getOrNull()?.processorLabel,
-                                distributedRemoteEnabled = remoteRouting
-                            )
-                            latestAttributionEntry = "${item.displayName} · ${latestProcessorLabel}"
                             logRepository.info(
                                 "ProcessingViewModel",
-                                "Processed ${item.displayName} by ${latestProcessorLabel} -> $destination (${elapsedMs}ms, done=$successfulCount/$totalItems, pending=${pendingByUri.size})"
+                                "Processed ${item.displayName} -> $destination (${elapsedMs}ms, done=$successfulCount/$totalItems, pending=${pendingByUri.size})"
                             )
                             if (!queueItemId.isNullOrBlank()) {
-                                host.updateUiState { state ->
+                                viewModel.updateUiState { state ->
                                     state.copy(
                                         queueItems = state.queueItems.map { queueItem ->
                                             if (queueItem.id == queueItemId) {
@@ -490,31 +438,11 @@ internal class ProcessingRunEngine(
                         )
                     }
 
-                    planner.saveCheckpointSnapshot(
-                        taskId = taskId,
-                        imagePath = imagePath,
-                        modelName = modelName,
-                        distributedMode = effectiveDistributedMode,
-                        totalItems = totalItems,
-                        completedItems = successfulCount,
-                        outputDirectory = outputDirectory.displayPath,
-                        outputDirectoryUri = outputDirectory.outputDirectoryUri,
-                        overwriteOriginal = outputDirectory.overwriteOriginal,
-                        backupOriginal = outputDirectory.backupOriginal,
-                        createdAtEpochMs = createdAt,
-                        pendingImages = pendingByUri.values.toList(),
-                        failureDetails = failureDetailsByUri,
-                        lastErrorMessage = lastError
-                    )
+                    saveCheckpointSnapshot()
 
-                    host.updateUiState { state ->
+                    viewModel.updateUiState { state ->
                         val currentTask = state.task ?: return@updateUiState state
                         val orderedFailures = planner.orderedFailureDetails(failureDetailsByUri)
-                        val updatedAttributions = if (latestAttributionEntry == null) {
-                            currentTask.recentProcessorAttributions
-                        } else {
-                            (currentTask.recentProcessorAttributions + latestAttributionEntry).takeLast(MAX_RECENT_ATTRIBUTIONS)
-                        }
                         state.copy(
                             task = currentTask.copy(
                                 progress = planner.progressOf(successfulCount, totalItems),
@@ -522,15 +450,7 @@ internal class ProcessingRunEngine(
                                 completedItems = successfulCount,
                                 pendingItems = pendingByUri.size,
                                 failedItems = orderedFailures.size,
-                                failedItemNames = planner.failureNamesFromOrdered(orderedFailures),
                                 failureDetails = orderedFailures,
-                                lastProcessedItemName = if (latestProcessorLabel == null) {
-                                    currentTask.lastProcessedItemName
-                                } else {
-                                    item.displayName
-                                },
-                                lastProcessorLabel = latestProcessorLabel ?: currentTask.lastProcessorLabel,
-                                recentProcessorAttributions = updatedAttributions,
                                 lastErrorMessage = lastError
                             )
                         )
@@ -539,7 +459,7 @@ internal class ProcessingRunEngine(
 
                 if (pendingByUri.isEmpty()) {
                     checkpointRepository.clearCheckpoint()
-                    host.updateUiState { state ->
+                    viewModel.updateUiState { state ->
                         val currentTask = state.task ?: return@updateUiState state
                         state.copy(
                             task = currentTask.copy(
@@ -548,7 +468,6 @@ internal class ProcessingRunEngine(
                                 completedItems = totalItems,
                                 pendingItems = 0,
                                 failedItems = 0,
-                                failedItemNames = emptyList(),
                                 failureDetails = emptyList(),
                                 currentItemName = null,
                                 lastErrorMessage = null
@@ -567,7 +486,7 @@ internal class ProcessingRunEngine(
                     } else {
                         ProcessingStatus.IDLE
                     }
-                    host.updateUiState { state ->
+                    viewModel.updateUiState { state ->
                         val currentTask = state.task ?: return@updateUiState state
                         val orderedFailures = planner.orderedFailureDetails(failureDetailsByUri)
                         state.copy(
@@ -576,7 +495,6 @@ internal class ProcessingRunEngine(
                                 completedItems = successfulCount,
                                 pendingItems = pendingByUri.size,
                                 failedItems = orderedFailures.size,
-                                failedItemNames = planner.failureNamesFromOrdered(orderedFailures),
                                 failureDetails = orderedFailures,
                                 progress = planner.progressOf(successfulCount, totalItems),
                                 currentItemName = null,
@@ -601,22 +519,7 @@ internal class ProcessingRunEngine(
                 // The coroutine is already cancelled; wrap in NonCancellable so
                 // the final checkpoint still reaches disk before rethrowing.
                 withContext(NonCancellable) {
-                    planner.saveCheckpointSnapshot(
-                        taskId = taskId,
-                        imagePath = imagePath,
-                        modelName = modelName,
-                        distributedMode = effectiveDistributedMode,
-                        totalItems = totalItems,
-                        completedItems = successfulCount,
-                        outputDirectory = outputDirectory.displayPath,
-                        outputDirectoryUri = outputDirectory.outputDirectoryUri,
-                        overwriteOriginal = outputDirectory.overwriteOriginal,
-                        backupOriginal = outputDirectory.backupOriginal,
-                        createdAtEpochMs = createdAt,
-                        pendingImages = pendingByUri.values.toList(),
-                        failureDetails = failureDetailsByUri,
-                        lastErrorMessage = lastError
-                    )
+                    saveCheckpointSnapshot()
                 }
                 logRepository.warning("ProcessingViewModel", "Task $taskId canceled")
                 throw cancellationException
@@ -624,23 +527,8 @@ internal class ProcessingRunEngine(
                 val errorMessage = throwable.message
                     ?: stringProvider.getString(R.string.processing_error_unknown_failure)
                 lastError = errorMessage
-                planner.saveCheckpointSnapshot(
-                    taskId = taskId,
-                    imagePath = imagePath,
-                    modelName = modelName,
-                    distributedMode = effectiveDistributedMode,
-                    totalItems = totalItems,
-                    completedItems = successfulCount,
-                    outputDirectory = outputDirectory.displayPath,
-                    outputDirectoryUri = outputDirectory.outputDirectoryUri,
-                    overwriteOriginal = outputDirectory.overwriteOriginal,
-                    backupOriginal = outputDirectory.backupOriginal,
-                    createdAtEpochMs = createdAt,
-                    pendingImages = pendingByUri.values.toList(),
-                    failureDetails = failureDetailsByUri,
-                    lastErrorMessage = lastError
-                )
-                    host.updateUiState { state ->
+                saveCheckpointSnapshot()
+                    viewModel.updateUiState { state ->
                         val currentTask = state.task ?: return@updateUiState state
                         val orderedFailures = planner.orderedFailureDetails(failureDetailsByUri)
                         state.copy(
@@ -650,7 +538,6 @@ internal class ProcessingRunEngine(
                                 completedItems = successfulCount,
                                 pendingItems = pendingByUri.size,
                                 failedItems = orderedFailures.size,
-                                failedItemNames = planner.failureNamesFromOrdered(orderedFailures),
                                 failureDetails = orderedFailures,
                                 progress = planner.progressOf(successfulCount, totalItems),
                                 lastErrorMessage = errorMessage
@@ -664,8 +551,8 @@ internal class ProcessingRunEngine(
                 )
             } finally {
                 processingSession?.close()
-                if (host.currentUiState().isProcessing) {
-                    host.updateUiState { state ->
+                if (viewModel.currentUiState().isProcessing) {
+                    viewModel.updateUiState { state ->
                         val currentTask = state.task ?: return@updateUiState state
                         state.copy(
                             task = currentTask.copy(
@@ -676,7 +563,7 @@ internal class ProcessingRunEngine(
                         )
                     }
                 }
-                host.onRunFinished()
+                viewModel.onRunFinished()
             }
         }
         return true
@@ -685,6 +572,5 @@ internal class ProcessingRunEngine(
     companion object {
         private const val DISTRIBUTED_TILE_SIZE = 256
         private const val DISTRIBUTED_TILE_OVERLAP = 16
-        private const val MAX_RECENT_ATTRIBUTIONS = 8
     }
 }

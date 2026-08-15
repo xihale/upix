@@ -112,35 +112,6 @@ auto ProcessingConfig::load(const std::filesystem::path& path)
     return config;
 }
 
-auto ProcessingConfig::save(const std::filesystem::path& path) const
-    -> expected<void, std::string> {
-
-    detail::ConfigJson snapshot{
-        .tile_size = tile_size,
-        .tile_overlap = tile_overlap,
-        .batch_size = batch_size,
-        .auto_tile_size = auto_tile_size,
-        .min_tile_size = min_tile_size,
-        .max_tile_size = max_tile_size,
-        .use_gpu = use_gpu,
-        .model_name = model_name,
-        .output_format = normalize_output_format(output_format),
-        .output_quality = output_quality,
-    };
-
-    std::string json;
-    if (auto err = glz::write_json(snapshot, json); err) {
-        return std::unexpected(std::string{"Failed to serialize config JSON"});
-    }
-
-    std::ofstream file(path);
-    if (!file.is_open()) {
-        return std::unexpected("Cannot create config file: " + path.string());
-    }
-    file << json;
-    return {};
-}
-
 auto ProcessingConfig::validate() const -> std::vector<std::string> {
     std::vector<std::string> errors;
 

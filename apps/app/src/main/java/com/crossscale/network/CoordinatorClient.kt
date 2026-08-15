@@ -1,13 +1,14 @@
 package com.crossscale.network
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.os.Environment
 import com.crossscale.data.repository.LogRepository
 import com.crossscale.data.repository.NativeProcessResult
 import com.crossscale.data.repository.ResolvedImageInput
+import com.crossscale.data.repository.RGB_CHANNELS
+import com.crossscale.data.repository.decodeRgb
+import com.crossscale.data.repository.outputFormatFor
 import com.crossscale.nativelib.NCNNEngine
 import com.crossscale.nativelib.NativeWorker
 import java.io.File
@@ -18,15 +19,6 @@ class CoordinatorClient(
     private val logRepository: LogRepository
 ) {
     private val appContext = context.applicationContext
-    private val modelsDirectory = appContext.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS)
-        ?.let { directory -> File(directory, "models") }
-        ?: File(appContext.filesDir, "models")
-
-    // NativeWorker is now stateless aside from library load; one-shot submit
-    // (NCNNEngine.nativeProcessImageDistributed) and requestConnection are the
-    // only native entry points used here. The old persistent worker-session
-    // (nativeCreate/Connect/Disconnect/IsConnected/GetLastError) is gone.
-    private val nativeWorker: NativeWorker by lazy { NativeWorker() }
 
     // Internal representation: carries the peer pubkey + stream flag needed to
     // re-run strict-MITM handshakes for each one-shot image submit. The public,
@@ -64,16 +56,8 @@ class CoordinatorClient(
             clearEndpoint(previousEndpoint)
         }
 
-        if (!modelsDirectory.exists() && !modelsDirectory.mkdirs()) {
-            logRepository.error(
-                "CoordinatorClient",
-                "Failed to create models directory: ${modelsDirectory.absolutePath}"
-            )
-            return null
-        }
-
         val learnedPubKey = try {
-            nativeWorker.requestConnection(
+            NativeWorker.nativeRequestConnection(
                 host = normalizedHost,
                 port = port,
                 peerPubKeyB64 = normalizedPeerPubKeyB64,
@@ -133,10 +117,14 @@ class CoordinatorClient(
         val endpoint = connectedEndpoint
             ?: return Result.failure(IllegalStateException("No connected coordinator endpoint"))
 
-        val decodedInput = decodeInput(input.uri)
-            ?: return Result.failure(
-                IllegalStateException("Failed to decode image input: ${input.displayName}")
-            )
+        val decodedInput = decodeRgb(
+            resolver = appContext.contentResolver,
+            uri = input.uri
+        ) { message ->
+            logRepository.error("CoordinatorClient", message)
+        } ?: return Result.failure(
+            IllegalStateException("Failed to decode image input: ${input.displayName}")
+        )
 
         val outputFormat = outputFormatFor(outputFile)
         val startedAt = System.currentTimeMillis()
@@ -200,7 +188,6 @@ class CoordinatorClient(
                 inputHeight = decodedInput.height,
                 outputWidth = outputBounds.first,
                 outputHeight = outputBounds.second,
-                processorLabel = "${endpoint.host}:${endpoint.port}"
             )
         )
     }
@@ -221,68 +208,6 @@ class CoordinatorClient(
     private fun clearEndpoint(endpoint: ConnectedEndpoint) {
         connectedEndpoint = null
         logRepository.info("CoordinatorClient", "Disconnected from ${endpoint.host}:${endpoint.port}")
-    }
-
-    private fun decodeInput(uri: Uri): DecodedRgbImage? {
-        val bitmap = runCatching {
-            appContext.contentResolver.openInputStream(uri)?.use { inputStream ->
-                BitmapFactory.decodeStream(inputStream)
-            }
-        }.onFailure { throwable ->
-            logRepository.error(
-                "CoordinatorClient",
-                "Unable to read input URI $uri: ${throwable.message}"
-            )
-        }.getOrNull() ?: return null
-
-        val argbBitmap = if (bitmap.config == Bitmap.Config.ARGB_8888) {
-            bitmap
-        } else {
-            val converted = bitmap.copy(Bitmap.Config.ARGB_8888, false)
-            bitmap.recycle()
-            converted ?: return null
-        }
-
-        val width = argbBitmap.width
-        val height = argbBitmap.height
-        if (width <= 0 || height <= 0) {
-            argbBitmap.recycle()
-            return null
-        }
-
-        val rgbByteCount = width.toLong() * height.toLong() * RGB_CHANNELS
-        if (rgbByteCount <= 0L || rgbByteCount > Int.MAX_VALUE.toLong()) {
-            argbBitmap.recycle()
-            return null
-        }
-
-        val rgbBytes = ByteArray(rgbByteCount.toInt())
-        val rowPixels = IntArray(width)
-        var writeIndex = 0
-        for (row in 0 until height) {
-            argbBitmap.getPixels(
-                rowPixels,
-                0,
-                width,
-                0,
-                row,
-                width,
-                1
-            )
-            for (column in 0 until width) {
-                val pixel = rowPixels[column]
-                rgbBytes[writeIndex++] = ((pixel shr 16) and 0xFF).toByte()
-                rgbBytes[writeIndex++] = ((pixel shr 8) and 0xFF).toByte()
-                rgbBytes[writeIndex++] = (pixel and 0xFF).toByte()
-            }
-        }
-        argbBitmap.recycle()
-
-        return DecodedRgbImage(
-            width = width,
-            height = height,
-            rgbBytes = rgbBytes
-        )
     }
 
     private fun decodeOutputBounds(encodedBytes: ByteArray): Pair<Int, Int>? {
@@ -309,20 +234,6 @@ class CoordinatorClient(
         }
     }
 
-    private fun outputFormatFor(outputFile: File): String {
-        return when (outputFile.extension.lowercase()) {
-            "png" -> "png"
-            "webp" -> "webp"
-            else -> "jpg"
-        }
-    }
-
-    private data class DecodedRgbImage(
-        val width: Int,
-        val height: Int,
-        val rgbBytes: ByteArray
-    )
-
     private data class ConnectedEndpoint(
         val host: String,
         val port: Int,
@@ -331,7 +242,6 @@ class CoordinatorClient(
     )
 
     private companion object {
-        private const val RGB_CHANNELS = 3
         private const val DEFAULT_OUTPUT_QUALITY = 95
         private const val MIN_TILE_SIZE = 16
     }

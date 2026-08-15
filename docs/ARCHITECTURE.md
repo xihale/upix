@@ -246,7 +246,7 @@ com/crossscale/
 └── native/    (NCNNEngine.kt, NativeWorker.kt)         ← JNI 桥
 ```
 
-**ViewModel 层**（3 个，全部 `StateFlow` + `WhileSubscribed`）：`MainViewModel`（模型/输入/输出/开关）、`DeviceViewModel`（mDNS 发现/QR 连接/自动重连）、`ProcessingViewModel`（批处理引擎，含队列去重、checkpoint 断点续传、failed-only 重试、备份恢复）。已从 ProcessingViewModel 抽出 `ProcessingMappers` / `BackupRestoreManager` / `InputCountEstimator` / `ProcessingUiModels`。
+**ViewModel 层**（3 个，全部 `StateFlow` + `WhileSubscribed`）：`MainViewModel`（模型/输入/输出/开关）、`DeviceViewModel`（mDNS 发现/QR 连接/自动重连）、`ProcessingViewModel`（批处理引擎，含队列去重、checkpoint 断点续传、failed-only 重试、备份恢复）。已从 ProcessingViewModel 抽出 `ProcessingMappers` / `ProcessingUiModels` 及 `ProcessingRunEngine` / `ProcessingQueueController` / `ProcessingRunPlanner`。
 
 **关键事实**：**Android 端的真正网络通信在 C++ JNI 层完成**（`jni_bridge.cpp` 的 `nativeProcessImageDistributed` 用 `crossscale::TCPSocket` + `Protocol`）。Kotlin `network/` 包只做发现（`MDNSDiscovery` 用 Android NsdManager）和封装（`CoordinatorClient` 调 JNI）。
 

@@ -6,21 +6,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.buildJsonArray
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.intOrNull
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
-import kotlinx.serialization.json.put
 
+@Serializable
 enum class PersistedQueueItemStatus {
     PENDING,
     RUNNING,
@@ -28,6 +18,7 @@ enum class PersistedQueueItemStatus {
     COMPLETED
 }
 
+@Serializable
 data class PersistedQueueItem(
     val id: String,
     val source: String,
@@ -46,6 +37,7 @@ data class PersistedQueueItem(
     val lastOutputUri: String? = null
 )
 
+@Serializable
 data class ProcessingQueueSnapshot(
     val items: List<PersistedQueueItem> = emptyList(),
     val isQueueRunning: Boolean = false
@@ -59,11 +51,11 @@ class ProcessingQueueRepository(
     private val _queue = MutableStateFlow(ProcessingQueueSnapshot())
     override val queue: StateFlow<ProcessingQueueSnapshot> = _queue.asStateFlow()
 
-    // Synchronous path retained for direct callers (unit tests). All production
-    // flows go through [persistQueue] so JSON serialization + file writes stay
-    // off the main thread.
-    override fun saveQueue(snapshot: ProcessingQueueSnapshot) {
-        runBlocking { persistQueue(snapshot) }
+    // Tolerant config: unknown/missing keys decode to defaults so older cache
+    // files stay readable; nullables are omitted on write like the old format.
+    private val json = Json {
+        ignoreUnknownKeys = true
+        explicitNulls = false
     }
 
     override suspend fun persistQueue(snapshot: ProcessingQueueSnapshot) {
@@ -87,9 +79,9 @@ class ProcessingQueueRepository(
 
         withContext(Dispatchers.IO) {
             runCatching {
-                val payload = Json.encodeToString(
-                    JsonObject.serializer(),
-                    normalizedSnapshot.toJsonObject()
+                val payload = json.encodeToString(
+                    ProcessingQueueSnapshot.serializer(),
+                    normalizedSnapshot
                 )
                 val tempFile = File(queueFile.parentFile, "${queueFile.name}.tmp")
                 tempFile.writeText(payload)
@@ -122,9 +114,8 @@ class ProcessingQueueRepository(
         }
 
         return runCatching {
-            val payload = queueFile.readText()
-            val json = Json.parseToJsonElement(payload).jsonObject
-            json.toQueueSnapshot().normalizedForRestore()
+            json.decodeFromString(ProcessingQueueSnapshot.serializer(), queueFile.readText())
+                .normalizedForRestore()
         }.onFailure { throwable ->
             logRepository.error(
                 "ProcessingQueueRepository",
@@ -188,94 +179,6 @@ class ProcessingQueueRepository(
             items = restoredItems,
             isQueueRunning = false
         )
-    }
-
-    private fun ProcessingQueueSnapshot.toJsonObject(): JsonObject {
-        return buildJsonObject {
-            put("isQueueRunning", isQueueRunning)
-            put(
-                "items",
-                buildJsonArray {
-                    items.forEach { item ->
-                        add(
-                            buildJsonObject {
-                                put("id", item.id)
-                                put("source", item.source)
-                                put("modelName", item.modelName)
-                                put("distributedMode", item.distributedMode)
-                                put("retryFailedOnly", item.retryFailedOnly)
-                                item.outputDirectoryUri?.let { uri ->
-                                    put("outputDirectoryUri", uri)
-                                }
-                                put("overwriteOriginal", item.overwriteOriginal)
-                                put("backupOriginal", item.backupOriginal)
-                                put("processNestedFolders", item.processNestedFolders)
-                                put("createdAtEpochMs", item.createdAtEpochMs)
-                                item.expectedItems?.let { expectedItems ->
-                                    put("expectedItems", expectedItems)
-                                }
-                                put("status", item.status.name)
-                                put("attempts", item.attempts)
-                                item.lastErrorMessage?.let { message ->
-                                    put("lastErrorMessage", message)
-                                }
-                                item.lastOutputUri?.let { outputUri ->
-                                    put("lastOutputUri", outputUri)
-                                }
-                            }
-                        )
-                    }
-                }
-            )
-        }
-    }
-
-    private fun JsonObject.toQueueSnapshot(): ProcessingQueueSnapshot {
-        val restoredItems = this["items"]
-            ?.jsonArrayOrNull()
-            ?.mapNotNull { element ->
-                val item = element.jsonObjectOrNull() ?: return@mapNotNull null
-                val id = item["id"]?.jsonPrimitive?.contentOrNull.orEmpty().trim()
-                val source = item["source"]?.jsonPrimitive?.contentOrNull.orEmpty().trim()
-                val modelName = item["modelName"]?.jsonPrimitive?.contentOrNull.orEmpty().trim()
-                if (id.isBlank() || source.isBlank() || modelName.isBlank()) {
-                    return@mapNotNull null
-                }
-                val parsedStatus = item["status"]?.jsonPrimitive?.contentOrNull
-                    ?.let { statusName ->
-                        runCatching { PersistedQueueItemStatus.valueOf(statusName.trim()) }.getOrNull()
-                    } ?: PersistedQueueItemStatus.PENDING
-                PersistedQueueItem(
-                    id = id,
-                    source = source,
-                    modelName = modelName,
-                    distributedMode = item["distributedMode"]?.jsonPrimitive?.booleanOrNull ?: false,
-                    retryFailedOnly = item["retryFailedOnly"]?.jsonPrimitive?.booleanOrNull ?: false,
-                    outputDirectoryUri = item["outputDirectoryUri"]?.jsonPrimitive?.contentOrNull,
-                    overwriteOriginal = item["overwriteOriginal"]?.jsonPrimitive?.booleanOrNull ?: false,
-                    backupOriginal = item["backupOriginal"]?.jsonPrimitive?.booleanOrNull ?: true,
-                        processNestedFolders = item["processNestedFolders"]?.jsonPrimitive?.booleanOrNull ?: true,
-                    createdAtEpochMs = item["createdAtEpochMs"]?.jsonPrimitive?.longOrNull ?: 0L,
-                    expectedItems = item["expectedItems"]?.jsonPrimitive?.intOrNull,
-                    status = parsedStatus,
-                    attempts = item["attempts"]?.jsonPrimitive?.intOrNull ?: 0,
-                    lastErrorMessage = item["lastErrorMessage"]?.jsonPrimitive?.contentOrNull,
-                    lastOutputUri = item["lastOutputUri"]?.jsonPrimitive?.contentOrNull
-                )
-            } ?: emptyList()
-
-        return ProcessingQueueSnapshot(
-            items = restoredItems,
-            isQueueRunning = this["isQueueRunning"]?.jsonPrimitive?.booleanOrNull ?: false
-        )
-    }
-
-    private fun kotlinx.serialization.json.JsonElement.jsonArrayOrNull(): kotlinx.serialization.json.JsonArray? {
-        return runCatching { jsonArray }.getOrNull()
-    }
-
-    private fun kotlinx.serialization.json.JsonElement.jsonObjectOrNull(): JsonObject? {
-        return runCatching { jsonObject }.getOrNull()
     }
 
     companion object {

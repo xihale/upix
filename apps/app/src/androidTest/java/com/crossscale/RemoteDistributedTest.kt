@@ -49,8 +49,7 @@ class RemoteDistributedTest {
 
     /** TOFU-pair with the coordinator; returns the learned PC identity pubkey. */
     private fun pair(): String {
-        val worker = NativeWorker()
-        val learnedPubKey = worker.requestConnection(
+        val learnedPubKey = NativeWorker.nativeRequestConnection(
             host = host(),
             port = port(),
             peerPubKeyB64 = "",      // TOFU: learn the PC key on first contact

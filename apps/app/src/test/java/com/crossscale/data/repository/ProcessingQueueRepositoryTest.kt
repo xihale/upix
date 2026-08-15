@@ -11,6 +11,7 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import kotlinx.coroutines.runBlocking
 import org.robolectric.RuntimeEnvironment
 
 @RunWith(RobolectricTestRunner::class)
@@ -43,34 +44,36 @@ class ProcessingQueueRepositoryTest {
 
     @Test
     fun saveQueueNormalizesItemsAndKeepsRunnableFlagWhenPendingExists() {
-        repository.saveQueue(
-            ProcessingQueueSnapshot(
-                items = listOf(
-                    PersistedQueueItem(
-                        id = "  queue-item-1  ",
-                        source = "  content://images/first.jpg  ",
-                        modelName = "  Real-ESRGANv3-anime-x2  ",
-                        distributedMode = true,
-                        retryFailedOnly = true,
-                        outputDirectoryUri = "   ",
-                        createdAtEpochMs = 100L,
-                        expectedItems = -5,
-                        status = PersistedQueueItemStatus.PENDING,
-                        attempts = -2,
-                        lastErrorMessage = "  "
+        runBlocking {
+            repository.persistQueue(
+                ProcessingQueueSnapshot(
+                    items = listOf(
+                        PersistedQueueItem(
+                            id = "  queue-item-1  ",
+                            source = "  content://images/first.jpg  ",
+                            modelName = "  Real-ESRGANv3-anime-x2  ",
+                            distributedMode = true,
+                            retryFailedOnly = true,
+                            outputDirectoryUri = "   ",
+                            createdAtEpochMs = 100L,
+                            expectedItems = -5,
+                            status = PersistedQueueItemStatus.PENDING,
+                            attempts = -2,
+                            lastErrorMessage = "  "
+                        ),
+                        PersistedQueueItem(
+                            id = "queue-item-2",
+                            source = "content://images/second.jpg",
+                            modelName = "   ",
+                            distributedMode = false,
+                            createdAtEpochMs = 200L,
+                            status = PersistedQueueItemStatus.FAILED
+                        )
                     ),
-                    PersistedQueueItem(
-                        id = "queue-item-2",
-                        source = "content://images/second.jpg",
-                        modelName = "   ",
-                        distributedMode = false,
-                        createdAtEpochMs = 200L,
-                        status = PersistedQueueItemStatus.FAILED
-                    )
-                ),
-                isQueueRunning = true
+                    isQueueRunning = true
+                )
             )
-        )
+        }
 
         assertTrue(queueFile.exists())
         val inMemoryAfterSave = repository.queue.value
@@ -131,23 +134,25 @@ class ProcessingQueueRepositoryTest {
 
     @Test
     fun saveQueueDeletesFileWhenQueueBecomesEmpty() {
-        repository.saveQueue(
-            ProcessingQueueSnapshot(
-                items = listOf(
-                    PersistedQueueItem(
-                        id = "queue-item",
-                        source = "content://images/image.jpg",
-                        modelName = "Real-ESRGANv3-anime-x2",
-                        distributedMode = false,
-                        createdAtEpochMs = 1L
-                    )
-                ),
-                isQueueRunning = false
+        runBlocking {
+            repository.persistQueue(
+                ProcessingQueueSnapshot(
+                    items = listOf(
+                        PersistedQueueItem(
+                            id = "queue-item",
+                            source = "content://images/image.jpg",
+                            modelName = "Real-ESRGANv3-anime-x2",
+                            distributedMode = false,
+                            createdAtEpochMs = 1L
+                        )
+                    ),
+                    isQueueRunning = false
+                )
             )
-        )
+        }
         assertTrue(queueFile.exists())
 
-        repository.saveQueue(ProcessingQueueSnapshot())
+        runBlocking { repository.persistQueue(ProcessingQueueSnapshot()) }
 
         assertFalse(queueFile.exists())
         assertTrue(repository.queue.value.items.isEmpty())

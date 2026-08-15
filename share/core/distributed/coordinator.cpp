@@ -1,5 +1,6 @@
 #include "coordinator.hpp"
 #include "core/tile_types.hpp"
+#include "core/engine_setup.hpp"
 #include "utils/image.hpp"
 #include "utils/logger.hpp"
 #include "utils/network.hpp"
@@ -15,10 +16,9 @@
 
 namespace crossscale {
 
-// Maximum payload size for network messages (100 MB)
-static constexpr uint32_t MAX_NETWORK_PAYLOAD = 100 * 1024 * 1024;
 // Raw upscaled pixels are a transient buffer (encoded to jpg/png before
-// transport), so they may exceed MAX_NETWORK_PAYLOAD. Bound PC memory instead.
+// transport), so they may exceed MAX_NETWORK_PAYLOAD (utils/network.hpp).
+// Bound PC memory instead.
 static constexpr uint64_t MAX_RAW_OUTPUT_BYTES = 512ULL * 1024 * 1024;
 
 // Human-readable byte count for logs: "6.66 MB", "512.0 KB", "723 bytes".
@@ -169,39 +169,19 @@ bool Coordinator::ensure_engine_ready(const std::string& model_name) {
     std::lock_guard<std::mutex> lk(engine_mutex_);
 
     if (!engine_initialized_) {
-        engine_ = create_ncnn_engine();
-        auto init_res = engine_->initialize(DeviceType::GPU_VULKAN);
-        if (!init_res) {
-            LOG_WARNING("Coordinator", "GPU unavailable, falling back to CPU: " + init_res.error().message);
-            auto cpu_res = engine_->initialize(DeviceType::CPU);
-            if (!cpu_res) {
-                LOG_ERROR("Coordinator", "engine initialize failed: " + cpu_res.error().message);
-                return false;
-            }
+        auto init = initialize_engine(SetupDevice::GPU_THEN_CPU);
+        if (!init) {
+            LOG_ERROR("Coordinator", init.error());
+            return false;
         }
+        engine_ = std::move(*init);
         tile_processor_ = std::make_unique<TileProcessor>();
         engine_initialized_ = true;
         LOG_INFO("Coordinator", "Local engine ready on " +
                  std::string(engine_->current_device() == DeviceType::GPU_VULKAN ? "GPU" : "CPU"));
     }
 
-    // Empty model name = "use whatever is loaded" (caller didn't specify).
-    if (model_name.empty() || model_name == loaded_model_name_) {
-        return true;
-    }
-    auto info = model_manager_.get_model(model_name);
-    if (!info) {
-        LOG_ERROR("Coordinator", "unknown model requested: " + model_name);
-        return false;
-    }
-    auto load_res = engine_->load_model(info->param_path.string(), info->bin_path.string());
-    if (!load_res) {
-        LOG_ERROR("Coordinator", "model load failed: " + load_res.error().message);
-        return false;
-    }
-    loaded_model_name_ = model_name;
-    LOG_INFO("Coordinator", "switched model to " + model_name);
-    return true;
+    return switch_model(*engine_, model_manager_, loaded_model_name_, model_name, "Coordinator");
 }
 
 // Upscale a submitted image on the PC's own engine. image_data is raw u8 pixels.

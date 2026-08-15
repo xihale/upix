@@ -26,7 +26,6 @@ struct ProcessingConfig {
 
     // 模型设置
     std::string model_name;
-    std::filesystem::path models_dir = "./models";
 
     // 输出设置
     int output_quality = 90;
@@ -35,10 +34,6 @@ struct ProcessingConfig {
     // 从 JSON 文件加载
     static auto load(const std::filesystem::path& path)
         -> expected<ProcessingConfig, std::string>;
-
-    // 保存到 JSON 文件
-    auto save(const std::filesystem::path& path) const
-        -> expected<void, std::string>;
 
     // 验证配置
     auto validate() const -> std::vector<std::string>;

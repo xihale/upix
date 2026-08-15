@@ -26,6 +26,25 @@ enum class SetupDevice {
     ENGINE_DEFAULT,     // call initialize() with no arg — engine picks (GPU→CPU)
 };
 
+// Create an engine and initialize it for the given device strategy (including
+// the GPU→CPU fallback for GPU_THEN_CPU). Returns the ready engine or a
+// human-readable error string. Used by setup_engine and by callers that keep
+// the engine alive across requests (e.g. the coordinator's lazy init).
+auto initialize_engine(SetupDevice device)
+    -> expected<std::unique_ptr<Engine>, std::string>;
+
+// Lazy model (re)load shared by the coordinator and the serve daemon: keep the
+// currently loaded model when `model_name` is empty or already loaded;
+// otherwise look it up in `models` and load it on `engine`. Updates
+// `loaded_model_name` on success. The caller serializes engine access.
+auto switch_model(
+    Engine& engine,
+    ModelManager& models,
+    std::string& loaded_model_name,
+    const std::string& model_name,
+    std::string_view log_tag
+) -> bool;
+
 // Compose the create_ncnn_engine → initialize → scan_models → load_model recipe.
 // Returns the ready engine + scanned models + selected model, or a human-readable
 // error string describing which step failed. Caller decides how to surface the

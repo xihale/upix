@@ -12,6 +12,7 @@ import androidx.compose.material.icons.outlined.Backup
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Image
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.SubdirectoryArrowRight
@@ -53,7 +54,11 @@ internal fun ParameterCard(
     overwriteOriginal: Boolean,
     backupOriginal: Boolean,
     processNestedFolders: Boolean,
+    outputFormatLabel: String = "",
+    availableScales: List<Int> = emptyList(),
     onPickModel: () -> Unit,
+    onPickScale: () -> Unit = {},
+    onPickFormat: () -> Unit = {},
     onSelectOutputFolder: () -> Unit,
     onUseDefaultOutputFolder: () -> Unit,
     onToggleOverwriteOriginal: (Boolean) -> Unit,
@@ -101,7 +106,8 @@ internal fun ParameterCard(
                     stringResource(R.string.config_scale_value, model.scaleFactor)
                 } ?: notSelectedLabel,
                 valueStyle = ValueMono,
-                onClick = onPickModel
+                // 无任何模型时保持原行为：打开模型选择 sheet。
+                onClick = if (availableScales.isEmpty()) onPickModel else onPickScale
             )
 
             ConfigRow(
@@ -141,15 +147,18 @@ internal fun ParameterCard(
                         ConfigRow(
                             icon = Icons.Outlined.Memory,
                             title = stringResource(R.string.config_label_spec),
-                            value = stringResource(
-                                R.string.config_model_spec_value,
-                                model.scaleFactor,
-                                model.tileSize,
-                                model.inputChannels
-                            ),
+                            value = stringResource(R.string.config_scale_value, model.scaleFactor),
                             valueStyle = ValueMono
                         )
                     }
+                    // 覆盖原图开启时输出写回原路径，格式不可生效：禁用该行。
+                    ConfigRow(
+                        icon = Icons.Outlined.Image,
+                        title = stringResource(R.string.config_output_format),
+                        value = outputFormatLabel,
+                        valueStyle = ValueMono,
+                        onClick = if (overwriteOriginal) null else onPickFormat
+                    )
                     ConfigSwitchRow(
                         icon = Icons.Outlined.Save,
                         title = stringResource(R.string.common_overwrite_original),

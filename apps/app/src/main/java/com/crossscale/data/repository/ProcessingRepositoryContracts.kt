@@ -27,6 +27,17 @@ interface InputSourceResolver {
     ): List<ResolvedImageInput>
 }
 
+/**
+ * 输出格式设置：FOLLOW 表示跟随原图扩展名（现状行为），
+ * 其余枚举在生成输出文件名时强制对应扩展名。
+ */
+enum class OutputImageFormat(val forcedExtension: String?) {
+    FOLLOW(null),
+    PNG("png"),
+    JPG("jpg"),
+    WEBP("webp")
+}
+
 interface BatchOutputStore {
     fun prepareOutputDirectory(
         source: String,
@@ -72,16 +83,8 @@ interface BatchOutputStore {
 interface ProcessingCheckpointStore {
     val checkpoint: StateFlow<ProcessingCheckpoint?>
 
-    fun saveCheckpoint(checkpoint: ProcessingCheckpoint)
-
-    /**
-     * Off-main-thread save: serialization + disk write run on Dispatchers.IO.
-     * Default implementation falls back to the synchronous save so lightweight
-     * fakes keep working without extra boilerplate.
-     */
-    suspend fun persistCheckpoint(checkpoint: ProcessingCheckpoint) {
-        saveCheckpoint(checkpoint)
-    }
+    /** Off-main-thread save: serialization + disk write run on Dispatchers.IO. */
+    suspend fun persistCheckpoint(checkpoint: ProcessingCheckpoint)
 
     fun loadCheckpoint(): ProcessingCheckpoint?
 
@@ -91,16 +94,8 @@ interface ProcessingCheckpointStore {
 interface ProcessingQueueStore {
     val queue: StateFlow<ProcessingQueueSnapshot>
 
-    fun saveQueue(snapshot: ProcessingQueueSnapshot)
-
-    /**
-     * Off-main-thread save: serialization + disk write run on Dispatchers.IO.
-     * Default implementation falls back to the synchronous save so lightweight
-     * fakes keep working without extra boilerplate.
-     */
-    suspend fun persistQueue(snapshot: ProcessingQueueSnapshot) {
-        saveQueue(snapshot)
-    }
+    /** Off-main-thread save: serialization + disk write run on Dispatchers.IO. */
+    suspend fun persistQueue(snapshot: ProcessingQueueSnapshot)
 
     fun loadQueue(): ProcessingQueueSnapshot
 }

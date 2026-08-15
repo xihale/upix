@@ -23,6 +23,10 @@ You can use any ncnn-trained super-resolution model, including:
 2. Ensure both files have matching names (e.g., `model.param` and `model.bin`)
 3. CrossScale will automatically detect and list available models
 
+Note: a `models/models` symlink pointing at a machine-local model store
+(e.g. `~/.config/CrossScale/models`) is no longer tracked by git — create it
+locally if you want that directory scanned.
+
 ## Model Metadata
 
 CrossScale automatically infers:

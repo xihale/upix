@@ -14,11 +14,8 @@ import com.crossscale.data.repository.ResolvedImageInput
 data class ProcessingUiState(
     val task: ProcessingTask? = null,
     val isProcessing: Boolean = false,
-    val canResume: Boolean = false,
     val checkpointSummary: ProcessingCheckpointSummary? = null,
     val canRetryFailedOnly: Boolean = false,
-    val expectedTotalItems: Int? = null,
-    val isEstimatingInputCount: Boolean = false,
     val queueItems: List<ProcessingQueueItemSummary> = emptyList(),
     val isQueueRunning: Boolean = false
 )

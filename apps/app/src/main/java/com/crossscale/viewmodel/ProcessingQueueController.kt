@@ -14,47 +14,16 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
-// State-exchange surface between ProcessingQueueController and the ViewModel
-// that owns the fused ui-state and the run job. The controller never holds
-// _uiState, processingJob or activeQueueItemId — they stay in the ViewModel.
-internal interface ProcessingQueueControllerHost {
-    // Equivalent of MutableStateFlow.update on the VM's fused ui-state flow.
-    fun updateUiState(transform: (ProcessingUiState) -> ProcessingUiState)
-
-    // Snapshot read of the current fused ui-state.
-    fun currentUiState(): ProcessingUiState
-
-    // Whether a run coroutine is currently active (VM: processingJob?.isActive == true).
-    fun isProcessingJobActive(): Boolean
-
-    // Queue item id of the currently running batch, if any (VM: activeQueueItemId).
-    fun currentActiveQueueItemId(): String?
-
-    // Entry point into the run engine (VM private startProcessingInternal delegate).
-    fun startProcessingInternal(
-        imagePath: String,
-        modelName: String,
-        distributedMode: Boolean,
-        outputDirectoryUri: String?,
-        overwriteOriginal: Boolean,
-        backupOriginal: Boolean,
-        processNestedFolders: Boolean,
-        resumeCheckpoint: ProcessingCheckpoint?,
-        retryFailedOnly: Boolean,
-        resumePendingUris: Set<String>?,
-        queueItemId: String?
-    ): Boolean
-}
-
 // Batch-queue state machine extracted from ProcessingViewModel: queue CRUD with
 // PENDING/RUNNING dedup and FAILED reuse, default syncing, retry configuration,
-// and the run-next/handle-finished chaining that drives queued batches one at a
-// time. All view-state mutations and run kickoff go through the host, so the
-// recursive coupling with the run engine (engine finally -> handleQueuedRunFinished
-// -> runNextQueuedBatchIfNeeded -> startProcessingInternal) still resolves inside
-// the ViewModel, exactly as before the extraction.
+// and the run-next/handle-finished chaining that drives queued batches one at
+// a time. All view-state mutations and run kickoff go through the owning
+// ProcessingViewModel, so the recursive coupling with the run engine (engine
+// finally -> handleQueuedRunFinished -> runNextQueuedBatchIfNeeded ->
+// startProcessingInternal) still resolves inside the ViewModel, exactly as
+// before the extraction.
 internal class ProcessingQueueController(
-    private val host: ProcessingQueueControllerHost,
+    private val viewModel: ProcessingViewModel,
     private val inputSourceRepository: InputSourceResolver,
     private val checkpointRepository: ProcessingCheckpointStore,
     private val logRepository: LogRepository,
@@ -83,8 +52,11 @@ internal class ProcessingQueueController(
         }
 
         val normalizedOutputDirectoryUri = outputDirectoryUri?.trim()?.ifBlank { null }
-        val reusablePendingOrRunningBatchId = host.currentUiState().queueItems.firstOrNull { item ->
-            (item.status == PersistedQueueItemStatus.PENDING || item.status == PersistedQueueItemStatus.RUNNING) &&
+        // Reuse an existing non-completed batch with the same configuration:
+        // a PENDING/RUNNING one short-circuits the duplicate enqueue, a FAILED
+        // one is reset to PENDING.
+        val reusableBatch = viewModel.currentUiState().queueItems.firstOrNull { item ->
+            item.status != PersistedQueueItemStatus.COMPLETED &&
                 item.matchesBatchConfiguration(
                     source = normalizedImagePath,
                     modelName = normalizedModelName,
@@ -94,72 +66,43 @@ internal class ProcessingQueueController(
                     backupOriginal = backupOriginal,
                     processNestedFolders = processNestedFolders
                 )
-        }?.id
-
-        if (reusablePendingOrRunningBatchId != null) {
-            host.updateUiState { state ->
-                state.copy(
-                    queueItems = state.queueItems.map { item ->
-                        if (
-                            item.id == reusablePendingOrRunningBatchId &&
-                            item.status == PersistedQueueItemStatus.PENDING &&
-                            item.retryFailedOnly
-                        ) {
-                            item.copy(
-                                retryFailedOnly = false,
-                                lastErrorMessage = null,
-                                lastOutputUri = null
-                            )
-                        } else {
-                            item
-                        }
-                    }
-                )
-            }
-            logRepository.info(
-                "ProcessingViewModel",
-                "Skipped duplicate enqueue for active batch ${reusablePendingOrRunningBatchId.take(8)} source=$normalizedImagePath"
-            )
-            estimateQueuedBatchExpectedItems(reusablePendingOrRunningBatchId, normalizedImagePath)
-            return reusablePendingOrRunningBatchId
         }
 
-        val reusableFailedBatchId = host.currentUiState().queueItems.firstOrNull { item ->
-            item.status == PersistedQueueItemStatus.FAILED &&
-                item.matchesBatchConfiguration(
-                    source = normalizedImagePath,
-                    modelName = normalizedModelName,
-                    distributedMode = distributedMode,
-                    outputDirectoryUri = normalizedOutputDirectoryUri,
-                    overwriteOriginal = overwriteOriginal,
-                    backupOriginal = backupOriginal,
-                    processNestedFolders = processNestedFolders
-                )
-        }?.id
+        if (reusableBatch != null && reusableBatch.status != PersistedQueueItemStatus.FAILED) {
+            updateItem(reusableBatch.id) { item ->
+                if (item.status == PersistedQueueItemStatus.PENDING && item.retryFailedOnly) {
+                    item.copy(
+                        retryFailedOnly = false,
+                        lastErrorMessage = null,
+                        lastOutputUri = null
+                    )
+                } else {
+                    item
+                }
+            }
+            logRepository.info(
+                "ProcessingViewModel",
+                "Skipped duplicate enqueue for active batch ${reusableBatch.id.take(8)} source=$normalizedImagePath"
+            )
+            estimateQueuedBatchExpectedItems(reusableBatch.id, normalizedImagePath)
+            return reusableBatch.id
+        }
 
-        if (reusableFailedBatchId != null) {
-            host.updateUiState { state ->
-                state.copy(
-                    queueItems = state.queueItems.map { item ->
-                        if (item.id == reusableFailedBatchId) {
-                            item.copy(
-                                status = PersistedQueueItemStatus.PENDING,
-                                retryFailedOnly = false,
-                                lastErrorMessage = null,
-                                lastOutputUri = null
-                            )
-                        } else {
-                            item
-                        }
-                    }
+        if (reusableBatch != null) {
+            updateItem(reusableBatch.id) { item ->
+                item.copy(
+                    status = PersistedQueueItemStatus.PENDING,
+                    retryFailedOnly = false,
+                    lastErrorMessage = null,
+                    lastOutputUri = null
                 )
             }
             logRepository.info(
                 "ProcessingViewModel",
-                "Reused failed queued batch ${reusableFailedBatchId.take(8)} for source=$normalizedImagePath"
+                "Reused failed queued batch ${reusableBatch.id.take(8)} for source=$normalizedImagePath"
             )
-            estimateQueuedBatchExpectedItems(reusableFailedBatchId, normalizedImagePath)
-            return reusableFailedBatchId
+            estimateQueuedBatchExpectedItems(reusableBatch.id, normalizedImagePath)
+            return reusableBatch.id
         }
 
         val queueItem = ProcessingQueueItemSummary(
@@ -173,7 +116,7 @@ internal class ProcessingQueueController(
             processNestedFolders = processNestedFolders,
             createdAtEpochMs = System.currentTimeMillis()
         )
-        host.updateUiState { state ->
+        viewModel.updateUiState { state ->
             state.copy(queueItems = state.queueItems + queueItem)
         }
         logRepository.info(
@@ -191,37 +134,29 @@ internal class ProcessingQueueController(
     ) {
         scope.launch {
             val expectedItems = withContext(ioDispatcher) {
-                val task = host.currentUiState().task
+                val task = viewModel.currentUiState().task
                 if (task != null) {
                     inputSourceRepository.resolveImageInputs(source = source, nested = task.processNestedFolders).size
                 } else {
                     inputSourceRepository.resolveImageInputs(source = source, nested = true).size // Default to nested for queue estimation if no active task
                 }
             }
-            host.updateUiState { state ->
-                state.copy(
-                    queueItems = state.queueItems.map { item ->
-                        if (item.id == queueItemId) {
-                            item.copy(expectedItems = expectedItems)
-                        } else {
-                            item
-                        }
-                    }
-                )
+            updateItem(queueItemId) { item ->
+                item.copy(expectedItems = expectedItems)
             }
         }
     }
 
     fun startBatchQueue(preferredBatchId: String? = null) {
         val normalizedPreferredBatchId = preferredBatchId?.trim()?.ifBlank { null }
-        val hasPending = host.currentUiState().queueItems.any { item ->
+        val hasPending = viewModel.currentUiState().queueItems.any { item ->
             item.status == PersistedQueueItemStatus.PENDING
         }
         if (!hasPending) {
             logRepository.warning("ProcessingViewModel", "No pending batch in queue")
             return
         }
-        host.updateUiState { state ->
+        viewModel.updateUiState { state ->
             state.copy(isQueueRunning = true)
         }
         runNextQueuedBatchIfNeeded(preferredBatchId = normalizedPreferredBatchId)
@@ -236,7 +171,7 @@ internal class ProcessingQueueController(
     ) {
         val normalizedOutputDirectoryUri = outputDirectoryUri?.trim()?.ifBlank { null }
         var updatedCount = 0
-        host.updateUiState { state ->
+        viewModel.updateUiState { state ->
             state.copy(
                 queueItems = state.queueItems.map { item ->
                     if (item.status != PersistedQueueItemStatus.PENDING) {
@@ -266,52 +201,42 @@ internal class ProcessingQueueController(
     }
 
     fun pauseBatchQueue() {
-        if (!host.currentUiState().isQueueRunning) {
+        if (!viewModel.currentUiState().isQueueRunning) {
             return
         }
-        host.updateUiState { state ->
+        viewModel.updateUiState { state ->
             state.copy(isQueueRunning = false)
         }
         logRepository.info("ProcessingViewModel", "Paused batch queue")
     }
 
     fun retryQueuedBatch(batchId: String) {
-        val normalizedBatchId = batchId.trim()
-        if (normalizedBatchId.isBlank()) {
-            return
-        }
+        val normalizedBatchId = normalizeBatchId(batchId) ?: return
         var updated = false
-        host.updateUiState { state ->
-            state.copy(
-                queueItems = state.queueItems.map { item ->
-                    if (item.id == normalizedBatchId && item.status != PersistedQueueItemStatus.RUNNING) {
-                        updated = true
-                        item.copy(
-                            status = PersistedQueueItemStatus.PENDING,
-                            retryFailedOnly = false,
-                            lastErrorMessage = null,
-                            lastOutputUri = null
-                        )
-                    } else {
-                        item
-                    }
-                }
-            )
+        updateItem(normalizedBatchId) { item ->
+            if (item.status != PersistedQueueItemStatus.RUNNING) {
+                updated = true
+                item.copy(
+                    status = PersistedQueueItemStatus.PENDING,
+                    retryFailedOnly = false,
+                    lastErrorMessage = null,
+                    lastOutputUri = null
+                )
+            } else {
+                item
+            }
         }
         if (updated) {
             logRepository.info("ProcessingViewModel", "Reset queued batch for retry: $normalizedBatchId")
-            if (host.currentUiState().isQueueRunning && !host.isProcessingJobActive()) {
+            if (viewModel.currentUiState().isQueueRunning && !viewModel.isProcessingJobActive()) {
                 runNextQueuedBatchIfNeeded()
             }
         }
     }
 
     fun retryQueuedBatchFailedOnly(batchId: String) {
-        val normalizedBatchId = batchId.trim()
-        if (normalizedBatchId.isBlank()) {
-            return
-        }
-        val queueItem = host.currentUiState().queueItems.firstOrNull { item ->
+        val normalizedBatchId = normalizeBatchId(batchId) ?: return
+        val queueItem = viewModel.currentUiState().queueItems.firstOrNull { item ->
             item.id == normalizedBatchId
         } ?: return
         if (queueItem.status == PersistedQueueItemStatus.RUNNING) {
@@ -328,62 +253,52 @@ internal class ProcessingQueueController(
         }
 
         var updated = false
-        host.updateUiState { state ->
-            state.copy(
-                queueItems = state.queueItems.map { item ->
-                    if (item.id == normalizedBatchId && item.status != PersistedQueueItemStatus.RUNNING) {
-                        updated = true
-                        item.copy(
-                            status = PersistedQueueItemStatus.PENDING,
-                            retryFailedOnly = true,
-                            lastErrorMessage = null,
-                            lastOutputUri = null
-                        )
-                    } else {
-                        item
-                    }
-                }
-            )
+        updateItem(normalizedBatchId) { item ->
+            if (item.status != PersistedQueueItemStatus.RUNNING) {
+                updated = true
+                item.copy(
+                    status = PersistedQueueItemStatus.PENDING,
+                    retryFailedOnly = true,
+                    lastErrorMessage = null,
+                    lastOutputUri = null
+                )
+            } else {
+                item
+            }
         }
         if (updated) {
             logRepository.info(
                 "ProcessingViewModel",
                 "Configured queued batch for failed-only retry: $normalizedBatchId"
             )
-            if (host.currentUiState().isQueueRunning && !host.isProcessingJobActive()) {
+            if (viewModel.currentUiState().isQueueRunning && !viewModel.isProcessingJobActive()) {
                 runNextQueuedBatchIfNeeded()
             }
         }
     }
 
     fun removeQueuedBatch(batchId: String) {
-        val normalizedBatchId = batchId.trim()
-        if (normalizedBatchId.isBlank()) {
-            return
-        }
-        if (host.currentActiveQueueItemId() == normalizedBatchId && host.isProcessingJobActive()) {
+        val normalizedBatchId = normalizeBatchId(batchId) ?: return
+        if (viewModel.currentActiveQueueItemId() == normalizedBatchId && viewModel.isProcessingJobActive()) {
             logRepository.warning("ProcessingViewModel", "Cannot remove running batch from queue")
             return
         }
-        val beforeSize = host.currentUiState().queueItems.size
-        host.updateUiState { state ->
+        val beforeSize = viewModel.currentUiState().queueItems.size
+        viewModel.updateUiState { state ->
             state.copy(
                 queueItems = state.queueItems.filterNot { item ->
                     item.id == normalizedBatchId
                 }
             )
         }
-        if (host.currentUiState().queueItems.size != beforeSize) {
+        if (viewModel.currentUiState().queueItems.size != beforeSize) {
             logRepository.info("ProcessingViewModel", "Removed queued batch: $normalizedBatchId")
         }
     }
 
     fun sourceForQueuedBatch(batchId: String): String? {
-        val normalizedBatchId = batchId.trim()
-        if (normalizedBatchId.isBlank()) {
-            return null
-        }
-        return host.currentUiState().queueItems.firstOrNull { item ->
+        val normalizedBatchId = normalizeBatchId(batchId) ?: return null
+        return viewModel.currentUiState().queueItems.firstOrNull { item ->
             item.id == normalizedBatchId
         }?.source
     }
@@ -393,13 +308,13 @@ internal class ProcessingQueueController(
         if (normalizedSource.isBlank()) {
             return false
         }
-        return host.currentUiState().queueItems.any { item ->
+        return viewModel.currentUiState().queueItems.any { item ->
             item.source == normalizedSource
         }
     }
 
     fun queuedSources(): Set<String> {
-        return host.currentUiState().queueItems
+        return viewModel.currentUiState().queueItems
             .map { item -> item.source }
             .toSet()
     }
@@ -410,15 +325,15 @@ internal class ProcessingQueueController(
             return 0
         }
         val removedBatchIds = mutableListOf<String>()
-        host.currentUiState().queueItems
+        viewModel.currentUiState().queueItems
             .filter { item ->
                 item.source == normalizedSource &&
-                    !(item.id == host.currentActiveQueueItemId() && host.isProcessingJobActive())
+                    !(item.id == viewModel.currentActiveQueueItemId() && viewModel.isProcessingJobActive())
             }
             .forEach { item ->
-                val beforeSize = host.currentUiState().queueItems.size
+                val beforeSize = viewModel.currentUiState().queueItems.size
                 removeQueuedBatch(item.id)
-                if (host.currentUiState().queueItems.size < beforeSize) {
+                if (viewModel.currentUiState().queueItems.size < beforeSize) {
                     removedBatchIds += item.id
                 }
             }
@@ -432,11 +347,11 @@ internal class ProcessingQueueController(
     }
 
     fun clearBatchQueue() {
-        if (host.currentUiState().queueItems.isEmpty()) {
+        if (viewModel.currentUiState().queueItems.isEmpty()) {
             return
         }
-        val runningBatchId = host.currentActiveQueueItemId()
-        host.updateUiState { state ->
+        val runningBatchId = viewModel.currentActiveQueueItemId()
+        viewModel.updateUiState { state ->
             val remaining = if (runningBatchId == null) {
                 emptyList()
             } else {
@@ -453,47 +368,44 @@ internal class ProcessingQueueController(
     }
 
     fun outputUriForQueuedBatch(batchId: String): String? {
-        val normalizedBatchId = batchId.trim()
-        if (normalizedBatchId.isBlank()) {
-            return null
-        }
-        return host.currentUiState().queueItems.firstOrNull { item ->
+        val normalizedBatchId = normalizeBatchId(batchId) ?: return null
+        return viewModel.currentUiState().queueItems.firstOrNull { item ->
             item.id == normalizedBatchId && item.status == PersistedQueueItemStatus.COMPLETED
         }?.lastOutputUri
     }
 
     fun pauseBatchQueueForManualRun() {
-        if (!host.currentUiState().isQueueRunning) {
+        if (!viewModel.currentUiState().isQueueRunning) {
             return
         }
-        host.updateUiState { state ->
+        viewModel.updateUiState { state ->
             state.copy(isQueueRunning = false)
         }
         logRepository.info("ProcessingViewModel", "Paused batch queue for manual run")
     }
 
     fun runNextQueuedBatchIfNeeded(preferredBatchId: String? = null) {
-        if (!host.currentUiState().isQueueRunning) {
+        if (!viewModel.currentUiState().isQueueRunning) {
             return
         }
-        if (host.isProcessingJobActive()) {
+        if (viewModel.isProcessingJobActive()) {
             return
         }
 
         val normalizedPreferredBatchId = preferredBatchId?.trim()?.ifBlank { null }
         val nextBatch = if (normalizedPreferredBatchId == null) {
-            host.currentUiState().queueItems.firstOrNull { item ->
+            viewModel.currentUiState().queueItems.firstOrNull { item ->
                 item.status == PersistedQueueItemStatus.PENDING
             }
         } else {
-            host.currentUiState().queueItems.firstOrNull { item ->
+            viewModel.currentUiState().queueItems.firstOrNull { item ->
                 item.id == normalizedPreferredBatchId && item.status == PersistedQueueItemStatus.PENDING
-            } ?: host.currentUiState().queueItems.firstOrNull { item ->
+            } ?: viewModel.currentUiState().queueItems.firstOrNull { item ->
                 item.status == PersistedQueueItemStatus.PENDING
             }
         }
         if (nextBatch == null) {
-            host.updateUiState { state ->
+            viewModel.updateUiState { state ->
                 state.copy(isQueueRunning = false)
             }
             logRepository.info("ProcessingViewModel", "Batch queue finished")
@@ -512,21 +424,14 @@ internal class ProcessingQueueController(
             }
         }
         val effectiveDistributedMode = coordinatorClient?.isConnected() == true
-        val updatedQueueItems = host.currentUiState().queueItems.map { item ->
-            if (item.id == nextBatch.id) {
-                item.copy(
-                    distributedMode = effectiveDistributedMode,
-                    status = PersistedQueueItemStatus.RUNNING,
-                    attempts = item.attempts + 1,
-                    lastErrorMessage = null,
-                    lastOutputUri = null
-                )
-            } else {
-                item
-            }
-        }
-        host.updateUiState { state ->
-            state.copy(queueItems = updatedQueueItems)
+        updateItem(nextBatch.id) { item ->
+            item.copy(
+                distributedMode = effectiveDistributedMode,
+                status = PersistedQueueItemStatus.RUNNING,
+                attempts = item.attempts + 1,
+                lastErrorMessage = null,
+                lastOutputUri = null
+            )
         }
         logRepository.info(
             "ProcessingViewModel",
@@ -538,7 +443,7 @@ internal class ProcessingQueueController(
                 "Queued batch ${nextBatch.id.take(8)} will resume from checkpoint ${resumeCheckpoint.taskId}"
             )
         }
-        val started = host.startProcessingInternal(
+        val started = viewModel.startProcessingInternal(
             imagePath = nextBatch.source,
             modelName = nextBatch.modelName,
             distributedMode = effectiveDistributedMode,
@@ -559,11 +464,11 @@ internal class ProcessingQueueController(
             )
             return
         }
-        if (!host.isProcessingJobActive()) {
+        if (!viewModel.isProcessingJobActive()) {
             handleQueuedRunFinished(
                 queueItemId = nextBatch.id,
-                status = host.currentUiState().task?.status,
-                lastErrorMessage = host.currentUiState().task?.lastErrorMessage
+                status = viewModel.currentUiState().task?.status,
+                lastErrorMessage = viewModel.currentUiState().task?.lastErrorMessage
             )
         }
     }
@@ -576,26 +481,18 @@ internal class ProcessingQueueController(
         val normalizedStatus = status ?: ProcessingStatus.FAILED
         when (normalizedStatus) {
             ProcessingStatus.COMPLETED -> {
-                host.updateUiState { state ->
-                    state.copy(
-                        queueItems = state.queueItems.map { item ->
-                            if (item.id == queueItemId) {
-                                item.copy(
-                                    status = PersistedQueueItemStatus.COMPLETED,
-                                    retryFailedOnly = false,
-                                    lastErrorMessage = null
-                                )
-                            } else {
-                                item
-                            }
-                        }
+                updateItem(queueItemId) { item ->
+                    item.copy(
+                        status = PersistedQueueItemStatus.COMPLETED,
+                        retryFailedOnly = false,
+                        lastErrorMessage = null
                     )
                 }
                 logRepository.info(
                     "ProcessingViewModel",
                     "Queued batch finished: ${queueItemId.take(8)}"
                 )
-                if (host.currentUiState().isQueueRunning) {
+                if (viewModel.currentUiState().isQueueRunning) {
                     runNextQueuedBatchIfNeeded()
                 }
             }
@@ -608,7 +505,7 @@ internal class ProcessingQueueController(
                     ProcessingStatus.IDLE -> "批次未完成"
                     else -> "批次失败"
                 }
-                host.updateUiState { state ->
+                viewModel.updateUiState { state ->
                     state.copy(
                         queueItems = state.queueItems.filterNot { item ->
                             item.id == queueItemId
@@ -627,6 +524,21 @@ internal class ProcessingQueueController(
             }
         }
     }
+
+    // Applies transform to the queue item with the given id (no-op if absent).
+    private fun updateItem(id: String, transform: (ProcessingQueueItemSummary) -> ProcessingQueueItemSummary) {
+        viewModel.updateUiState { state ->
+            state.copy(
+                queueItems = state.queueItems.map { item ->
+                    if (item.id == id) transform(item) else item
+                }
+            )
+        }
+    }
+
+    // Trims a caller-supplied batch id; null when blank.
+    private fun normalizeBatchId(batchId: String): String? =
+        batchId.trim().ifBlank { null }
 
     private fun findMatchingCheckpointForQueuedBatch(
         queueItem: ProcessingQueueItemSummary

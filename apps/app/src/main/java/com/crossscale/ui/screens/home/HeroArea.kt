@@ -54,7 +54,7 @@ private const val PREVIEW_THUMBNAIL_TARGET_SIZE_PX = 960
 
 /**
  * 图片舞台：超分工具的唯一视觉焦点。
- * 空态展示标题 + 两个显式入口；已选态大图铺满；
+ * 空态只留两个显式入口；已选态大图铺满；
  * 处理中由调用方通过 [overlay] 叠加遮罩进度。
  */
 @Composable
@@ -73,7 +73,7 @@ internal fun ImageStage(
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(320.dp),
+                .height(if (selectedInputs.isEmpty()) 180.dp else 320.dp),
             shape = MaterialTheme.shapes.large,
             color = MaterialTheme.colorScheme.surfaceContainer
         ) {
@@ -106,7 +106,7 @@ internal fun ImageStage(
     }
 }
 
-/** 空态：标题 + 两个显式入口。 */
+/** 空态：两个显式入口居中。 */
 @Composable
 private fun EmptyStage(
     onAddImage: () -> Unit,
@@ -119,11 +119,6 @@ private fun EmptyStage(
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Text(
-            text = stringResource(R.string.hero_stage_empty_title),
-            style = MaterialTheme.typography.headlineSmall
-        )
-        Spacer(modifier = Modifier.height(Spacing.lg))
         Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
             FilledTonalButton(onClick = onAddImage) {
                 Text(stringResource(R.string.hero_pick_image))

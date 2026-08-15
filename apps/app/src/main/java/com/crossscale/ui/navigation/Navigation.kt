@@ -1,14 +1,20 @@
 package com.crossscale.ui.navigation
 
+import android.content.Intent
+import android.net.Uri
 import androidx.camera.core.ExperimentalGetImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -16,97 +22,83 @@ import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import com.crossscale.AppContainer
-import com.crossscale.CrossScaleApplication
+import com.crossscale.clearBatchQueue
 import com.crossscale.data.model.ConnectionState
-import com.crossscale.data.model.LogEntry
-import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.model.RemoteEndpoint
+import com.crossscale.openQueuedBatchOutput
+import com.crossscale.removeQueuedBatch
+import com.crossscale.restoreBackup
+import com.crossscale.startProcessing
+import com.crossscale.ui.input.rememberInputSelection
 import com.crossscale.ui.screens.ConnectionScreen
 import com.crossscale.ui.screens.HelpScreen
 import com.crossscale.ui.screens.HomeScreen
 import com.crossscale.ui.screens.LogsScreen
 import com.crossscale.ui.screens.ModelsScreen
 import com.crossscale.ui.screens.SettingsScreen
-import com.crossscale.ui.screens.home.HomeCheckpointActions
-import com.crossscale.ui.screens.home.HomeConnection
-import com.crossscale.ui.screens.home.HomeQueueActions
-import com.crossscale.ui.screens.home.HomeSetupActions
 import com.crossscale.ui.theme.NavEnterTransition
 import com.crossscale.ui.theme.NavExitTransition
-import com.crossscale.viewmodel.DeviceUiState
 import com.crossscale.viewmodel.DeviceViewModel
-import com.crossscale.viewmodel.MainUiState
-import com.crossscale.viewmodel.ProcessingUiState
+import com.crossscale.viewmodel.MainViewModel
 import com.crossscale.viewmodel.ProcessingViewModel
-import kotlinx.coroutines.flow.StateFlow
 
+/**
+ * 导航图自行解析三个 ViewModel（与 CrossScaleApp 同一 Activity 级
+ * ViewModelStore，viewModel() 返回同一实例），并在各目的地的调用点
+ * 直接绑定 VM 方法。跨 VM 的复合编排回调（startProcessing 等）位于
+ * AppCallbacks.kt，此处仅做接线；不经过逐参数透传的回调墙。
+ */
 @ExperimentalGetImage
 @Composable
 fun CrossScaleNavigation(
+    container: AppContainer,
     navController: NavHostController,
-    mainUiState: MainUiState,
-    deviceUiState: DeviceUiState,
-    processingUiState: ProcessingUiState,
-    logsFlow: StateFlow<List<LogEntry>>,
-    onSelectModel: (ModelInfo) -> Unit,
-    onSelectImages: () -> Unit,
-    onSelectImageFolder: () -> Unit,
-    onClearInputSources: () -> Unit,
-    onRemoveInputSource: (String) -> Unit,
-    onMoveInputSourceUp: (String) -> Unit,
-    onMoveInputSourceDown: (String) -> Unit,
-    onSelectOutputFolder: () -> Unit,
-    onUseDefaultOutputFolder: () -> Unit,
-    onToggleOverwriteOriginal: (Boolean) -> Unit,
-    onToggleBackupOriginal: (Boolean) -> Unit,
-    onToggleProcessNestedFolders: (Boolean) -> Unit,
-    onStartProcessing: () -> Unit,
-    onStartBatchQueue: () -> Unit,
-    onPauseBatchQueue: () -> Unit,
-    onRetryQueuedBatch: (String) -> Unit,
-    onRetryQueuedBatchFailedOnly: (String) -> Unit,
-    onOpenQueuedBatchOutput: (String) -> Unit,
-    onRemoveQueuedBatch: (String) -> Unit,
-    onClearBatchQueue: () -> Unit,
-    onResumeProcessing: () -> Unit,
-    onRetryFailedItems: () -> Unit,
-    onResumePendingItem: (String) -> Unit,
-    onRetryFailedItem: (String) -> Unit,
-    onDiscardCheckpoint: () -> Unit,
-    onCancelProcessing: () -> Unit,
-    modifier: Modifier = Modifier,
-    hasBackupAvailable: Boolean = false,
-    onRestoreBackup: () -> Unit = {},
-    onRefreshModels: () -> Unit,
-    onImportModels: () -> Unit,
-    onDeleteModel: (ModelInfo) -> Unit,
-    onShowManualConnectDialog: (Boolean) -> Unit,
-    onManualConnect: (String, String) -> Unit,
-    onConnectByQr: (String) -> Unit,
-    onClearConnectionError: () -> Unit,
-    onConfirmFingerprint: () -> Unit,
-    onCancelFingerprint: () -> Unit,
-    onStreamEncryptedChange: (Boolean) -> Unit,
-    isStreamEncrypted: Boolean,
-    onClearLogs: () -> Unit,
-    onOpenModelRelease: () -> Unit,
-    onOpenHelp: () -> Unit
+    modifier: Modifier = Modifier
 ) {
-    // 1:1 phone<->PC: the nav graph no longer takes connectionState /
-    // connectedEndpoint / onDisconnect as threaded callback params. It pulls the
-    // Activity-owned DeviceViewModel + ProcessingViewModel (same ViewModelStore as
-    // CrossScaleApp, so viewModel() returns the very same instances) and consumes
-    // the contract StateFlows directly. The connection screen's disconnect action
-    // likewise binds straight to deviceViewModel.disconnect().
-    val appContext = LocalContext.current
-    val appContainer: AppContainer = remember(appContext) {
-        (appContext.applicationContext as CrossScaleApplication).container
-    }
-    val deviceViewModel: DeviceViewModel = viewModel(factory = DeviceViewModel.factory(appContainer))
-    val processingViewModel: ProcessingViewModel = viewModel(factory = ProcessingViewModel.factory(appContainer))
+    val context = LocalContext.current
+    val mainViewModel: MainViewModel = viewModel(factory = MainViewModel.factory(container))
+    val deviceViewModel: DeviceViewModel = viewModel(factory = DeviceViewModel.factory(container))
+    val processingViewModel: ProcessingViewModel = viewModel(factory = ProcessingViewModel.factory(container))
+
+    val mainUiState by mainViewModel.uiState.collectAsState()
+    val deviceUiState by deviceViewModel.uiState.collectAsState()
+    val processingUiState by processingViewModel.uiState.collectAsState()
     val connectionState: ConnectionState by deviceViewModel.connectionState.collectAsState()
     val connectedEndpoint: RemoteEndpoint? by deviceViewModel.connectedEndpoint.collectAsState()
     val remoteFallbackMessage: String? by processingViewModel.remoteFallbackMessage.collectAsState()
+    val logRepository = container.logRepository
+    val appSettings = container.appSettingsRepository
+
+    var hasBackupAvailable by rememberSaveable { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    // 加密数据流开关(SharedPreferences 持久化, 默认关闭=吞吐优先)。
+    val streamEncryptedState = rememberSaveable {
+        mutableStateOf(appSettings.isStreamEncrypted())
+    }
+    val isStreamEncrypted = streamEncryptedState.value
+
+    LaunchedEffect(mainUiState.selectedImagePath, mainUiState.processNestedFolders) {
+        val path = mainUiState.selectedImagePath
+        hasBackupAvailable = if (path != null) {
+            processingViewModel.hasBackupFor(path, mainUiState.processNestedFolders)
+        } else {
+            false
+        }
+    }
+
+    // App 启动即尝试自动重连上次的 PC (1:1 模型)。成功 -> Remote 模式;
+    // 失败/无记录 -> Native 模式。mDNS 自动发现已移除。
+    LaunchedEffect(Unit) {
+        deviceViewModel.tryAutoReconnect()
+    }
+
+    val inputSelection = rememberInputSelection(
+        mainViewModel = mainViewModel,
+        processingViewModel = processingViewModel,
+        mainUiState = mainUiState,
+        logRepository = logRepository
+    )
 
     NavHost(
         navController = navController,
@@ -122,46 +114,88 @@ fun CrossScaleNavigation(
                 HomeScreen(
                     state = mainUiState,
                     processingUiState = processingUiState,
-                    connection = HomeConnection(
-                        connectionState = connectionState,
-                        connectedEndpoint = connectedEndpoint,
-                        remoteFallbackMessage = remoteFallbackMessage,
-                        onClearRemoteFallbackMessage = processingViewModel::clearRemoteFallbackMessage
-                    ),
-                    setupActions = HomeSetupActions(
-                        onSelectModel = onSelectModel,
-                        onSelectImages = onSelectImages,
-                        onSelectImageFolder = onSelectImageFolder,
-                        onClearInputSources = onClearInputSources,
-                        onRemoveInputSource = onRemoveInputSource,
-                        onMoveInputSourceUp = onMoveInputSourceUp,
-                        onMoveInputSourceDown = onMoveInputSourceDown,
-                        onSelectOutputFolder = onSelectOutputFolder,
-                        onUseDefaultOutputFolder = onUseDefaultOutputFolder,
-                        onToggleOverwriteOriginal = onToggleOverwriteOriginal,
-                        onToggleBackupOriginal = onToggleBackupOriginal,
-                        onToggleProcessNestedFolders = onToggleProcessNestedFolders
-                    ),
-                    queueActions = HomeQueueActions(
-                        onStartProcessing = onStartProcessing,
-                        onStartBatchQueue = onStartBatchQueue,
-                        onPauseBatchQueue = onPauseBatchQueue,
-                        onRetryQueuedBatch = onRetryQueuedBatch,
-                        onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
-                        onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,
-                        onRemoveQueuedBatch = onRemoveQueuedBatch,
-                        onClearBatchQueue = onClearBatchQueue,
-                        onCancelProcessing = onCancelProcessing
-                    ),
-                    checkpointActions = HomeCheckpointActions(
-                        onResumeProcessing = onResumeProcessing,
-                        onRetryFailedItems = onRetryFailedItems,
-                        onResumePendingItem = onResumePendingItem,
-                        onRetryFailedItem = onRetryFailedItem,
-                        onDiscardCheckpoint = onDiscardCheckpoint
-                    ),
+                    connectionState = connectionState,
+                    connectedEndpoint = connectedEndpoint,
+                    remoteFallbackMessage = remoteFallbackMessage,
+                    onClearRemoteFallbackMessage = processingViewModel::clearRemoteFallbackMessage,
+                    onSelectModel = mainViewModel::selectModel,
+                    onSelectScale = mainViewModel::selectModelByScale,
+                    onSelectImages = inputSelection::pickImages,
+                    onSelectImageFolder = inputSelection::pickImageFolder,
+                    onClearInputSources = {
+                        mainViewModel.clearSelectedImage()
+                        processingViewModel.clearBatchQueue()
+                    },
+                    onRemoveInputSource = { source ->
+                        mainViewModel.removeInputSource(source)
+                        processingViewModel.removeQueuedBatchesBySource(source)
+                    },
+                    onSelectOutputFolder = inputSelection::pickOutputFolder,
+                    onUseDefaultOutputFolder = mainViewModel::useDefaultOutputDirectory,
+                    onToggleOverwriteOriginal = mainViewModel::setOverwriteOriginalImage,
+                    onToggleBackupOriginal = mainViewModel::setBackupOriginalImage,
+                    onToggleProcessNestedFolders = mainViewModel::setProcessNestedFolders,
+                    onSelectOutputFormat = mainViewModel::setOutputImageFormat,
+                    onStartProcessing = {
+                        startProcessing(
+                            mainUiState = mainUiState,
+                            processingUiState = processingUiState,
+                            processingViewModel = processingViewModel,
+                            logRepository = logRepository,
+                            startQueueWithWritePermissionCheck = inputSelection::startQueueWithWritePermissionCheck
+                        )
+                    },
+                    onStartBatchQueue = {
+                        processingViewModel.syncPendingQueueDefaults(
+                            distributedMode = mainUiState.useRemote,
+                            outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
+                            overwriteOriginal = mainUiState.overwriteOriginalImage,
+                            backupOriginal = mainUiState.backupOriginalImage,
+                            processNestedFolders = mainUiState.processNestedFolders
+                        )
+                        inputSelection.startQueueWithWritePermissionCheck(null)
+                    },
+                    onPauseBatchQueue = processingViewModel::pauseBatchQueue,
+                    onRetryQueuedBatch = processingViewModel::retryQueuedBatch,
+                    onRetryQueuedBatchFailedOnly = processingViewModel::retryQueuedBatchFailedOnly,
+                    onOpenQueuedBatchOutput = { batchId ->
+                        openQueuedBatchOutput(
+                            context = context,
+                            batchId = batchId,
+                            processingViewModel = processingViewModel,
+                            logRepository = logRepository
+                        )
+                    },
+                    onRemoveQueuedBatch = { batchId ->
+                        removeQueuedBatch(
+                            batchId = batchId,
+                            mainViewModel = mainViewModel,
+                            processingViewModel = processingViewModel
+                        )
+                    },
+                    onClearBatchQueue = {
+                        clearBatchQueue(
+                            mainUiState = mainUiState,
+                            mainViewModel = mainViewModel,
+                            processingViewModel = processingViewModel
+                        )
+                    },
+                    onCancelProcessing = processingViewModel::cancelProcessing,
+                    onResumeProcessing = processingViewModel::resumeLastProcessing,
+                    onRetryFailedItems = processingViewModel::retryFailedItems,
+                    onResumePendingItem = processingViewModel::resumePendingItem,
+                    onRetryFailedItem = processingViewModel::retryFailedItem,
+                    onDiscardCheckpoint = processingViewModel::discardCheckpoint,
                     hasBackupAvailable = hasBackupAvailable,
-                    onRestoreBackup = onRestoreBackup
+                    onRestoreBackup = {
+                        restoreBackup(
+                            context = context,
+                            mainUiState = mainUiState,
+                            processingViewModel = processingViewModel,
+                            scope = scope,
+                            onBackupAvailabilityChanged = { hasBackupAvailable = it }
+                        )
+                    }
                 )
             }
         }
@@ -172,12 +206,12 @@ fun CrossScaleNavigation(
                     connectionState = connectionState,
                     connectedEndpoint = connectedEndpoint,
                     onDisconnect = deviceViewModel::disconnect,
-                    onShowManualConnectDialog = onShowManualConnectDialog,
-                    onManualConnect = onManualConnect,
-                    onConnectByQr = onConnectByQr,
-                    onClearConnectionError = onClearConnectionError,
-                    onConfirmFingerprint = onConfirmFingerprint,
-                    onCancelFingerprint = onCancelFingerprint
+                    onShowManualConnectDialog = deviceViewModel::showManualConnectDialog,
+                    onManualConnect = deviceViewModel::connectManual,
+                    onConnectByQr = deviceViewModel::connectByQrPayload,
+                    onClearConnectionError = deviceViewModel::clearConnectionError,
+                    onConfirmFingerprint = deviceViewModel::confirmFingerprintAndConnect,
+                    onCancelFingerprint = deviceViewModel::cancelFingerprintConfirm
                 )
             }
         }
@@ -192,9 +226,14 @@ fun CrossScaleNavigation(
                     onOpenLogs = {
                         navController.navigate(AppScreen.SettingsLogs.route)
                     },
-                    onOpenHelp = onOpenHelp,
+                    onOpenHelp = {
+                        navController.navigate(AppScreen.Help.route)
+                    },
                     isStreamEncrypted = isStreamEncrypted,
-                    onStreamEncryptedChange = onStreamEncryptedChange
+                    onStreamEncryptedChange = { enabled ->
+                        appSettings.setStreamEncrypted(enabled)
+                        streamEncryptedState.value = enabled
+                    }
                 )
             }
         }
@@ -203,21 +242,28 @@ fun CrossScaleNavigation(
                 ModelsScreen(
                     models = mainUiState.models,
                     selectedModel = mainUiState.selectedModel,
-                    onSelectModel = onSelectModel,
-                    onRefreshModels = onRefreshModels,
-                    onImportModels = onImportModels,
-                    onDeleteModel = onDeleteModel,
+                    onSelectModel = mainViewModel::selectModel,
+                    onRefreshModels = mainViewModel::refreshModels,
+                    onImportModels = inputSelection::importModels,
+                    onDeleteModel = mainViewModel::deleteModel,
                     modelDirectoryPath = mainUiState.modelDirectoryPath,
-                    onOpenModelRelease = onOpenModelRelease
+                    onOpenModelRelease = {
+                        val releaseUri = Uri.parse(MODEL_RELEASE_URL)
+                        runCatching {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, releaseUri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                        }
+                    }
                 )
             }
         }
         composable(AppScreen.SettingsLogs.route) {
-            val logs by logsFlow.collectAsState()
+            val logs by logRepository.logs.collectAsState()
             DestinationContainer {
                 LogsScreen(
                     logs = logs,
-                    onClearLogs = onClearLogs
+                    onClearLogs = logRepository::clear
                 )
             }
         }
@@ -228,6 +274,8 @@ fun CrossScaleNavigation(
         }
     }
 }
+
+private const val MODEL_RELEASE_URL = "https://github.com/xihale/crossscale/releases"
 
 @Composable
 private fun DestinationContainer(content: @Composable () -> Unit) {

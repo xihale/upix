@@ -10,7 +10,6 @@ import com.crossscale.data.model.ModelImportResult
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.IOException
-import java.security.MessageDigest
 import java.util.Locale
 import java.util.zip.ZipInputStream
 import kotlinx.coroutines.Dispatchers
@@ -551,15 +550,12 @@ class ModelRepository(
     }
 
     private fun sanitizeModelName(rawName: String): String {
-        val sanitized = buildString {
-            rawName.trim().forEach { char ->
-                if (char.isLetterOrDigit() || char == '_' || char == '-') {
-                    append(char)
-                } else {
-                    append('_')
-                }
+        val sanitized = rawName.trim()
+            .map { char ->
+                if (char.isLetterOrDigit() || char == '_' || char == '-') char else '_'
             }
-        }.trim('_')
+            .joinToString("")
+            .trim('_')
 
         return sanitized
             .ifBlank { DEFAULT_IMPORTED_MODEL_PREFIX }
@@ -567,15 +563,10 @@ class ModelRepository(
     }
 
     private fun sanitizeFileToken(rawName: String): String {
-        return buildString {
-            rawName.forEach { char ->
-                if (char.isLetterOrDigit()) {
-                    append(char)
-                } else {
-                    append('_')
-                }
-            }
-        }.ifBlank { "file" }
+        return rawName
+            .map { char -> if (char.isLetterOrDigit()) char else '_' }
+            .joinToString("")
+            .ifBlank { "file" }
     }
 
     private fun discoverModels(): List<ModelInfo> {
@@ -658,15 +649,10 @@ class ModelRepository(
     }
 
     private fun toModelInfo(modelName: String, param: File, bin: File): ModelInfo {
-        val totalSize = param.length() + bin.length()
-        val scaleFactor = inferScaleFactor(modelName)
         return ModelInfo(
             name = modelName,
-            scaleFactor = scaleFactor,
-            inputChannels = 3,
-            tileSize = 0,
-            totalSize = totalSize,
-            hash = computeHash(param, bin),
+            scaleFactor = inferScaleFactor(modelName),
+            totalSize = param.length() + bin.length(),
             paramPath = param.absolutePath,
             binPath = bin.absolutePath
         )
@@ -674,27 +660,8 @@ class ModelRepository(
 
     private fun inferScaleFactor(modelName: String): Int {
         val regex = Regex("x(\\d+)", RegexOption.IGNORE_CASE)
-        return regex.find(modelName)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 4
-    }
-
-    private fun computeHash(param: File, bin: File): String {
-        val digest = MessageDigest.getInstance("SHA-256")
-        updateDigestWithFile(digest, param)
-        updateDigestWithFile(digest, bin)
-        return digest.digest().joinToString(separator = "") { byte -> "%02x".format(byte) }
-    }
-
-    private fun updateDigestWithFile(digest: MessageDigest, file: File) {
-        file.inputStream().use { input ->
-            val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-            while (true) {
-                val bytesRead = input.read(buffer)
-                if (bytesRead <= 0) {
-                    return
-                }
-                digest.update(buffer, 0, bytesRead)
-            }
-        }
+        // 兜底与引擎一致（NativeImageProcessingRepository DEFAULT_SCALE_FACTOR = 2）。
+        return regex.find(modelName)?.groupValues?.getOrNull(1)?.toIntOrNull() ?: 2
     }
 
     private data class MutableModelImportCandidate(

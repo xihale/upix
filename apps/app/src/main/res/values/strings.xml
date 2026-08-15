@@ -33,6 +33,8 @@
     <string name="home_backup_original">备份原图</string>
     <string name="home_include_subdirectories">包含子目录</string>
     <string name="home_select_model_sheet_title">选择模型</string>
+    <string name="home_select_scale_sheet_title">选择放大倍率</string>
+    <string name="home_model_subtitle">x%1$d</string>
     <string name="home_restore_backup">恢复备份</string>
     <string name="home_restore_backup_result_success">成功恢复 %1$d 个备份</string>
     <string name="home_restore_backup_result_partial">已恢复 %1$d 个，失败 %2$d 个</string>
@@ -45,7 +47,6 @@
     <string name="hero_thumbnail_preview">预览</string>
     <string name="hero_image_corrupted">图片损坏</string>
     <string name="hero_no_preview">暂无预览</string>
-    <string name="hero_stage_empty_title">把图片放大，交给 CrossScale</string>
     <string name="hero_pick_image">选择图片</string>
     <string name="hero_pick_folder">选择文件夹</string>
     <string name="hero_add_image_cd">添加图片</string>
@@ -59,8 +60,11 @@
     <string name="config_mode_remote">远程</string>
     <string name="config_label_scale">放大倍率</string>
     <string name="config_label_spec">模型规格</string>
+    <string name="config_output_format">输出格式</string>
+    <string name="config_output_format_follow">跟随原图</string>
+    <string name="home_select_output_format_sheet_title">选择输出格式</string>
     <string name="config_scale_value">x%1$d</string>
-    <string name="config_model_spec_value">x%1$d · 分块 %2$d · %3$d 通道</string>
+    <string name="config_scale_sheet_hint">倍率取决于所选模型</string>
     <string name="config_advanced_title">高级设置</string>
     <string name="config_resume_last_task">恢复上次任务</string>
 
@@ -106,8 +110,6 @@
     <string name="models_download">下载模型</string>
     <string name="models_import_rules">.param 与 .bin 需同名成对，支持 zip</string>
     <string name="models_empty_hint">未发现模型，请将 .param/.bin 放入模型目录</string>
-    <string name="models_spec_tile">分块 %1$d</string>
-    <string name="models_spec_channels">%1$d 通道</string>
     <string name="models_spec_size">%1$dMB</string>
     <string name="models_selected">已选择</string>
     <string name="models_select">选择</string>
@@ -166,8 +168,6 @@
     <string name="progress_status_canceled">已取消</string>
     <string name="progress_completed_items">已处理 %1$d/%2$d</string>
     <!-- Processing run messages (resolved by ProcessingRunPlanner / ProcessingRunEngine) -->
-    <string name="processing_processor_local">本地</string>
-    <string name="processing_processor_remote_node">PC</string>
     <string name="processing_remote_fallback">PC 不可达，已切换为本地处理</string>
     <string name="processing_error_model_not_found">未找到模型：%1$s</string>
     <string name="processing_error_native_session">本地处理引擎启动失败：%1$s</string>

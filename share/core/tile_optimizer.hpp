@@ -10,46 +10,7 @@
 #include <string>
 #include <unordered_map>
 
-#if defined(__linux__)
-#include <sys/sysinfo.h>
-#elif defined(_WIN32)
-#include <windows.h>
-#elif defined(__APPLE__)
-#include <mach/mach.h>
-#endif
-
 namespace crossscale {
-
-// 获取系统可用内存 (MB)
-// `inline` (not `static`): this header is included by multiple translation
-// units in the CLI binary (cmd_process.cpp + process_batch.cpp). A `static`
-// free function would silently give each TU its own private copy; `inline`
-// yields a single shared definition (ODR-safe) with identical behavior.
-inline size_t get_available_memory_mb() {
-#if defined(__linux__)
-    struct sysinfo info;
-    if (sysinfo(&info) == 0) {
-        return info.freeram * info.mem_unit / (1024 * 1024);
-    }
-#elif defined(_WIN32)
-    MEMORYSTATUSEX status;
-    status.dwLength = sizeof(status);
-    if (GlobalMemoryStatusEx(&status)) {
-        return status.ullAvailPhys / (1024 * 1024);
-    }
-#elif defined(__APPLE__)
-    mach_port_t host = mach_host_self();
-    vm_size_t page_size;
-    host_page_size(host, &page_size);
-    vm_statistics64_data_t vm_stat;
-    mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
-    if (host_statistics64(host, HOST_VM_INFO64,
-        reinterpret_cast<host_info64_t>(&vm_stat), &count) == KERN_SUCCESS) {
-        return vm_stat.free_count * page_size / (1024 * 1024);
-    }
-#endif
-    return 1024; // 默认 1GB
-}
 
 // Member-function definitions below are `inline` because this header is
 // included by multiple TUs in the CLI binary. `inline` only relaxes the
@@ -124,7 +85,7 @@ inline auto TileSizeOptimizer::profile_device(Engine& engine) -> DevicePerforman
     DevicePerformanceProfile profile;
     profile.device_type = engine.current_device();
     profile.device_name = engine.model_name();
-    profile.available_memory_mb = get_available_memory_mb();
+    profile.available_memory_mb = engine.get_memory_info().second;
 
     return profile;
 }

@@ -6,31 +6,27 @@
 
 namespace crossscale {
 
-auto setup_engine(
-    SetupDevice device,
-    std::string_view models_dir,
-    std::string_view model_name
-) -> expected<EngineSetupResult, std::string> {
-    EngineSetupResult result;
-    result.engine = create_ncnn_engine();
+auto initialize_engine(SetupDevice device)
+    -> expected<std::unique_ptr<Engine>, std::string> {
+    auto engine = create_ncnn_engine();
 
     // ── initialize ───────────────────────────────────────────────────────────
     switch (device) {
         case SetupDevice::GPU:
-            if (auto r = result.engine->initialize(DeviceType::GPU_VULKAN); !r) {
+            if (auto r = engine->initialize(DeviceType::GPU_VULKAN); !r) {
                 return std::unexpected("engine initialize (GPU) failed: " + r.error().message);
             }
             break;
         case SetupDevice::CPU:
-            if (auto r = result.engine->initialize(DeviceType::CPU); !r) {
+            if (auto r = engine->initialize(DeviceType::CPU); !r) {
                 return std::unexpected("engine initialize (CPU) failed: " + r.error().message);
             }
             break;
         case SetupDevice::GPU_THEN_CPU: {
-            if (auto gpu = result.engine->initialize(DeviceType::GPU_VULKAN); !gpu) {
-                LOG_WARNING("Engine", "GPU not available, falling back to CPU");
-                if (auto cpu = result.engine->initialize(DeviceType::CPU); !cpu) {
-                    return std::unexpected("engine initialize failed on both GPU and CPU");
+            if (auto gpu = engine->initialize(DeviceType::GPU_VULKAN); !gpu) {
+                LOG_WARNING("Engine", "GPU not available, falling back to CPU: " + gpu.error().message);
+                if (auto cpu = engine->initialize(DeviceType::CPU); !cpu) {
+                    return std::unexpected("engine initialize failed on both GPU and CPU: " + cpu.error().message);
                 }
             }
             break;
@@ -38,11 +34,53 @@ auto setup_engine(
         case SetupDevice::ENGINE_DEFAULT:
             // initialize() with no arg lets the engine pick (NCNNEngine tries
             // GPU→CPU internally).
-            if (auto r = result.engine->initialize(); !r) {
+            if (auto r = engine->initialize(); !r) {
                 return std::unexpected("engine initialize failed: " + r.error().message);
             }
             break;
     }
+
+    return engine;
+}
+
+auto switch_model(
+    Engine& engine,
+    ModelManager& models,
+    std::string& loaded_model_name,
+    const std::string& model_name,
+    std::string_view log_tag
+) -> bool {
+    // Empty model name = "use whatever is loaded" (caller didn't specify).
+    if (model_name.empty() || model_name == loaded_model_name) {
+        return true;
+    }
+    auto info = models.get_model(model_name);
+    if (!info) {
+        LOG_ERROR(log_tag, "unknown model requested: " + model_name);
+        return false;
+    }
+    auto load_res = engine.load_model(info->param_path.string(), info->bin_path.string());
+    if (!load_res) {
+        LOG_ERROR(log_tag, "model load failed: " + load_res.error().message);
+        return false;
+    }
+    loaded_model_name = model_name;
+    LOG_INFO(log_tag, "switched model to " + model_name);
+    return true;
+}
+
+auto setup_engine(
+    SetupDevice device,
+    std::string_view models_dir,
+    std::string_view model_name
+) -> expected<EngineSetupResult, std::string> {
+    EngineSetupResult result;
+
+    auto init = initialize_engine(device);
+    if (!init) {
+        return std::unexpected(init.error());
+    }
+    result.engine = std::move(*init);
 
     // ── scan_models ──────────────────────────────────────────────────────────
     const std::string resolved_models_dir =

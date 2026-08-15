@@ -4,15 +4,16 @@
 #include <memory>
 #include <cstdint>
 #include <mutex>
-#include "network.hpp"  // NetworkError (used in expected return types)
+#include "stream_socket.hpp"  // StreamSocket + NetworkError (via network_error.hpp)
 
 namespace crossscale {
 
 // AF_UNIX stream socket — local-only, no network stack, filesystem-permission
 // scoped. Mirrors the TCPSocket/TCPServer surface so callers can swap between
 // them. Available on Linux/macOS; not compiled on platforms without AF_UNIX
-// (the daemon subcommand gates on this at the CLI layer).
-class UnixSocket {
+// (the daemon subcommand gates on this at the CLI layer). Framing I/O plus
+// the fd and I/O lock live in StreamSocket.
+class UnixSocket : public StreamSocket {
 public:
     UnixSocket();
     ~UnixSocket();
@@ -28,12 +29,6 @@ public:
     // Connect to a server listening at the given filesystem path.
     auto connect(const std::string& path) -> expected<void, NetworkError>;
 
-    auto send(const void* data, size_t size) -> expected<size_t, NetworkError>;
-    auto send_all(const void* data, size_t size) -> expected<void, NetworkError>;
-    auto receive(void* buffer, size_t max_size) -> expected<size_t, NetworkError>;
-    auto receive_all(void* buffer, size_t size) -> expected<void, NetworkError>;
-
-    void set_timeout(int timeout_ms);
     void close();
 
     const std::string& path() const { return path_; }
@@ -41,11 +36,7 @@ public:
 private:
     friend class UnixServer;
 
-    int socket_ = -1;
     std::string path_;
-    // Guards all socket I/O so concurrent users can't interleave partial
-    // sends/receives and corrupt the framing protocol.
-    mutable std::recursive_mutex io_mutex_;
 };
 
 // AF_UNIX stream server.

@@ -13,10 +13,12 @@ import com.crossscale.R
 import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.ModelImportResult
 import com.crossscale.data.model.ModelInfo
+import com.crossscale.data.repository.BatchOutputRepository
 import com.crossscale.data.repository.DeviceRepository
 import com.crossscale.data.repository.InputSourceSpec
 import com.crossscale.data.repository.LogRepository
 import com.crossscale.data.repository.ModelProvider
+import com.crossscale.data.repository.OutputImageFormat
 import com.crossscale.util.StringProvider
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -40,8 +42,19 @@ data class MainUiState(
     val overwriteOriginalImage: Boolean = false,
     val backupOriginalImage: Boolean = true,
     val processNestedFolders: Boolean = true,
+    val outputImageFormat: OutputImageFormat = OutputImageFormat.FOLLOW,
     val modelDirectoryPath: String = "",
     val useRemote: Boolean = false
+)
+
+// Fused snapshot of the task-level toggle flows, combined ahead of the main
+// uiState combine so it stays within the 5-flow overload.
+private data class MainTaskSettings(
+    val corruptedInputSources: Set<String>,
+    val overwriteOriginalImage: Boolean,
+    val backupOriginalImage: Boolean,
+    val processNestedFolders: Boolean,
+    val outputImageFormat: OutputImageFormat
 )
 
 // Observable state lives in StateFlow properties; the class itself never
@@ -51,7 +64,8 @@ class MainViewModel(
     private val modelRepository: ModelProvider,
     private val deviceRepository: DeviceRepository,
     private val logRepository: LogRepository,
-    private val stringProvider: StringProvider
+    private val stringProvider: StringProvider,
+    private val batchOutputRepository: BatchOutputRepository
 ) : ViewModel() {
     private val _selectedModelName = MutableStateFlow<String?>(null)
     private val _selectedInputSources = MutableStateFlow<List<String>>(emptyList())
@@ -60,6 +74,7 @@ class MainViewModel(
     private val _overwriteOriginalImage = MutableStateFlow(false)
     private val _backupOriginalImage = MutableStateFlow(true)
     private val _processNestedFolders = MutableStateFlow(true)
+    private val _outputImageFormat = MutableStateFlow(OutputImageFormat.FOLLOW)
 
     private val baseUiState = combine(
         modelRepository.models,
@@ -83,18 +98,32 @@ class MainViewModel(
         )
     }
 
-    val uiState: StateFlow<MainUiState> = combine(
-        baseUiState,
+    private val taskSettings = combine(
         _corruptedInputSources,
         _overwriteOriginalImage,
         _backupOriginalImage,
-        _processNestedFolders
-    ) { state, corruptedInputSources, overwriteOriginalImage, backupOriginalImage, processNestedFolders ->
-        state.copy(
+        _processNestedFolders,
+        _outputImageFormat
+    ) { corruptedInputSources, overwriteOriginalImage, backupOriginalImage, processNestedFolders, outputImageFormat ->
+        MainTaskSettings(
             corruptedInputSources = corruptedInputSources,
             overwriteOriginalImage = overwriteOriginalImage,
             backupOriginalImage = backupOriginalImage,
-            processNestedFolders = processNestedFolders
+            processNestedFolders = processNestedFolders,
+            outputImageFormat = outputImageFormat
+        )
+    }
+
+    val uiState: StateFlow<MainUiState> = combine(
+        baseUiState,
+        taskSettings
+    ) { state, settings ->
+        state.copy(
+            corruptedInputSources = settings.corruptedInputSources,
+            overwriteOriginalImage = settings.overwriteOriginalImage,
+            backupOriginalImage = settings.backupOriginalImage,
+            processNestedFolders = settings.processNestedFolders,
+            outputImageFormat = settings.outputImageFormat
         )
     }.stateIn(
         scope = viewModelScope,
@@ -121,6 +150,21 @@ class MainViewModel(
     fun selectModel(model: ModelInfo) {
         _selectedModelName.value = model.name
         logRepository.info("MainViewModel", "Selected model: ${model.name}")
+    }
+
+    /** 按倍率选模型：倍率由模型固有决定，切换倍率即切换到该倍率的模型。 */
+    fun selectModelByScale(scale: Int) {
+        val models = modelRepository.models.value
+        val currentModel = uiState.value.selectedModel
+        if (currentModel?.scaleFactor == scale) {
+            return
+        }
+        val targetModel = models.firstOrNull { model -> model.scaleFactor == scale }
+        if (targetModel == null) {
+            logRepository.warning("MainViewModel", "No model found for scale x$scale")
+            return
+        }
+        selectModel(targetModel)
     }
 
     fun selectImage(imagePath: String) {
@@ -207,48 +251,6 @@ class MainViewModel(
         }
     }
 
-    fun moveInputSourceUp(source: String) {
-        moveInputSource(source = source, offset = -1)
-    }
-
-    fun moveInputSourceDown(source: String) {
-        moveInputSource(source = source, offset = 1)
-    }
-
-    private fun moveInputSource(
-        source: String,
-        offset: Int
-    ) {
-        val normalizedSource = source.trim()
-        if (normalizedSource.isBlank()) {
-            return
-        }
-        var fromIndex = -1
-        var toIndex = -1
-        _selectedInputSources.update { currentSources ->
-            val currentIndex = currentSources.indexOf(normalizedSource)
-            if (currentIndex == -1) {
-                return@update currentSources
-            }
-            val targetIndex = (currentIndex + offset).coerceIn(0, currentSources.lastIndex)
-            if (targetIndex == currentIndex) {
-                return@update currentSources
-            }
-            fromIndex = currentIndex
-            toIndex = targetIndex
-            val movedSources = currentSources.toMutableList()
-            val movedItem = movedSources.removeAt(currentIndex)
-            movedSources.add(targetIndex, movedItem)
-            movedSources
-        }
-        if (fromIndex >= 0 && toIndex >= 0) {
-            logRepository.info(
-                "MainViewModel",
-                "Moved input source to position ${toIndex + 1}: $normalizedSource"
-            )
-        }
-    }
-
     fun selectOutputDirectory(outputDirectoryUri: String?) {
         _selectedOutputDirectoryUri.value = outputDirectoryUri?.ifBlank { null }
         val outputLabel = _selectedOutputDirectoryUri.value ?: "App internal directory"
@@ -270,6 +272,12 @@ class MainViewModel(
 
     fun setProcessNestedFolders(enabled: Boolean) {
         _processNestedFolders.value = enabled
+    }
+
+    /** 输出格式：同步写入 BatchOutputRepository，输出名在处理时生成时读取。 */
+    fun setOutputImageFormat(format: OutputImageFormat) {
+        _outputImageFormat.value = format
+        batchOutputRepository.requestedOutputFormat = format
     }
 
     fun refreshModels() {
@@ -324,7 +332,8 @@ class MainViewModel(
                     modelRepository = container.modelRepository,
                     deviceRepository = container.deviceRepository,
                     logRepository = container.logRepository,
-                    stringProvider = container.stringProvider
+                    stringProvider = container.stringProvider,
+                    batchOutputRepository = container.batchOutputRepository
                 )
             }
         }

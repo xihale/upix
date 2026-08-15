@@ -85,8 +85,6 @@ fun ModelCard(
             Text(
                 text = listOf(
                     stringResource(R.string.config_scale_value, model.scaleFactor),
-                    stringResource(R.string.models_spec_tile, model.tileSize),
-                    stringResource(R.string.models_spec_channels, model.inputChannels),
                     stringResource(
                         R.string.models_spec_size,
                         model.totalSize / 1024 / 1024

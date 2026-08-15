@@ -21,7 +21,6 @@ data class NativeProcessResult(
     val inputHeight: Int,
     val outputWidth: Int,
     val outputHeight: Int,
-    val processorLabel: String? = null
 )
 
 class NativeImageProcessingRepository(
@@ -275,9 +274,12 @@ class NativeImageProcessingRepository(
         val pixels = IntArray(pixelCount)
         bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
 
+        // Single pass: accumulate sum and sum-of-squares, then derive
+        // mean/variance (E[x^2] - E[x]^2) from the two accumulators.
         var minLuma = 255
         var maxLuma = 0
         var sum = 0.0
+        var sumOfSquares = 0.0
         for (pixel in pixels) {
             val r = (pixel shr 16) and 0xFF
             val g = (pixel shr 8) and 0xFF
@@ -286,20 +288,12 @@ class NativeImageProcessingRepository(
             minLuma = minOf(minLuma, luma)
             maxLuma = maxOf(maxLuma, luma)
             sum += luma.toDouble()
+            sumOfSquares += luma.toDouble() * luma
         }
 
-        val mean = sum / pixelCount.toDouble()
-        var varianceSum = 0.0
-        for (pixel in pixels) {
-            val r = (pixel shr 16) and 0xFF
-            val g = (pixel shr 8) and 0xFF
-            val b = pixel and 0xFF
-            val luma = (r * 299 + g * 587 + b * 114) / 1000
-            val delta = luma - mean
-            varianceSum += delta * delta
-        }
-
-        val stdDev = sqrt(varianceSum / pixelCount.toDouble())
+        val mean = sum / pixelCount
+        val meanOfSquares = sumOfSquares / pixelCount
+        val stdDev = sqrt((meanOfSquares - mean * mean).coerceAtLeast(0.0))
         val dynamicRange = maxLuma - minLuma
         val hasSignal = dynamicRange >= GPU_VALIDATION_MIN_DYNAMIC_RANGE &&
             stdDev >= GPU_VALIDATION_MIN_STD_DEV
@@ -459,7 +453,6 @@ class NativeImageProcessingRepository(
                 inputHeight = decoded.height,
                 outputWidth = outputWidth,
                 outputHeight = outputHeight,
-                processorLabel = context.getString(R.string.processing_processor_local)
             )
         }
 
@@ -479,106 +472,12 @@ class NativeImageProcessingRepository(
         }
 
         private fun decodeInput(uri: Uri): DecodedRgbImage? {
-            val bitmap = runCatching {
-                context.contentResolver.openInputStream(uri)?.use { inputStream ->
-                    BitmapFactory.decodeStream(inputStream)
-                }
-            }.onFailure { throwable ->
-                logRepository.error(
-                    "NativeImageProcessingRepository",
-                    "Unable to read input URI $uri: ${throwable.message}"
-                )
-            }.getOrNull() ?: return null
-
-            val argbBitmap = if (bitmap.config == Bitmap.Config.ARGB_8888) {
-                bitmap
-            } else {
-                val converted = bitmap.copy(Bitmap.Config.ARGB_8888, false)
-                bitmap.recycle()
-                converted ?: return null
+            return decodeRgb(
+                resolver = context.contentResolver,
+                uri = uri
+            ) { message ->
+                logRepository.error("NativeImageProcessingRepository", message)
             }
-
-            val width = argbBitmap.width
-            val height = argbBitmap.height
-            if (width <= 0 || height <= 0) {
-                argbBitmap.recycle()
-                return null
-            }
-
-            val pixelCount = width.toLong() * height.toLong()
-            val rgbByteCount = pixelCount * RGB_CHANNELS
-            if (rgbByteCount <= 0L || rgbByteCount > Int.MAX_VALUE.toLong()) {
-                logRepository.error(
-                    "NativeImageProcessingRepository",
-                    "Input image is too large to allocate RGB buffer: $width x $height"
-                )
-                argbBitmap.recycle()
-                return null
-            }
-
-            if (!hasSufficientHeapForRgbBuffer(width = width, rgbByteCount = rgbByteCount)) {
-                val runtime = Runtime.getRuntime()
-                val used = runtime.totalMemory() - runtime.freeMemory()
-                val available = (runtime.maxMemory() - used).coerceAtLeast(0L)
-                logRepository.error(
-                    "NativeImageProcessingRepository",
-                    "Insufficient heap before RGB conversion: $width x $height, " +
-                        "required=${rgbByteCount}B, available=${available}B"
-                )
-                argbBitmap.recycle()
-                return null
-            }
-
-            val rgbBytes = runCatching {
-                ByteArray(rgbByteCount.toInt())
-            }.onFailure { throwable ->
-                logRepository.error(
-                    "NativeImageProcessingRepository",
-                    "Failed to allocate RGB buffer for $uri (${width}x${height}): ${throwable.message}"
-                )
-            }.getOrNull() ?: run {
-                argbBitmap.recycle()
-                return null
-            }
-
-            val rowPixels = IntArray(width)
-            var writeIndex = 0
-            for (row in 0 until height) {
-                argbBitmap.getPixels(
-                    rowPixels,
-                    0,
-                    width,
-                    0,
-                    row,
-                    width,
-                    1
-                )
-                for (column in 0 until width) {
-                    val pixel = rowPixels[column]
-                    rgbBytes[writeIndex++] = ((pixel shr 16) and 0xFF).toByte()
-                    rgbBytes[writeIndex++] = ((pixel shr 8) and 0xFF).toByte()
-                    rgbBytes[writeIndex++] = (pixel and 0xFF).toByte()
-                }
-            }
-            argbBitmap.recycle()
-
-            return DecodedRgbImage(
-                width = width,
-                height = height,
-                rgbBytes = rgbBytes
-            )
-        }
-
-        private fun hasSufficientHeapForRgbBuffer(
-            width: Int,
-            rgbByteCount: Long
-        ): Boolean {
-            val runtime = Runtime.getRuntime()
-            val used = runtime.totalMemory() - runtime.freeMemory()
-            val available = (runtime.maxMemory() - used).coerceAtLeast(0L)
-            val estimatedAdditionalBytes = rgbByteCount + (width.toLong() * Int.SIZE_BYTES)
-            val safeBudget = (available * MAX_RGB_BUFFER_HEAP_RATIO).toLong()
-            return estimatedAdditionalBytes <= safeBudget
         }
 
         private fun validateEncodedOutput(
@@ -646,11 +545,7 @@ class NativeImageProcessingRepository(
 
                     moveTempFileAtomically(tempFile = tempFile, outputFile = file)
                 } catch (throwable: Throwable) {
-                    val isExistsConflict = throwable is IOException &&
-                        (throwable.message?.contains("EEXIST", ignoreCase = true) == true ||
-                            throwable.message?.contains("File exists", ignoreCase = true) == true)
-
-                    if (!isExistsConflict) {
+                    if (!isExistsConflict(throwable)) {
                         throw throwable
                     }
 
@@ -714,33 +609,14 @@ class NativeImageProcessingRepository(
             )
         }
 
-        private fun outputFormatFor(file: File): String {
-            val extension = file.extension.trim().lowercase()
-            return when (extension) {
-                "png" -> "png"
-                "jpg" -> "jpg"
-                "jpeg" -> "jpeg"
-                "webp" -> "webp"
-                else -> DEFAULT_OUTPUT_FORMAT
-            }
-        }
-
-        private data class DecodedRgbImage(
-            val width: Int,
-            val height: Int,
-            val rgbBytes: ByteArray
-        )
     }
 
     companion object {
         private const val DEVICE_TYPE_CPU = 0
         private const val DEVICE_TYPE_GPU = 1
-        private const val RGB_CHANNELS = 3
         private const val DEFAULT_SCALE_FACTOR = 2
-        private const val DEFAULT_OUTPUT_FORMAT = "png"
         private const val VALIDATION_OUTPUT_FORMAT = "png"
         private const val DEFAULT_OUTPUT_QUALITY = 90
-        private const val MAX_RGB_BUFFER_HEAP_RATIO = 0.85
         private const val GPU_VALIDATION_INPUT_SIZE = 96
         private const val GPU_VALIDATION_MIN_DYNAMIC_RANGE = 24
         private const val GPU_VALIDATION_MIN_STD_DEV = 8.0

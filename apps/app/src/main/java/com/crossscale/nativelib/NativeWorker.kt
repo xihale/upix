@@ -1,6 +1,12 @@
 package com.crossscale.nativelib
 
-class NativeWorker {
+/**
+ * Coordinator-side JNI facade (connection handshake + identity load).
+ *
+ * The externals must stay on this class: the C++ bridge exports them as
+ * Java_com_crossscale_nativelib_NativeWorker_* symbols.
+ */
+object NativeWorker {
     init {
         System.loadLibrary("crossscale-native")
     }
@@ -13,23 +19,12 @@ class NativeWorker {
      * 非空时严格 MITM 校验, 成功返回传入公钥。失败返回 null。
      * 调用方应将返回的公钥持久化, 以便后续连接/图像处理恢复严格校验。
      */
-    fun requestConnection(
-        host: String,
-        port: Int,
-        peerPubKeyB64: String,
-        wantsEncryptedStream: Boolean
-    ): String? {
-        return nativeRequestConnection(host, port, peerPubKeyB64, wantsEncryptedStream)
-    }
-
-    fun loadIdentity(identityPath: String): Boolean = nativeLoadIdentity(identityPath)
-
-    private external fun nativeRequestConnection(
+    external fun nativeRequestConnection(
         host: String,
         port: Int,
         peerPubKeyB64: String,
         wantsEncryptedStream: Boolean
     ): String?
 
-    private external fun nativeLoadIdentity(identityPath: String): Boolean
+    external fun nativeLoadIdentity(identityPath: String): Boolean
 }

@@ -19,19 +19,17 @@ UnixSocket::~UnixSocket() {
 }
 
 UnixSocket::UnixSocket(UnixSocket&& other) noexcept
-    : socket_(other.socket_)
+    : StreamSocket(std::move(other))
     , path_(std::move(other.path_)) {
     // io_mutex_ is non-movable; default-constructed. Moved-from socket is left closed.
-    other.socket_ = -1;
 }
 
 UnixSocket& UnixSocket::operator=(UnixSocket&& other) noexcept {
     if (this != &other) {
         close();
         std::lock_guard<std::recursive_mutex> other_lock(other.io_mutex_);
-        socket_ = other.socket_;
+        take_fd_from(other);
         path_ = std::move(other.path_);
-        other.socket_ = -1;
     }
     return *this;
 }
@@ -71,72 +69,8 @@ auto UnixSocket::connect(const std::string& path) -> expected<void, NetworkError
     return {};
 }
 
-auto UnixSocket::send(const void* data, size_t size) -> expected<size_t, NetworkError> {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
-    if (socket_ < 0) {
-        return std::unexpected(NetworkError{EBADF, "Socket not connected"});
-    }
-    ssize_t sent = ::send(socket_, data, size, MSG_NOSIGNAL);
-    if (sent < 0) {
-        return std::unexpected(NetworkError{errno, "Send failed"});
-    }
-    return static_cast<size_t>(sent);
-}
-
-auto UnixSocket::send_all(const void* data, size_t size) -> expected<void, NetworkError> {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
-    size_t total = 0;
-    const uint8_t* ptr = static_cast<const uint8_t*>(data);
-    while (total < size) {
-        auto r = send(ptr + total, size - total);
-        if (!r.has_value()) return std::unexpected(r.error());
-        total += r.value();
-    }
-    return {};
-}
-
-auto UnixSocket::receive(void* buffer, size_t max_size) -> expected<size_t, NetworkError> {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
-    if (socket_ < 0) {
-        return std::unexpected(NetworkError{EBADF, "Socket not connected"});
-    }
-    ssize_t received = ::recv(socket_, buffer, max_size, 0);
-    if (received < 0) {
-        return std::unexpected(NetworkError{errno, "Receive failed"});
-    }
-    if (received == 0) {
-        return std::unexpected(NetworkError{ECONNRESET, "Connection closed"});
-    }
-    return static_cast<size_t>(received);
-}
-
-auto UnixSocket::receive_all(void* buffer, size_t size) -> expected<void, NetworkError> {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
-    size_t total = 0;
-    uint8_t* ptr = static_cast<uint8_t*>(buffer);
-    while (total < size) {
-        auto r = receive(ptr + total, size - total);
-        if (!r.has_value()) return std::unexpected(r.error());
-        total += r.value();
-    }
-    return {};
-}
-
-void UnixSocket::set_timeout(int timeout_ms) {
-    if (socket_ < 0) return;
-    struct timeval tv{};
-    tv.tv_sec = timeout_ms / 1000;
-    tv.tv_usec = (timeout_ms % 1000) * 1000;
-    setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    setsockopt(socket_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-}
-
 void UnixSocket::close() {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
-    if (socket_ >= 0) {
-        ::close(socket_);
-        socket_ = -1;
-    }
+    close_fd();
     path_.clear();
 }
 

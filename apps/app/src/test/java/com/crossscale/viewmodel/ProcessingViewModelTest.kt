@@ -143,13 +143,12 @@ class ProcessingViewModelTest {
         )
 
         advanceUntilIdle()
-        assertTrue(viewModel.uiState.value.canResume)
+        assertNotNull(viewModel.uiState.value.checkpointSummary)
 
         viewModel.discardCheckpoint()
         advanceUntilIdle()
 
         val state = viewModel.uiState.value
-        assertFalse(state.canResume)
         assertFalse(state.canRetryFailedOnly)
         assertNull(state.checkpointSummary)
         assertEquals(1, checkpointStore.clearCallCount)
@@ -609,7 +608,14 @@ class ProcessingViewModelTest {
             outputDirectoryUri = null
         )
         advanceUntilIdle()
-        assertTrue(queueFile.exists())
+        // persistQueue writes on Dispatchers.IO, which advanceUntilIdle does not
+        // cover — poll the real filesystem until the estimate lands. The first
+        // write persists expectedItems=null; a second write follows once
+        // estimateQueuedBatchExpectedItems resolves the source.
+        waitForTrue(pump = { advanceUntilIdle() }) {
+            queueFile.exists() &&
+                queueStore.loadQueue().items.firstOrNull()?.expectedItems == 1
+        }
 
         val restoredQueueStore = ProcessingQueueRepository(context, LogRepository())
         val restoredViewModel = makeViewModel(
@@ -629,13 +635,36 @@ class ProcessingViewModelTest {
         queueFile.delete()
     }
 
+    // Blocks the test thread until condition holds; repository writes run on
+    // Dispatchers.IO (a real thread pool under Robolectric), invisible to the
+    // TestDispatcher that advanceUntilIdle drains. The chain estimate → state
+    // → persist also hops back onto the test scheduler, so each poll must pump
+    // it while yielding to the real IO threads.
+    private fun waitForTrue(
+        timeoutMs: Long = 5_000,
+        pump: (() -> Unit)? = null,
+        condition: () -> Boolean
+    ) {
+        val deadline = System.currentTimeMillis() + timeoutMs
+        while (!condition()) {
+            check(System.currentTimeMillis() < deadline) {
+                "condition not met within ${timeoutMs}ms; queue file: ${dumpQueueFile()}"
+            }
+            pump?.invoke()
+            Thread.sleep(10)
+        }
+    }
+
+    private fun dumpQueueFile(): String {
+        val context = RuntimeEnvironment.getApplication()
+        val queueFile = File(context.filesDir, "processing_queue.json")
+        return if (queueFile.exists()) queueFile.readText() else "<missing>"
+    }
+
     private fun testModel() = ModelInfo(
         name = "Real-ESRGANv3-anime-x2",
         scaleFactor = 2,
-        inputChannels = 3,
-        tileSize = 0,
         totalSize = 1024L,
-        hash = "hash",
         paramPath = "/models/Real-ESRGANv3-anime-x2.param",
         binPath = "/models/Real-ESRGANv3-anime-x2.bin"
     )
@@ -804,7 +833,7 @@ class ProcessingViewModelTest {
         override val checkpoint: StateFlow<ProcessingCheckpoint?>
             get() = state.asStateFlow()
 
-        override fun saveCheckpoint(checkpoint: ProcessingCheckpoint) {
+        override suspend fun persistCheckpoint(checkpoint: ProcessingCheckpoint) {
             state.value = checkpoint
         }
 
@@ -826,7 +855,7 @@ class ProcessingViewModelTest {
         override val queue: StateFlow<ProcessingQueueSnapshot>
             get() = state.asStateFlow()
 
-        override fun saveQueue(snapshot: ProcessingQueueSnapshot) {
+        override suspend fun persistQueue(snapshot: ProcessingQueueSnapshot) {
             state.value = snapshot
         }
 

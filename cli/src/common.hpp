@@ -13,11 +13,15 @@
 #include <string>
 
 #include "utils/image.hpp"
+#include "utils/network.hpp"  // MAX_NETWORK_PAYLOAD
 
 namespace crossscale {
 class ServeDaemon;
 struct ProcessingProgress;
 }  // namespace crossscale
+
+// Maximum payload size for network messages (100 MB).
+using crossscale::MAX_NETWORK_PAYLOAD;
 
 // ── Global run-state ────────────────────────────────────────────────────────
 // Set false by signal handlers; long-running loops (process, server, worker,
@@ -34,10 +38,6 @@ extern crossscale::ServeDaemon* g_serve_daemon;
 // ── Signal handlers ─────────────────────────────────────────────────────────
 void signal_handler(int);
 void serve_signal_handler(int);
-
-// ── Constants ───────────────────────────────────────────────────────────────
-// Maximum payload size for network messages (100 MB).
-inline constexpr uint32_t MAX_NETWORK_PAYLOAD = 100 * 1024 * 1024;
 
 // ── Image / format helpers ──────────────────────────────────────────────────
 // Infer output format ("png"/"jpg"/"webp") from a file extension; "" if unknown.
