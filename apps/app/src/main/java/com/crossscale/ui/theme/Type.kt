@@ -16,9 +16,16 @@ val Typography = Typography(
     ),
     titleMedium = TextStyle(
         fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.SemiBold,
+        fontWeight = FontWeight.Medium,
         fontSize = 16.sp,
         lineHeight = 24.sp,
+        letterSpacing = 0.1.sp
+    ),
+    titleSmall = TextStyle(
+        fontFamily = FontFamily.Default,
+        fontWeight = FontWeight.Medium,
+        fontSize = 14.sp,
+        lineHeight = 20.sp,
         letterSpacing = 0.1.sp
     ),
     bodyMedium = TextStyle(
@@ -57,3 +64,9 @@ val Typography = Typography(
         letterSpacing = 0.5.sp
     )
 )
+
+/**
+ * 等宽小字号样式：供日志、路径、指纹等机器可读文本使用。
+ * 本阶段仅定义，消费在后续阶段接入。
+ */
+val LogMonoStyle = Typography.bodySmall.copy(fontFamily = FontFamily.Monospace)

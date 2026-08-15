@@ -18,6 +18,7 @@ import androidx.compose.ui.text.font.FontWeight
 import com.crossscale.data.model.LogEntry
 import com.crossscale.data.model.LogLevel
 import com.crossscale.ui.theme.BorderlessTokens
+import com.crossscale.ui.theme.LogMonoStyle
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -47,7 +48,7 @@ fun LogViewer(logs: List<LogEntry>) {
                 Text(
                     text = "[${logEntry.level}] ${logEntry.message}",
                     color = levelColor(logEntry.level),
-                    style = MaterialTheme.typography.bodySmall
+                    style = LogMonoStyle
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = BorderlessTokens.DividerSubtleAlpha))
             }
@@ -55,12 +56,14 @@ fun LogViewer(logs: List<LogEntry>) {
     }
 }
 
+@Composable
 private fun levelColor(level: LogLevel): Color {
+    val colorScheme = MaterialTheme.colorScheme
     return when (level) {
-        LogLevel.DEBUG -> Color(0xFF6B7280)
-        LogLevel.INFO -> Color(0xFF1D4ED8)
-        LogLevel.WARNING -> Color(0xFFD97706)
-        LogLevel.ERROR -> Color(0xFFB91C1C)
-        LogLevel.CRITICAL -> Color(0xFF7F1D1D)
+        LogLevel.DEBUG -> colorScheme.onSurfaceVariant
+        LogLevel.INFO -> colorScheme.primary
+        LogLevel.WARNING -> colorScheme.tertiary
+        LogLevel.ERROR -> colorScheme.error
+        LogLevel.CRITICAL -> colorScheme.error
     }
 }

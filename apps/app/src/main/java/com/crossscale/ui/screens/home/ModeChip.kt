@@ -19,31 +19,32 @@ import com.crossscale.data.model.RemoteEndpoint
 
 /**
  * 醒目的处理模式指示条（始终可见，挂在底部操作区内）。
- * 连上 PC → 绿色「远程」；未连 → 蓝色「本地」；连接中 → 琥珀。
+ * 连上 PC → primaryContainer「远程」；未连 → surfaceVariant「本地」；连接中 → tertiaryContainer。
  */
 @Composable
 internal fun ModeChip(
     connectionState: ConnectionState,
     connectedEndpoint: RemoteEndpoint?
 ) {
+    val colorScheme = MaterialTheme.colorScheme
     val backgroundColor: Color
     val contentColor: Color
     val text: String
     when (connectionState) {
         ConnectionState.CONNECTED -> {
-            backgroundColor = Color(0xFFD7F4DE)
-            contentColor = Color(0xFF1B5E20)
+            backgroundColor = colorScheme.primaryContainer
+            contentColor = colorScheme.onPrimaryContainer
             val endpoint = connectedEndpoint?.let { "${it.host}:${it.port}" }.orEmpty()
             text = stringResource(R.string.home_mode_remote, endpoint)
         }
         ConnectionState.DISCONNECTED -> {
-            backgroundColor = Color(0xFFD6E4FF)
-            contentColor = Color(0xFF0D47A1)
+            backgroundColor = colorScheme.surfaceVariant
+            contentColor = colorScheme.onSurfaceVariant
             text = stringResource(R.string.home_mode_local)
         }
         ConnectionState.CONNECTING -> {
-            backgroundColor = Color(0xFFFFE8C2)
-            contentColor = Color(0xFF8A5A00)
+            backgroundColor = colorScheme.tertiaryContainer
+            contentColor = colorScheme.onTertiaryContainer
             text = stringResource(R.string.home_mode_connecting)
         }
     }
