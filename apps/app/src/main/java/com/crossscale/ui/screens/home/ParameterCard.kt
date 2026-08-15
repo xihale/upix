@@ -134,7 +134,7 @@ internal fun ParameterCard(
                     Icon(
                         imageVector = Icons.Outlined.ExpandMore,
                         contentDescription = stringResource(
-                            if (advancedExpanded) R.string.common_collapse else R.string.config_advanced_title
+                            if (advancedExpanded) R.string.common_collapse else R.string.common_expand
                         ),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier

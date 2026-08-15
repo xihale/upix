@@ -12,6 +12,7 @@
     <string name="common_model_directory">模型目录：%1$s</string>
     <string name="common_overwrite_original">覆盖原图</string>
     <string name="common_collapse">收起</string>
+    <string name="common_expand">展开</string>
     <string name="common_details">详情</string>
     <string name="common_status_processing">处理中</string>
     <string name="common_status_completed">已完成</string>
