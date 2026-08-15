@@ -33,9 +33,7 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
-import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.ModelInfo
-import com.crossscale.data.model.RemoteEndpoint
 import com.crossscale.ui.components.ConfigRow
 import com.crossscale.ui.components.ConfigSwitchRow
 import com.crossscale.ui.theme.ExpandSizeSpec
@@ -44,13 +42,11 @@ import com.crossscale.ui.theme.ValueMono
 
 /**
  * 参数卡：一张容器内聚合所有任务配置。
- * 顶部模式分段控件；常用行（模型 / 倍率 / 输出路径）+「高级设置」折叠区，
+ * 常用行（模型 / 倍率 / 输出路径）+「高级设置」折叠区，
  * 行间用留白分隔。
  */
 @Composable
 internal fun ParameterCard(
-    connectionState: ConnectionState,
-    connectedEndpoint: RemoteEndpoint?,
     selectedModel: ModelInfo?,
     notSelectedLabel: String,
     outputDirectoryLabel: String,
@@ -82,11 +78,6 @@ internal fun ParameterCard(
             modifier = Modifier.padding(Spacing.lg),
             verticalArrangement = Arrangement.spacedBy(Spacing.md)
         ) {
-            ModeSegment(
-                connectionState = connectionState,
-                connectedEndpoint = connectedEndpoint
-            )
-
             ConfigRow(
                 icon = Icons.Outlined.Memory,
                 title = stringResource(R.string.home_model_setting_label),

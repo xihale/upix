@@ -1,9 +1,7 @@
 package com.crossscale.ui.screens
 
 import androidx.camera.core.ExperimentalGetImage
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -13,12 +11,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilledTonalButton
@@ -33,7 +28,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
@@ -49,8 +43,8 @@ import com.crossscale.viewmodel.DeviceUiState
 
 /**
  * 连接屏（严格 1:1 手机↔PC）：
- * 顶部大状态卡（图标 + 状态标题 + 地址/指纹 + 操作按钮），下方使用说明分区卡。
- * 已连 → primaryContainer 图标 + 断开；连接中 → tertiaryContainer + 进度；断开 → errorContainer + 扫码/手动入口。
+ * 顶部大状态卡（状态标题 + 地址/指纹 + 操作按钮），下方使用说明分区卡。
+ * 已连 → 标题 + 断开；连接中 → spinner；断开 → 扫码/手动入口。
  */
 @ExperimentalGetImage
 @Composable
@@ -157,14 +151,11 @@ fun ConnectionScreen(
     }
 }
 
-/** 状态主卡通用骨架：48dp 状态色圆底图标 + 标题 + 副信息 + 底部操作区。 */
+/** 状态主卡通用骨架：标题 + 副信息 + 底部操作区；状态差异只用文字与必要 spinner 表达。 */
 @Composable
 private fun StatusCardScaffold(
-    statusContainer: androidx.compose.ui.graphics.Color,
-    statusContent: androidx.compose.ui.graphics.Color,
     title: String,
-    subtitle: String?,
-    icon: ImageVector? = null,
+    subtitle: String? = null,
     progressInstead: Boolean = false,
     actions: @Composable () -> Unit
 ) {
@@ -178,27 +169,11 @@ private fun StatusCardScaffold(
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Box(
-                modifier = Modifier
-                    .size(48.dp)
-                    .background(color = statusContainer, shape = CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                if (progressInstead) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(24.dp),
-                        strokeWidth = 2.5.dp,
-                        color = statusContent,
-                        trackColor = androidx.compose.ui.graphics.Color.Transparent
-                    )
-                } else if (icon != null) {
-                    Icon(
-                        imageVector = icon,
-                        contentDescription = null,
-                        tint = statusContent,
-                        modifier = Modifier.size(24.dp)
-                    )
-                }
+            if (progressInstead) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(24.dp),
+                    strokeWidth = 2.5.dp
+                )
             }
             Text(
                 text = title,
@@ -222,9 +197,6 @@ private fun ConnectedStatusCard(
     onDisconnect: () -> Unit
 ) {
     StatusCardScaffold(
-        statusContainer = MaterialTheme.colorScheme.primaryContainer,
-        statusContent = MaterialTheme.colorScheme.onPrimaryContainer,
-        icon = Icons.Outlined.CheckCircle,
         title = stringResource(R.string.connection_status_connected),
         subtitle = endpoint?.let { "${it.host}:${it.port}" }
     ) {
@@ -250,11 +222,8 @@ private fun ConnectedStatusCard(
 @Composable
 private fun ConnectingCard() {
     StatusCardScaffold(
-        statusContainer = MaterialTheme.colorScheme.tertiaryContainer,
-        statusContent = MaterialTheme.colorScheme.onTertiaryContainer,
         progressInstead = true,
-        title = stringResource(R.string.connection_connecting_title),
-        subtitle = stringResource(R.string.connection_connecting_hint)
+        title = stringResource(R.string.connection_connecting_title)
     ) {
     }
 }
@@ -265,11 +234,7 @@ private fun DisconnectedActions(
     onManual: () -> Unit
 ) {
     StatusCardScaffold(
-        statusContainer = MaterialTheme.colorScheme.errorContainer,
-        statusContent = MaterialTheme.colorScheme.onErrorContainer,
-        icon = Icons.Outlined.LinkOff,
-        title = stringResource(R.string.connection_status_disconnected),
-        subtitle = stringResource(R.string.connection_status_disconnected_hint)
+        title = stringResource(R.string.connection_status_disconnected)
     ) {
         Row(
             horizontalArrangement = Arrangement.spacedBy(Spacing.md)

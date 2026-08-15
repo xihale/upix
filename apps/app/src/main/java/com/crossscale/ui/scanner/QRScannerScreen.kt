@@ -10,7 +10,6 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,7 +18,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilledTonalButton
@@ -35,16 +33,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.RoundRect
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.ClipOp
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.PathOperation
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
@@ -59,12 +47,6 @@ import com.google.mlkit.vision.common.InputImage
 import com.crossscale.ui.theme.Spacing
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
-
-private val ViewfinderSize = 260.dp
-private val ViewfinderCorner = 24.dp
-private val ViewfinderStroke = 2.dp
-private val CornerStroke = 5.dp
-private val CornerLength = 46.dp
 
 @ExperimentalGetImage
 @Composable
@@ -214,32 +196,6 @@ fun QRScannerScreen(
                 factory = { previewView },
                 modifier = Modifier.fillMaxSize()
             )
-            ViewfinderOverlay(modifier = Modifier.fillMaxSize())
-
-            Column(
-                modifier = Modifier
-                    .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .statusBarsPadding()
-                    .padding(horizontal = Spacing.lg, vertical = Spacing.md),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(Spacing.sm)
-            ) {
-                ScannerPill {
-                    Text(
-                        text = stringResource(R.string.scanner_title),
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-                ScannerPill {
-                    Text(
-                        text = stringResource(R.string.scanner_hint),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurface
-                    )
-                }
-            }
         } else {
             Column(
                 modifier = Modifier
@@ -298,91 +254,5 @@ fun QRScannerScreen(
                 Text(stringResource(R.string.scanner_close))
             }
         }
-    }
-}
-
-/** 半透明提示 pill：surface.copy(0.6) + 圆角 full + onSurface 字。 */
-@Composable
-private fun ScannerPill(content: @Composable () -> Unit) {
-    Surface(
-        shape = CircleShape,
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
-        contentColor = MaterialTheme.colorScheme.onSurface
-    ) {
-        Box(modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.xs)) {
-            content()
-        }
-    }
-}
-
-/**
- * 取景框：中央 260dp 圆角 24 描边 2dp primary + 四角 L 形加重描边 + 半透明 scrim。
- */
-@Composable
-private fun ViewfinderOverlay(modifier: Modifier = Modifier) {
-    val frameColor = MaterialTheme.colorScheme.primary
-    val scrimColor = Color.Black.copy(alpha = 0.55f)
-
-    Canvas(modifier = modifier) {
-        val frame = ViewfinderSize.toPx()
-        val cornerRadius = ViewfinderCorner.toPx()
-        val left = (size.width - frame) / 2f
-        val top = (size.height - frame) / 2f
-        val right = left + frame
-        val bottom = top + frame
-
-        // Scrim: full canvas minus rounded-rect cutout.
-        val scrimPath = Path().apply {
-            val full = Path().apply {
-                addRect(androidx.compose.ui.geometry.Rect(0f, 0f, size.width, size.height))
-            }
-            val cutout = Path().apply {
-                addRoundRect(
-                    RoundRect(
-                        left = left,
-                        top = top,
-                        right = right,
-                        bottom = bottom,
-                        cornerRadius = CornerRadius(cornerRadius, cornerRadius)
-                    )
-                )
-            }
-            op(full, cutout, PathOperation.Difference)
-        }
-        drawPath(path = scrimPath, color = scrimColor)
-
-        // Rounded frame outline.
-        drawRoundRect(
-            color = frameColor,
-            topLeft = Offset(left, top),
-            size = Size(frame, frame),
-            cornerRadius = CornerRadius(cornerRadius, cornerRadius),
-            style = Stroke(width = ViewfinderStroke.toPx())
-        )
-
-        // Four heavy L-shaped corner brackets.
-        val stroke = CornerStroke.toPx()
-        val len = CornerLength.toPx()
-        val cap = StrokeCap.Round
-        fun bracket(x: Float, y: Float, dx: Float, dy: Float) {
-            drawLine(
-                color = frameColor,
-                start = Offset(x, y),
-                end = Offset(x + dx * len, y),
-                strokeWidth = stroke,
-                cap = cap
-            )
-            drawLine(
-                color = frameColor,
-                start = Offset(x, y),
-                end = Offset(x, y + dy * len),
-                strokeWidth = stroke,
-                cap = cap
-            )
-        }
-        bracket(left, top, 1f, 1f)
-        bracket(right, top, -1f, 1f)
-        bracket(left, bottom, 1f, -1f)
-        bracket(right, bottom, -1f, -1f)
     }
 }

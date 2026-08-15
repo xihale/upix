@@ -191,7 +191,7 @@ internal class InputSelectionController(
 
 private fun buildModelImportFeedbackMessage(result: ModelImportResult, context: Context): String {
     if (result.importedCount <= 0) {
-        return context.getString(R.string.models_import_invalid)
+        return context.getString(R.string.models_import_error_invalid_pair_generic)
     }
     return if (result.invalidCount > 0) {
         context.getString(R.string.models_import_result_partial, result.importedCount, result.invalidCount)

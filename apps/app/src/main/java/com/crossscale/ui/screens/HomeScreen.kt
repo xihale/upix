@@ -5,7 +5,6 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -16,16 +15,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -52,8 +48,6 @@ import com.crossscale.ui.screens.home.ImageStage
 import com.crossscale.ui.screens.home.ParameterCard
 import com.crossscale.ui.screens.home.PreviewBottomSheet
 import com.crossscale.ui.screens.home.QueueBottomSheetContent
-import com.crossscale.ui.screens.home.countFailedQueueItems
-import com.crossscale.ui.screens.home.countPendingQueueItems
 import com.crossscale.ui.theme.EnterMotionSpec
 import com.crossscale.ui.theme.EnterSizeSpec
 import com.crossscale.ui.theme.Spacing
@@ -82,15 +76,13 @@ fun HomeScreen(
     val notSelectedLabel = stringResource(R.string.common_not_selected)
     val snackbarConnectingMessage = stringResource(R.string.home_snackbar_connecting)
     val snackbarConnectedMessage = stringResource(R.string.home_snackbar_connected)
-    val snackbarPcUnreachableSwitchedMessage = stringResource(R.string.home_snackbar_pc_unreachable_switched)
+    val snackbarPcUnreachableSwitchedMessage = stringResource(R.string.processing_remote_fallback)
     val snackbarPcUnreachableLocalMessage = stringResource(R.string.home_snackbar_pc_unreachable_local)
 
     val selectedInputs = state.selectedInputSources
     val corruptedSources = state.corruptedInputSources
     val selectedOutput = abbreviatePath(state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/CrossScale")
     val queueItems = processingUiState.queueItems
-    val pendingQueueCount = remember(queueItems) { countPendingQueueItems(queueItems) }
-    val failedQueueCount = remember(queueItems) { countFailedQueueItems(queueItems) }
 
     var showModelSheet by rememberSaveable { mutableStateOf(false) }
     var queueSheetVisible by rememberSaveable { mutableStateOf(false) }
@@ -162,8 +154,6 @@ fun HomeScreen(
             )
 
             ParameterCard(
-                connectionState = connectionState,
-                connectedEndpoint = connectedEndpoint,
                 selectedModel = state.selectedModel,
                 notSelectedLabel = notSelectedLabel,
                 outputDirectoryLabel = selectedOutput,
@@ -198,8 +188,6 @@ fun HomeScreen(
         BottomActionDock(
             modifier = Modifier.align(Alignment.BottomCenter),
             isProcessing = isProcessing,
-            pendingQueueCount = pendingQueueCount,
-            failedQueueCount = failedQueueCount,
             hasBackupAvailable = hasBackupAvailable,
             hasQueueItems = queueItems.isNotEmpty(),
             onShowQueue = {
@@ -293,15 +281,15 @@ private fun BoxScope.StageProcessingOverlay(
     }
 }
 
-/** 顶部标识条：品牌名 + 连接状态 pill（直接消费 HomeConnection 现成数据）。 */@Composable
+/** 顶部标识条：品牌名 + 连接状态文本（直接消费 HomeConnection 现成数据）。 */@Composable
 private fun HomeIdentityBar(
     connectionState: ConnectionState,
     connectedEndpoint: com.crossscale.data.model.RemoteEndpoint?
 ) {
-    val (pillLabelRes, pillColor) = when (connectionState) {
+    val (statusLabelRes, statusColor) = when (connectionState) {
         ConnectionState.CONNECTED -> R.string.config_mode_remote to MaterialTheme.colorScheme.primary
         ConnectionState.DISCONNECTED -> R.string.config_mode_local to MaterialTheme.colorScheme.onSurfaceVariant
-        ConnectionState.CONNECTING -> R.string.config_mode_connecting to MaterialTheme.colorScheme.tertiary
+        ConnectionState.CONNECTING -> R.string.config_mode_connecting to MaterialTheme.colorScheme.primary
     }
 
     Row(
@@ -315,34 +303,18 @@ private fun HomeIdentityBar(
             text = stringResource(R.string.app_name),
             style = MaterialTheme.typography.titleLarge
         )
-        Surface(
-            shape = CircleShape,
-            color = pillColor.copy(alpha = 0.14f),
-            contentColor = pillColor
-        ) {
-            Row(
-                modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.xs),
-                horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .background(color = pillColor, shape = CircleShape)
-                )
-                val pillLabel = stringResource(pillLabelRes)
-                val endpoint = connectedEndpoint?.let { "${it.host}:${it.port}" }
-                Text(
-                    text = if (connectionState == ConnectionState.CONNECTED && endpoint != null) {
-                        "$pillLabel $endpoint"
-                    } else {
-                        pillLabel
-                    },
-                    style = MaterialTheme.typography.labelMedium,
-                    maxLines = 1
-                )
-            }
-        }
+        val statusLabel = stringResource(statusLabelRes)
+        val endpoint = connectedEndpoint?.let { "${it.host}:${it.port}" }
+        Text(
+            text = if (connectionState == ConnectionState.CONNECTED && endpoint != null) {
+                "$statusLabel $endpoint"
+            } else {
+                statusLabel
+            },
+            style = MaterialTheme.typography.labelMedium,
+            color = statusColor,
+            maxLines = 1
+        )
     }
 }
 

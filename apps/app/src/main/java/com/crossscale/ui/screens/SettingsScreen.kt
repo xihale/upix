@@ -74,19 +74,16 @@ fun SettingsScreen(
             SettingsEntryRow(
                 icon = Icons.Outlined.Memory,
                 title = stringResource(R.string.common_model_management),
-                subtitle = stringResource(R.string.settings_model_management_subtitle),
                 onClick = onOpenModels
             )
             SettingsEntryRow(
                 icon = Icons.AutoMirrored.Outlined.ReceiptLong,
                 title = stringResource(R.string.common_logs),
-                subtitle = stringResource(R.string.settings_logs_subtitle),
                 onClick = onOpenLogs
             )
             SettingsEntryRow(
                 icon = Icons.AutoMirrored.Outlined.HelpOutline,
                 title = stringResource(R.string.common_help),
-                subtitle = stringResource(R.string.settings_help_subtitle),
                 onClick = onOpenHelp
             )
         }
@@ -181,7 +178,7 @@ private fun SettingsGroupCard(content: @Composable () -> Unit) {
 private fun SettingsEntryRow(
     icon: ImageVector,
     title: String,
-    subtitle: String,
+    subtitle: String? = null,
     onClick: () -> Unit
 ) {
     Row(
@@ -208,11 +205,13 @@ private fun SettingsEntryRow(
                 text = title,
                 style = MaterialTheme.typography.bodyLarge
             )
-            Text(
-                text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
         }
         Icon(
             imageVector = Icons.Outlined.ChevronRight,

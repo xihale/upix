@@ -2,7 +2,6 @@ package com.crossscale.ui.screens.home
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -13,7 +12,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
@@ -36,7 +34,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -57,7 +54,7 @@ private const val PREVIEW_THUMBNAIL_TARGET_SIZE_PX = 960
 
 /**
  * 图片舞台：超分工具的唯一视觉焦点。
- * 空态展示品牌 motif + 两个显式入口；已选态大图铺满 + 数量角标；
+ * 空态展示标题 + 两个显式入口；已选态大图铺满；
  * 处理中由调用方通过 [overlay] 叠加遮罩进度。
  */
 @Composable
@@ -88,8 +85,7 @@ internal fun ImageStage(
                     )
                 } else {
                     SelectedStage(
-                        selectedInputs = selectedInputs,
-                        isProcessing = isProcessing
+                        selectedInputs = selectedInputs
                     )
                 }
                 overlay?.invoke(this)
@@ -110,7 +106,7 @@ internal fun ImageStage(
     }
 }
 
-/** 品牌空态：两个错位圆角方框呼应「分层放大」的启动图标。 */
+/** 空态：标题 + 两个显式入口。 */
 @Composable
 private fun EmptyStage(
     onAddImage: () -> Unit,
@@ -119,49 +115,15 @@ private fun EmptyStage(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .border(
-                width = 1.5.dp,
-                color = MaterialTheme.colorScheme.outlineVariant,
-                shape = MaterialTheme.shapes.large
-            )
             .padding(Spacing.lg),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Box(modifier = Modifier.size(112.dp)) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .size(88.dp)
-                    .border(
-                        width = 3.dp,
-                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.6f),
-                        shape = MaterialTheme.shapes.small
-                    )
-            )
-            Box(
-                modifier = Modifier
-                    .align(Alignment.Center)
-                    .offset(x = 12.dp, y = 12.dp)
-                    .size(56.dp)
-                    .background(
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        shape = MaterialTheme.shapes.small
-                    )
-            )
-        }
-        Spacer(modifier = Modifier.height(Spacing.xl))
         Text(
             text = stringResource(R.string.hero_stage_empty_title),
             style = MaterialTheme.typography.headlineSmall
         )
-        Spacer(modifier = Modifier.height(Spacing.xs))
-        Text(
-            text = stringResource(R.string.hero_stage_empty_subtitle),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(modifier = Modifier.height(Spacing.xl))
+        Spacer(modifier = Modifier.height(Spacing.lg))
         Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
             FilledTonalButton(onClick = onAddImage) {
                 Text(stringResource(R.string.hero_pick_image))
@@ -175,8 +137,7 @@ private fun EmptyStage(
 
 @Composable
 private fun SelectedStage(
-    selectedInputs: List<String>,
-    isProcessing: Boolean
+    selectedInputs: List<String>
 ) {
     val context = LocalContext.current
     val firstSource = selectedInputs.firstOrNull()
@@ -201,24 +162,6 @@ private fun SelectedStage(
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
             )
-        }
-        if (selectedInputs.size > 1 && !isProcessing) {
-            Surface(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(Spacing.md)
-                    .size(28.dp),
-                shape = CircleShape,
-                color = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary
-            ) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text(
-                        text = selectedInputs.size.toString(),
-                        style = MaterialTheme.typography.labelMedium
-                    )
-                }
-            }
         }
     }
 }
@@ -385,12 +328,6 @@ internal fun PreviewBottomSheet(
             )
         }.getOrNull()
     }
-    val previewFallbackTitle = stringResource(R.string.hero_thumbnail_preview)
-    val previewTitle = remember(source, previewFallbackTitle) {
-        source.substringAfterLast('/').ifBlank {
-            source.takeLast(28).ifBlank { previewFallbackTitle }
-        }
-    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -403,10 +340,6 @@ internal fun PreviewBottomSheet(
                 .padding(horizontal = Spacing.xl),
             verticalArrangement = Arrangement.spacedBy(Spacing.md)
         ) {
-            Text(
-                text = stringResource(R.string.hero_preview_title, previewTitle),
-                style = MaterialTheme.typography.titleMedium
-            )
             Box(
                 modifier = Modifier
                     .fillMaxWidth()

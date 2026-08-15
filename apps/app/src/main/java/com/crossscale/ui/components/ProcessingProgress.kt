@@ -15,7 +15,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -25,7 +24,6 @@ import com.crossscale.data.model.ProcessingTask
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
 import com.crossscale.ui.theme.smoothProgress
-import kotlin.math.roundToInt
 
 /**
  * 舞台遮罩进度：处理中覆盖在图片舞台之上。
@@ -44,18 +42,6 @@ fun StageProgressOverlay(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            MaterialTheme.colorScheme.surface.copy(alpha = 0.0f),
-                            MaterialTheme.colorScheme.surface.copy(alpha = 0.75f)
-                        )
-                    )
-                )
-        )
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -82,19 +68,6 @@ fun StageProgressOverlay(
                 ),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Text(
-                text = stringResource(
-                    R.string.progress_compact_summary,
-                    (task.progress * 100.0f).roundToInt(),
-                    task.pendingItems,
-                    task.totalItems,
-                    task.failedItems
-                ),
-                style = ValueMono.copy(fontSize = MaterialTheme.typography.labelSmall.fontSize),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis
             )
             task.currentItemName?.let { itemName ->
                 Text(

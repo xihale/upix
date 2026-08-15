@@ -67,8 +67,8 @@ private fun levelColor(level: LogLevel): Color {
     val colorScheme = MaterialTheme.colorScheme
     return when (level) {
         LogLevel.DEBUG -> colorScheme.onSurfaceVariant
-        LogLevel.INFO -> colorScheme.primary
-        LogLevel.WARNING -> colorScheme.tertiary
+        LogLevel.INFO -> colorScheme.onSurfaceVariant
+        LogLevel.WARNING -> colorScheme.onSurfaceVariant
         LogLevel.ERROR -> colorScheme.error
         LogLevel.CRITICAL -> colorScheme.error
     }

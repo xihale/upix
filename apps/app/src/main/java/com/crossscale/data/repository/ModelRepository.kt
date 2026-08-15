@@ -121,7 +121,7 @@ class ModelRepository(
 
                     else -> {
                         invalidItems.add(
-                            context.getString(R.string.models_import_error_unsupported_type, sourceName)
+                            context.getString(R.string.models_import_error_invalid_extension, sourceName)
                         )
                     }
                 }

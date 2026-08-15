@@ -17,7 +17,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 
@@ -49,9 +48,6 @@ val ExpandSizeSpec = tween<IntSize>(ExpandTween, easing = EmphasizedEasing)
 
 /** AnimatedVisibility 进入/退出的尺寸 spec（200ms，与 fade 同步）。 */
 val EnterSizeSpec = tween<IntSize>(EnterTween, easing = EmphasizedEasing)
-
-/** AnimatedContent 换内容的位移 spec（200ms）。 */
-val EnterOffsetSpec = tween<IntOffset>(EnterTween, easing = EmphasizedEasing)
 
 /** NavHost 目的地进入：fade-in（200ms，EmphasizedEasing），替代默认 700ms fade。 */
 val NavEnterTransition: EnterTransition = fadeIn(tween(EnterTween, easing = EmphasizedEasing))

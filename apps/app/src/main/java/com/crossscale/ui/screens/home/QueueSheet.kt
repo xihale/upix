@@ -306,38 +306,20 @@ private fun QueueItemAction(
     }
 }
 
-/** 小号状态 chip：排队=surfaceVariant / 进行中=primary / 完成=primary 淡 / 失败=error 淡。 */
+/** 小号状态文本：进行中=primary / 失败=error / 其余中性。 */
 @Composable
 private fun QueueStatusChip(status: PersistedQueueItemStatus) {
-    val (container, content, labelRes) = when (status) {
-        PersistedQueueItemStatus.PENDING -> Triple(
-            MaterialTheme.colorScheme.surfaceVariant,
-            MaterialTheme.colorScheme.onSurfaceVariant,
-            R.string.queue_status_pending
-        )
-        PersistedQueueItemStatus.RUNNING -> Triple(
-            MaterialTheme.colorScheme.primary,
-            MaterialTheme.colorScheme.onPrimary,
-            R.string.common_status_processing
-        )
-        PersistedQueueItemStatus.COMPLETED -> Triple(
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.16f),
-            MaterialTheme.colorScheme.primary,
-            R.string.common_status_completed
-        )
-        PersistedQueueItemStatus.FAILED -> Triple(
-            MaterialTheme.colorScheme.error.copy(alpha = 0.16f),
-            MaterialTheme.colorScheme.error,
-            R.string.common_status_failed
-        )
+    val (color, labelRes) = when (status) {
+        PersistedQueueItemStatus.PENDING -> MaterialTheme.colorScheme.onSurfaceVariant to R.string.queue_status_pending
+        PersistedQueueItemStatus.RUNNING -> MaterialTheme.colorScheme.primary to R.string.common_status_processing
+        PersistedQueueItemStatus.COMPLETED -> MaterialTheme.colorScheme.onSurfaceVariant to R.string.common_status_completed
+        PersistedQueueItemStatus.FAILED -> MaterialTheme.colorScheme.error to R.string.common_status_failed
     }
-    Surface(shape = MaterialTheme.shapes.extraSmall, color = container, contentColor = content) {
-        Text(
-            text = stringResource(labelRes),
-            style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.padding(horizontal = Spacing.sm, vertical = 2.dp)
-        )
-    }
+    Text(
+        text = stringResource(labelRes),
+        style = MaterialTheme.typography.labelSmall,
+        color = color
+    )
 }
 
 @Composable

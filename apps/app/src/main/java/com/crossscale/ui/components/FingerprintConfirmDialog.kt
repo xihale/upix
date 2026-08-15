@@ -3,22 +3,18 @@ package com.crossscale.ui.components
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.compose.material3.Button
+import androidx.compose.ui.text.style.TextAlign
 import com.crossscale.R
+import com.crossscale.ui.theme.Spacing
+import com.crossscale.ui.theme.ValueMono
 
 /**
  * TOFU 首次连接: 展示从握手学到的 PC 指纹(16 字符大写 hex), 让用户与 PC 终端
@@ -37,8 +33,7 @@ fun FingerprintConfirmDialog(
         title = { Text(stringResource(R.string.dialog_fingerprint_title)) },
         text = {
             Column(
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(Spacing.md),
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Text(
@@ -46,22 +41,12 @@ fun FingerprintConfirmDialog(
                     style = MaterialTheme.typography.bodyMedium,
                     textAlign = TextAlign.Center
                 )
-                Surface(
-                    tonalElevation = 3.dp,
-                    shape = MaterialTheme.shapes.medium,
+                Text(
+                    text = fingerprint,
+                    style = ValueMono,
+                    textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text(
-                        text = fingerprint,
-                        fontSize = 26.sp,
-                        fontFamily = FontFamily.Monospace,
-                        letterSpacing = 2.sp,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 14.dp, horizontal = 8.dp)
-                    )
-                }
+                )
                 Text(
                     stringResource(R.string.dialog_fingerprint_trust_note),
                     style = MaterialTheme.typography.bodySmall,

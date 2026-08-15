@@ -287,7 +287,7 @@ class MainViewModel(
             onCompleted(
                 ModelImportResult(
                     invalidItems = listOf(
-                        stringProvider.getString(R.string.models_error_no_files_selected)
+                        stringProvider.getString(R.string.models_import_error_no_files)
                     )
                 )
             )

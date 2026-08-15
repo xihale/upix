@@ -26,7 +26,6 @@
     <!-- Home screen -->
     <string name="home_snackbar_connecting">正在连接 PC…</string>
     <string name="home_snackbar_connected">已连接 PC，将使用 PC 处理</string>
-    <string name="home_snackbar_pc_unreachable_switched">PC 不可达，已切换为本地处理</string>
     <string name="home_snackbar_pc_unreachable_local">PC 不可达，本次使用本地处理</string>
     <string name="home_model_setting_label">超分模型</string>
     <string name="home_output_path_label">输出路径</string>
@@ -44,11 +43,9 @@
     <!-- Home hero area -->
     <string name="hero_thumbnail_corrupted">已损坏</string>
     <string name="hero_thumbnail_preview">预览</string>
-    <string name="hero_preview_title">预览 · %1$s</string>
     <string name="hero_image_corrupted">图片损坏</string>
     <string name="hero_no_preview">暂无预览</string>
     <string name="hero_stage_empty_title">把图片放大，交给 CrossScale</string>
-    <string name="hero_stage_empty_subtitle">选择图片或文件夹，交由手机或 PC 处理</string>
     <string name="hero_pick_image">选择图片</string>
     <string name="hero_pick_folder">选择文件夹</string>
     <string name="hero_add_image_cd">添加图片</string>
@@ -60,7 +57,6 @@
     <string name="config_mode_local">本地</string>
     <string name="config_mode_connecting">连接中</string>
     <string name="config_mode_remote">远程</string>
-    <string name="config_mode_endpoint">%1$s</string>
     <string name="config_label_scale">放大倍率</string>
     <string name="config_label_spec">模型规格</string>
     <string name="config_scale_value">x%1$d</string>
@@ -106,29 +102,25 @@
     <string name="models_title">模型</string>
     <string name="models_discovered_summary">已发现 %1$d 个模型；当前：%2$s</string>
     <string name="models_refresh">刷新模型列表</string>
-    <string name="models_import">导入模型（.param/.bin/.zip）</string>
+    <string name="models_import">导入模型</string>
     <string name="models_download">下载模型</string>
-    <string name="models_import_rules">导入规则：.param 与 .bin 需同名成对；支持 zip（可含多个模型与子文件夹）</string>
+    <string name="models_import_rules">.param 与 .bin 需同名成对，支持 zip</string>
     <string name="models_empty_hint">未发现模型，请将 .param/.bin 放入模型目录</string>
-    <string name="models_current">当前</string>
     <string name="models_spec_tile">分块 %1$d</string>
     <string name="models_spec_channels">%1$d 通道</string>
     <string name="models_spec_size">%1$dMB</string>
     <string name="models_selected">已选择</string>
     <string name="models_select">选择</string>
     <string name="models_delete">删除</string>
-    <string name="models_import_invalid">模型无效：需同时提供同名 .param 与 .bin</string>
     <string name="models_import_result_partial">已导入 %1$d 个模型，%2$d 个无效</string>
     <string name="models_import_result_success">已导入 %1$d 个模型</string>
     <!-- Model import failure detail (resolved by MainViewModel / ModelRepository) -->
-    <string name="models_error_no_files_selected">未选择模型文件</string>
     <string name="models_import_error_no_files">未选择模型文件</string>
     <string name="models_import_error_staging_dir">导入失败：无法写入临时文件</string>
-    <string name="models_import_error_unsupported_type">%1$s：仅支持 .param/.bin/.zip</string>
     <string name="models_import_error_invalid_pair">%1$s：需同时提供同名 .param 与 .bin</string>
     <string name="models_import_error_invalid_pair_generic">模型无效：需同时提供同名 .param 与 .bin</string>
     <string name="models_import_error_import_failed">%1$s：导入失败（%2$s）</string>
-    <string name="models_import_error_no_models_found">未找到模型文件（支持 .param/.bin 或包含它们的 zip）</string>
+    <string name="models_import_error_no_models_found">未找到模型文件</string>
     <string name="models_import_error_unreadable">%1$s：无法读取</string>
     <string name="models_import_error_read_failed">%1$s：读取失败（%2$s）</string>
     <string name="models_import_error_zip_unreadable">%1$s：无法读取 zip 文件</string>
@@ -153,29 +145,26 @@
     <string name="connection_fingerprint">指纹：%1$s</string>
     <string name="connection_disconnect">断开连接</string>
     <string name="connection_connecting_title">正在连接 PC…</string>
-    <string name="connection_connecting_hint">首次连接需在 PC 端批准并核对指纹。</string>
     <string name="connection_status_connected">已连接 PC</string>
     <string name="connection_status_disconnected">未连接 PC</string>
-    <string name="connection_status_disconnected_hint">连接后图片交由 PC 的 GPU 超分，速度更快</string>
     <string name="connection_usage_section">使用说明</string>
     <string name="connection_scan_qr">扫码连接</string>
     <string name="connection_manual_input">手动输入地址</string>
-    <string name="connection_usage_body">连接后图片将发送到 PC，由 GPU 完成超分，速度比手机更快；未连接时在手机本地处理。首次连接需在 PC 端批准并核对指纹，之后会自动重连。</string>
+    <string name="connection_usage_body">连接后图片交由 PC 的 GPU 超分，速度更快。首次连接需在 PC 端核对指纹。</string>
     <string name="connection_host_label">PC IP 地址</string>
     <string name="connection_port_label">端口</string>
-    <string name="connection_manual_hint">输入 PC 端显示的 IP 与端口。首次连接后会显示 PC 指纹，请核对一致后再确认。</string>
+    <string name="connection_manual_hint">输入 PC 端显示的 IP 与端口。</string>
 
     <!-- Fingerprint confirm dialog -->
     <string name="dialog_fingerprint_title">确认 PC 指纹</string>
-    <string name="dialog_fingerprint_body">首次连接 %1$s:%2$d。\n请核对指纹与 PC 端显示的是否一致：</string>
-    <string name="dialog_fingerprint_trust_note">一致即可信任，之后自动连接；不一致请取消并检查网络环境。</string>
+    <string name="dialog_fingerprint_body">首次连接 %1$s:%2$d，请核对指纹与 PC 端显示的是否一致：</string>
+    <string name="dialog_fingerprint_trust_note">一致即可信任；不一致请取消。</string>
     <string name="dialog_fingerprint_confirm">一致，确认</string>
 
     <!-- Processing progress panel -->
     <string name="progress_status_idle">未开始</string>
     <string name="progress_status_canceled">已取消</string>
     <string name="progress_completed_items">已处理 %1$d/%2$d</string>
-    <string name="progress_compact_summary">%1$d%% · 剩 %2$d/%3$d · 失败 %4$d</string>
     <!-- Processing run messages (resolved by ProcessingRunPlanner / ProcessingRunEngine) -->
     <string name="processing_processor_local">本地</string>
     <string name="processing_processor_remote_node">PC</string>
@@ -188,11 +177,8 @@
 
     <!-- Settings screen -->
     <string name="settings_current_model">当前模型：%1$s</string>
-    <string name="settings_model_management_subtitle">下载、删除与切换模型</string>
-    <string name="settings_logs_subtitle">查看运行和错误日志</string>
-    <string name="settings_help_subtitle">快速开始与常见问题</string>
     <string name="settings_stream_encryption_title">加密传输（图像与结果）</string>
-    <string name="settings_stream_encryption_subtitle">关闭可提升速度；控制指令始终加密</string>
+    <string name="settings_stream_encryption_subtitle">关闭可提速；控制指令仍加密</string>
     <string name="settings_section_general">通用</string>
     <string name="settings_section_transfer">传输</string>
     <string name="settings_section_about">关于</string>
@@ -201,14 +187,8 @@
     <string name="help_step_1">在主页点「选择图片」或「选择文件夹」</string>
     <string name="help_step_2">选择超分模型与输出路径。</string>
     <string name="help_step_3">需要时开启「覆盖原图 / 备份原图」</string>
-    <string name="help_step_4">点「开始超分」开始；上拉队列可查看进度与失败原因</string>
-    <string name="help_step_5">图片与模型都通过系统文件选择器导入</string>
-    <string name="help_tip">提示：若开启覆盖原图，建议同时开启备份原图。</string>
-    <string name="help_faq_q1">如何添加图片？</string>
-    <string name="help_faq_q2">如何选择模型与输出路径？</string>
-    <string name="help_faq_q3">覆盖原图 / 备份原图怎么用？</string>
-    <string name="help_faq_q4">如何查看进度与失败原因？</string>
-    <string name="help_faq_q5">文件与模型如何导入？</string>
+    <string name="help_step_4">点「开始超分」后，上拉队列可查看进度与失败原因</string>
+    <string name="help_tip">开启覆盖原图时，建议同时开启备份。</string>
 
     <!-- Logs screen -->
     <string name="logs_result_count">共 %1$d 条</string>
@@ -217,8 +197,6 @@
     <string name="logs_clear">清空日志</string>
 
     <!-- QR scanner -->
-    <string name="scanner_title">二维码扫描</string>
-    <string name="scanner_hint">对准 PC 端显示的二维码，识别后自动连接</string>
     <string name="scanner_permission_required">需要相机权限才能扫码</string>
     <string name="scanner_grant_permission">授予相机权限</string>
     <string name="scanner_close">关闭</string>
