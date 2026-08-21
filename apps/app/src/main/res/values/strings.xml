@@ -33,7 +33,6 @@
     <string name="home_backup_original">备份原图</string>
     <string name="home_include_subdirectories">包含子目录</string>
     <string name="home_select_model_sheet_title">选择模型</string>
-    <string name="home_select_scale_sheet_title">选择放大倍率</string>
     <string name="home_model_subtitle">x%1$d</string>
     <string name="home_restore_backup">恢复备份</string>
     <string name="home_restore_backup_result_success">成功恢复 %1$d 个备份</string>
@@ -64,7 +63,6 @@
     <string name="config_output_format_follow">跟随原图</string>
     <string name="home_select_output_format_sheet_title">选择输出格式</string>
     <string name="config_scale_value">x%1$d</string>
-    <string name="config_scale_sheet_hint">倍率取决于所选模型</string>
     <string name="config_advanced_title">高级设置</string>
     <string name="config_resume_last_task">恢复上次任务</string>
 
