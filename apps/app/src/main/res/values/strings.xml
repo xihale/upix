@@ -107,7 +107,7 @@
     <string name="models_import">导入模型</string>
     <string name="models_download">下载模型</string>
     <string name="models_import_rules">.param 与 .bin 需同名成对，支持 zip</string>
-    <string name="models_empty_hint">未发现模型，请将 .param/.bin 放入模型目录</string>
+    <string name="models_empty_hint">未发现模型</string>
     <string name="models_spec_size">%1$dMB</string>
     <string name="models_selected">已选择</string>
     <string name="models_select">选择</string>
@@ -156,10 +156,8 @@
     <string name="connection_connecting_title">正在连接 PC…</string>
     <string name="connection_status_connected">已连接 PC</string>
     <string name="connection_status_disconnected">未连接 PC</string>
-    <string name="connection_usage_section">使用说明</string>
     <string name="connection_scan_qr">扫码连接</string>
     <string name="connection_manual_input">手动输入地址</string>
-    <string name="connection_usage_body">连接后图片交由 PC 的 GPU 超分，速度更快。首次连接需在 PC 端核对指纹。</string>
     <string name="connection_host_label">PC IP 地址</string>
     <string name="connection_port_label">端口</string>
     <string name="connection_manual_hint">输入 PC 端显示的 IP 与端口。</string>
@@ -193,11 +191,9 @@
     <string name="settings_about_project">项目地址</string>
 
     <!-- Help screen -->
-    <string name="help_step_1">在主页点「选择图片」或「选择文件夹」</string>
-    <string name="help_step_2">选择超分模型与输出路径。</string>
-    <string name="help_step_3">需要时开启「覆盖原图 / 备份原图」</string>
-    <string name="help_step_4">点「开始超分」后，上拉队列可查看进度与失败原因</string>
-    <string name="help_tip">开启覆盖原图时，建议同时开启备份。</string>
+    <string name="help_step_1">选择图片或文件夹</string>
+    <string name="help_step_2">选择模型与输出路径</string>
+    <string name="help_step_3">点「开始超分」</string>
 
     <!-- Logs screen -->
     <string name="logs_result_count">共 %1$d 条</string>

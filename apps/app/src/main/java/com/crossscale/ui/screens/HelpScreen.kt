@@ -32,8 +32,7 @@ fun HelpScreen() {
         val steps = listOf(
             R.string.help_step_1,
             R.string.help_step_2,
-            R.string.help_step_3,
-            R.string.help_step_4
+            R.string.help_step_3
         )
         steps.forEachIndexed { index, stepRes ->
             Text(
@@ -41,11 +40,5 @@ fun HelpScreen() {
                 style = MaterialTheme.typography.bodyMedium
             )
         }
-
-        Text(
-            text = stringResource(R.string.help_tip),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }

@@ -35,7 +35,6 @@ import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.RemoteEndpoint
 import com.crossscale.ui.components.ConnectionDialog
 import com.crossscale.ui.components.FingerprintConfirmDialog
-import com.crossscale.ui.components.SectionHeader
 import com.crossscale.ui.scanner.QRScannerScreen
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
@@ -126,9 +125,6 @@ fun ConnectionScreen(
                     onManual = { onShowManualConnectDialog(true) }
                 )
             }
-
-            SectionHeader(text = stringResource(R.string.connection_usage_section))
-            HelpCard()
         }
     }
 
@@ -256,24 +252,5 @@ private fun DisconnectedActions(
                 Text(stringResource(R.string.connection_manual_input))
             }
         }
-    }
-}
-
-/**
- * 使用说明卡：解释远程 vs 本地的差异、首次配对流程、自动重连。
- */
-@Composable
-private fun HelpCard() {
-    Surface(
-        modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
-        color = MaterialTheme.colorScheme.surfaceContainer
-    ) {
-        Text(
-            text = stringResource(R.string.connection_usage_body),
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(Spacing.lg)
-        )
     }
 }
