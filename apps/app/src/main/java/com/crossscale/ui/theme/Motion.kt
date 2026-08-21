@@ -49,14 +49,14 @@ val ExpandSizeSpec = tween<IntSize>(ExpandTween, easing = EmphasizedEasing)
 /** AnimatedVisibility 进入/退出的尺寸 spec（200ms，与 fade 同步）。 */
 val EnterSizeSpec = tween<IntSize>(EnterTween, easing = EmphasizedEasing)
 
-/** NavHost 目的地进入：纯 fade（180ms），轻快不做位移。 */
-val NavEnterTransition: EnterTransition = fadeIn(tween(180, easing = EmphasizedEasing))
+/** NavHost 目的地进入：纯 fade（120ms），轻快不做位移。 */
+val NavEnterTransition: EnterTransition = fadeIn(tween(120, easing = EmphasizedEasing))
 
 /** NavHost 目的地退出：纯快速 fade（90ms），不做位移，降低转场期间双屏重绘成本。 */
 val NavExitTransition: ExitTransition = fadeOut(tween(NavExitTween))
 
-/** 返回键进入（pop）：纯 fade（180ms）。 */
-val NavPopEnterTransition: EnterTransition = fadeIn(tween(180, easing = EmphasizedEasing))
+/** 返回键进入（pop）：纯 fade（120ms）。 */
+val NavPopEnterTransition: EnterTransition = fadeIn(tween(120, easing = EmphasizedEasing))
 
 /** 返回键退出（pop）：纯 fade（120ms）。 */
 val NavPopExitTransition: ExitTransition = fadeOut(tween(120, easing = EmphasizedEasing))
