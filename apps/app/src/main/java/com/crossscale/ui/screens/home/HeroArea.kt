@@ -22,28 +22,48 @@ import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.thumbnails.decodeQueueThumbnailWithLimit
+import com.crossscale.ui.theme.EmphasizedEasing
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.pressable
 
@@ -106,27 +126,150 @@ internal fun ImageStage(
     }
 }
 
-/** 空态：两个显式入口居中。 */
+/** "/" 分割形状：左上三角（图片区）。 */
+private val ImageZoneShape = TriangleShape(isUpperLeft = true)
+
+/** "/" 分割形状：右下三角（文件夹区）。 */
+private val FolderZoneShape = TriangleShape(isUpperLeft = false)
+
+/** 三角形裁剪区：isUpperLeft=true 取反对角线左上三角，否则取右下三角。 */
+private class TriangleShape(private val isUpperLeft: Boolean) : Shape {
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline {
+        val path = Path()
+        if (isUpperLeft) {
+            path.moveTo(0f, 0f)
+            path.lineTo(size.width, 0f)
+            path.lineTo(0f, size.height)
+        } else {
+            path.moveTo(size.width, 0f)
+            path.lineTo(size.width, size.height)
+            path.lineTo(0f, size.height)
+        }
+        path.close()
+        return Outline.Generic(path)
+    }
+}
+
+/**
+ * 空态：一条 "/" 斜线贯穿舞台，左上三角=图片、右下三角=文件夹，
+ * 点按对应区域触发相应选择；斜线首次出现时做一次快速划入。
+ */
 @Composable
 private fun EmptyStage(
     onAddImage: () -> Unit,
     onAddFolder: () -> Unit
 ) {
+    val lineReveal = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        lineReveal.animateTo(
+            targetValue = 1f,
+            animationSpec = tween(durationMillis = 280, easing = EmphasizedEasing)
+        )
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        // 三角形重心 ≈ (W/3, H/3) 与 (2W/3, 2H/3)：相对中心各偏移 1/6。
+        val dx = maxWidth / 6
+        val dy = maxHeight / 6
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(ImageZoneShape)
+                .clickable(onClick = onAddImage),
+            contentAlignment = Alignment.Center
+        ) {
+            ZoneEntry(
+                modifier = Modifier.offset(x = -dx, y = -dy),
+                icon = Icons.Outlined.AddPhotoAlternate,
+                label = stringResource(R.string.hero_pick_image),
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                iconTint = MaterialTheme.colorScheme.onPrimaryContainer
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clip(FolderZoneShape)
+                .clickable(onClick = onAddFolder),
+            contentAlignment = Alignment.Center
+        ) {
+            ZoneEntry(
+                modifier = Modifier.offset(x = dx, y = dy),
+                icon = Icons.Outlined.CreateNewFolder,
+                label = stringResource(R.string.hero_pick_folder),
+                containerColor = MaterialTheme.colorScheme.secondaryContainer,
+                iconTint = MaterialTheme.colorScheme.onSecondaryContainer
+            )
+        }
+
+        val lineColor = MaterialTheme.colorScheme.primary
+        Canvas(modifier = Modifier.fillMaxSize()) {
+            val progress = lineReveal.value
+            if (progress <= 0f) return@Canvas
+            val start = Offset(0f, size.height)
+            val end = Offset(size.width, 0f)
+            val currentEnd = Offset(
+                x = start.x + (end.x - start.x) * progress,
+                y = start.y + (end.y - start.y) * progress
+            )
+            drawLine(
+                brush = Brush.linearGradient(
+                    colors = listOf(
+                        lineColor.copy(alpha = 0f),
+                        lineColor.copy(alpha = 0.85f),
+                        lineColor.copy(alpha = 0f)
+                    ),
+                    start = start,
+                    end = end
+                ),
+                start = start,
+                end = currentEnd,
+                strokeWidth = 2.dp.toPx(),
+                cap = StrokeCap.Round
+            )
+        }
+    }
+}
+
+/** 半区入口：tonal 圆形图标 + 文字标签。 */
+@Composable
+private fun ZoneEntry(
+    modifier: Modifier = Modifier,
+    icon: ImageVector,
+    label: String,
+    containerColor: Color,
+    iconTint: Color
+) {
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(Spacing.lg),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(Spacing.sm)
     ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
-            FilledTonalButton(onClick = onAddImage) {
-                Text(stringResource(R.string.hero_pick_image))
-            }
-            OutlinedButton(onClick = onAddFolder) {
-                Text(stringResource(R.string.hero_pick_folder))
+        Surface(
+            shape = CircleShape,
+            color = containerColor,
+            modifier = Modifier.size(48.dp)
+        ) {
+            Box(contentAlignment = Alignment.Center) {
+                Icon(
+                    imageVector = icon,
+                    contentDescription = null,
+                    tint = iconTint,
+                    modifier = Modifier.size(24.dp)
+                )
             }
         }
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -228,7 +371,7 @@ private fun StageThumbnail(
         }.getOrNull()
     }
 
-    Box(modifier = Modifier.size(64.dp)) {
+    Box(modifier = Modifier.size(72.dp)) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -264,19 +407,21 @@ private fun StageThumbnail(
         Surface(
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .size(18.dp),
+                .offset(x = 3.dp, y = (-3).dp)
+                .size(22.dp),
             shape = CircleShape,
             color = MaterialTheme.colorScheme.surfaceContainerHighest,
-            contentColor = MaterialTheme.colorScheme.onSurface
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
         ) {
             IconButton(
                 onClick = onDelete,
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(22.dp)
             ) {
                 Icon(
                     imageVector = Icons.Outlined.Close,
                     contentDescription = stringResource(R.string.hero_thumbnail_remove_cd),
-                    modifier = Modifier.size(14.dp)
+                    modifier = Modifier.size(13.dp)
                 )
             }
         }
@@ -291,9 +436,10 @@ private fun StageActionTile(
 ) {
     Box(
         modifier = Modifier
-            .size(64.dp)
+            .size(72.dp)
             .clip(MaterialTheme.shapes.small)
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .background(MaterialTheme.colorScheme.surfaceContainerLowest)
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, MaterialTheme.shapes.small)
             .pressable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
@@ -301,7 +447,7 @@ private fun StageActionTile(
             imageVector = icon,
             contentDescription = stringResource(contentDescriptionRes),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp)
+            modifier = Modifier.size(22.dp)
         )
     }
 }

@@ -223,7 +223,7 @@ fun HomeScreen(
             modifier = Modifier.align(Alignment.BottomCenter),
             isProcessing = isProcessing,
             hasBackupAvailable = hasBackupAvailable,
-            hasQueueItems = queueItems.isNotEmpty(),
+            queueCount = queueItems.size,
             onShowQueue = {
                 queueSheetVisible = true
             },
