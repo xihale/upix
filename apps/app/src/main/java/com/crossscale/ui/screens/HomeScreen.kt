@@ -30,6 +30,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -138,7 +139,7 @@ fun HomeScreen(
     var showRemoteModelsDialog by rememberSaveable { mutableStateOf(false) }
     var queueSheetVisible by rememberSaveable { mutableStateOf(false) }
     var previewSource by rememberSaveable { mutableStateOf<String?>(null) }
-    val queueSheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val queueSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     val snackbarHostState = remember { SnackbarHostState() }
     val prevConnectionState = remember { mutableStateOf(connectionState) }
@@ -269,6 +270,7 @@ fun HomeScreen(
         LaunchedEffect(Unit) { onRefreshRemoteModels() }
         ModalBottomSheet(
             onDismissRequest = { showModelSheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             shape = MaterialTheme.shapes.extraLarge,
             containerColor = MaterialTheme.colorScheme.surface
         ) {
@@ -311,6 +313,7 @@ fun HomeScreen(
         val followLabel = stringResource(R.string.config_output_format_follow)
         ModalBottomSheet(
             onDismissRequest = { showFormatSheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             shape = MaterialTheme.shapes.extraLarge,
             containerColor = MaterialTheme.colorScheme.surface
         ) {
