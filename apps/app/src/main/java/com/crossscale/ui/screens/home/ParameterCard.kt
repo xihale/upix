@@ -1,7 +1,11 @@
 package com.crossscale.ui.screens.home
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -46,10 +50,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.model.ModelInfo
+import com.crossscale.ui.theme.EnterMotionSpec
 import com.crossscale.ui.theme.ExpandSizeSpec
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
@@ -98,56 +105,67 @@ internal fun ParameterCard(
         color = MaterialTheme.colorScheme.surfaceContainer
     ) {
         Column {
-            ListItem(
-                overlineContent = { Text(stringResource(R.string.home_model_setting_label)) },
-                headlineContent = {
-                    val modelLabel = selectedModel?.name ?: notSelectedLabel
-                    Text(
-                        text = modelLabel,
-                        style = valueStyleFor(modelLabel),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                },
-                leadingContent = {
+            // 模型 + 倍率是一个联动整体：倍率分段紧贴模型名下方（无独立标题块），
+            // 点倍率即换模型，模型名用统一纯 fade 过渡，联动不突兀。
+            // 点击区域只覆盖名称行；倍率分段独立响应，不触发打开模型 sheet。
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .pressable(onClick = onPickModel)
+                        .padding(horizontal = Spacing.lg, vertical = Spacing.md),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Icon(
                         imageVector = Icons.Outlined.Memory,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                },
-                trailingContent = {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = Spacing.md),
+                        verticalArrangement = Arrangement.spacedBy(1.dp)
+                    ) {
+                        Text(
+                            text = stringResource(R.string.home_model_setting_label),
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        val modelLabel = selectedModel?.name ?: notSelectedLabel
+                        AnimatedContent(
+                            targetState = modelLabel,
+                            transitionSpec = {
+                                fadeIn(EnterMotionSpec) togetherWith fadeOut(EnterMotionSpec)
+                            },
+                            label = "modelNameFade"
+                        ) { label ->
+                            Text(
+                                text = label,
+                                style = valueStyleFor(label),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
                     Icon(
                         imageVector = Icons.Outlined.ChevronRight,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(20.dp)
                     )
-                },
-                colors = transparent,
-                modifier = Modifier.pressable(onClick = onPickModel)
-            )
+                }
 
-            // 倍率：模型固有倍率的分段直选；未装模型时隐藏。
-            if (availableScales.isNotEmpty()) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = Spacing.lg)
-                        .padding(bottom = Spacing.md),
-                    verticalArrangement = Arrangement.spacedBy(Spacing.xs)
-                ) {
-                    Text(
-                        text = stringResource(R.string.config_label_scale),
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = Spacing.sm)
-                    )
-                    // 档位极多时允许横滑，避免挤压文字（常规 2-3 档用不到）。
+                // 倍率：模型固有倍率的分段直选；未装模型时隐藏。
+                if (availableScales.isNotEmpty()) {
+                    val scaleLabel = stringResource(R.string.config_label_scale)
                     SingleChoiceSegmentedButtonRow(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .padding(horizontal = Spacing.lg)
+                            .padding(bottom = Spacing.md)
                             .horizontalScroll(rememberScrollState())
+                            .semantics { contentDescription = scaleLabel }
                     ) {
                         availableScales.forEachIndexed { index, scale ->
                             SegmentedButton(

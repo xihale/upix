@@ -151,14 +151,24 @@ class MainViewModel(
         logRepository.info("MainViewModel", "Selected model: ${model.name}")
     }
 
-    /** 按倍率选模型：倍率由模型固有决定，切换倍率即切换到该倍率的模型。 */
+    /**
+     * 按倍率选模型：倍率由模型固有决定，切换倍率即切换到该倍率的模型。
+     * 同倍率存在多个模型时优先同系列（名称去掉 -xN 后缀后相同），
+     * 避免从 Real-CUGAN-denoise-x2 切 x3 时跳到无关模型。
+     */
     fun selectModelByScale(scale: Int) {
         val models = modelRepository.models.value
         val currentModel = uiState.value.selectedModel
         if (currentModel?.scaleFactor == scale) {
             return
         }
-        val targetModel = models.firstOrNull { model -> model.scaleFactor == scale }
+        val familyOf = { name: String ->
+            name.substringBeforeLast("-x", missingDelimiterValue = name)
+        }
+        val currentFamily = currentModel?.let { familyOf(it.name) }
+        val targetModel = models.firstOrNull { model ->
+            model.scaleFactor == scale && familyOf(model.name) == currentFamily
+        } ?: models.firstOrNull { model -> model.scaleFactor == scale }
         if (targetModel == null) {
             logRepository.warning("MainViewModel", "No model found for scale x$scale")
             return
