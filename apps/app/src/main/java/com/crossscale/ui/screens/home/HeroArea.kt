@@ -48,7 +48,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
@@ -126,28 +125,38 @@ internal fun ImageStage(
     }
 }
 
-/** "/" 分割形状：左上三角（图片区）。 */
-private val ImageZoneShape = TriangleShape(isUpperLeft = true)
+/** 1/e：斜线上下端点在顶/底边框上的位置比例。 */
+private const val INV_E = 0.36787944f
 
-/** "/" 分割形状：右下三角（文件夹区）。 */
-private val FolderZoneShape = TriangleShape(isUpperLeft = false)
+/** 斜线分割形状：斜线左侧（图片区）。 */
+private val ImageZoneShape = SlashSideShape(isLeft = true)
 
-/** 三角形裁剪区：isUpperLeft=true 取反对角线左上三角，否则取右下三角。 */
-private class TriangleShape(private val isUpperLeft: Boolean) : Shape {
+/** 斜线分割形状：斜线右侧（文件夹区）。 */
+private val FolderZoneShape = SlashSideShape(isLeft = false)
+
+/**
+ * 斜线单侧区域：下端点在底边自左 1/e 处，上端点在顶边自右 1/e 处（关于中心对称）；
+ * isLeft 取线左侧四边形，否则取右侧。
+ */
+private class SlashSideShape(private val isLeft: Boolean) : Shape {
     override fun createOutline(
         size: Size,
         layoutDirection: LayoutDirection,
         density: Density
     ): Outline {
+        val topX = size.width * (1f - INV_E)
+        val bottomX = size.width * INV_E
         val path = Path()
-        if (isUpperLeft) {
+        if (isLeft) {
             path.moveTo(0f, 0f)
-            path.lineTo(size.width, 0f)
+            path.lineTo(topX, 0f)
+            path.lineTo(bottomX, size.height)
             path.lineTo(0f, size.height)
         } else {
-            path.moveTo(size.width, 0f)
+            path.moveTo(topX, 0f)
+            path.lineTo(size.width, 0f)
             path.lineTo(size.width, size.height)
-            path.lineTo(0f, size.height)
+            path.lineTo(bottomX, size.height)
         }
         path.close()
         return Outline.Generic(path)
@@ -155,8 +164,8 @@ private class TriangleShape(private val isUpperLeft: Boolean) : Shape {
 }
 
 /**
- * 空态：一条 "/" 斜线贯穿舞台，左上三角=图片、右下三角=文件夹，
- * 点按对应区域触发相应选择；斜线首次出现时做一次快速划入。
+ * 空态：一条 "/" 斜线分割舞台（端点位于上下边框 1/e 处），
+ * 左侧=图片、右侧=文件夹，点按对应区域触发相应选择；斜线首次出现时快速划入。
  */
 @Composable
 private fun EmptyStage(
@@ -172,9 +181,8 @@ private fun EmptyStage(
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        // 三角形重心 ≈ (W/3, H/3) 与 (2W/3, 2H/3)：相对中心各偏移 1/6。
-        val dx = maxWidth / 6
-        val dy = maxHeight / 6
+        // 两侧梯形重心在 (W/4, H/2) 与 (3W/4, H/2)：相对中心各偏移 W/4。
+        val dx = maxWidth / 4
 
         Box(
             modifier = Modifier
@@ -183,12 +191,13 @@ private fun EmptyStage(
                 .clickable(onClick = onAddImage),
             contentAlignment = Alignment.Center
         ) {
-            ZoneEntry(
-                modifier = Modifier.offset(x = -dx, y = -dy),
-                icon = Icons.Outlined.AddPhotoAlternate,
-                label = stringResource(R.string.hero_pick_image),
-                containerColor = MaterialTheme.colorScheme.primaryContainer,
-                iconTint = MaterialTheme.colorScheme.onPrimaryContainer
+            Icon(
+                imageVector = Icons.Outlined.AddPhotoAlternate,
+                contentDescription = stringResource(R.string.hero_add_image_cd),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .offset(x = -dx)
+                    .size(40.dp)
             )
         }
 
@@ -199,12 +208,13 @@ private fun EmptyStage(
                 .clickable(onClick = onAddFolder),
             contentAlignment = Alignment.Center
         ) {
-            ZoneEntry(
-                modifier = Modifier.offset(x = dx, y = dy),
-                icon = Icons.Outlined.CreateNewFolder,
-                label = stringResource(R.string.hero_pick_folder),
-                containerColor = MaterialTheme.colorScheme.secondaryContainer,
-                iconTint = MaterialTheme.colorScheme.onSecondaryContainer
+            Icon(
+                imageVector = Icons.Outlined.CreateNewFolder,
+                contentDescription = stringResource(R.string.hero_add_folder_cd),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .offset(x = dx)
+                    .size(40.dp)
             )
         }
 
@@ -212,8 +222,8 @@ private fun EmptyStage(
         Canvas(modifier = Modifier.fillMaxSize()) {
             val progress = lineReveal.value
             if (progress <= 0f) return@Canvas
-            val start = Offset(0f, size.height)
-            val end = Offset(size.width, 0f)
+            val start = Offset(size.width * INV_E, size.height)
+            val end = Offset(size.width * (1f - INV_E), 0f)
             val currentEnd = Offset(
                 x = start.x + (end.x - start.x) * progress,
                 y = start.y + (end.y - start.y) * progress
@@ -234,42 +244,6 @@ private fun EmptyStage(
                 cap = StrokeCap.Round
             )
         }
-    }
-}
-
-/** 半区入口：tonal 圆形图标 + 文字标签。 */
-@Composable
-private fun ZoneEntry(
-    modifier: Modifier = Modifier,
-    icon: ImageVector,
-    label: String,
-    containerColor: Color,
-    iconTint: Color
-) {
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(Spacing.sm)
-    ) {
-        Surface(
-            shape = CircleShape,
-            color = containerColor,
-            modifier = Modifier.size(48.dp)
-        ) {
-            Box(contentAlignment = Alignment.Center) {
-                Icon(
-                    imageVector = icon,
-                    contentDescription = null,
-                    tint = iconTint,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        }
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
     }
 }
 
