@@ -171,6 +171,8 @@ internal fun ParameterCard(
                             SegmentedButton(
                                 selected = selectedModel?.scaleFactor == scale,
                                 onClick = { onPickScale(scale) },
+                                // 不显示选中打勾：靠底色/边框区分即可，避免 xN 前多出图标。
+                                icon = { },
                                 shape = SegmentedButtonDefaults.itemShape(
                                     index = index,
                                     count = availableScales.size

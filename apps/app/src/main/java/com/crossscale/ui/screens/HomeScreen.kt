@@ -120,8 +120,18 @@ fun HomeScreen(
     val corruptedSources = state.corruptedInputSources
     val selectedOutput = prettyOutputPath(state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/CrossScale")
     val queueItems = processingUiState.queueItems
-    // 倍率由模型固有决定：可用倍率 = 已有模型倍率的升序去重集合。
-    val availableScales = state.models.map { model -> model.scaleFactor }.distinct().sorted()
+    // 倍率针对当前模型：只列出同系列（名称去掉 -xN 后缀）的倍率；
+    // 系列内没有其他倍率时为空，参数卡即隐藏倍率选择。
+    val selectedFamily = state.selectedModel?.name?.let { name ->
+        name.substringBeforeLast("-x", missingDelimiterValue = name)
+    }
+    val availableScales = state.models
+        .filter { model ->
+            model.name.substringBeforeLast("-x", missingDelimiterValue = model.name) == selectedFamily
+        }
+        .map { model -> model.scaleFactor }
+        .distinct()
+        .sorted()
 
     var showModelSheet by rememberSaveable { mutableStateOf(false) }
     var showFormatSheet by rememberSaveable { mutableStateOf(false) }
