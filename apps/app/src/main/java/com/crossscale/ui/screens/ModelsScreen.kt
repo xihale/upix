@@ -10,7 +10,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Download
+import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.SaveAlt
 import androidx.compose.material3.FilledTonalButton
@@ -20,13 +20,20 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.model.ModelInfo
 import com.crossscale.ui.components.ModelCard
+import com.crossscale.ui.components.RemoteModelsDialog
 import com.crossscale.ui.theme.Spacing
+import com.crossscale.viewmodel.ModelsUiState
 
 @Composable
 fun ModelsScreen(
@@ -37,8 +44,17 @@ fun ModelsScreen(
     onImportModels: () -> Unit,
     onDeleteModel: (ModelInfo) -> Unit,
     modelDirectoryPath: String,
-    onOpenModelRelease: () -> Unit
+    remoteUiState: ModelsUiState,
+    onRefreshRemoteModels: () -> Unit,
+    onDownloadRemoteModel: (com.crossscale.data.model.RemoteModel) -> Unit,
+    onDismissDownloadError: (String) -> Unit
 ) {
+    var showRemoteDialog by remember { mutableStateOf(false) }
+
+    // 点开下载入口时自动拉取一次远程模型列表（VM 内部有并发去重，已有列表时静默刷新）。
+    LaunchedEffect(showRemoteDialog) {
+        if (showRemoteDialog) onRefreshRemoteModels()
+    }
     val notSelectedLabel = stringResource(R.string.common_not_selected)
     Column(
         modifier = Modifier
@@ -78,9 +94,9 @@ fun ModelsScreen(
                 )
                 Text(stringResource(R.string.models_import), maxLines = 1)
             }
-            OutlinedButton(onClick = onOpenModelRelease) {
+            OutlinedButton(onClick = { showRemoteDialog = true }) {
                 Icon(
-                    imageVector = Icons.Outlined.Download,
+                    imageVector = Icons.Outlined.CloudDownload,
                     contentDescription = stringResource(R.string.models_download),
                     modifier = Modifier.size(18.dp)
                 )
@@ -129,6 +145,20 @@ fun ModelsScreen(
                     )
                 }
             }
+        }
+
+        if (showRemoteDialog) {
+            RemoteModelsDialog(
+                remoteModels = remoteUiState.remoteModels,
+                installedModelNames = models.map { it.name }.toSet(),
+                downloads = remoteUiState.downloads,
+                isLoading = remoteUiState.isLoadingRemote,
+                errorMessage = remoteUiState.remoteError,
+                onRefresh = onRefreshRemoteModels,
+                onDownload = onDownloadRemoteModel,
+                onDismiss = { showRemoteDialog = false },
+                onDismissError = onDismissDownloadError
+            )
         }
     }
 }
