@@ -54,6 +54,7 @@ import com.crossscale.ui.theme.ExpandSizeSpec
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
 import com.crossscale.ui.theme.pressable
+import com.crossscale.ui.theme.valueStyleFor
 
 /**
  * 参数卡：一张容器内聚合所有任务配置。
@@ -100,9 +101,10 @@ internal fun ParameterCard(
             ListItem(
                 overlineContent = { Text(stringResource(R.string.home_model_setting_label)) },
                 headlineContent = {
+                    val modelLabel = selectedModel?.name ?: notSelectedLabel
                     Text(
-                        text = selectedModel?.name ?: notSelectedLabel,
-                        style = ValueMono,
+                        text = modelLabel,
+                        style = valueStyleFor(modelLabel),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
@@ -196,9 +198,9 @@ internal fun ParameterCard(
                         )
                         Text(
                             text = outputDirectoryLabel,
-                            style = ValueMono,
+                            style = valueStyleFor(outputDirectoryLabel),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
+                            maxLines = 2,
                             overflow = TextOverflow.Ellipsis
                         )
                     }

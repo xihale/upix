@@ -61,6 +61,7 @@ import com.crossscale.data.thumbnails.decodeQueueThumbnailWithLimit
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
 import com.crossscale.ui.theme.pressable
+import com.crossscale.ui.theme.valueStyleFor
 import com.crossscale.viewmodel.ProcessingQueueItemSummary
 import com.crossscale.viewmodel.ProcessingUiState
 
@@ -302,7 +303,7 @@ private fun QueueItemCard(
                 headlineContent = {
                     Text(
                         text = "#${index + 1} $sourceLabel",
-                        style = ValueMono,
+                        style = valueStyleFor(sourceLabel),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )

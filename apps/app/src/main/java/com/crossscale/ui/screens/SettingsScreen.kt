@@ -1,5 +1,6 @@
 package com.crossscale.ui.screens
 
+import android.content.Intent
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -15,7 +16,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
 import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.FolderOpen
+import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material3.Icon
@@ -24,23 +26,22 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.ui.components.SectionHeader
 import com.crossscale.ui.theme.Spacing
-import com.crossscale.ui.theme.ValueMono
 
 /**
  * 设置屏：分组卡列表（组间留白 Spacing.lg，组内行间留白，不用 Divider）。
  */
 @Composable
 fun SettingsScreen(
-    modelDirectoryPath: String,
     selectedModelName: String?,
     onOpenModels: () -> Unit,
     onOpenLogs: () -> Unit,
@@ -130,33 +131,33 @@ fun SettingsScreen(
 
         SectionHeader(text = stringResource(R.string.settings_section_about))
         SettingsGroupCard {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 48.dp)
-                    .padding(horizontal = Spacing.md, vertical = Spacing.sm),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.FolderOpen,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp)
-                )
-                Text(
-                    text = stringResource(R.string.common_model_directory, modelDirectoryPath),
-                    style = ValueMono,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(start = Spacing.md, end = Spacing.sm)
-                )
+            val context = LocalContext.current
+            val versionName = remember {
+                runCatching {
+                    context.packageManager.getPackageInfo(context.packageName, 0).versionName
+                }.getOrNull()
             }
+            SettingsEntryRow(
+                icon = Icons.Outlined.Info,
+                title = stringResource(R.string.settings_about_version, versionName ?: "-")
+            )
+            SettingsEntryRow(
+                icon = Icons.Outlined.Link,
+                title = stringResource(R.string.settings_about_project),
+                onClick = {
+                    runCatching {
+                        context.startActivity(
+                            Intent(Intent.ACTION_VIEW, android.net.Uri.parse(PROJECT_URL))
+                        )
+                    }
+                }
+            )
         }
     }
 }
+
+/** 开源项目地址（关于页展示并可跳转）。 */
+private const val PROJECT_URL = "https://github.com/xihale/crossscale"
 
 @Composable
 private fun SettingsGroupCard(content: @Composable () -> Unit) {
@@ -179,13 +180,19 @@ private fun SettingsEntryRow(
     icon: ImageVector,
     title: String,
     subtitle: String? = null,
-    onClick: () -> Unit
+    onClick: (() -> Unit)? = null
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
             .heightIn(min = 48.dp)
+            .then(
+                if (onClick != null) {
+                    Modifier.clickable(onClick = onClick)
+                } else {
+                    Modifier
+                }
+            )
             .padding(horizontal = Spacing.md, vertical = Spacing.sm),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -213,11 +220,13 @@ private fun SettingsEntryRow(
                 )
             }
         }
-        Icon(
-            imageVector = Icons.Outlined.ChevronRight,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp)
-        )
+        if (onClick != null) {
+            Icon(
+                imageVector = Icons.Outlined.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+        }
     }
 }

@@ -8,6 +8,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -49,11 +51,21 @@ val ExpandSizeSpec = tween<IntSize>(ExpandTween, easing = EmphasizedEasing)
 /** AnimatedVisibility 进入/退出的尺寸 spec（200ms，与 fade 同步）。 */
 val EnterSizeSpec = tween<IntSize>(EnterTween, easing = EmphasizedEasing)
 
-/** NavHost 目的地进入：fade-in（200ms，EmphasizedEasing），替代默认 700ms fade。 */
-val NavEnterTransition: EnterTransition = fadeIn(tween(EnterTween, easing = EmphasizedEasing))
+/** NavHost 目的地进入：fade + 轻微右滑入（200ms，EmphasizedEasing），带方向感更流畅。 */
+val NavEnterTransition: EnterTransition = fadeIn(tween(EnterTween, easing = EmphasizedEasing)) +
+    slideInHorizontally(tween(EnterTween, easing = EmphasizedEasing)) { it / 12 }
 
-/** NavHost 目的地退出：fade-out（90ms）。 */
-val NavExitTransition: ExitTransition = fadeOut(tween(NavExitTween))
+/** NavHost 目的地退出：fade-out + 轻微左滑出（90ms）。 */
+val NavExitTransition: ExitTransition = fadeOut(tween(NavExitTween)) +
+    slideOutHorizontally(tween(NavExitTween)) { -it / 16 }
+
+/** 返回键进入（pop）：fade + 轻微左滑入，与前进方向镜像。 */
+val NavPopEnterTransition: EnterTransition = fadeIn(tween(EnterTween, easing = EmphasizedEasing)) +
+    slideInHorizontally(tween(EnterTween, easing = EmphasizedEasing)) { -it / 12 }
+
+/** 返回键退出（pop）：fade-out + 轻微右滑出。 */
+val NavPopExitTransition: ExitTransition = fadeOut(tween(NavExitTween)) +
+    slideOutHorizontally(tween(NavExitTween)) { it / 16 }
 
 /**
  * 给定 interactionSource，按下时缩到 0.97（graphicsLayer，仅 transform）。

@@ -75,3 +75,11 @@ val LogMonoStyle = Typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
  * 配置值等宽样式：文件名 / 路径 / 数字等机器可读取值使用。
  */
 val ValueMono = Typography.titleSmall.copy(fontFamily = FontFamily.Monospace)
+
+/**
+ * 按文本内容选择等宽或系统字体：等宽字体无 CJK 字形，
+ * 含非拉丁字符（如「未选择」、中文文件名）时回退系统默认字阶，
+ * 保证中文始终渲染为系统字体。
+ */
+fun valueStyleFor(text: String, fallback: TextStyle = Typography.titleSmall): TextStyle =
+    if (text.any { it.code > 0x7F }) fallback else ValueMono

@@ -34,6 +34,7 @@ import com.crossscale.R
 import com.crossscale.ui.theme.ExpandSizeSpec
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
+import com.crossscale.ui.theme.valueStyleFor
 import com.crossscale.viewmodel.ProcessingCheckpointSummary
 import com.crossscale.viewmodel.ProcessingUiState
 
@@ -150,7 +151,7 @@ internal fun CheckpointSection(
                         ) {
                             Text(
                                 text = item.displayName,
-                                style = ValueMono,
+                                style = valueStyleFor(item.displayName),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,

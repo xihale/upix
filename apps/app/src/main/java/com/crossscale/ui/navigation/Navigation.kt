@@ -36,6 +36,8 @@ import com.crossscale.ui.screens.ModelsScreen
 import com.crossscale.ui.screens.SettingsScreen
 import com.crossscale.ui.theme.NavEnterTransition
 import com.crossscale.ui.theme.NavExitTransition
+import com.crossscale.ui.theme.NavPopEnterTransition
+import com.crossscale.ui.theme.NavPopExitTransition
 import com.crossscale.viewmodel.DeviceViewModel
 import com.crossscale.viewmodel.MainViewModel
 import com.crossscale.viewmodel.ModelsViewModel
@@ -107,8 +109,8 @@ fun CrossScaleNavigation(
         modifier = modifier,
         enterTransition = { NavEnterTransition },
         exitTransition = { NavExitTransition },
-        popEnterTransition = { NavEnterTransition },
-        popExitTransition = { NavExitTransition }
+        popEnterTransition = { NavPopEnterTransition },
+        popExitTransition = { NavPopExitTransition }
     ) {
         composable(AppScreen.Home.route) {
             DestinationContainer {
@@ -137,9 +139,10 @@ fun CrossScaleNavigation(
                     onToggleBackupOriginal = mainViewModel::setBackupOriginalImage,
                     onToggleProcessNestedFolders = mainViewModel::setProcessNestedFolders,
                     onSelectOutputFormat = mainViewModel::setOutputImageFormat,
-                    onOpenModelManagement = {
-                        navController.navigate(AppScreen.SettingsModels.route)
-                    },
+                    remoteUiState = modelsUiState,
+                    onRefreshRemoteModels = modelsViewModel::refreshRemoteModels,
+                    onDownloadRemoteModel = modelsViewModel::downloadRemoteModel,
+                    onDismissDownloadError = modelsViewModel::dismissDownloadError,
                     onStartProcessing = {
                         startProcessing(
                             mainUiState = mainUiState,
@@ -222,7 +225,6 @@ fun CrossScaleNavigation(
         composable(AppScreen.Settings.route) {
             DestinationContainer {
                 SettingsScreen(
-                    modelDirectoryPath = mainUiState.modelDirectoryPath,
                     selectedModelName = mainUiState.selectedModel?.name,
                     onOpenModels = {
                         navController.navigate(AppScreen.SettingsModels.route)

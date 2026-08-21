@@ -21,6 +21,8 @@ import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
@@ -44,9 +46,10 @@ import com.crossscale.R
 import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.model.RemoteEndpoint
+import com.crossscale.data.model.RemoteModel
 import com.crossscale.data.repository.OutputImageFormat
+import com.crossscale.ui.components.RemoteModelsDialog
 import com.crossscale.ui.components.StageProgressOverlay
-import com.crossscale.ui.components.SheetActionItem
 import com.crossscale.ui.screens.home.BottomActionDock
 import com.crossscale.ui.screens.home.CheckpointSection
 import com.crossscale.ui.screens.home.ImageStage
@@ -58,6 +61,7 @@ import com.crossscale.ui.theme.EnterSizeSpec
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
 import com.crossscale.viewmodel.MainUiState
+import com.crossscale.viewmodel.ModelsUiState
 import com.crossscale.viewmodel.ProcessingUiState
 
 /**
@@ -85,7 +89,10 @@ fun HomeScreen(
     onToggleBackupOriginal: (Boolean) -> Unit,
     onToggleProcessNestedFolders: (Boolean) -> Unit,
     onSelectOutputFormat: (OutputImageFormat) -> Unit,
-    onOpenModelManagement: () -> Unit,
+    remoteUiState: ModelsUiState,
+    onRefreshRemoteModels: () -> Unit,
+    onDownloadRemoteModel: (RemoteModel) -> Unit,
+    onDismissDownloadError: (String) -> Unit,
     onStartProcessing: () -> Unit,
     onStartBatchQueue: () -> Unit,
     onPauseBatchQueue: () -> Unit,
@@ -111,13 +118,14 @@ fun HomeScreen(
 
     val selectedInputs = state.selectedInputSources
     val corruptedSources = state.corruptedInputSources
-    val selectedOutput = abbreviatePath(state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/CrossScale")
+    val selectedOutput = prettyOutputPath(state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/CrossScale")
     val queueItems = processingUiState.queueItems
     // 倍率由模型固有决定：可用倍率 = 已有模型倍率的升序去重集合。
     val availableScales = state.models.map { model -> model.scaleFactor }.distinct().sorted()
 
     var showModelSheet by rememberSaveable { mutableStateOf(false) }
     var showFormatSheet by rememberSaveable { mutableStateOf(false) }
+    var showRemoteModelsDialog by rememberSaveable { mutableStateOf(false) }
     var queueSheetVisible by rememberSaveable { mutableStateOf(false) }
     var previewSource by rememberSaveable { mutableStateOf<String?>(null) }
     val queueSheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -247,16 +255,34 @@ fun HomeScreen(
     }
 
     if (showModelSheet) {
+        // 打开下载入口时自动拉取一次远程模型列表（VM 内部有并发去重）。
+        LaunchedEffect(Unit) { onRefreshRemoteModels() }
         ModalBottomSheet(
             onDismissRequest = { showModelSheet = false },
             shape = MaterialTheme.shapes.extraLarge,
             containerColor = MaterialTheme.colorScheme.surface
         ) {
-            Text(
-                text = stringResource(R.string.home_select_model_sheet_title),
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(horizontal = Spacing.xl, vertical = Spacing.sm)
-            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = Spacing.xl, end = Spacing.sm),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = stringResource(R.string.home_select_model_sheet_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.padding(vertical = Spacing.sm)
+                )
+                // 右上角下载入口：与设置页相同的远程模型下载对话框。
+                IconButton(onClick = { showRemoteModelsDialog = true }) {
+                    Icon(
+                        imageVector = Icons.Outlined.CloudDownload,
+                        contentDescription = stringResource(R.string.models_download),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
             state.models.forEach { model ->
                 SelectSheetItem(
                     label = model.name,
@@ -267,15 +293,6 @@ fun HomeScreen(
                     onSelectModel(model)
                 }
             }
-            // 无本地模型 / 想要更多：直接跳转模型管理页在线下载。
-            SheetActionItem(
-                label = stringResource(R.string.models_download),
-                subtitle = stringResource(R.string.home_download_models_subtitle),
-                onClick = {
-                    showModelSheet = false
-                    onOpenModelManagement()
-                }
-            )
             Spacer(modifier = Modifier.height(Spacing.xl))
         }
     }
@@ -336,6 +353,20 @@ fun HomeScreen(
             source = source,
             isCorrupted = source in corruptedSources,
             onDismiss = { previewSource = null }
+        )
+    }
+
+    if (showRemoteModelsDialog) {
+        RemoteModelsDialog(
+            remoteModels = remoteUiState.remoteModels,
+            installedModelNames = state.models.map { it.name }.toSet(),
+            downloads = remoteUiState.downloads,
+            isLoading = remoteUiState.isLoadingRemote,
+            errorMessage = remoteUiState.remoteError,
+            onRefresh = onRefreshRemoteModels,
+            onDownload = onDownloadRemoteModel,
+            onDismiss = { showRemoteModelsDialog = false },
+            onDismissError = onDismissDownloadError
         )
     }
 }
@@ -427,12 +458,26 @@ private fun HomeIdentityBar(
     }
 }
 
-private fun abbreviatePath(path: String): String {
-    val normalized = path.trim()
-    if (normalized.length <= 22) {
-        return normalized
+/**
+ * SAF tree URI 转可读路径：取 tree/ 后的路径并 URL 解码，
+ * primary: 前缀表示内部存储根目录，替换为 /。解析失败时原样返回。
+ */
+private fun prettyOutputPath(uri: String): String {
+    val marker = "/tree/"
+    val idx = uri.indexOf(marker)
+    if (!uri.startsWith("content://") || idx < 0) {
+        return uri
     }
-    return "${normalized.take(12)}...${normalized.takeLast(7)}"
+    val decoded = runCatching {
+        java.net.URLDecoder.decode(uri.substring(idx + marker.length), "UTF-8")
+    }.getOrDefault("")
+    if (decoded.isEmpty()) {
+        return uri
+    }
+    return when {
+        decoded.startsWith("primary:") -> "/" + decoded.removePrefix("primary:")
+        else -> decoded
+    }
 }
 
 /** 输出格式选项文本：「跟随原图」走资源，PNG/JPG/WebP 用常量。 */
