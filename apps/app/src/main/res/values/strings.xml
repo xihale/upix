@@ -189,8 +189,8 @@
     <string name="settings_section_general">通用</string>
     <string name="settings_section_transfer">传输</string>
     <string name="settings_section_about">关于</string>
-    <string name="settings_about_version">版本：%1$s</string>
-    <string name="settings_about_project">项目地址：github.com/xihale/crossscale</string>
+    <string name="settings_about_version">版本 %1$s</string>
+    <string name="settings_about_project">项目地址</string>
 
     <!-- Help screen -->
     <string name="help_step_1">在主页点「选择图片」或「选择文件夹」</string>
@@ -209,6 +209,7 @@
     <string name="scanner_permission_required">需要相机权限才能扫码</string>
     <string name="scanner_grant_permission">授予相机权限</string>
     <string name="scanner_close">关闭</string>
+    <string name="scanner_hint">对准 PC 屏幕上的二维码</string>
     <string name="scanner_permission_denied">未授予相机权限，无法扫码。</string>
     <string name="scanner_scan_failed">扫码失败，请重试。</string>
     <string name="scanner_camera_failed">启动相机失败。</string>

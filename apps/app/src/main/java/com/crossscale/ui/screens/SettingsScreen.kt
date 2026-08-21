@@ -144,6 +144,7 @@ fun SettingsScreen(
             SettingsEntryRow(
                 icon = Icons.Outlined.Link,
                 title = stringResource(R.string.settings_about_project),
+                subtitle = PROJECT_URL.removePrefix("https://"),
                 onClick = {
                     runCatching {
                         context.startActivity(

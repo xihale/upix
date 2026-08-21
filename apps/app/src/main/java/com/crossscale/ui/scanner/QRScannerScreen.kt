@@ -11,6 +11,7 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,9 +19,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.Button
-import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -33,6 +40,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
@@ -97,7 +105,9 @@ fun QRScannerScreen(
     }
 
     DisposableEffect(Unit) {
+        ScannerMode.enter()
         onDispose {
+            ScannerMode.exit()
             cameraExecutor.shutdown()
             barcodeScanner.close()
         }
@@ -186,10 +196,11 @@ fun QRScannerScreen(
         }
     }
 
+    // 全屏相机体验：纯黑背景 + 顶部关闭按钮 + 中央取景框 + 底部提示。
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(Color.Black)
     ) {
         if (cameraPermissionGranted) {
             AndroidView(
@@ -229,11 +240,40 @@ fun QRScannerScreen(
             }
         }
 
+        // 顶部关闭按钮：半透明圆形，相机应用标准样式。
+        IconButton(
+            onClick = onClose,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .statusBarsPadding()
+                .padding(start = Spacing.md, top = Spacing.sm)
+                .size(44.dp)
+                .background(Color.Black.copy(alpha = 0.4f), CircleShape)
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Close,
+                contentDescription = stringResource(R.string.scanner_close),
+                tint = Color.White
+            )
+        }
+
+        // 中央取景框：圆角方框提示扫描区域。
+        Box(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .size(260.dp)
+                .border(
+                    width = 2.dp,
+                    color = Color.White.copy(alpha = 0.9f),
+                    shape = RoundedCornerShape(28.dp)
+                )
+        )
+
         Column(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()
-                .padding(bottom = Spacing.lg),
+                .padding(bottom = Spacing.xxl),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(Spacing.md)
         ) {
@@ -250,9 +290,11 @@ fun QRScannerScreen(
                     )
                 }
             }
-            FilledTonalButton(onClick = onClose) {
-                Text(stringResource(R.string.scanner_close))
-            }
+            Text(
+                text = stringResource(R.string.scanner_hint),
+                style = MaterialTheme.typography.bodyMedium,
+                color = Color.White.copy(alpha = 0.85f)
+            )
         }
     }
 }
