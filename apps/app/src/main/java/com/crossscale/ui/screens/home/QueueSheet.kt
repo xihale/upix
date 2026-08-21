@@ -83,6 +83,7 @@ internal fun QueueBottomSheetContent(
     processingUiState: ProcessingUiState,
     onStartBatchQueue: () -> Unit,
     onPauseBatchQueue: () -> Unit,
+    onCancelProcessing: () -> Unit,
     onRetryQueuedBatch: (String) -> Unit,
     onRetryQueuedBatchFailedOnly: (String) -> Unit,
     onOpenQueuedBatchOutput: (String) -> Unit,
@@ -194,6 +195,7 @@ internal fun QueueBottomSheetContent(
                         queueItem = queueItem,
                         isProcessing = processingUiState.isProcessing,
                         modifier = Modifier.animateItem(),
+                        onCancelProcessing = onCancelProcessing,
                         onRetryQueuedBatch = onRetryQueuedBatch,
                         onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
                         onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,
@@ -214,6 +216,7 @@ private fun DismissibleQueueItem(
     queueItem: ProcessingQueueItemSummary,
     isProcessing: Boolean,
     modifier: Modifier = Modifier,
+    onCancelProcessing: () -> Unit,
     onRetryQueuedBatch: (String) -> Unit,
     onRetryQueuedBatchFailedOnly: (String) -> Unit,
     onOpenQueuedBatchOutput: (String) -> Unit,
@@ -259,6 +262,7 @@ private fun DismissibleQueueItem(
             index = index,
             queueItem = queueItem,
             isProcessing = isProcessing,
+            onCancelProcessing = onCancelProcessing,
             onRetryQueuedBatch = onRetryQueuedBatch,
             onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
             onOpenQueuedBatchOutput = onOpenQueuedBatchOutput
@@ -271,6 +275,7 @@ private fun QueueItemCard(
     index: Int,
     queueItem: ProcessingQueueItemSummary,
     isProcessing: Boolean,
+    onCancelProcessing: () -> Unit,
     onRetryQueuedBatch: (String) -> Unit,
     onRetryQueuedBatchFailedOnly: (String) -> Unit,
     onOpenQueuedBatchOutput: (String) -> Unit
@@ -278,6 +283,7 @@ private fun QueueItemCard(
     val canOpenOutput = queueItem.status == PersistedQueueItemStatus.COMPLETED &&
         !queueItem.lastOutputUri.isNullOrBlank()
     val isFailed = queueItem.status == PersistedQueueItemStatus.FAILED
+    val isRunning = queueItem.status == PersistedQueueItemStatus.RUNNING
     val unnamedInputLabel = stringResource(R.string.queue_unnamed_input)
     // Decoding a (possibly multi-source) spec parses JSON and URIs; only
     // recompute when the source itself changes, not on every recomposition.
@@ -370,7 +376,24 @@ private fun QueueItemCard(
                 }
             }
 
-            if (queueItem.status == PersistedQueueItemStatus.RUNNING) {
+            if (isRunning) {
+                // 取消入口在处理队列内：终止当前运行中的批次。
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(start = Spacing.md, end = Spacing.sm, bottom = Spacing.xs),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Spacer(modifier = Modifier.weight(1f))
+                    QueueItemAction(
+                        iconVector = Icons.Outlined.Close,
+                        contentDescriptionRes = R.string.queue_cancel,
+                        onClick = onCancelProcessing
+                    )
+                }
+            }
+
+            if (isRunning) {
                 LinearProgressIndicator(
                     modifier = Modifier
                         .fillMaxWidth()

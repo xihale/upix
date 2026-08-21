@@ -344,7 +344,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             }
 
             if (out_gpu.w != tile_out_full_w || out_gpu.h != tile_out_full_h || out_gpu.c != channels) {
-                return std::unexpected(EngineError{209, "Vulkan output shape mismatch"});
+                return std::unexpected(EngineError{209, "Vulkan output shape mismatch (got " + std::to_string(out_gpu.w) + "x" + std::to_string(out_gpu.h) + "x" + std::to_string(out_gpu.c) + ", want " + std::to_string(tile_out_full_w) + "x" + std::to_string(tile_out_full_h) + "x" + std::to_string(channels) + ")"});
             }
 
             blend_bindings[0] = out_gpu;
@@ -847,7 +847,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             }
 
             if (out_gpu.w != tile_out_full_w || out_gpu.h != tile_out_full_h || out_gpu.c != channels) {
-                return std::unexpected(EngineError{209, "Vulkan output shape mismatch"});
+                return std::unexpected(EngineError{209, "Vulkan output shape mismatch (got " + std::to_string(out_gpu.w) + "x" + std::to_string(out_gpu.h) + "x" + std::to_string(out_gpu.c) + ", want " + std::to_string(tile_out_full_w) + "x" + std::to_string(tile_out_full_h) + "x" + std::to_string(channels) + ")"});
             }
 
             std::vector<ncnn::VkMat> blend_bindings(3);
@@ -1371,7 +1371,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             }
 
             if (out_gpu.w != tile_out_full_w || out_gpu.h != tile_out_full_h || out_gpu.c != channels) {
-                return std::unexpected(EngineError{209, "Vulkan output shape mismatch"});
+                return std::unexpected(EngineError{209, "Vulkan output shape mismatch (got " + std::to_string(out_gpu.w) + "x" + std::to_string(out_gpu.h) + "x" + std::to_string(out_gpu.c) + ", want " + std::to_string(tile_out_full_w) + "x" + std::to_string(tile_out_full_h) + "x" + std::to_string(channels) + ")"});
             }
 
             std::vector<ncnn::VkMat> blend_bindings(3);
@@ -2041,7 +2041,57 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         return true;
     }
 
-    auto NCNNEngineImpl::process_vulkan_with_gpu_layout(
+    namespace {
+
+// Replicate-border pad an HWC interleaved float buffer by `pad` pixels.
+void replicate_pad_hwc(const float* src, int w, int h, int c, int pad,
+                       std::vector<float>& dst) {
+    const int ow = w + 2 * pad;
+    const int oh = h + 2 * pad;
+    dst.resize(static_cast<size_t>(ow) * oh * c);
+    for (int y = 0; y < oh; ++y) {
+        const int sy = std::clamp(y - pad, 0, h - 1);
+        for (int x = 0; x < ow; ++x) {
+            const int sx = std::clamp(x - pad, 0, w - 1);
+            const float* px = src + (static_cast<size_t>(sy) * w + sx) * c;
+            std::memcpy(dst.data() + (static_cast<size_t>(y) * ow + x) * c,
+                        px, static_cast<size_t>(c) * sizeof(float));
+        }
+    }
+}
+
+// Crop a fixed replicate border from an HWC interleaved float buffer.
+// (kept for future pre-padding variants that emit oversized frames)
+[[maybe_unused]] void crop_hwc_border(const float* src, int w, int h, int c, int pad, float* dst) {
+    const int ow = w - 2 * pad;
+    const int oh = h - 2 * pad;
+    for (int y = 0; y < oh; ++y) {
+        std::memcpy(dst + static_cast<size_t>(y) * ow * c,
+                    src + (static_cast<size_t>(y + pad) * w + pad) * c,
+                    static_cast<size_t>(ow) * c * sizeof(float));
+    }
+}
+
+}  // namespace
+
+auto NCNNEngineImpl::process_vulkan_with_gpu_layout(
+    const float* input, float* output, int width, int height,
+    int channels, const std::atomic<bool>& cancel_flag)
+    -> expected<void, EngineError> {
+    // Pre-padding models: replicate-pad the frame so the model's internal
+    // border crops cancel out. The model then emits exactly width*scale for
+    // the ORIGINAL frame, straight into the caller's buffer.
+    const int pad = model_prepadding_;
+    if (pad > 0) {
+        std::vector<float> padded;
+        replicate_pad_hwc(input, width, height, channels, pad, padded);
+        return process_vulkan_with_gpu_layout_run(
+            padded.data(), output, width + 2 * pad, height + 2 * pad, channels, cancel_flag);
+    }
+    return process_vulkan_with_gpu_layout_run(input, output, width, height, channels, cancel_flag);
+}
+
+auto NCNNEngineImpl::process_vulkan_with_gpu_layout_run(
         const float* input,
         float* output,
         int width,
@@ -2062,8 +2112,11 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             return std::unexpected(EngineError{3, "Processing cancelled"});
         }
 
-        const int out_width = width * scale_factor_;
-        const int out_height = height * scale_factor_;
+        // On pre-padded frames (model_prepadding_ > 0) `width`/`height` include
+        // the 2*pad margin the model will crop internally, so the emitted frame
+        // corresponds to the caller's original (width - 2*pad) * scale.
+        const int out_width = (width - 2 * model_prepadding_) * scale_factor_;
+        const int out_height = (height - 2 * model_prepadding_) * scale_factor_;
         const size_t in_total = static_cast<size_t>(width) * height * channels;
         const size_t out_total = static_cast<size_t>(out_width) * out_height * channels;
         if (in_total > static_cast<size_t>(std::numeric_limits<int>::max()) ||
@@ -2163,7 +2216,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         }
 
         if (out_gpu.w != out_width || out_gpu.h != out_height || out_gpu.c != channels) {
-            return std::unexpected(EngineError{16, "Vulkan output shape mismatch"});
+            return std::unexpected(EngineError{16, "Vulkan output shape mismatch (got " + std::to_string(out_gpu.w) + "x" + std::to_string(out_gpu.h) + "x" + std::to_string(out_gpu.c) + ", want " + std::to_string(out_width) + "x" + std::to_string(out_height) + "x" + std::to_string(channels) + ")"});
         }
 
         ncnn::VkMat out_gpu_hwc;

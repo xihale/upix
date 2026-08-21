@@ -351,6 +351,7 @@ fun HomeScreen(
                 processingUiState = processingUiState,
                 onStartBatchQueue = onStartBatchQueue,
                 onPauseBatchQueue = onPauseBatchQueue,
+                onCancelProcessing = onCancelProcessing,
                 onRetryQueuedBatch = onRetryQueuedBatch,
                 onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
                 onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,

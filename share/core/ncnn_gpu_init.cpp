@@ -171,26 +171,69 @@ std::mutex g_vulkan_init_mutex;
         //      Real-ESRGANv3-anime x2: 4x Interp then 0.5x downsample -> 2.
         double interp_product = 1.0;
         bool found_interp = false;
+        // Deconvolution-upsampler nets (Real-CUGAN): the final deconv that
+        // restores image channels (0=3) carries the net scale in its stride.
+        int deconv_scale = 0;
+        // Real-CUGAN "se" nets carry internal Crop layers trimming the
+        // receptive-field border; they need a fixed replicate prepadding so
+        // the out == in*scale contract holds (margins from upstream
+        // realcugan-ncnn-vulkan: x2=18, x3=14, x4=19).
+        bool has_crop_layer = false;
         while (std::getline(file, line)) {
-            // Param lines start with the layer type in column 0.
-            if (line.rfind("Interp", 0) != 0) continue;
-            found_interp = true;
-            auto param = [&line](const std::string& key) -> double {
-                try {
-                    size_t pos = line.find(key);
-                    if (pos == std::string::npos) return 1.0;
-                    return std::stod(line.substr(pos + key.size()));
-                } catch (const std::exception&) {
-                    return 1.0;
+            if (!found_interp && line.rfind("Interp", 0) == 0) {
+                found_interp = true;
+                auto param = [&line](const std::string& key) -> double {
+                    try {
+                        size_t pos = line.find(key);
+                        if (pos == std::string::npos) return 1.0;
+                        return std::stod(line.substr(pos + key.size()));
+                    } catch (const std::exception&) {
+                        return 1.0;
+                    }
+                };
+                if (param(" 0=") == 2.0) { found_interp = false; continue; }  // fixed output size, not a scale
+                const double h_scale = param(" 1=");
+                if (h_scale > 0.0) interp_product *= h_scale;
+            }
+            if (line.rfind("Crop", 0) == 0) {
+                has_crop_layer = true;
+            }
+            if (deconv_scale == 0 && line.rfind("Deconvolution", 0) == 0) {
+                auto param_i = [&line](const std::string& key) -> int {
+                    try {
+                        size_t pos = line.find(key);
+                        if (pos == std::string::npos) return -1;
+                        return std::stoi(line.substr(pos + key.size()));
+                    } catch (const std::exception&) {
+                        return -1;
+                    }
+                };
+                if (param_i(" 0=") == 3) {
+                    const int stride = param_i(" 3=");
+                    if (stride >= 1) {
+                        deconv_scale = stride;
+                    }
                 }
-            };
-            if (param(" 0=") == 2.0) continue;  // fixed output size, not a scale
-            const double h_scale = param(" 1=");
-            if (h_scale > 0.0) interp_product *= h_scale;
+            }
         }
         if (found_interp) {
             const int detected = static_cast<int>(interp_product + 0.5);
             if (detected >= 1) scale_factor_ = detected;
+        } else if (deconv_scale >= 1) {
+            scale_factor_ = deconv_scale;
+        }
+
+        if (has_crop_layer) {
+            switch (scale_factor_) {
+                case 2: model_prepadding_ = 18; break;
+                case 3: model_prepadding_ = 14; break;
+                case 4: model_prepadding_ = 19; break;
+                default: model_prepadding_ = 0; break;
+            }
+            LOG_WARNING("Engine",
+                "Model uses internal border crops; applying prepadding=" +
+                std::to_string(model_prepadding_) +
+                (model_prepadding_ > 0 ? "" : " (unsupported scale, GPU tile pipeline disabled)"));
         }
 
         // If we couldn't detect, try inferring from model metadata or use default

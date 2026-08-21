@@ -337,6 +337,16 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
                 }
             }
         }
+
+        // Pre-padding models (Real-CUGAN "se"): feed a replicate-border padded
+        // frame so the model's internal crops cancel out and output stays
+        // exactly width*scale x height*scale.
+        ncnn::Mat in_feed;
+        if (model_prepadding_ > 0) {
+            ncnn::copy_make_border(in, in_feed,
+                model_prepadding_, model_prepadding_, model_prepadding_, model_prepadding_,
+                ncnn::BORDER_REPLICATE, 0.f);
+        }
         
         // Create extractor
         ncnn::Extractor ex = net_->create_extractor();
@@ -354,11 +364,12 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
         
         // Set input
         int ret;
+        const ncnn::Mat& feed = (model_prepadding_ > 0 && !in_feed.empty()) ? in_feed : in;
         if (input_idx >= 0) {
-            ret = ex.input(input_idx, in);
+            ret = ex.input(input_idx, feed);
         } else {
             // Fallback to common name
-            ret = ex.input("data", in);
+            ret = ex.input("data", feed);
         }
         if (ret != 0) {
             return std::unexpected(EngineError{6, "Failed to set input (error " + std::to_string(ret) + ")"});
@@ -735,6 +746,21 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
             if (inputs.empty()) {
                 return {};
             }
+            // Pre-padding models: run each item through the single-image path,
+            // which pads the border on the way in and crops it on the way out.
+            if (model_prepadding_ > 0) {
+                for (size_t i = 0; i < inputs.size(); ++i) {
+                    if (cancel_flag) {
+                        return std::unexpected(EngineError{3, "Processing cancelled"});
+                    }
+                    auto item_result = process_vulkan_with_gpu_layout(
+                        inputs[i], outputs[i], width, height, channels, cancel_flag);
+                    if (!item_result.has_value()) {
+                        return item_result;
+                    }
+                }
+                return {};
+            }
 
             if (cancel_flag) {
                 return std::unexpected(EngineError{3, "Processing cancelled"});
@@ -834,7 +860,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                 }
 
                 if (out_gpu.w != out_width || out_gpu.h != out_height || out_gpu.c != channels) {
-                    return std::unexpected(EngineError{16, "Vulkan output shape mismatch"});
+                    return std::unexpected(EngineError{16, "Vulkan output shape mismatch (got " + std::to_string(out_gpu.w) + "x" + std::to_string(out_gpu.h) + "x" + std::to_string(out_gpu.c) + ", want " + std::to_string(out_width) + "x" + std::to_string(out_height) + "x" + std::to_string(channels) + ")"});
                 }
 
                 ncnn::VkMat out_gpu_hwc;
@@ -874,7 +900,11 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
 
     bool NCNNEngineImpl::supports_gpu_tile_pipeline() const {
 #if NCNN_VULKAN
-        return current_device_ == DeviceType::GPU_VULKAN &&
+        // Pre-padding models need CPU-side border replication before upload;
+        // the GPU tile pipelines crop tiles straight from the full-image buffer
+        // and cannot provide that context, so route them through engine.process().
+        return model_prepadding_ == 0 &&
+               current_device_ == DeviceType::GPU_VULKAN &&
                vkdev_ != nullptr &&
                gpu_layout_pipeline_ready_ &&
                gpu_tile_pipeline_ready_;
@@ -885,7 +915,8 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
 
     bool NCNNEngineImpl::supports_gpu_tile_pipeline_u8() const {
 #if NCNN_VULKAN
-        return current_device_ == DeviceType::GPU_VULKAN &&
+        return model_prepadding_ == 0 &&
+               current_device_ == DeviceType::GPU_VULKAN &&
                vkdev_ != nullptr &&
                gpu_layout_u8_pipeline_ready_ &&
                gpu_tile_pipeline_ready_;

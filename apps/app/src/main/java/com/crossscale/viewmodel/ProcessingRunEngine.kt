@@ -225,10 +225,9 @@ internal class ProcessingRunEngine(
             val pendingByUri = LinkedHashMap<String, ResolvedImageInput>()
             pendingImages.forEach { pendingByUri[it.uri.toString()] = it }
             val failureDetailsByUri = initialFailures.toMutableMap()
-            // Per-image routing flag. Starts as the initial mode but may flip to
-            // false mid-batch once the PC is found unreachable, so the rest of the
-            // batch runs natively without re-trying a dead link each image.
-            var remoteRouting = effectiveDistributedMode
+            // Per-image routing mode, fixed for the whole run: a PC failure
+            // aborts the batch with an error instead of silently falling back.
+            val remoteRouting = effectiveDistributedMode
             var processingSession: ImageProcessingSession? = null
 
             // Persists a checkpoint reflecting the run's current progress. The
@@ -346,31 +345,42 @@ internal class ProcessingRunEngine(
                         }
                     }
 
-                    // PC unreachable mid-batch: drop remote for this image and the
-                    // rest of the batch, re-process THIS image natively, and emit a
-                    // UI signal so the mode chip / snackbar can react.
+                    // PC 处理失败：直接报错并终止批次，不回退手机本地。
+                    // 静默回退会掩盖 PC 端问题，且手机 CPU 处理大图极慢。
                     if (remoteRouting && result.isFailure) {
-                        viewModel.emitRemoteFallbackMessage(
-                            stringProvider.getString(R.string.processing_remote_fallback)
+                        val reason = result.exceptionOrNull()?.message
+                            ?: stringProvider.getString(R.string.processing_error_unknown_processing)
+                        lastError = "PC 处理失败：$reason"
+                        val failedItemUri = item.uri.toString()
+                        val previousAttempts = failureDetailsByUri[failedItemUri]?.attempts ?: 0
+                        failureDetailsByUri[failedItemUri] = ProcessingFailureDetail(
+                            uri = failedItemUri,
+                            displayName = item.displayName,
+                            errorMessage = lastError,
+                            attempts = previousAttempts + 1
                         )
-                        logRepository.warning(
-                            "ProcessingViewModel",
-                            "Remote submit failed for ${item.displayName}, falling back to native for remaining items"
-                        )
-                        remoteRouting = false
-                        val reopenedSession = processingSession ?: withContext(defaultDispatcher) {
-                            nativeImageProcessingRepository.openSession(
-                                modelName = modelName,
-                                modelBasePath = modelBasePath,
-                                preferGpu = true
+                        batchOutputRepository.discardOutputFile(outputFile)
+                        saveCheckpointSnapshot()
+                        viewModel.updateUiState { state ->
+                            val currentTask = state.task ?: return@updateUiState state
+                            val orderedFailures = planner.orderedFailureDetails(failureDetailsByUri)
+                            state.copy(
+                                task = currentTask.copy(
+                                    progress = planner.progressOf(successfulCount, totalItems),
+                                    completedItems = successfulCount,
+                                    pendingItems = pendingByUri.size,
+                                    failedItems = orderedFailures.size,
+                                    failureDetails = orderedFailures,
+                                    lastErrorMessage = lastError
+                                )
                             )
                         }
-                        processingSession = reopenedSession
-                        if (reopenedSession != null) {
-                            result = withContext(defaultDispatcher) {
-                                reopenedSession.process(input = item, outputFile = outputFile)
-                            }
-                        }
+                        viewModel.emitRemoteFallbackMessage(lastError)
+                        logRepository.error(
+                            "ProcessingViewModel",
+                            "Remote processing failed for ${item.displayName}, aborting batch: $lastError"
+                        )
+                        break
                     }
                     val elapsedMs = System.currentTimeMillis() - startedAt
                     val itemUri = item.uri.toString()

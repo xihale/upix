@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import com.crossscale.data.model.ProcessingStatus
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -94,6 +95,13 @@ fun CrossScaleNavigation(
     // 失败/无记录 -> Native 模式。mDNS 自动发现已移除。
     LaunchedEffect(Unit) {
         deviceViewModel.tryAutoReconnect()
+    }
+
+    // 处理完成后清空主页 hero（已选图片），避免残留上一轮输入。
+    LaunchedEffect(processingUiState.task?.status) {
+        if (processingUiState.task?.status == ProcessingStatus.COMPLETED) {
+            mainViewModel.clearSelectedImage()
+        }
     }
 
     val inputSelection = rememberInputSelection(

@@ -94,6 +94,8 @@ private:
     bool init_gpu_tile_pipelines();
     auto process_vulkan_with_gpu_layout(const float* input, float* output, int width, int height,
         int channels, const std::atomic<bool>& cancel_flag) -> expected<void, EngineError>;
+    auto process_vulkan_with_gpu_layout_run(const float* input, float* output, int width, int height,
+        int channels, const std::atomic<bool>& cancel_flag) -> expected<void, EngineError>;
     bool try_init_vulkan();
     void detect_model_info(const std::string& param_path);
 
@@ -123,6 +125,10 @@ private:
     std::string model_name_;
     int scale_factor_ = 2;
     int input_channels_ = 3;
+    // Fixed replicate-border prepadding required by the loaded model
+    // (Real-CUGAN "se" family crops its receptive-field border internally;
+    // callers must pad input so out == in*scale still holds). 0 = none.
+    int model_prepadding_ = 0;
     // Per-engine CPU inference thread cap; 0 = ncnn default (all logical CPUs).
     int inference_threads_ = 0;
 };

@@ -74,6 +74,7 @@
     <!-- Queue bottom sheet -->
     <string name="queue_start">启动</string>
     <string name="queue_pause">暂停</string>
+    <string name="queue_cancel">取消处理</string>
     <string name="queue_clear">清空</string>
     <string name="queue_empty">队列为空</string>
     <string name="queue_status_pending">未开始</string>
