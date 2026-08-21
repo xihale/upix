@@ -5,6 +5,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -38,6 +39,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
@@ -69,6 +71,7 @@ internal fun ParameterCard(
     processNestedFolders: Boolean,
     outputFormatLabel: String = "",
     availableScales: List<Int> = emptyList(),
+    hasCustomOutputDirectory: Boolean = false,
     onPickModel: () -> Unit,
     onPickScale: (Int) -> Unit = {},
     onPickFormat: () -> Unit = {},
@@ -164,31 +167,59 @@ internal fun ParameterCard(
                 }
             }
 
-            ListItem(
-                overlineContent = { Text(stringResource(R.string.home_output_path_label)) },
-                headlineContent = {
-                    Text(
-                        text = outputDirectoryLabel,
-                        style = ValueMono,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                },
-                leadingContent = {
+            // 输出路径：标题 + 路径副行的标准两行行样式，点击整行选目录；
+            // 自定义目录时提供「使用默认」快捷操作，不再挤在行尾按钮里。
+            Column(
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .pressable(onClick = onSelectOutputFolder)
+                        .padding(horizontal = Spacing.lg, vertical = Spacing.sm),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     Icon(
                         imageVector = Icons.Outlined.FolderOpen,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                },
-                trailingContent = {
-                    TextButton(onClick = onUseDefaultOutputFolder) {
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = Spacing.md),
+                        verticalArrangement = Arrangement.spacedBy(1.dp)
+                    ) {
+                        Text(
+                            text = stringResource(R.string.home_output_path_label),
+                            style = MaterialTheme.typography.bodyLarge
+                        )
+                        Text(
+                            text = outputDirectoryLabel,
+                            style = ValueMono,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    Icon(
+                        imageVector = Icons.Outlined.ChevronRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .padding(start = Spacing.sm)
+                            .size(20.dp)
+                    )
+                }
+                if (hasCustomOutputDirectory) {
+                    TextButton(
+                        onClick = onUseDefaultOutputFolder,
+                        modifier = Modifier.padding(start = Spacing.lg)
+                    ) {
                         Text(stringResource(R.string.home_use_default_output))
                     }
-                },
-                colors = transparent,
-                modifier = Modifier.pressable(onClick = onSelectOutputFolder)
-            )
+                }
+            }
 
             ListItem(
                 headlineContent = { Text(stringResource(R.string.config_advanced_title)) },
@@ -221,7 +252,16 @@ internal fun ParameterCard(
                     ListItem(
                         headlineContent = { Text(stringResource(R.string.config_output_format)) },
                         supportingContent = {
-                            Text(text = outputFormatLabel, style = ValueMono, color = MaterialTheme.colorScheme.onSurface)
+                            // 等宽字体无 CJK 字形：中文标签走系统字体，仅拉丁格式名用 mono。
+                            Text(
+                                text = outputFormatLabel,
+                                style = if (outputFormatLabel.any { it.code > 127 }) {
+                                    MaterialTheme.typography.titleSmall
+                                } else {
+                                    ValueMono
+                                },
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
                         },
                         leadingContent = {
                             Icon(

@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -44,6 +46,7 @@ import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.model.RemoteEndpoint
 import com.crossscale.data.repository.OutputImageFormat
 import com.crossscale.ui.components.StageProgressOverlay
+import com.crossscale.ui.components.SheetActionItem
 import com.crossscale.ui.screens.home.BottomActionDock
 import com.crossscale.ui.screens.home.CheckpointSection
 import com.crossscale.ui.screens.home.ImageStage
@@ -82,6 +85,7 @@ fun HomeScreen(
     onToggleBackupOriginal: (Boolean) -> Unit,
     onToggleProcessNestedFolders: (Boolean) -> Unit,
     onSelectOutputFormat: (OutputImageFormat) -> Unit,
+    onOpenModelManagement: () -> Unit,
     onStartProcessing: () -> Unit,
     onStartBatchQueue: () -> Unit,
     onPauseBatchQueue: () -> Unit,
@@ -194,6 +198,7 @@ fun HomeScreen(
                     followLabel = stringResource(R.string.config_output_format_follow)
                 ),
                 availableScales = availableScales,
+                hasCustomOutputDirectory = state.selectedOutputDirectoryUri != null,
                 onPickModel = { showModelSheet = true },
                 onPickScale = onSelectScale,
                 onPickFormat = { showFormatSheet = true },
@@ -262,6 +267,15 @@ fun HomeScreen(
                     onSelectModel(model)
                 }
             }
+            // 无本地模型 / 想要更多：直接跳转模型管理页在线下载。
+            SheetActionItem(
+                label = stringResource(R.string.models_download),
+                subtitle = stringResource(R.string.home_download_models_subtitle),
+                onClick = {
+                    showModelSheet = false
+                    onOpenModelManagement()
+                }
+            )
             Spacer(modifier = Modifier.height(Spacing.xl))
         }
     }
@@ -282,7 +296,8 @@ fun HomeScreen(
                 SelectSheetItem(
                     label = outputFormatLabel(format, followLabel),
                     selected = state.outputImageFormat == format,
-                    labelStyle = ValueMono
+                    // 等宽字体无 CJK 字形：「跟随原图」等中文走系统字体，仅拉丁格式名用 mono。
+                    labelStyle = if (format == OutputImageFormat.FOLLOW) null else ValueMono
                 ) {
                     showFormatSheet = false
                     onSelectOutputFormat(format)

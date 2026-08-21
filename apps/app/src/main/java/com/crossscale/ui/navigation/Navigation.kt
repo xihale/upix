@@ -137,6 +137,9 @@ fun CrossScaleNavigation(
                     onToggleBackupOriginal = mainViewModel::setBackupOriginalImage,
                     onToggleProcessNestedFolders = mainViewModel::setProcessNestedFolders,
                     onSelectOutputFormat = mainViewModel::setOutputImageFormat,
+                    onOpenModelManagement = {
+                        navController.navigate(AppScreen.SettingsModels.route)
+                    },
                     onStartProcessing = {
                         startProcessing(
                             mainUiState = mainUiState,

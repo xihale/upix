@@ -29,7 +29,8 @@
     <string name="home_snackbar_pc_unreachable_local">PC 不可达，本次使用本地处理</string>
     <string name="home_model_setting_label">超分模型</string>
     <string name="home_output_path_label">输出路径</string>
-    <string name="home_use_default_output">默认</string>
+    <string name="home_use_default_output">使用默认</string>
+    <string name="home_download_models_subtitle">前往模型管理，在线下载或导入</string>
     <string name="home_backup_original">备份原图</string>
     <string name="home_include_subdirectories">包含子目录</string>
     <string name="home_select_model_sheet_title">选择模型</string>
