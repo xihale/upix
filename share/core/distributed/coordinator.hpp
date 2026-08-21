@@ -129,6 +129,16 @@ private:
     auto recv_encrypted(WorkerConnection& conn)
         -> std::optional<std::pair<MessageHeader, std::vector<uint8_t>>>;
 
+    // ── Shared model library ops (phone↔PC) ─────────────────────────────────
+    // Each handles one authenticated role frame and sends the reply. All guard
+    // model_manager_ with models_mutex_ (inference reads it via switch_model
+    // under engine_mutex_; the two must not interleave on the vector).
+    void handle_model_list(WorkerConnection& conn);
+    void handle_model_upload(WorkerConnection& conn,
+                             const MessageHeader& hdr, const std::vector<uint8_t>& payload);
+    void handle_model_download(WorkerConnection& conn,
+                               const MessageHeader& hdr, const std::vector<uint8_t>& payload);
+
     std::unique_ptr<TCPServer> server_;
     std::thread accept_thread_;
 
@@ -144,6 +154,9 @@ private:
     bool engine_initialized_ = false;
 
     ModelManager model_manager_;
+    // Guards model_manager_ scans/mutations against concurrent model-library
+    // ops from other phone connections.
+    std::mutex models_mutex_;
 
     IdentityKey* identity_ = nullptr;
     std::filesystem::path trust_store_path_;

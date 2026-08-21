@@ -10,8 +10,10 @@
 #include <cstring>
 #include <chrono>
 #include <algorithm>
+#include <cctype>
 #include <cerrno>
 #include <cstdio>
+#include <fstream>
 #include <optional>
 
 namespace crossscale {
@@ -710,12 +712,261 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                     LOG_ERROR("Coordinator", "Authenticated client task failed: " + process_result.error().message);
                 }
                 return;
+            } else if (frame_hdr.type == MessageType::MSG_MODEL_LIST_REQUEST) {
+                conn.socket->set_timeout(120);
+                handle_model_list(conn);
+                return;
+            } else if (frame_hdr.type == MessageType::MSG_MODEL_UPLOAD) {
+                conn.socket->set_timeout(300);
+                handle_model_upload(conn, frame_hdr, frame_payload);
+                return;
+            } else if (frame_hdr.type == MessageType::MSG_MODEL_DOWNLOAD_REQUEST) {
+                conn.socket->set_timeout(300);
+                handle_model_download(conn, frame_hdr, frame_payload);
+                return;
             } else {
                 // Unknown second frame; already drained via recv_encrypted.
             }
         }
     }
     // Any other first message (no handshake, no recognized type) → drop silently.
+}
+
+// ── Shared model library ops ────────────────────────────────────────────────
+
+// Defense-in-depth: model names become filenames on the PC, so reject anything
+// that could escape the models directory or hide as a dotfile.
+static bool is_safe_model_name(const std::string& name) {
+    if (name.empty() || name.size() >= 64) {
+        return false;
+    }
+    if (name.front() == '.') {
+        return false;
+    }
+    for (const char c : name) {
+        const bool ok = std::isalnum(static_cast<unsigned char>(c)) ||
+                        c == '_' || c == '-' || c == ' ';
+        if (!ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void Coordinator::handle_model_list(WorkerConnection& conn) {
+    std::vector<ModelInfo> models;
+    {
+        std::lock_guard<std::mutex> lk(models_mutex_);
+        auto scan = model_manager_.scan_models();
+        if (!scan.has_value()) {
+            LOG_ERROR("Coordinator", "Model list scan failed: " + scan.error().message);
+        }
+        models = model_manager_.available_models();
+    }
+
+    ModelListResponse list_resp{};
+    list_resp.count = static_cast<uint32_t>(models.size());
+    std::vector<uint8_t> payload(sizeof(list_resp) +
+                                 models.size() * sizeof(ModelLibraryEntry));
+    std::memcpy(payload.data(), &list_resp, sizeof(list_resp));
+    size_t offset = sizeof(list_resp);
+    for (const auto& m : models) {
+        ModelLibraryEntry entry{};
+        std::strncpy(entry.name, m.name.c_str(), sizeof(entry.name) - 1);
+        entry.scale_factor = static_cast<uint32_t>(m.scale_factor);
+        entry.total_size = static_cast<uint64_t>(m.total_size);
+        std::memcpy(payload.data() + offset, &entry, sizeof(entry));
+        offset += sizeof(entry);
+    }
+    if (!send_encrypted(conn, MessageType::MSG_MODEL_LIST_RESPONSE,
+                        payload.data(), payload.size())) {
+        LOG_ERROR("Coordinator", "Failed to send model list response");
+        return;
+    }
+    LOG_INFO("Coordinator", "Sent model library list (" +
+             std::to_string(models.size()) + " models) to phone");
+}
+
+void Coordinator::handle_model_upload(WorkerConnection& conn,
+                                      const MessageHeader& hdr,
+                                      const std::vector<uint8_t>& payload) {
+    (void)hdr;
+    ModelOpResponse resp{};
+    resp.success = 0;
+
+    auto fail = [&](const std::string& message) {
+        std::strncpy(resp.error, message.c_str(), sizeof(resp.error) - 1);
+        (void)send_encrypted(conn, MessageType::MSG_MODEL_UPLOAD_RESPONSE,
+                             &resp, sizeof(resp));
+        LOG_ERROR("Coordinator", "Model upload rejected: " + message);
+    };
+
+    if (payload.size() < sizeof(ModelUploadRequest)) {
+        fail("upload payload truncated");
+        return;
+    }
+    ModelUploadRequest req{};
+    std::memcpy(&req, payload.data(), sizeof(req));
+    const std::string name(req.name);
+    if (!is_safe_model_name(name)) {
+        fail("invalid model name: " + name);
+        return;
+    }
+    if (req.param_size == 0 || req.bin_size == 0 ||
+        req.param_size > MAX_NETWORK_PAYLOAD || req.bin_size > MAX_NETWORK_PAYLOAD ||
+        req.param_size + req.bin_size > MAX_NETWORK_PAYLOAD ||
+        sizeof(req) + req.param_size + req.bin_size != payload.size()) {
+        fail("invalid upload sizes");
+        return;
+    }
+
+    const uint8_t* param_begin = payload.data() + sizeof(req);
+    const uint8_t* bin_begin = param_begin + req.param_size;
+
+    // Write flat into the models dir: <name>.param / <name>.bin → ModelManager
+    // derives the model name from the file stem alone.
+    const std::filesystem::path param_path = model_manager_.models_directory() / (name + ".param");
+    const std::filesystem::path bin_path = model_manager_.models_directory() / (name + ".bin");
+
+    bool write_ok = true;
+    try {
+        {
+            std::ofstream param_file(param_path, std::ios::binary | std::ios::trunc);
+            param_file.write(reinterpret_cast<const char*>(param_begin),
+                             static_cast<std::streamsize>(req.param_size));
+            param_file.close();
+            if (!param_file) write_ok = false;
+        }
+        {
+            std::ofstream bin_file(bin_path, std::ios::binary | std::ios::trunc);
+            bin_file.write(reinterpret_cast<const char*>(bin_begin),
+                           static_cast<std::streamsize>(req.bin_size));
+            bin_file.close();
+            if (!bin_file) write_ok = false;
+        }
+    } catch (const std::exception& e) {
+        fail(std::string("write failed: ") + e.what());
+        return;
+    }
+    if (!write_ok) {
+        fail("failed to write model files");
+        return;
+    }
+
+    // Rescan so the new model is immediately usable and visible to lists.
+    {
+        std::lock_guard<std::mutex> lk(models_mutex_);
+        (void)model_manager_.scan_models();
+    }
+    resp.success = 1;
+    if (!send_encrypted(conn, MessageType::MSG_MODEL_UPLOAD_RESPONSE,
+                        &resp, sizeof(resp))) {
+        LOG_ERROR("Coordinator", "Failed to send upload ack for " + name);
+        return;
+    }
+    LOG_INFO("Coordinator", "Model uploaded from phone: " + name + " (" +
+             format_bytes(req.param_size + req.bin_size) + ")");
+}
+
+void Coordinator::handle_model_download(WorkerConnection& conn,
+                                        const MessageHeader& hdr,
+                                        const std::vector<uint8_t>& payload) {
+    (void)hdr;
+    ModelDownloadResponse resp{};
+
+    auto fail = [&](const std::string& message) {
+        resp.success = 0;
+        resp.scale_factor = 0;
+        resp.total_size = 0;
+        resp.param_size = 0;
+        resp.bin_size = 0;
+        std::strncpy(resp.error, message.c_str(), sizeof(resp.error) - 1);
+        (void)send_encrypted(conn, MessageType::MSG_MODEL_DOWNLOAD_RESPONSE,
+                             &resp, sizeof(resp));
+        LOG_ERROR("Coordinator", "Model download failed: " + message);
+    };
+
+    if (payload.size() < sizeof(ModelDownloadRequest)) {
+        fail("download request truncated");
+        return;
+    }
+    ModelDownloadRequest req{};
+    std::memcpy(&req, payload.data(), sizeof(req));
+    const std::string name(req.name);
+
+    std::optional<ModelInfo> model;
+    {
+        std::lock_guard<std::mutex> lk(models_mutex_);
+        auto scan = model_manager_.scan_models();
+        if (!scan.has_value()) {
+            fail("model scan failed: " + scan.error().message);
+            return;
+        }
+        model = model_manager_.get_model(name);
+    }
+    if (!model.has_value()) {
+        fail("model not found: " + name);
+        return;
+    }
+
+    std::error_code ec;
+    const uint64_t param_size =
+        static_cast<uint64_t>(std::filesystem::file_size(model->param_path, ec));
+    if (ec) {
+        fail("cannot stat param file");
+        return;
+    }
+    const uint64_t bin_size =
+        static_cast<uint64_t>(std::filesystem::file_size(model->bin_path, ec));
+    if (ec) {
+        fail("cannot stat bin file");
+        return;
+    }
+    if (param_size + bin_size > MAX_NETWORK_PAYLOAD) {
+        fail("model too large for transfer (" + format_bytes(param_size + bin_size) + ")");
+        return;
+    }
+
+    std::vector<uint8_t> param_bytes(static_cast<size_t>(param_size));
+    std::vector<uint8_t> bin_bytes(static_cast<size_t>(bin_size));
+    try {
+        std::ifstream param_file(model->param_path, std::ios::binary);
+        if (!param_file.read(reinterpret_cast<char*>(param_bytes.data()),
+                             static_cast<std::streamsize>(param_size))) {
+            fail("failed to read param file");
+            return;
+        }
+        std::ifstream bin_file(model->bin_path, std::ios::binary);
+        if (!bin_file.read(reinterpret_cast<char*>(bin_bytes.data()),
+                           static_cast<std::streamsize>(bin_size))) {
+            fail("failed to read bin file");
+            return;
+        }
+    } catch (const std::exception& e) {
+        fail(std::string("read failed: ") + e.what());
+        return;
+    }
+
+    resp.success = 1;
+    std::strncpy(resp.error, "", sizeof(resp.error) - 1);
+    resp.scale_factor = static_cast<uint32_t>(model->scale_factor);
+    resp.total_size = param_size + bin_size;
+    resp.param_size = param_size;
+    resp.bin_size = bin_size;
+
+    std::vector<uint8_t> out(sizeof(resp) + param_bytes.size() + bin_bytes.size());
+    std::memcpy(out.data(), &resp, sizeof(resp));
+    std::memcpy(out.data() + sizeof(resp), param_bytes.data(), param_bytes.size());
+    std::memcpy(out.data() + sizeof(resp) + param_bytes.size(),
+                bin_bytes.data(), bin_bytes.size());
+
+    if (!send_encrypted(conn, MessageType::MSG_MODEL_DOWNLOAD_RESPONSE,
+                        out.data(), out.size())) {
+        LOG_ERROR("Coordinator", "Failed to send model download response for " + name);
+        return;
+    }
+    LOG_INFO("Coordinator", "Model sent to phone: " + name + " (" +
+             format_bytes(param_size + bin_size) + ")");
 }
 
 } // namespace crossscale

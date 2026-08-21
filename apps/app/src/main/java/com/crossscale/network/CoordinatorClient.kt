@@ -3,6 +3,7 @@ package com.crossscale.network
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.net.Uri
+import com.crossscale.data.model.PcModel
 import com.crossscale.data.repository.LogRepository
 import com.crossscale.data.repository.NativeProcessResult
 import com.crossscale.data.repository.ResolvedImageInput
@@ -106,6 +107,78 @@ class CoordinatorClient(
         val endpoint = connectedEndpoint ?: return null
         return "${endpoint.host}:${endpoint.port}"
     }
+
+    // ── 共享模型库（手机↔PC）──────────────────────────────────────────
+    // 与图像提交相同的 one-shot 模式：每次操作独立连接（握手+配对+操作帧）。
+
+    private inline fun <T> withEndpoint(onMissing: () -> T, block: (host: String, port: Int, pubkey: String) -> T): T {
+        val endpoint = connectedEndpoint ?: return onMissing()
+        return block(endpoint.host, endpoint.port, endpoint.peerPubKeyB64)
+    }
+
+    /** 拉取 PC 模型库；未连接或失败返回 null。 */
+    fun listPCModels(): List<PcModel>? = withEndpoint(
+        onMissing = { null }
+    ) { host, port, pubkey ->
+        val records = NativeWorker.nativeListPCModels(host, port, pubkey) ?: return@withEndpoint null
+        records.lineSequence()
+            .filter { it.isNotBlank() }
+            .mapNotNull { line ->
+                val parts = line.split('\t')
+                if (parts.size < 3) return@mapNotNull null
+                val scale = parts[1].toIntOrNull() ?: return@mapNotNull null
+                val size = parts[2].toLongOrNull() ?: return@mapNotNull null
+                PcModel(name = parts[0], scaleFactor = scale, totalSize = size)
+            }
+            .toList()
+    }
+
+    /** 上传本地模型到 PC 模型库。未连接返回失败。 */
+    fun uploadModelToPC(model: com.crossscale.data.model.ModelInfo): kotlin.Result<Unit> = withEndpoint(
+        onMissing = { kotlin.Result.failure(IllegalStateException("未连接 PC")) }
+    ) { host, port, pubkey ->
+        if (NativeWorker.nativeUploadModelToPC(
+                host = host,
+                port = port,
+                peerPubKeyB64 = pubkey,
+                modelName = model.name,
+                scaleFactor = model.scaleFactor,
+                paramPath = model.paramPath,
+                binPath = model.binPath
+            )
+        ) {
+            Result.success(Unit)
+        } else {
+            Result.failure(IllegalStateException(lastNativeError()))
+        }
+    }
+
+    /** 从 PC 模型库下载模型到 destParam/destBin 路径。未连接返回失败。 */
+    fun downloadModelFromPC(
+        name: String,
+        destParamPath: String,
+        destBinPath: String
+    ): kotlin.Result<Unit> = withEndpoint(
+        onMissing = { kotlin.Result.failure(IllegalStateException("未连接 PC")) }
+    ) { host, port, pubkey ->
+        if (NativeWorker.nativeDownloadModelFromPC(
+                host = host,
+                port = port,
+                peerPubKeyB64 = pubkey,
+                modelName = name,
+                destParamPath = destParamPath,
+                destBinPath = destBinPath
+            )
+        ) {
+            Result.success(Unit)
+        } else {
+            Result.failure(IllegalStateException(lastNativeError()))
+        }
+    }
+
+    private fun lastNativeError(): String =
+        runCatching { NCNNEngine.nativeGetLastError() }.getOrNull()?.trim().orEmpty()
+            .ifBlank { "传输失败" }
 
     fun processInputRemotely(
         input: ResolvedImageInput,

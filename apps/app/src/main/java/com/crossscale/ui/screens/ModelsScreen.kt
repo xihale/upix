@@ -29,7 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
-import com.crossscale.data.model.ModelInfo
+import com.crossscale.data.model.ModelLibraryEntry
 import com.crossscale.ui.components.ModelCard
 import com.crossscale.ui.components.RemoteModelsDialog
 import com.crossscale.ui.theme.Spacing
@@ -37,11 +37,18 @@ import com.crossscale.viewmodel.ModelsUiState
 
 @Composable
 fun ModelsScreen(
-    models: List<ModelInfo>,
+    /** 双端合并后的模型库（含手机/PC 存在标记）。 */
+    library: List<ModelLibraryEntry>,
+    /** 手机本地模型（供云端下载去重与删除操作）。 */
+    phoneModelNames: Set<String>,
     onRefreshModels: () -> Unit,
     onImportModels: () -> Unit,
-    onDeleteModel: (ModelInfo) -> Unit,
+    onDeleteModel: (com.crossscale.data.model.ModelInfo) -> Unit,
     modelDirectoryPath: String,
+    uploadingToPc: Set<String>,
+    downloadingFromPc: Set<String>,
+    onUploadToPc: (ModelLibraryEntry) -> Unit,
+    onDownloadFromPc: (ModelLibraryEntry) -> Unit,
     remoteUiState: ModelsUiState,
     onRefreshRemoteModels: () -> Unit,
     onDownloadRemoteModel: (com.crossscale.data.model.RemoteModel) -> Unit,
@@ -65,7 +72,7 @@ fun ModelsScreen(
             style = MaterialTheme.typography.titleLarge
         )
         Text(
-            text = stringResource(R.string.models_discovered_summary, models.size),
+            text = stringResource(R.string.models_discovered_summary, library.size),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -102,7 +109,7 @@ fun ModelsScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        if (models.isEmpty()) {
+        if (library.isEmpty()) {
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = MaterialTheme.shapes.large,
@@ -129,10 +136,16 @@ fun ModelsScreen(
                 verticalArrangement = Arrangement.spacedBy(Spacing.md),
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = Spacing.xxl)
             ) {
-                items(items = models, key = { it.name }) { model ->
+                items(items = library, key = { it.name }) { entry ->
                     ModelCard(
-                        model = model,
-                        onDelete = onDeleteModel
+                        entry = entry,
+                        uploading = entry.name in uploadingToPc,
+                        downloading = entry.name in downloadingFromPc,
+                        onUploadToPc = { onUploadToPc(entry) },
+                        onDownloadFromPc = { onDownloadFromPc(entry) },
+                        onDelete = entry.localModel?.let { local ->
+                            { onDeleteModel(local) }
+                        }
                     )
                 }
             }
@@ -141,7 +154,7 @@ fun ModelsScreen(
         if (showRemoteDialog) {
             RemoteModelsDialog(
                 remoteModels = remoteUiState.remoteModels,
-                installedModelNames = models.map { it.name }.toSet(),
+                installedModelNames = phoneModelNames,
                 downloads = remoteUiState.downloads,
                 isLoading = remoteUiState.isLoadingRemote,
                 errorMessage = remoteUiState.remoteError,

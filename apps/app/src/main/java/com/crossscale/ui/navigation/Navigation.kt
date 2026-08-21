@@ -246,11 +246,16 @@ fun CrossScaleNavigation(
         composable(AppScreen.SettingsModels.route) {
             DestinationContainer {
                 ModelsScreen(
-                    models = mainUiState.models,
+                    library = mainUiState.library,
+                    phoneModelNames = mainUiState.models.map { it.name }.toSet(),
                     onRefreshModels = mainViewModel::refreshModels,
                     onImportModels = inputSelection::importModels,
                     onDeleteModel = mainViewModel::deleteModel,
                     modelDirectoryPath = mainUiState.modelDirectoryPath,
+                    uploadingToPc = mainUiState.uploadingToPc,
+                    downloadingFromPc = mainUiState.downloadingFromPc,
+                    onUploadToPc = mainViewModel::uploadModelToPc,
+                    onDownloadFromPc = mainViewModel::downloadModelFromPc,
                     remoteUiState = modelsUiState,
                     onRefreshRemoteModels = modelsViewModel::refreshRemoteModels,
                     onDownloadRemoteModel = modelsViewModel::downloadRemoteModel,

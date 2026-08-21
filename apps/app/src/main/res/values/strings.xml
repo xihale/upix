@@ -110,7 +110,10 @@
     <string name="models_empty_hint">未发现模型</string>
     <string name="models_spec_size">%1$dMB</string>
     <string name="models_selected">已选择</string>
-    <string name="models_select">选择</string>
+    <string name="models_badge_phone">手机</string>
+    <string name="models_badge_pc">电脑</string>
+    <string name="models_action_upload">上传到电脑</string>
+    <string name="models_action_download">从电脑下载</string>
     <string name="models_delete">删除</string>
     <string name="models_import_result_partial">已导入 %1$d 个模型，%2$d 个无效</string>
     <string name="models_import_result_success">已导入 %1$d 个模型</string>

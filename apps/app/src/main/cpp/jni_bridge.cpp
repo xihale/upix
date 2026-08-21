@@ -6,6 +6,7 @@
 #include <atomic>
 #include <cstring>
 #include <exception>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -329,6 +330,126 @@ auto recv_encrypted_frame(
         return std::nullopt;
     }
     return std::move(*opened);
+}
+
+}  // namespace
+
+// ── Shared model library ops (phone↔PC) ─────────────────────────────────────
+// Each op opens a fresh one-shot connection, exactly like image submit:
+// TCP connect → ECDH handshake → CONNECT_REQUEST/RESPONSE → op frame → reply.
+namespace {
+
+struct PairedLink {
+    crossscale::TCPSocket socket;
+    crossscale::EncryptedSession session;
+};
+
+auto open_paired_link(
+    const std::string& host,
+    uint16_t port,
+    const std::array<uint8_t, 32>& peer_pk,
+    std::string& error_msg
+) -> std::optional<PairedLink> {
+    error_msg.clear();
+    if (!g_identity.has_value()) {
+        error_msg = "identity not loaded; call loadIdentity first";
+        return std::nullopt;
+    }
+
+    PairedLink link;
+    auto connect_result = link.socket.connect(host, port);
+    if (!connect_result.has_value()) {
+        error_msg = "connect failed: " + connect_result.error().message;
+        return std::nullopt;
+    }
+
+    std::string handshake_error;
+    auto session = run_client_handshake(link.socket, peer_pk, *g_identity, handshake_error);
+    if (!session.has_value()) {
+        error_msg = "handshake failed: " + handshake_error;
+        return std::nullopt;
+    }
+
+    const std::string own_fp = crossscale::fingerprint(g_identity->public_key());
+    std::string pairing_error;
+    if (!perform_connect_request(
+            link.socket, *session, "CrossScale-Android", own_fp,
+            /*wants_encrypted_stream=*/false, pairing_error)) {
+        error_msg = "pairing failed: " + pairing_error;
+        return std::nullopt;
+    }
+
+    link.session = std::move(*session);
+    return link;
+}
+
+auto send_sealed(
+    PairedLink& link,
+    crossscale::MessageType type,
+    const void* payload,
+    size_t len,
+    std::string& error_msg
+) -> bool {
+    error_msg.clear();
+    crossscale::MessageHeader header{};
+    header.type = type;
+    header.payload_length = static_cast<uint32_t>(len);
+    try {
+        auto wire = link.session.seal(header, payload);
+        if (!link.socket.send_all(wire.data(), wire.size()).has_value()) {
+            error_msg = "frame send failed";
+            return false;
+        }
+        return true;
+    } catch (const std::exception& e) {
+        error_msg = std::string("frame seal failed: ") + e.what();
+        return false;
+    }
+}
+
+// Parse "host:port" style params shared by the three model-library JNI calls.
+// Returns false and sets jni last error on failure.
+auto resolve_endpoint_params(
+    JNIEnv* env,
+    jstring host,
+    jint port,
+    jstring peer_pubkey_b64,
+    std::string& host_out,
+    uint16_t& port_out,
+    std::array<uint8_t, 32>& peer_pk_out
+) -> bool {
+    if (host == nullptr) {
+        set_jni_last_error("model library op: host is null");
+        return false;
+    }
+    if (port <= 0 || port > std::numeric_limits<uint16_t>::max()) {
+        set_jni_last_error("model library op: port is invalid");
+        return false;
+    }
+    const char* host_chars = env->GetStringUTFChars(host, nullptr);
+    if (host_chars == nullptr) {
+        set_jni_last_error("model library op: failed to read host string");
+        return false;
+    }
+    host_out.assign(host_chars);
+    env->ReleaseStringUTFChars(host, host_chars);
+    port_out = static_cast<uint16_t>(port);
+
+    std::string peer_b64;
+    if (peer_pubkey_b64 != nullptr) {
+        const char* chars = env->GetStringUTFChars(peer_pubkey_b64, nullptr);
+        if (chars != nullptr) {
+            peer_b64.assign(chars);
+            env->ReleaseStringUTFChars(peer_pubkey_b64, chars);
+        }
+    }
+    auto pk_bytes = crossscale::base64_decode(peer_b64);
+    if (!pk_bytes || pk_bytes->size() != 32) {
+        set_jni_last_error("model library op: invalid peer pubkey (expected 32-byte base64)");
+        return false;
+    }
+    std::memcpy(peer_pk_out.data(), pk_bytes->data(), 32);
+    return true;
 }
 
 }  // namespace
@@ -970,6 +1091,302 @@ Java_com_crossscale_nativelib_NativeWorker_nativeRequestConnection(
          host_str.c_str(), port, tofu_mode ? 1 : 0,
          crossscale::fingerprint(result_pubkey_arr).c_str());
     return env->NewStringUTF(result_pubkey_b64.c_str());
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_crossscale_nativelib_NativeWorker_nativeListPCModels(
+    JNIEnv* env,
+    jobject thiz,
+    jstring host,
+    jint port,
+    jstring peer_pubkey_b64
+) {
+    (void)thiz;
+    set_jni_last_error("");
+
+    std::string host_str;
+    uint16_t port_u16 = 0;
+    std::array<uint8_t, 32> peer_pk{};
+    if (!resolve_endpoint_params(env, host, port, peer_pubkey_b64,
+                                 host_str, port_u16, peer_pk)) {
+        return nullptr;
+    }
+
+    std::string link_error;
+    auto link = open_paired_link(host_str, port_u16, peer_pk, link_error);
+    if (!link.has_value()) {
+        set_jni_last_error("Model list: " + link_error);
+        return nullptr;
+    }
+
+    std::string send_error;
+    static const uint8_t kEmptyPayload = 0;  // seal reads len=0 bytes from it
+    if (!send_sealed(*link, crossscale::MessageType::MSG_MODEL_LIST_REQUEST,
+                     &kEmptyPayload, 0, send_error)) {
+        set_jni_last_error("Model list: " + send_error);
+        return nullptr;
+    }
+
+    std::string frame_error;
+    auto frame = recv_encrypted_frame(link->socket, link->session, frame_error);
+    if (!frame) {
+        set_jni_last_error("Model list: " + frame_error);
+        return nullptr;
+    }
+    if (frame->first.type != crossscale::MessageType::MSG_MODEL_LIST_RESPONSE ||
+        frame->second.size() < sizeof(crossscale::ModelListResponse)) {
+        set_jni_last_error("Model list: unexpected response frame");
+        return nullptr;
+    }
+
+    crossscale::ModelListResponse list_resp{};
+    std::memcpy(&list_resp, frame->second.data(), sizeof(list_resp));
+    const size_t expected = sizeof(list_resp) +
+        static_cast<size_t>(list_resp.count) * sizeof(crossscale::ModelLibraryEntry);
+    if (list_resp.count > 1024 || frame->second.size() < expected) {
+        set_jni_last_error("Model list: payload truncated");
+        return nullptr;
+    }
+
+    // One record per line: "name\tscale\tsize". Model names are sanitized
+    // (alnum/_/-/space) on both ends, so tabs are safe separators.
+    std::ostringstream out;
+    for (uint32_t i = 0; i < list_resp.count; ++i) {
+        crossscale::ModelLibraryEntry entry{};
+        const size_t offset = sizeof(list_resp) +
+            static_cast<size_t>(i) * sizeof(entry);
+        std::memcpy(&entry, frame->second.data() + offset, sizeof(entry));
+        out << entry.name << '\t' << entry.scale_factor << '\t' << entry.total_size << '\n';
+    }
+    set_jni_last_error("");
+    return env->NewStringUTF(out.str().c_str());
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_crossscale_nativelib_NativeWorker_nativeUploadModelToPC(
+    JNIEnv* env,
+    jobject thiz,
+    jstring host,
+    jint port,
+    jstring peer_pubkey_b64,
+    jstring model_name,
+    jint scale_factor,
+    jstring param_path,
+    jstring bin_path
+) {
+    (void)thiz;
+    set_jni_last_error("");
+
+    std::string host_str;
+    uint16_t port_u16 = 0;
+    std::array<uint8_t, 32> peer_pk{};
+    if (!resolve_endpoint_params(env, host, port, peer_pubkey_b64,
+                                 host_str, port_u16, peer_pk)) {
+        return JNI_FALSE;
+    }
+    if (model_name == nullptr || param_path == nullptr || bin_path == nullptr) {
+        set_jni_last_error("Model upload: name/paths are null");
+        return JNI_FALSE;
+    }
+
+    auto read_all = [&](jstring path_jstr, std::vector<uint8_t>& out) -> bool {
+        const char* chars = env->GetStringUTFChars(path_jstr, nullptr);
+        if (chars == nullptr) {
+            set_jni_last_error("Model upload: failed to read path string");
+            return false;
+        }
+        const std::string path(chars);
+        env->ReleaseStringUTFChars(path_jstr, chars);
+        std::ifstream file(path, std::ios::binary);
+        if (!file) {
+            set_jni_last_error("Model upload: cannot open " + path);
+            return false;
+        }
+        file.seekg(0, std::ios::end);
+        const std::streamoff size = file.tellg();
+        file.seekg(0, std::ios::beg);
+        if (size <= 0 || static_cast<uint64_t>(size) > MAX_PAYLOAD_LENGTH) {
+            set_jni_last_error("Model upload: invalid file size for " + path);
+            return false;
+        }
+        out.resize(static_cast<size_t>(size));
+        return static_cast<bool>(
+            file.read(reinterpret_cast<char*>(out.data()), size));
+    };
+
+    std::vector<uint8_t> param_bytes;
+    std::vector<uint8_t> bin_bytes;
+    if (!read_all(param_path, param_bytes) || !read_all(bin_path, bin_bytes)) {
+        return JNI_FALSE;
+    }
+    if (param_bytes.size() + bin_bytes.size() > MAX_PAYLOAD_LENGTH) {
+        set_jni_last_error("Model upload: model exceeds transfer limit");
+        return JNI_FALSE;
+    }
+
+    const char* name_chars = env->GetStringUTFChars(model_name, nullptr);
+    if (name_chars == nullptr) {
+        set_jni_last_error("Model upload: failed to read model name");
+        return JNI_FALSE;
+    }
+    const std::string name(name_chars);
+    env->ReleaseStringUTFChars(model_name, name_chars);
+
+    std::string link_error;
+    auto link = open_paired_link(host_str, port_u16, peer_pk, link_error);
+    if (!link.has_value()) {
+        set_jni_last_error("Model upload: " + link_error);
+        return JNI_FALSE;
+    }
+
+    crossscale::ModelUploadRequest req{};
+    std::strncpy(req.name, name.c_str(), sizeof(req.name) - 1);
+    req.scale_factor = static_cast<uint32_t>(std::max(scale_factor, 1));
+    req.param_size = param_bytes.size();
+    req.bin_size = bin_bytes.size();
+
+    std::vector<uint8_t> plaintext(sizeof(req) + param_bytes.size() + bin_bytes.size());
+    std::memcpy(plaintext.data(), &req, sizeof(req));
+    std::memcpy(plaintext.data() + sizeof(req), param_bytes.data(), param_bytes.size());
+    std::memcpy(plaintext.data() + sizeof(req) + param_bytes.size(),
+                bin_bytes.data(), bin_bytes.size());
+
+    std::string send_error;
+    if (!send_sealed(*link, crossscale::MessageType::MSG_MODEL_UPLOAD,
+                     plaintext.data(), plaintext.size(), send_error)) {
+        set_jni_last_error("Model upload: " + send_error);
+        return JNI_FALSE;
+    }
+
+    std::string frame_error;
+    auto frame = recv_encrypted_frame(link->socket, link->session, frame_error);
+    if (!frame ||
+        frame->first.type != crossscale::MessageType::MSG_MODEL_UPLOAD_RESPONSE ||
+        frame->second.size() < sizeof(crossscale::ModelOpResponse)) {
+        set_jni_last_error("Model upload: bad response (" + frame_error + ")");
+        return JNI_FALSE;
+    }
+    crossscale::ModelOpResponse resp{};
+    std::memcpy(&resp, frame->second.data(), sizeof(resp));
+    if (resp.success == 0) {
+        set_jni_last_error(std::string("Model upload rejected by PC: ") + resp.error);
+        return JNI_FALSE;
+    }
+    set_jni_last_error("");
+    LOGI("Model uploaded to PC: %s (%zu bytes)", name.c_str(),
+         param_bytes.size() + bin_bytes.size());
+    return JNI_TRUE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_crossscale_nativelib_NativeWorker_nativeDownloadModelFromPC(
+    JNIEnv* env,
+    jobject thiz,
+    jstring host,
+    jint port,
+    jstring peer_pubkey_b64,
+    jstring model_name,
+    jstring dest_param_path,
+    jstring dest_bin_path
+) {
+    (void)thiz;
+    set_jni_last_error("");
+
+    std::string host_str;
+    uint16_t port_u16 = 0;
+    std::array<uint8_t, 32> peer_pk{};
+    if (!resolve_endpoint_params(env, host, port, peer_pubkey_b64,
+                                 host_str, port_u16, peer_pk)) {
+        return JNI_FALSE;
+    }
+    if (model_name == nullptr || dest_param_path == nullptr || dest_bin_path == nullptr) {
+        set_jni_last_error("Model download: name/paths are null");
+        return JNI_FALSE;
+    }
+
+    const char* name_chars = env->GetStringUTFChars(model_name, nullptr);
+    if (name_chars == nullptr) {
+        set_jni_last_error("Model download: failed to read model name");
+        return JNI_FALSE;
+    }
+    const std::string name(name_chars);
+    env->ReleaseStringUTFChars(model_name, name_chars);
+
+    std::string link_error;
+    auto link = open_paired_link(host_str, port_u16, peer_pk, link_error);
+    if (!link.has_value()) {
+        set_jni_last_error("Model download: " + link_error);
+        return JNI_FALSE;
+    }
+
+    crossscale::ModelDownloadRequest req{};
+    std::strncpy(req.name, name.c_str(), sizeof(req.name) - 1);
+
+    std::string send_error;
+    if (!send_sealed(*link, crossscale::MessageType::MSG_MODEL_DOWNLOAD_REQUEST,
+                     &req, sizeof(req), send_error)) {
+        set_jni_last_error("Model download: " + send_error);
+        return JNI_FALSE;
+    }
+
+    std::string frame_error;
+    auto frame = recv_encrypted_frame(link->socket, link->session, frame_error);
+    if (!frame ||
+        frame->first.type != crossscale::MessageType::MSG_MODEL_DOWNLOAD_RESPONSE ||
+        frame->second.size() < sizeof(crossscale::ModelDownloadResponse)) {
+        set_jni_last_error("Model download: bad response (" + frame_error + ")");
+        return JNI_FALSE;
+    }
+    crossscale::ModelDownloadResponse resp{};
+    std::memcpy(&resp, frame->second.data(), sizeof(resp));
+    if (resp.success == 0) {
+        set_jni_last_error(std::string("Model download failed on PC: ") + resp.error);
+        return JNI_FALSE;
+    }
+    // Security: validate declared sizes against the actual frame before use.
+    if (resp.param_size == 0 || resp.bin_size == 0 ||
+        resp.param_size > MAX_PAYLOAD_LENGTH || resp.bin_size > MAX_PAYLOAD_LENGTH ||
+        resp.param_size + resp.bin_size > MAX_PAYLOAD_LENGTH ||
+        sizeof(resp) + resp.param_size + resp.bin_size != frame->second.size()) {
+        set_jni_last_error("Model download: payload truncated or oversized");
+        return JNI_FALSE;
+    }
+
+    auto write_file = [&](jstring path_jstr, const uint8_t* data, uint64_t size) -> bool {
+        const char* chars = env->GetStringUTFChars(path_jstr, nullptr);
+        if (chars == nullptr) {
+            set_jni_last_error("Model download: failed to read destination path");
+            return false;
+        }
+        const std::string path(chars);
+        env->ReleaseStringUTFChars(path_jstr, chars);
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        if (!file) {
+            set_jni_last_error("Model download: cannot open " + path);
+            return false;
+        }
+        file.write(reinterpret_cast<const char*>(data),
+                   static_cast<std::streamsize>(size));
+        file.close();
+        if (!file) {
+            set_jni_last_error("Model download: write failed for " + path);
+            return false;
+        }
+        return true;
+    };
+
+    const uint8_t* param_begin = frame->second.data() + sizeof(resp);
+    const uint8_t* bin_begin = param_begin + resp.param_size;
+    if (!write_file(dest_param_path, param_begin, resp.param_size)) {
+        return JNI_FALSE;
+    }
+    if (!write_file(dest_bin_path, bin_begin, resp.bin_size)) {
+        return JNI_FALSE;
+    }
+    set_jni_last_error("");
+    LOGI("Model downloaded from PC: %s (%llu bytes)",
+         name.c_str(), static_cast<unsigned long long>(resp.total_size));
+    return JNI_TRUE;
 }
 
 JNIEXPORT jboolean JNICALL

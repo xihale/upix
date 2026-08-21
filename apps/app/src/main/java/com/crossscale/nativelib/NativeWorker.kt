@@ -26,5 +26,36 @@ object NativeWorker {
         wantsEncryptedStream: Boolean
     ): String?
 
+    /**
+     * 拉取 PC 模型库列表。每次调用走一次独立连接（握手+配对+列表帧）。
+     * 成功返回逐行记录 "name\tscale\tsize"；失败返回 null（错误见 NCNNEngine.nativeGetLastError）。
+     */
+    external fun nativeListPCModels(
+        host: String,
+        port: Int,
+        peerPubKeyB64: String
+    ): String?
+
+    /** 上传手机本地模型（param+bin）到 PC 模型库。 */
+    external fun nativeUploadModelToPC(
+        host: String,
+        port: Int,
+        peerPubKeyB64: String,
+        modelName: String,
+        scaleFactor: Int,
+        paramPath: String,
+        binPath: String
+    ): Boolean
+
+    /** 从 PC 模型库下载模型到指定落盘路径。 */
+    external fun nativeDownloadModelFromPC(
+        host: String,
+        port: Int,
+        peerPubKeyB64: String,
+        modelName: String,
+        destParamPath: String,
+        destBinPath: String
+    ): Boolean
+
     external fun nativeLoadIdentity(identityPath: String): Boolean
 }

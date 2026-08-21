@@ -35,6 +35,15 @@ enum class MessageType : uint16_t {
     MSG_CLIENT_CONNECT_REQUEST = 0x0700,
     MSG_CLIENT_CONNECT_RESPONSE = 0x0701,
 
+    // Shared model library (phone↔PC), one op per connection, same one-shot
+    // pattern as CLIENT_SUBMIT: handshake → CONNECT_REQUEST → op frame → reply.
+    MSG_MODEL_LIST_REQUEST     = 0x0510,  // phone→PC, empty payload
+    MSG_MODEL_LIST_RESPONSE    = 0x0511,  // PC→phone: count + entries
+    MSG_MODEL_UPLOAD           = 0x0512,  // phone→PC: header + param + bin
+    MSG_MODEL_UPLOAD_RESPONSE  = 0x0513,  // PC→phone: ModelOpResponse
+    MSG_MODEL_DOWNLOAD_REQUEST = 0x0514,  // phone→PC: name
+    MSG_MODEL_DOWNLOAD_RESPONSE= 0x0515,  // PC→phone: header + param + bin
+
     // Local serve daemon (Unix domain socket). Separate range so the daemon's
     // protocol can evolve independently of the TCP protocol.
     MSG_SERVE_REQUEST = 0x0601,   // client→daemon: upscale request
@@ -117,6 +126,54 @@ struct ClientConnectResponse {
     uint8_t approved;
     uint8_t trusted;
     uint8_t stream_encrypted;
+};
+
+// ── Shared model library messages ───────────────────────────────────────────
+// All structs use natural alignment with fixed-width fields, so the layouts
+// match on Android arm64 and desktop x86_64. Variable-size data (file bytes,
+// entry arrays) follows the struct contiguously inside the same frame.
+
+// One PC-side model in a MODEL_LIST_RESPONSE.
+struct ModelLibraryEntry {
+    char name[64];
+    uint32_t scale_factor;
+    uint64_t total_size;   // param + bin bytes
+};
+
+// MODEL_LIST_RESPONSE payload: [ModelListResponse][count * ModelLibraryEntry].
+struct ModelListResponse {
+    uint32_t count;
+};
+
+// MODEL_UPLOAD payload: [ModelUploadRequest][param bytes][bin bytes].
+// Files are written flat into the PC models dir as <name>.param / <name>.bin
+// so ModelManager derives the model name from the stem alone.
+struct ModelUploadRequest {
+    char name[64];
+    uint32_t scale_factor;
+    uint64_t param_size;
+    uint64_t bin_size;
+};
+
+// Generic op ack (MODEL_UPLOAD_RESPONSE).
+struct ModelOpResponse {
+    uint8_t success;
+    char error[128];
+};
+
+// MODEL_DOWNLOAD_REQUEST payload.
+struct ModelDownloadRequest {
+    char name[64];
+};
+
+// MODEL_DOWNLOAD_RESPONSE payload: [ModelDownloadResponse][param][bin].
+struct ModelDownloadResponse {
+    uint8_t success;
+    uint32_t scale_factor;
+    uint64_t total_size;
+    uint64_t param_size;
+    uint64_t bin_size;
+    char error[128];
 };
 
 // ── Local serve daemon messages ─────────────────────────────────────────────

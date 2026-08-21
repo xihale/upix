@@ -5,8 +5,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CloudDownload
+import androidx.compose.material.icons.outlined.CloudUpload
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -17,18 +22,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.dp
 import com.crossscale.R
-import com.crossscale.data.model.ModelInfo
+import com.crossscale.data.model.ModelLibraryEntry
 import com.crossscale.ui.theme.Spacing
 
 /**
- * 模型卡：名称 + 规格单行 mono 小字 + 行尾删除 IconButton。
- * 管理界面只做管理（导入/下载/删除），模型选择在主页参数卡。
+ * 模型库卡：名称 + 双端存在徽标（手机/电脑）+ 规格单行 mono 小字 + 行尾操作。
+ * 单端存在的模型显示上传/下载动作；双端都有则无动作，仅可删除本地副本。
  */
 @Composable
 fun ModelCard(
-    model: ModelInfo,
-    onDelete: (ModelInfo) -> Unit
+    entry: ModelLibraryEntry,
+    uploading: Boolean,
+    downloading: Boolean,
+    onUploadToPc: () -> Unit,
+    onDownloadFromPc: () -> Unit,
+    onDelete: (() -> Unit)?
 ) {
     val specTextStyle = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace)
 
@@ -52,26 +62,58 @@ fun ModelCard(
                 horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
             ) {
                 Text(
-                    text = model.name,
+                    text = entry.name,
                     style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier.weight(1f, fill = false)
                 )
-                IconButton(onClick = { onDelete(model) }) {
-                    Icon(
-                        imageVector = Icons.Outlined.Delete,
-                        contentDescription = stringResource(R.string.models_delete),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                LocationBadge(text = stringResource(R.string.models_badge_phone), enabled = entry.onPhone)
+                LocationBadge(text = stringResource(R.string.models_badge_pc), enabled = entry.onPc)
+
+                val busy = uploading || downloading
+                if (!entry.onPhone && entry.onPc) {
+                    if (downloading) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        IconButton(onClick = onDownloadFromPc, enabled = !busy) {
+                            Icon(
+                                imageVector = Icons.Outlined.CloudDownload,
+                                contentDescription = stringResource(R.string.models_action_download),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                } else if (entry.onPhone && !entry.onPc) {
+                    if (uploading) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                    } else {
+                        IconButton(onClick = onUploadToPc, enabled = !busy) {
+                            Icon(
+                                imageVector = Icons.Outlined.CloudUpload,
+                                contentDescription = stringResource(R.string.models_action_upload),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+
+                if (onDelete != null) {
+                    IconButton(onClick = onDelete) {
+                        Icon(
+                            imageVector = Icons.Outlined.Delete,
+                            contentDescription = stringResource(R.string.models_delete),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
 
             Text(
                 text = listOf(
-                    stringResource(R.string.config_scale_value, model.scaleFactor),
+                    stringResource(R.string.config_scale_value, entry.scaleFactor),
                     stringResource(
                         R.string.models_spec_size,
-                        model.totalSize / 1024 / 1024
+                        entry.totalSize / 1024 / 1024
                     )
                 ).joinToString(" · "),
                 style = specTextStyle,
@@ -79,5 +121,28 @@ fun ModelCard(
                 maxLines = 1
             )
         }
+    }
+}
+
+@Composable
+private fun LocationBadge(text: String, enabled: Boolean) {
+    Surface(
+        shape = RoundedCornerShape(50),
+        color = if (enabled) {
+            MaterialTheme.colorScheme.secondaryContainer
+        } else {
+            MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f)
+        }
+    ) {
+        Text(
+            text = text,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (enabled) {
+                MaterialTheme.colorScheme.onSecondaryContainer
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+            },
+            modifier = Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.xs)
+        )
     }
 }
