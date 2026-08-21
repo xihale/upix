@@ -22,8 +22,6 @@ import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.DeleteSweep
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
@@ -38,21 +36,17 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -62,7 +56,6 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.thumbnails.decodeQueueThumbnailWithLimit
-import com.crossscale.ui.theme.EmphasizedEasing
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.pressable
 
@@ -164,22 +157,14 @@ private class SlashSideShape(private val isLeft: Boolean) : Shape {
 }
 
 /**
- * 空态：一条 "/" 斜线分割舞台（端点位于上下边框 1/e 处），
- * 左侧=图片、右侧=文件夹，点按对应区域触发相应选择；斜线首次出现时快速划入。
+ * 空态：一条 "/" 细线安静地分割舞台（端点位于上下边框 1/e 处），
+ * 左侧=图片、右侧=文件夹，点按对应区域触发相应选择。
  */
 @Composable
 private fun EmptyStage(
     onAddImage: () -> Unit,
     onAddFolder: () -> Unit
 ) {
-    val lineReveal = remember { Animatable(0f) }
-    LaunchedEffect(Unit) {
-        lineReveal.animateTo(
-            targetValue = 1f,
-            animationSpec = tween(durationMillis = 280, easing = EmphasizedEasing)
-        )
-    }
-
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         // 两侧梯形重心在 (W/4, H/2) 与 (3W/4, H/2)：相对中心各偏移 W/4。
         val dx = maxWidth / 4
@@ -218,30 +203,13 @@ private fun EmptyStage(
             )
         }
 
-        val lineColor = MaterialTheme.colorScheme.primary
+        val lineColor = MaterialTheme.colorScheme.outlineVariant
         Canvas(modifier = Modifier.fillMaxSize()) {
-            val progress = lineReveal.value
-            if (progress <= 0f) return@Canvas
-            val start = Offset(size.width * INV_E, size.height)
-            val end = Offset(size.width * (1f - INV_E), 0f)
-            val currentEnd = Offset(
-                x = start.x + (end.x - start.x) * progress,
-                y = start.y + (end.y - start.y) * progress
-            )
             drawLine(
-                brush = Brush.linearGradient(
-                    colors = listOf(
-                        lineColor.copy(alpha = 0f),
-                        lineColor.copy(alpha = 0.85f),
-                        lineColor.copy(alpha = 0f)
-                    ),
-                    start = start,
-                    end = end
-                ),
-                start = start,
-                end = currentEnd,
-                strokeWidth = 2.dp.toPx(),
-                cap = StrokeCap.Round
+                color = lineColor,
+                start = Offset(size.width * INV_E, size.height),
+                end = Offset(size.width * (1f - INV_E), 0f),
+                strokeWidth = 1.dp.toPx()
             )
         }
     }
