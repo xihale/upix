@@ -1,10 +1,5 @@
 package com.crossscale
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
 import androidx.camera.core.ExperimentalGetImage
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -24,12 +19,8 @@ fun CrossScaleApp(container: AppContainer) {
 
     Scaffold(
         bottomBar = {
-            // 扫码模式为全屏相机体验，底部导航栏滑出隐藏。
-            AnimatedVisibility(
-                visible = !ScannerMode.isActive,
-                enter = fadeIn() + slideInVertically { it },
-                exit = slideOutVertically { it } + fadeOut()
-            ) {
+            // 扫码模式为全屏相机体验，底部导航栏直接隐藏（无过渡动画）。
+            if (!ScannerMode.isActive) {
                 BottomNavigationBar(navController = navController)
             }
         }

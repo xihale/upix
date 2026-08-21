@@ -1,7 +1,9 @@
 package com.crossscale.ui.scanner
 
 import android.Manifest
+import android.app.Activity
 import android.content.pm.PackageManager
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
@@ -11,7 +13,6 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,15 +20,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.Button
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -47,6 +41,9 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.crossscale.R
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
@@ -112,6 +109,21 @@ fun QRScannerScreen(
             barcodeScanner.close()
         }
     }
+
+    // 沉浸式：隐藏系统状态栏/标题栏，扫码期间全屏；退出时恢复。
+    DisposableEffect(context) {
+        val window = (context as? Activity)?.window
+        val controller = window?.let { WindowCompat.getInsetsController(it, it.decorView) }
+        controller?.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+        controller?.hide(WindowInsetsCompat.Type.systemBars())
+        onDispose {
+            controller?.show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    // 无关闭按钮，返回手势即退出扫码。
+    BackHandler(onBack = onClose)
 
     DisposableEffect(cameraPermissionGranted, lifecycleOwner, previewView) {
         if (!cameraPermissionGranted) {
@@ -239,35 +251,6 @@ fun QRScannerScreen(
                 }
             }
         }
-
-        // 顶部关闭按钮：半透明圆形，相机应用标准样式。
-        IconButton(
-            onClick = onClose,
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .statusBarsPadding()
-                .padding(start = Spacing.md, top = Spacing.sm)
-                .size(44.dp)
-                .background(Color.Black.copy(alpha = 0.4f), CircleShape)
-        ) {
-            Icon(
-                imageVector = Icons.Outlined.Close,
-                contentDescription = stringResource(R.string.scanner_close),
-                tint = Color.White
-            )
-        }
-
-        // 中央取景框：圆角方框提示扫描区域。
-        Box(
-            modifier = Modifier
-                .align(Alignment.Center)
-                .size(260.dp)
-                .border(
-                    width = 2.dp,
-                    color = Color.White.copy(alpha = 0.9f),
-                    shape = RoundedCornerShape(28.dp)
-                )
-        )
 
         Column(
             modifier = Modifier
