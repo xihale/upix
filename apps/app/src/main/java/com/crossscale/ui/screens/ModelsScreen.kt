@@ -38,8 +38,6 @@ import com.crossscale.viewmodel.ModelsUiState
 @Composable
 fun ModelsScreen(
     models: List<ModelInfo>,
-    selectedModel: ModelInfo?,
-    onSelectModel: (ModelInfo) -> Unit,
     onRefreshModels: () -> Unit,
     onImportModels: () -> Unit,
     onDeleteModel: (ModelInfo) -> Unit,
@@ -55,7 +53,6 @@ fun ModelsScreen(
     LaunchedEffect(showRemoteDialog) {
         if (showRemoteDialog) onRefreshRemoteModels()
     }
-    val notSelectedLabel = stringResource(R.string.common_not_selected)
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -68,11 +65,7 @@ fun ModelsScreen(
             style = MaterialTheme.typography.titleLarge
         )
         Text(
-            text = stringResource(
-                R.string.models_discovered_summary,
-                models.size,
-                selectedModel?.name ?: notSelectedLabel
-            ),
+            text = stringResource(R.string.models_discovered_summary, models.size),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
@@ -139,8 +132,6 @@ fun ModelsScreen(
                 items(items = models, key = { it.name }) { model ->
                     ModelCard(
                         model = model,
-                        isSelected = selectedModel?.name == model.name,
-                        onSelect = onSelectModel,
                         onDelete = onDeleteModel
                     )
                 }

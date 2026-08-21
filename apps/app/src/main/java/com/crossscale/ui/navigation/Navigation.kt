@@ -247,8 +247,6 @@ fun CrossScaleNavigation(
             DestinationContainer {
                 ModelsScreen(
                     models = mainUiState.models,
-                    selectedModel = mainUiState.selectedModel,
-                    onSelectModel = mainViewModel::selectModel,
                     onRefreshModels = mainViewModel::refreshModels,
                     onImportModels = inputSelection::importModels,
                     onDeleteModel = mainViewModel::deleteModel,

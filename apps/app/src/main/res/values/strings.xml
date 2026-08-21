@@ -102,7 +102,7 @@
 
     <!-- Models screen and model import feedback -->
     <string name="models_title">模型</string>
-    <string name="models_discovered_summary">已发现 %1$d 个模型；当前：%2$s</string>
+    <string name="models_discovered_summary">已发现 %1$d 个模型</string>
     <string name="models_refresh">刷新模型列表</string>
     <string name="models_import">导入模型</string>
     <string name="models_download">下载模型</string>

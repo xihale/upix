@@ -6,7 +6,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -23,14 +22,12 @@ import com.crossscale.data.model.ModelInfo
 import com.crossscale.ui.theme.Spacing
 
 /**
- * 模型卡：名称 + 规格单行 mono 小字 + 行尾操作 IconButton。
- * 列表内模型均为已导入（本地）模型；下载入口在屏级操作区。
+ * 模型卡：名称 + 规格单行 mono 小字 + 行尾删除 IconButton。
+ * 管理界面只做管理（导入/下载/删除），模型选择在主页参数卡。
  */
 @Composable
 fun ModelCard(
     model: ModelInfo,
-    isSelected: Boolean,
-    onSelect: (ModelInfo) -> Unit,
     onDelete: (ModelInfo) -> Unit
 ) {
     val specTextStyle = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace)
@@ -60,19 +57,6 @@ fun ModelCard(
                     maxLines = 1,
                     modifier = Modifier.weight(1f)
                 )
-                IconButton(onClick = { onSelect(model) }) {
-                    Icon(
-                        imageVector = Icons.Outlined.CheckCircle,
-                        contentDescription = stringResource(
-                            if (isSelected) R.string.models_selected else R.string.models_select
-                        ),
-                        tint = if (isSelected) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.onSurfaceVariant
-                        }
-                    )
-                }
                 IconButton(onClick = { onDelete(model) }) {
                     Icon(
                         imageVector = Icons.Outlined.Delete,
