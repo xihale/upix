@@ -40,5 +40,9 @@ add_requires("glaze")
 add_requires("qr-code-generator-cpp")
 add_requires("cli11")
 add_requires("libsodium")
+-- HTTPS client for `model download` (GitHub releases manifest + model zips).
+add_requires("libcurl")
+add_requires("openssl")
+add_requires("libzip")
 
 includes("share", "share/perf", "cli")

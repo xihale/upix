@@ -134,6 +134,15 @@
     <string name="models_import_error_invalid_extension">%1$s：仅支持 .param/.bin/.zip</string>
     <string name="models_import_error_mkdir_failed">无法创建模型目录：%1$s</string>
 
+    <!-- Remote model download (GitHub "models" release, see scripts/publish_models.py) -->
+    <string name="models_remote_title">下载模型</string>
+    <string name="models_remote_loading">正在获取模型列表…</string>
+    <string name="models_remote_empty">远程模型列表为空</string>
+    <string name="models_remote_error">获取模型列表失败</string>
+    <string name="models_remote_item_summary">%1$d 倍率 · %2$s</string>
+    <string name="models_remote_installed">已安装</string>
+    <string name="models_remote_retry">重试</string>
+
     <!-- Connection errors (resolved by DeviceViewModel) -->
     <string name="connection_error_auto_reconnect_failed">自动重连失败，使用本地处理</string>
     <string name="connection_error_invalid_params">连接信息无效，请重新输入</string>

@@ -8,13 +8,12 @@ import kotlinx.coroutines.flow.StateFlow
 
 /**
  * Model catalog contract: observe the available models and manage their
- * lifecycle (discovery refresh, bundled sync, import, delete).
+ * lifecycle (discovery refresh, import, delete, remote download).
  */
 interface ModelProvider {
     val models: StateFlow<List<ModelInfo>>
     fun getModelByName(name: String): ModelInfo?
     fun modelDirectoryPath(): String
-    suspend fun syncBundledModels()
     suspend fun refreshModels()
     suspend fun importModels(inputUris: List<Uri>): ModelImportResult
     suspend fun deleteModel(modelInfo: ModelInfo)

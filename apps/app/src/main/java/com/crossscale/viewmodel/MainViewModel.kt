@@ -133,7 +133,6 @@ class MainViewModel(
 
     init {
         viewModelScope.launch {
-            modelRepository.syncBundledModels()
             modelRepository.refreshModels()
             logRepository.info("MainViewModel", "Model initialization finished")
         }

@@ -30,17 +30,6 @@ class ModelRepository(
     private val _models = MutableStateFlow<List<ModelInfo>>(emptyList())
     override val models: StateFlow<List<ModelInfo>> = _models.asStateFlow()
 
-    override suspend fun syncBundledModels() = withContext(Dispatchers.IO) {
-        ensureModelDirectory()
-
-        val copied = copyBundledDefaultModel()
-        if (!copied) {
-            logRepository.warning("ModelRepository", "Bundled default model copy failed")
-        }
-
-        refreshModelsInternal()
-    }
-
     override suspend fun refreshModels() = withContext(Dispatchers.IO) {
         ensureModelDirectory()
         refreshModelsInternal()
@@ -202,6 +191,9 @@ class ModelRepository(
         return modelsDirectory.absolutePath
     }
 
+    /** 远程下载的落盘目录（与发现扫描的根目录一致）。 */
+    fun modelsDirectory(): File = modelsDirectory
+
     private fun ensureModelDirectory() {
         if (!modelsDirectory.exists() && !modelsDirectory.mkdirs()) {
             logRepository.error("ModelRepository", "Failed to create model directory ${modelsDirectory.path}")
@@ -216,64 +208,6 @@ class ModelRepository(
                 "ModelRepository",
                 "No valid model pair found under ${modelsDirectory.absolutePath}"
             )
-        }
-    }
-
-    private fun copyBundledDefaultModel(): Boolean {
-        val paramAssetPath = findAssetPath(PARAM_ASSET_CANDIDATES)
-        val binAssetPath = findAssetPath(BIN_ASSET_CANDIDATES)
-        if (paramAssetPath == null || binAssetPath == null) {
-            logRepository.error(
-                "ModelRepository",
-                "Bundled default model assets not found (param=$paramAssetPath, bin=$binAssetPath)"
-            )
-            return false
-        }
-
-        val paramCopied = ensureBundledAssetPresent(
-            assetPath = paramAssetPath,
-            destination = File(modelsDirectory, DEFAULT_MODEL_PARAM_FILE)
-        )
-        val binCopied = ensureBundledAssetPresent(
-            assetPath = binAssetPath,
-            destination = File(modelsDirectory, DEFAULT_MODEL_BIN_FILE)
-        )
-        return paramCopied && binCopied
-    }
-
-    private fun ensureBundledAssetPresent(
-        assetPath: String,
-        destination: File
-    ): Boolean {
-        if (destination.isFile && destination.length() > 0L) {
-            return true
-        }
-        return copyAssetToDestination(assetPath = assetPath, destination = destination)
-    }
-
-    private fun findAssetPath(candidates: List<String>): String? {
-        return candidates.firstOrNull { candidate ->
-            runCatching { context.assets.open(candidate).close() }.isSuccess
-        }
-    }
-
-    private fun copyAssetToDestination(
-        assetPath: String,
-        destination: File
-    ): Boolean {
-        return runCatching {
-            context.assets.open(assetPath).use { input ->
-                destination.outputStream().use { output ->
-                    input.copyTo(output)
-                }
-            }
-            true
-        }.getOrElse { throwable ->
-            logRepository.error(
-                "ModelRepository",
-                "Failed to copy asset $assetPath -> ${destination.name}: ${throwable.message}"
-            )
-            false
         }
     }
 
@@ -672,24 +606,11 @@ class ModelRepository(
     )
 
     companion object {
-        private const val DEFAULT_MODEL_NAME = "Real-ESRGANv3-anime_x2"
-        private const val DEFAULT_MODEL_PARAM_FILE = "$DEFAULT_MODEL_NAME.param"
-        private const val DEFAULT_MODEL_BIN_FILE = "$DEFAULT_MODEL_NAME.bin"
         private const val DEFAULT_IMPORTED_MODEL_PREFIX = "imported_model"
         private const val MAX_MODEL_NAME_LENGTH = 80
         private const val PARAM_FILE_EXTENSION = "param"
         private const val BIN_FILE_EXTENSION = "bin"
         private const val ZIP_FILE_EXTENSION = "zip"
-        private val PARAM_ASSET_CANDIDATES = listOf(
-            "x2.param",
-            "Real-ESRGANv3-anime/x2.param",
-            DEFAULT_MODEL_PARAM_FILE
-        )
-        private val BIN_ASSET_CANDIDATES = listOf(
-            "x2.bin",
-            "Real-ESRGANv3-anime/x2.bin",
-            DEFAULT_MODEL_BIN_FILE
-        )
     }
 
 }

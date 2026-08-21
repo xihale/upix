@@ -83,11 +83,8 @@ android {
         compose = true
     }
 
-    sourceSets {
-        getByName("main") {
-            assets.directories.add("../../models/models/Real-ESRGANv3-anime")
-        }
-    }
+    // Models are NOT bundled: they are downloaded from the GitHub "models"
+    // release (Models screen) or imported from local files by the user.
 
     packaging {
         resources {
@@ -162,5 +159,6 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.robolectric)
     androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

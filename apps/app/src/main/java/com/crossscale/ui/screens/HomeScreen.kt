@@ -5,6 +5,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -18,8 +19,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -33,13 +36,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.model.RemoteEndpoint
 import com.crossscale.data.repository.OutputImageFormat
-import com.crossscale.ui.components.SheetActionItem
 import com.crossscale.ui.components.StageProgressOverlay
 import com.crossscale.ui.screens.home.BottomActionDock
 import com.crossscale.ui.screens.home.CheckpointSection
@@ -110,7 +113,6 @@ fun HomeScreen(
     val availableScales = state.models.map { model -> model.scaleFactor }.distinct().sorted()
 
     var showModelSheet by rememberSaveable { mutableStateOf(false) }
-    var showScaleSheet by rememberSaveable { mutableStateOf(false) }
     var showFormatSheet by rememberSaveable { mutableStateOf(false) }
     var queueSheetVisible by rememberSaveable { mutableStateOf(false) }
     var previewSource by rememberSaveable { mutableStateOf<String?>(null) }
@@ -193,7 +195,7 @@ fun HomeScreen(
                 ),
                 availableScales = availableScales,
                 onPickModel = { showModelSheet = true },
-                onPickScale = { showScaleSheet = true },
+                onPickScale = onSelectScale,
                 onPickFormat = { showFormatSheet = true },
                 onSelectOutputFolder = onSelectOutputFolder,
                 onUseDefaultOutputFolder = onUseDefaultOutputFolder,
@@ -251,52 +253,15 @@ fun HomeScreen(
                 modifier = Modifier.padding(horizontal = Spacing.xl, vertical = Spacing.sm)
             )
             state.models.forEach { model ->
-                SheetActionItem(
+                SelectSheetItem(
                     label = model.name,
-                    subtitle = stringResource(R.string.home_model_subtitle, model.scaleFactor)
+                    sublabel = stringResource(R.string.home_model_subtitle, model.scaleFactor),
+                    selected = state.selectedModel?.name == model.name
                 ) {
                     showModelSheet = false
                     onSelectModel(model)
                 }
             }
-            Spacer(modifier = Modifier.height(Spacing.xl))
-        }
-    }
-
-    if (showScaleSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { showScaleSheet = false },
-            shape = MaterialTheme.shapes.extraLarge,
-            containerColor = MaterialTheme.colorScheme.surface
-        ) {
-            Text(
-                text = stringResource(R.string.home_select_scale_sheet_title),
-                style = MaterialTheme.typography.titleMedium,
-                modifier = Modifier.padding(horizontal = Spacing.xl, vertical = Spacing.sm)
-            )
-            availableScales.forEach { scale ->
-                val scaleModels = state.models.filter { model -> model.scaleFactor == scale }
-                val selectedModelName = state.selectedModel?.name
-                // 同倍率多个模型：当前选中模型属于该倍率则沿用，否则取第一个。
-                val targetModel = scaleModels.firstOrNull { model ->
-                    model.name == selectedModelName
-                } ?: scaleModels.firstOrNull()
-                SheetActionItem(
-                    label = stringResource(R.string.config_scale_value, scale),
-                    subtitle = targetModel?.name,
-                    selected = state.selectedModel?.scaleFactor == scale,
-                    labelStyle = ValueMono
-                ) {
-                    showScaleSheet = false
-                    onSelectScale(scale)
-                }
-            }
-            Text(
-                text = stringResource(R.string.config_scale_sheet_hint),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = Spacing.xl, vertical = Spacing.sm)
-            )
             Spacer(modifier = Modifier.height(Spacing.xl))
         }
     }
@@ -314,7 +279,7 @@ fun HomeScreen(
                 modifier = Modifier.padding(horizontal = Spacing.xl, vertical = Spacing.sm)
             )
             OutputImageFormat.entries.forEach { format ->
-                SheetActionItem(
+                SelectSheetItem(
                     label = outputFormatLabel(format, followLabel),
                     selected = state.outputImageFormat == format,
                     labelStyle = ValueMono
@@ -358,6 +323,37 @@ fun HomeScreen(
             onDismiss = { previewSource = null }
         )
     }
+}
+
+/** Sheet 内单选项：M3 官方 ListItem + RadioButton 单选列表模式。 */
+@Composable
+private fun SelectSheetItem(
+    label: String,
+    sublabel: String? = null,
+    selected: Boolean,
+    labelStyle: TextStyle? = null,
+    onClick: () -> Unit
+) {
+    ListItem(
+        headlineContent = {
+            Text(text = label, style = labelStyle ?: MaterialTheme.typography.bodyLarge)
+        },
+        supportingContent = if (sublabel != null) {
+            {
+                Text(
+                    text = sublabel,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        } else {
+            null
+        },
+        trailingContent = { RadioButton(selected = selected, onClick = null) },
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+    )
 }
 
 /** 舞台处理 scrim/覆盖层：出现/消失做 fade（200ms ease-out）。只接收 task，避免整包 UI state 参与 overlay 重组。 */

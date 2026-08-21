@@ -1,35 +1,91 @@
 # CrossScale Models
 
-This directory contains pre-trained super-resolution models.
+CrossScale uses ncnn-format super-resolution models. Model files are **not
+bundled** with the CLI or the Android app — they are distributed via the
+[models GitHub release](https://github.com/xihale/crossscale/releases/tag/models)
+and downloaded on demand.
 
 ## Model Format
 
-CrossScale uses ncnn format models with the following files:
-- `.param` - Model architecture definition
-- `.bin` - Model weights
+Each model is a pair of files:
+- `.param` — model architecture definition
+- `.bin` — model weights
 
-## Supported Models
+Both files must share the same stem (e.g. `foo.param` + `foo.bin`).
 
-You can use any ncnn-trained super-resolution model, including:
-- Real-ESRGAN
-- RealSR
-- ESRGAN
-- SRResNet
-- Custom models
+## Getting Models
 
-## Adding Models
+### CLI
 
-1. Copy your `.param` and `.bin` files to this directory
-2. Ensure both files have matching names (e.g., `model.param` and `model.bin`)
-3. CrossScale will automatically detect and list available models
+```bash
+crossscale model list-remote          # list models in the GitHub release
+crossscale model download realesrganv3-anime-x2
+crossscale model list                 # list models installed locally
+crossscale model import ~/my-model.param ~/my-model.bin   # local custom models
+```
 
-Note: a `models/models` symlink pointing at a machine-local model store
-(e.g. `~/.config/CrossScale/models`) is no longer tracked by git — create it
-locally if you want that directory scanned.
+By default downloads land in `./models` (the same directory `process` scans);
+override with `--models-dir`.
+
+### Android
+
+Models page → 下载模型 (download icon): fetches the release manifest, lists
+available models, and downloads them into the app's model directory.
+本地自定义模型 (your own `.param`/`.bin`/`.zip`) can still be imported via
+导入模型.
+
+## Layout
+
+Models are discovered recursively, so both layouts work:
+
+```
+models/
+  Real-ESRGANv3-anime-x2.param      # flat
+  Real-ESRGANv3-anime-x2.bin
+  Real-ESRGANv3-anime/
+    x2.param                        # nested (name becomes "Real-ESRGANv3-anime-x2")
+    x2.bin
+```
+
+A `models/models` symlink pointing at a machine-local store (e.g.
+`~/.config/CrossScale/models`) is followed by the scanner; it is untracked —
+create it locally if you want that directory scanned.
+
+## Publishing (maintainers)
+
+Models live in the git tag `models` / release `models`. Use
+`scripts/publish_models.py` to (re)build the release: it packs each model
+directory into a zip, computes sha256/size, and writes `manifest.json`:
+
+```bash
+./scripts/publish_models.py                                          # publish new models, skip existing
+./scripts/publish_models.py models Real-ESRGANv3-anime-x2            # one model (full name or MODEL STEM)
+./scripts/publish_models.py models Real-ESRGANv3-anime-x2 --overwrite
+```
+
+Requires the `gh` CLI authenticated with repo scope (`gh auth login`); no
+token env vars. Models already in the release are **skipped** by default
+(their manifest entry reuses the asset's sha256/size); `--overwrite`
+re-uploads the selected ones. Assets absent from the local catalog are
+pruned unless `--no-prune`.
+
+```json
+{
+  "version": 1,
+  "models": [
+    {
+      "name": "realesrganv3-anime-x2",
+      "scale": 2,
+      "size_bytes": 17825792,
+      "sha256": "…",
+      "url": "https://github.com/xihale/crossscale/releases/download/models/realesrganv3-anime-x2.zip"
+    }
+  ]
+}
+```
 
 ## Model Metadata
 
 CrossScale automatically infers:
-- Scale factor (2x, 4x, etc.)
-- Input channels (RGB or Grayscale)
-- Recommended tile size
+- Scale factor (2x, 4x, etc., from the `x2`/`x4` filename suffix)
+- Input channels (RGB or Grayscale, from the param file)

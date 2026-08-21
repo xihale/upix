@@ -1,7 +1,5 @@
 package com.crossscale.ui.navigation
 
-import android.content.Intent
-import android.net.Uri
 import androidx.camera.core.ExperimentalGetImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -40,6 +38,7 @@ import com.crossscale.ui.theme.NavEnterTransition
 import com.crossscale.ui.theme.NavExitTransition
 import com.crossscale.viewmodel.DeviceViewModel
 import com.crossscale.viewmodel.MainViewModel
+import com.crossscale.viewmodel.ModelsViewModel
 import com.crossscale.viewmodel.ProcessingViewModel
 
 /**
@@ -59,10 +58,12 @@ fun CrossScaleNavigation(
     val mainViewModel: MainViewModel = viewModel(factory = MainViewModel.factory(container))
     val deviceViewModel: DeviceViewModel = viewModel(factory = DeviceViewModel.factory(container))
     val processingViewModel: ProcessingViewModel = viewModel(factory = ProcessingViewModel.factory(container))
+    val modelsViewModel: ModelsViewModel = viewModel(factory = ModelsViewModel.factory(container))
 
     val mainUiState by mainViewModel.uiState.collectAsState()
     val deviceUiState by deviceViewModel.uiState.collectAsState()
     val processingUiState by processingViewModel.uiState.collectAsState()
+    val modelsUiState by modelsViewModel.uiState.collectAsState()
     val connectionState: ConnectionState by deviceViewModel.connectionState.collectAsState()
     val connectedEndpoint: RemoteEndpoint? by deviceViewModel.connectedEndpoint.collectAsState()
     val remoteFallbackMessage: String? by processingViewModel.remoteFallbackMessage.collectAsState()
@@ -247,14 +248,10 @@ fun CrossScaleNavigation(
                     onImportModels = inputSelection::importModels,
                     onDeleteModel = mainViewModel::deleteModel,
                     modelDirectoryPath = mainUiState.modelDirectoryPath,
-                    onOpenModelRelease = {
-                        val releaseUri = Uri.parse(MODEL_RELEASE_URL)
-                        runCatching {
-                            context.startActivity(
-                                Intent(Intent.ACTION_VIEW, releaseUri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            )
-                        }
-                    }
+                    remoteUiState = modelsUiState,
+                    onRefreshRemoteModels = modelsViewModel::refreshRemoteModels,
+                    onDownloadRemoteModel = modelsViewModel::downloadRemoteModel,
+                    onDismissDownloadError = modelsViewModel::dismissDownloadError
                 )
             }
         }
@@ -274,8 +271,6 @@ fun CrossScaleNavigation(
         }
     }
 }
-
-private const val MODEL_RELEASE_URL = "https://github.com/xihale/crossscale/releases"
 
 @Composable
 private fun DestinationContainer(content: @Composable () -> Unit) {

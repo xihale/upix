@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace args {
 
@@ -38,8 +39,15 @@ struct Process {
     bool no_daemon = false;
 };
 
-// `model list` — no flags.
-struct Model {};
+// `model {list, list-remote, download, import}`. One instance per nested
+// subcommand (see cli_app.cpp) so each carries its own models_dir/repo.
+struct Model {
+    std::string subcommand;         // list / list-remote / download / import
+    std::string models_dir;         // empty = ./models
+    std::string repo;               // "owner/name", empty = default upstream
+    std::vector<std::string> names; // download: model names from the manifest
+    std::vector<std::string> files; // import: local .param/.bin paths
+};
 
 // `perf {list-probes, gpu-efficiency, gpu-concurrency, gpu-reuse}`.
 // One instance per nested subcommand (see cli_app.cpp) so each gets its own

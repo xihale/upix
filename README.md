@@ -68,13 +68,31 @@ Process all images in a directory (recursively), preserving directory structure:
 
 ### Model Management
 
-List available models:
+Models are **not bundled** with the CLI or the Android app. They are
+distributed via the [models GitHub release](https://github.com/xihale/crossscale/releases/tag/models)
+and downloaded on demand (see `models/README.md`):
 
 ```bash
-./crossscale-cli model list
+./crossscale-cli model list-remote                          # list models in the release
+./crossscale-cli model download Real-ESRGANv3-anime-x2      # download into ./models
+./crossscale-cli model list                                 # list installed models
+./crossscale-cli model import ~/foo.param ~/foo.bin         # import local custom models
 ```
 
-Models are discovered from the `models` directory (either in current working directory or specified via `--models`). Each model should have a `.param` and a `.bin` file.
+Models are discovered from the `models` directory (default `./models`, override
+with `--models`). Each model is a `.param` + `.bin` pair; both layouts work:
+
+```
+models/
+  Real-ESRGANv3-anime-x2.param      # flat
+  Real-ESRGANv3-anime-x2.bin
+  Real-CUGAN-conservative/          # nested (name: "Real-CUGAN-conservative-x2")
+    x2.param
+    x2.bin
+```
+
+On Android, the Models page offers the same download list plus local import
+of your own `.param`/`.bin`/`.zip` files.
 
 ### Distributed Mode
 
@@ -147,7 +165,7 @@ Load with `--config FILE`. CLI flags override the loaded configuration.
 
 ## Troubleshooting
 
-- **No models found**: Ensure the `models` directory exists and contains `.param`/`.bin` files. Use `--models` to specify an alternative location.
+- **No models found**: Run `./crossscale-cli model list-remote && ./crossscale-cli model download <name>`, or use `--models` to point at an existing directory. On Android, use 模型 → 下载模型.
 - **Out of memory**: Reduce tile size or reduce `--jobs`. For GPU mode, close other applications to free VRAM. If GPU memory is insufficient, try smaller tile sizes (128 or 192).
 - **Slow GPU performance**: Increase `--batch-size` to improve GPU occupancy. Ensure you are not using `--jobs` with `--gpu` (they are incompatible). For large directories, consider using CPU mode with `--jobs` for parallel image processing, or process images individually with `--gpu`.
 - **Crashes with GPU in directory mode**: This should no longer occur as GPU directory mode now uses a single shared engine sequentially. If you experience crashes, ensure you are using the latest version.

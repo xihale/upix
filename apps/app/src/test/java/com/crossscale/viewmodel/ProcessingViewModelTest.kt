@@ -704,8 +704,6 @@ class ProcessingViewModelTest {
 
         override fun modelDirectoryPath(): String = "/models"
 
-        override suspend fun syncBundledModels() = Unit
-
         override suspend fun refreshModels() {
             _models.value = listOf(modelInfo)
         }

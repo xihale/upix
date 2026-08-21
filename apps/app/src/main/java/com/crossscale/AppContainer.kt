@@ -6,6 +6,7 @@ import com.crossscale.data.repository.BatchOutputRepository
 import com.crossscale.data.repository.DeviceRepository
 import com.crossscale.data.repository.InputSourceRepository
 import com.crossscale.data.repository.LogRepository
+import com.crossscale.data.repository.ModelReleaseRepository
 import com.crossscale.data.repository.ModelRepository
 import com.crossscale.data.repository.NativeImageProcessingRepository
 import com.crossscale.data.repository.PairingRepository
@@ -23,6 +24,7 @@ class AppContainer(context: Context) {
     }
     val appSettingsRepository = AppSettingsRepository(appContext)
     val modelRepository = ModelRepository(appContext, logRepository)
+    val modelReleaseRepository = ModelReleaseRepository(logRepository)
     val deviceRepository = DeviceRepository(logRepository)
     val pairingRepository = PairingRepository(appContext, logRepository)
     val inputSourceRepository = InputSourceRepository(appContext, logRepository)

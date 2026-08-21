@@ -42,17 +42,17 @@ apps/captures/
 apps/app/src/main/jniLibs/
 apps/app/src/main/cpp/third_party/
 
-# Models (large files)
+# Models (large files — distributed via GitHub release, never committed)
 *.bin
 *.param
 *.onnx
 *.tflite
 *.ncnn
-models/**/*.bin
-models/**/*.param
 cli/models/
 !models/README.md
-!cli/models/README.md
+models/manifest.json
+# Machine-local model store symlink (e.g. -> ~/.config/CrossScale/models)
+models/models
 
 # Logs
 *.log

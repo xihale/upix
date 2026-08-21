@@ -65,10 +65,44 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     });
 
     // ── model ───────────────────────────────────────────────────────────────
-    static args::Model model_args;
-    auto* model = app->add_subcommand("model", "List installed models");
-    model->add_subcommand("list", "List available models")
-        ->callback([] { g_exit_code = cmd_model(model_args); });
+    // One Model instance per nested subcommand (like perf) so each carries its
+    // own models_dir/repo. `repo` is bound on the subcommands that hit the
+    // network (list-remote/download); list/import are purely local.
+    auto* model = app->add_subcommand("model", "Manage models (list, download, import)");
+
+    static args::Model model_list_args;
+    auto* mlist = model->add_subcommand("list", "List installed models");
+    mlist->add_option("--models-dir", model_list_args.models_dir,
+                      "Models directory (default: ./models)");
+    mlist->callback([] { model_list_args.subcommand = "list";
+                         g_exit_code = cmd_model(model_list_args); });
+
+    static args::Model model_remote_args;
+    auto* mremote = model->add_subcommand("list-remote", "List models in the GitHub release");
+    mremote->add_option("--repo", model_remote_args.repo,
+                        "GitHub repo owner/name (default: upstream release)");
+    mremote->callback([] { model_remote_args.subcommand = "list-remote";
+                           g_exit_code = cmd_model(model_remote_args); });
+
+    static args::Model model_dl_args;
+    auto* mdl = model->add_subcommand("download", "Download model(s) from the release");
+    mdl->add_option("names", model_dl_args.names, "Model name(s), see list-remote")
+        ->required();
+    mdl->add_option("--models-dir", model_dl_args.models_dir,
+                    "Models directory (default: ./models)");
+    mdl->add_option("--repo", model_dl_args.repo,
+                    "GitHub repo owner/name (default: upstream release)");
+    mdl->callback([] { model_dl_args.subcommand = "download";
+                       g_exit_code = cmd_model(model_dl_args); });
+
+    static args::Model model_imp_args;
+    auto* mimp = model->add_subcommand("import", "Import local .param/.bin files");
+    mimp->add_option("files", model_imp_args.files, "Local .param/.bin file path(s)")
+        ->required();
+    mimp->add_option("--models-dir", model_imp_args.models_dir,
+                     "Models directory (default: ./models)");
+    mimp->callback([] { model_imp_args.subcommand = "import";
+                        g_exit_code = cmd_model(model_imp_args); });
 
     // ── perf ────────────────────────────────────────────────────────────────
     // One Perf instance per nested subcommand so each carries its own defaults
