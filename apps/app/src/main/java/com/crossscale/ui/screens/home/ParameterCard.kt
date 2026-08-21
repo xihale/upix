@@ -156,8 +156,8 @@ internal fun ParameterCard(
                     )
                 }
 
-                // 倍率：模型固有倍率的分段直选；未装模型时隐藏。
-                if (availableScales.isNotEmpty()) {
+                // 倍率：模型固有倍率的分段直选；仅一个倍率（无可切换项）时隐藏。
+                if (availableScales.size > 1) {
                     val scaleLabel = stringResource(R.string.config_label_scale)
                     SingleChoiceSegmentedButtonRow(
                         modifier = Modifier
