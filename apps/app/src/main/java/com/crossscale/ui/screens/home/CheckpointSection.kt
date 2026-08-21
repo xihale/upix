@@ -1,7 +1,6 @@
 package com.crossscale.ui.screens.home
 
 import androidx.compose.animation.animateContentSize
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -124,17 +123,20 @@ internal fun CheckpointSection(
                 }
                 Box(modifier = Modifier.weight(1f))
                 if (checkpointSummary.pendingItemDetails.isNotEmpty()) {
-                    Icon(
-                        imageVector = Icons.Outlined.ExpandMore,
-                        contentDescription = stringResource(
-                            if (detailsExpanded) R.string.common_collapse else R.string.common_details
-                        ),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .size(20.dp)
-                            .clickable { detailsExpanded = !detailsExpanded }
-                            .padding(Spacing.xs)
-                    )
+                    // 展开热区收进 IconButton，不再裸图标（触控目标更稳）。
+                    IconButton(
+                        onClick = { detailsExpanded = !detailsExpanded },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.ExpandMore,
+                            contentDescription = stringResource(
+                                if (detailsExpanded) R.string.common_collapse else R.string.common_details
+                            ),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
                 }
             }
 
