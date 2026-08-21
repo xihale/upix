@@ -55,17 +55,15 @@ val EnterSizeSpec = tween<IntSize>(EnterTween, easing = EmphasizedEasing)
 val NavEnterTransition: EnterTransition = fadeIn(tween(EnterTween, easing = EmphasizedEasing)) +
     slideInHorizontally(tween(EnterTween, easing = EmphasizedEasing)) { it / 12 }
 
-/** NavHost 目的地退出：fade-out + 轻微左滑出（90ms）。 */
-val NavExitTransition: ExitTransition = fadeOut(tween(NavExitTween)) +
-    slideOutHorizontally(tween(NavExitTween)) { -it / 16 }
+/** NavHost 目的地退出：纯快速 fade（90ms），不做位移，降低转场期间双屏重绘成本。 */
+val NavExitTransition: ExitTransition = fadeOut(tween(NavExitTween))
 
 /** 返回键进入（pop）：fade + 轻微左滑入，与前进方向镜像。 */
 val NavPopEnterTransition: EnterTransition = fadeIn(tween(EnterTween, easing = EmphasizedEasing)) +
     slideInHorizontally(tween(EnterTween, easing = EmphasizedEasing)) { -it / 12 }
 
-/** 返回键退出（pop）：fade-out + 轻微右滑出。 */
-val NavPopExitTransition: ExitTransition = fadeOut(tween(NavExitTween)) +
-    slideOutHorizontally(tween(NavExitTween)) { it / 16 }
+/** 返回键退出（pop）：纯快速 fade。 */
+val NavPopExitTransition: ExitTransition = fadeOut(tween(NavExitTween))
 
 /**
  * 给定 interactionSource，按下时缩到 0.97（graphicsLayer，仅 transform）。
