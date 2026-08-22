@@ -469,6 +469,27 @@ internal class ProcessingRunEngine(
 
                 if (pendingByUri.isEmpty()) {
                     checkpointRepository.clearCheckpoint()
+                    // Record the first ready output so the queue sheet can open
+                    // the result with the system image viewer on tap.
+                    if (!queueItemId.isNullOrBlank()) {
+                        val outputUri = batchOutputRepository.firstReadyOutputUri(
+                            outputDirectory = outputDirectory,
+                            inputs = allImages
+                        )
+                        if (outputUri != null) {
+                            viewModel.updateUiState { state ->
+                                state.copy(
+                                    queueItems = state.queueItems.map { item ->
+                                        if (item.id == queueItemId) {
+                                            item.copy(lastOutputUri = outputUri)
+                                        } else {
+                                            item
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
                     viewModel.updateUiState { state ->
                         val currentTask = state.task ?: return@updateUiState state
                         state.copy(

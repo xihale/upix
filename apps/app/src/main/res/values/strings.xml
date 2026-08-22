@@ -39,6 +39,7 @@
     <string name="home_restore_backup_result_partial">已恢复 %1$d 个，失败 %2$d 个</string>
     <string name="home_continue_queue">继续队列</string>
     <string name="home_start_upscaling">开始超分</string>
+    <string name="home_processing">处理中</string>
     <string name="home_open_queue_cd">打开队列</string>
 
     <!-- Home hero area -->

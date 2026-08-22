@@ -22,6 +22,7 @@ import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -63,10 +64,11 @@ internal fun BottomActionDock(
     ) {
         val ctaInteraction = remember { MutableInteractionSource() }
         val ctaLabel = stringResource(
-            if (isProcessing) R.string.home_continue_queue else R.string.home_start_upscaling
+            if (isProcessing) R.string.home_processing else R.string.home_start_upscaling
         )
         Button(
             onClick = onStart,
+            enabled = !isProcessing,
             modifier = Modifier
                 .weight(1f)
                 .height(56.dp)
@@ -82,11 +84,18 @@ internal fun BottomActionDock(
                 contentColor = MaterialTheme.colorScheme.onPrimary
             )
         ) {
-            Icon(
-                imageVector = Icons.Filled.PlayArrow,
-                contentDescription = null,
-                modifier = Modifier.size(22.dp)
-            )
+            if (isProcessing) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    strokeWidth = 2.5.dp
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Filled.PlayArrow,
+                    contentDescription = null,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
             Spacer(modifier = Modifier.width(Spacing.sm))
             Text(text = ctaLabel, style = MaterialTheme.typography.titleMedium)
         }
