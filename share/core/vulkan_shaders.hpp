@@ -29,6 +29,14 @@ struct VkAllocGuard {
     ncnn::VkAllocator* staging = nullptr;
     ~VkAllocGuard() {
         if (dev != nullptr) {
+            // Staging buffers are full-frame host-mapped coherent memory that
+            // ncnn caches by size bucket and never shrinks; without this the
+            // largest frame ever staged stays resident (and mapped) for the
+            // process lifetime. Clearing here — submits are done and the
+            // allocator is exclusively ours until reclaim — keeps per-image
+            // RSS flat. Blob buffers are VRAM-backed on dGPU and worth
+            // reusing across images, so they are kept.
+            if (staging) staging->clear();
             if (blob) dev->reclaim_blob_allocator(blob);
             if (staging) dev->reclaim_staging_allocator(staging);
         }

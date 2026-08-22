@@ -240,6 +240,7 @@ int run_batch(const args::Process& a) {
             int width = 0;
             int height = 0;
             int channels = 0;
+            size_t pixel_bytes = 0;  // decoded frame bytes, for queue byte caps
             crossscale::Image input_image;
         };
 
@@ -265,6 +266,7 @@ int run_batch(const args::Process& a) {
             prepared.width = prepared.input_image.width();
             prepared.height = prepared.input_image.height();
             prepared.channels = prepared.input_image.channels();
+            prepared.pixel_bytes = prepared.input_image.size();
 
             return prepared;
         };
@@ -281,6 +283,7 @@ int run_batch(const args::Process& a) {
             int out_width = 0;
             int out_height = 0;
             int channels = 0;
+            size_t pixel_bytes = 0;  // encoded-ready frame bytes, for queue byte caps
             crossscale::Image output_image;
         };
 
@@ -350,6 +353,7 @@ int run_batch(const args::Process& a) {
             processed.out_width = out_width;
             processed.out_height = out_height;
             processed.channels = prepared.channels;
+            processed.pixel_bytes = output_image.size();
             processed.output_image = std::move(output_image);
             return processed;
         };
@@ -434,6 +438,16 @@ int run_batch(const args::Process& a) {
                 }
                 const size_t prepared_queue_limit = std::max(static_cast<size_t>(4), kPrepareWorkers * 2);
                 const size_t processed_queue_limit = std::max(static_cast<size_t>(2), kSaveWorkers * 2);
+                // Byte caps on top of the count limits: a directory of huge
+                // images makes each queued frame worth hundreds of MB, so a
+                // count-only bound can pin several GB of decoded inputs /
+                // full outputs ahead of the GPU and the encoders. A queue
+                // always accepts its first item, so one oversized image that
+                // alone exceeds the cap still flows.
+                constexpr size_t kPreparedQueueByteCap = 768u << 20;
+                constexpr size_t kProcessedQueueByteCap = 1024u << 20;
+                size_t prepared_queue_bytes = 0;
+                size_t processed_queue_bytes = 0;
                 std::deque<PreparedTask> prepared_queue;
                 std::deque<ProcessedTask> processed_queue;
                 std::mutex prepared_mutex;
@@ -464,13 +478,18 @@ int run_batch(const args::Process& a) {
                             if (!prepared.has_value()) {
                                 continue;
                             }
+                            const size_t task_bytes = prepared.value().pixel_bytes;
                             std::unique_lock<std::mutex> lock(prepared_mutex);
-                            while (prepared_queue.size() >= prepared_queue_limit && !g_cancel_requested.load()) {
+                            while ((prepared_queue.size() >= prepared_queue_limit ||
+                                    (prepared_queue_bytes > 0 &&
+                                     prepared_queue_bytes + task_bytes > kPreparedQueueByteCap)) &&
+                                   !g_cancel_requested.load()) {
                                 prepared_cv.wait_for(lock, kCancelPoll);
                             }
                             if (g_cancel_requested.load()) {
                                 break;
                             }
+                            prepared_queue_bytes += task_bytes;
                             prepared_queue.emplace_back(std::move(prepared.value()));
                             lock.unlock();
                             prepared_cv.notify_one();
@@ -485,13 +504,18 @@ int run_batch(const args::Process& a) {
 
                 std::thread process_thread([&]() {
                     auto enqueue_processed = [&](ProcessedTask&& processed) {
+                        const size_t task_bytes = processed.pixel_bytes;
                         std::unique_lock<std::mutex> lock(processed_mutex);
-                        while (processed_queue.size() >= processed_queue_limit && !g_cancel_requested.load()) {
+                        while ((processed_queue.size() >= processed_queue_limit ||
+                                (processed_queue_bytes > 0 &&
+                                 processed_queue_bytes + task_bytes > kProcessedQueueByteCap)) &&
+                               !g_cancel_requested.load()) {
                             processed_cv.wait_for(lock, kCancelPoll);
                         }
                         if (g_cancel_requested.load()) {
                             return false;
                         }
+                        processed_queue_bytes += task_bytes;
                         processed_queue.emplace_back(std::move(processed));
                         lock.unlock();
                         processed_cv.notify_one();
@@ -520,6 +544,7 @@ int run_batch(const args::Process& a) {
                             // CROSSSCALE_GPU_SUBMIT_QUEUE* env vars. With submit_budget
                             // pinned to 1 inside the engine, batching gains nothing —
                             // take one prepared task at a time.
+                            prepared_queue_bytes -= prepared_queue.front().pixel_bytes;
                             prepared_batch.emplace_back(std::move(prepared_queue.front()));
                             prepared_queue.pop_front();
                         }
@@ -559,6 +584,7 @@ int run_batch(const args::Process& a) {
                                 if ((processed_queue.empty() && process_done) || g_cancel_requested.load()) {
                                     break;
                                 }
+                                processed_queue_bytes -= processed_queue.front().pixel_bytes;
                                 processed = std::move(processed_queue.front());
                                 processed_queue.pop_front();
                             }

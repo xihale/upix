@@ -66,6 +66,19 @@ namespace {
         return std::clamp(level, 0, 9);
     }
 
+    // PNG color type for the 1-4 channel 8-bit images this codebase produces
+    // (indexed by channel count; entry 0 unused).
+    constexpr uint8_t kPngColorTypeByChannels[5] = {0, 0, 4, 2, 6};
+
+    // The libdeflate fast path below materializes the AVG-filtered frame plus
+    // a worst-case compress_bound output — ~2x raw bytes on top of the image
+    // itself (measured: a 14000x14400 output peaks ~1.1GB extra RSS). Past
+    // this raw-size threshold, stream through libpng instead: identical
+    // pixels, same fixed AVG filter, O(rows) extra memory, at the cost of the
+    // ~2.6x slower encode (639ms vs 245ms at 4500^2) — negligible next to
+    // multi-second inference at these dimensions.
+    constexpr size_t kPngStreamingThresholdBytes = 128u << 20;
+
     // libdeflate level for the PNG fast path: same numeric scale as the old
     // zlib mapping. Measured on 4500x4500 RGB super-resolution output, the
     // full PNG encode drops 639ms -> 245ms (2.6x) at default quality with
@@ -109,8 +122,6 @@ namespace {
         if (width <= 0 || height <= 0 || channels < 1 || channels > 4) {
             return false;
         }
-
-        static constexpr uint8_t color_type_by_channels[5] = {0, 0, 4, 2, 6};
 
         const size_t stride = static_cast<size_t>(width) * static_cast<size_t>(channels);
 
@@ -197,7 +208,7 @@ namespace {
         ihdr[6] = static_cast<uint8_t>(be_height >> 8);
         ihdr[7] = static_cast<uint8_t>(be_height);
         ihdr[8] = 8;  // bit depth
-        ihdr[9] = color_type_by_channels[channels];
+        ihdr[9] = kPngColorTypeByChannels[channels];
         ihdr[10] = 0;  // compression: deflate
         ihdr[11] = 0;  // filter: adaptive (per-row bytes carry the actual type)
         ihdr[12] = 0;  // interlace: none
@@ -205,6 +216,78 @@ namespace {
         write_png_chunk(out, "IDAT", compressed.get(), compressed_size);
         write_png_chunk(out, "IEND", nullptr, 0);
         return true;
+    }
+
+    // Streaming PNG writer for very large images (see
+    // kPngStreamingThresholdBytes): libpng encodes row-by-row straight to the
+    // output file, so the only extra memory is the row-pointer table. Same
+    // fixed AVG filter as the libdeflate path; decoded pixels are identical,
+    // only the compressed byte stream differs.
+    auto png_write_to_stream(png_structp png, png_bytep data, png_size_t length) -> void {
+        auto* file = static_cast<std::ofstream*>(png_get_io_ptr(png));
+        file->write(reinterpret_cast<const char*>(data), length);
+        if (!*file) {
+            png_error(png, "PNG write failed");
+        }
+    }
+
+    auto png_flush_stream(png_structp png) -> void {
+        static_cast<std::ofstream*>(png_get_io_ptr(png))->flush();
+    }
+
+    auto save_png_streaming(const Image& image, const std::filesystem::path& path, int level) -> expected<void, ImageError> {
+        std::ofstream file(path, std::ios::binary);
+        if (!file.is_open()) {
+            return std::unexpected(ImageError{3, "Cannot open file for writing: " + path.string()});
+        }
+
+        png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+        if (!png) {
+            return std::unexpected(ImageError{5, "Failed to create PNG write struct"});
+        }
+        png_infop info = png_create_info_struct(png);
+        if (!info) {
+            png_destroy_write_struct(&png, nullptr);
+            return std::unexpected(ImageError{5, "Failed to create PNG info struct"});
+        }
+
+        // volatile: this local must survive the libpng setjmp/longjmp unwinding.
+        volatile bool encode_failed = false;
+        if (setjmp(png_jmpbuf(png))) {
+            encode_failed = true;
+        }
+
+        if (!encode_failed) {
+            png_set_write_fn(png, &file, png_write_to_stream, png_flush_stream);
+            // Match the fast path's effective level floor (libdeflate has no 0).
+            png_set_compression_level(png, level < 1 ? 1 : level);
+            png_set_filter(png, 0, PNG_FILTER_AVG);
+
+            const int channels = image.channels();
+            png_set_IHDR(png, info,
+                         static_cast<png_uint_32>(image.width()),
+                         static_cast<png_uint_32>(image.height()),
+                         8, kPngColorTypeByChannels[channels],
+                         PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+            png_write_info(png, info);
+
+            std::vector<png_bytep> rows(static_cast<size_t>(image.height()));
+            const size_t stride = static_cast<size_t>(image.width()) * channels;
+            for (int y = 0; y < image.height(); ++y) {
+                rows[y] = const_cast<png_bytep>(image.data() + static_cast<size_t>(y) * stride);
+            }
+            png_write_image(png, rows.data());
+            png_write_end(png, info);
+            png_destroy_write_struct(&png, &info);
+        } else {
+            png_destroy_write_struct(&png, &info);
+        }
+
+        file.close();
+        if (encode_failed || !file) {
+            return std::unexpected(ImageError{4, "Failed to write file: " + path.string()});
+        }
+        return {};
     }
 
     auto load_png(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError> {
@@ -398,6 +481,15 @@ auto Image::load(const std::filesystem::path& path)
 
 auto Image::save(const std::filesystem::path& path, int quality) const
     -> expected<void, ImageError> {
+    // Very large PNG outputs go straight to disk row-by-row instead of
+    // materializing the whole compressed file (plus the fast path's ~2x raw
+    // transient) in RAM.
+    const std::string fmt = normalize_image_format(path.extension().string());
+    if ((fmt.empty() || fmt == "png") && size() >= kPngStreamingThresholdBytes) {
+        return save_png_streaming(*this, path,
+                                  png_libdeflate_level_from_quality(quality));
+    }
+
     auto encoded = save_to_memory(path.extension().string(), quality);
     if (!encoded.has_value()) {
         return std::unexpected(encoded.error());
