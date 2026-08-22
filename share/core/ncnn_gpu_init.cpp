@@ -180,8 +180,7 @@ std::mutex g_vulkan_init_mutex;
         // realcugan-ncnn-vulkan: x2=18, x3=14, x4=19).
         bool has_crop_layer = false;
         while (std::getline(file, line)) {
-            if (!found_interp && line.rfind("Interp", 0) == 0) {
-                found_interp = true;
+            if (line.rfind("Interp", 0) == 0) {
                 auto param = [&line](const std::string& key) -> double {
                     try {
                         size_t pos = line.find(key);
@@ -191,7 +190,8 @@ std::mutex g_vulkan_init_mutex;
                         return 1.0;
                     }
                 };
-                if (param(" 0=") == 2.0) { found_interp = false; continue; }  // fixed output size, not a scale
+                if (param(" 0=") == 2.0) continue;  // fixed output size, not a scale
+                found_interp = true;
                 const double h_scale = param(" 1=");
                 if (h_scale > 0.0) interp_product *= h_scale;
             }

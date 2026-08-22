@@ -20,7 +20,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CLI_DIR="$ROOT/cli"
 APPS_DIR="$ROOT/apps"
-CLI_BIN="$CLI_DIR/build/linux/x86_64/release/crossscale-cli"
+# xmake outputs to the project-root build dir ($(projectdir)/build/...), not
+# cli/build. Prefer the fresh root build; fall back to a legacy cli/build copy.
+CLI_BIN="$ROOT/build/linux/x86_64/release/crossscale-cli"
+[ -x "$CLI_BIN" ] || CLI_BIN="$CLI_DIR/build/linux/x86_64/release/crossscale-cli"
 APP_APK="$APPS_DIR/app/build/outputs/apk/debug/app-debug.apk"
 TEST_APK="$APPS_DIR/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
 PACKAGE="com.crossscale"
