@@ -2,9 +2,11 @@ package com.crossscale.data.repository
 
 import com.crossscale.data.model.RemoteModel
 import java.io.File
+import java.io.InputStream
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URL
 import java.security.MessageDigest
@@ -24,11 +26,10 @@ import org.json.JSONObject
  *   manifest.json          — {"version":1,"models":[{name,scale,size_bytes,sha256,url}]}
  *   <model-name>.zip       — DEFLATE zip：<name>.param + <name>.bin
  *
- * 网络策略（国内环境）：
- *   1. 系统解析直连；
- *   2. 失败后查固定 IP 表（见 GITHUB_FIXED_IPS）直连 + SNI 剥离。
- * 证书判断完整保留：握手链校验走系统信任库，握手后平台默认主机名验证器
- * 逐跳核对证书与目标域名，不匹配即失败，绝不关闭校验。
+ * 网络策略（国内环境）：固定 IP 表（见 GITHUB_FIXED_IPS）直连，TLS 默认
+ * 携带 SNI 会被 GFW 掐断（表现为超时），故用自研裸 HTTPS 客户端剥离 SNI。
+ * 证书判断完整保留：握手链校验走系统信任库，平台默认主机名验证器
+ * 核对证书与目标域名，不匹配即失败，绝不关闭校验。
  *
  * 下载流式写入 models 目录下的 .part 临时文件，校验 sha256 后解压，
  * 任一步失败即清理临时文件并返回错误信息（不抛异常）。
@@ -39,20 +40,15 @@ class ModelReleaseRepository(
     /** manifest 拉取失败（网络/解析/版本）时返回 null，message 为用户可读原因。 */
     suspend fun fetchRemoteModels(): Result<List<RemoteModel>> = withContext(Dispatchers.IO) {
         runCatching {
-            var lastError: Throwable? = null
-            for (stripSni in CONNECT_STRATEGIES) {
-                try {
-                    return@runCatching parseManifest(httpGetText(MANIFEST_URL, stripSni))
-                } catch (throwable: Throwable) {
-                    lastError = throwable
-                    // 逐次尝试属预期内降级，仅记 debug：避免每次联网都在日志里刷屏。
-                    logRepository.debug(
-                        "ModelReleaseRepository",
-                        "Manifest attempt failed (sni-stripped=$stripSni): ${throwable.message}"
-                    )
-                }
+            try {
+                return@runCatching parseManifest(httpGetText(MANIFEST_URL))
+            } catch (throwable: Throwable) {
+                logRepository.debug(
+                    "ModelReleaseRepository",
+                    "Manifest fetch attempt failed: ${throwable.message}"
+                )
+                throw throwable
             }
-            throw lastError ?: IOException("manifest fetch failed")
         }.onSuccess {
             logRepository.info("ModelReleaseRepository", "Manifest fetched")
         }.onFailure { throwable ->
@@ -73,19 +69,7 @@ class ModelReleaseRepository(
             if (!modelsDirectory.exists() && !modelsDirectory.mkdirs()) {
                 throw IOException("cannot create ${modelsDirectory.absolutePath}")
             }
-            var lastError: Throwable? = null
-            for (stripSni in CONNECT_STRATEGIES) {
-                try {
-                    return@runCatching downloadAndInstall(stripSni, model, modelsDirectory, onProgress)
-                } catch (throwable: Throwable) {
-                    lastError = throwable
-                    logRepository.info(
-                        "ModelReleaseRepository",
-                        "Download attempt failed (sni-stripped=$stripSni): ${throwable.message}"
-                    )
-                }
-            }
-            throw lastError ?: IOException("download failed")
+            return@runCatching downloadAndInstall(model, modelsDirectory, onProgress)
         }.onFailure { throwable ->
             logRepository.error("ModelReleaseRepository", "Download ${model.name} failed: ${throwable.message}")
         }
@@ -93,7 +77,6 @@ class ModelReleaseRepository(
 
     /** 单次尝试：下载→sha256 校验→解压，任一步失败抛异常并清理临时文件。 */
     private fun downloadAndInstall(
-        stripSni: Boolean,
         model: RemoteModel,
         modelsDirectory: File,
         onProgress: (Long, Long) -> Unit
@@ -103,24 +86,23 @@ class ModelReleaseRepository(
         val digest = MessageDigest.getInstance("SHA-256")
         var downloaded = 0L
         try {
-            openConnection(model.url, stripSni).let { connection ->
-                try {
-                    val total = connection.contentLengthLong
-                    connection.inputStream.use { input ->
-                        zipFile.outputStream().use { output ->
-                            val buffer = ByteArray(DOWNLOAD_BUFFER_BYTES)
-                            while (true) {
-                                val read = input.read(buffer)
-                                if (read < 0) break
-                                output.write(buffer, 0, read)
-                                digest.update(buffer, 0, read)
-                                downloaded += read
-                                onProgress(downloaded, total)
-                            }
+            RawHttpsFetcher().get(URL(model.url)).use { response ->
+                if (response.status != HttpURLConnection.HTTP_OK) {
+                    throw IOException("HTTP ${response.status} for ${model.url}")
+                }
+                val total = response.header("content-length")?.toLongOrNull() ?: 0L
+                response.body.use { input ->
+                    zipFile.outputStream().use { output ->
+                        val buffer = ByteArray(DOWNLOAD_BUFFER_BYTES)
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read < 0) break
+                            output.write(buffer, 0, read)
+                            digest.update(buffer, 0, read)
+                            downloaded += read
+                            onProgress(downloaded, total)
                         }
                     }
-                } finally {
-                    connection.disconnect()
                 }
             }
         } catch (throwable: Throwable) {
@@ -171,28 +153,175 @@ class ModelReleaseRepository(
         return model.name
     }
 
-    private fun httpGetText(url: String, stripSni: Boolean): String {
-        val connection = openConnection(url, stripSni)
-        try {
-            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
-                throw IOException("HTTP ${connection.responseCode} for $url")
+    private fun httpGetText(url: String): String {
+        RawHttpsFetcher().get(URL(url)).use { response ->
+            if (response.status != HttpURLConnection.HTTP_OK) {
+                throw IOException("HTTP ${response.status} for $url")
             }
-            return connection.inputStream.bufferedReader().use { it.readText() }
-        } finally {
-            connection.disconnect()
+            return response.body.bufferedReader().use { it.readText() }
         }
     }
 
-    private fun openConnection(url: String, stripSni: Boolean): HttpURLConnection {
-        val connection = URL(url).openConnection() as HttpURLConnection
-        if (stripSni && connection is HttpsURLConnection) {
-            connection.sslSocketFactory = StripSniSocketFactory()
+    /**
+     * 裸 HTTPS 客户端。绕过 HttpURLConnection 的原因：其内部 TLS 升级会按
+     * 真实主机名回填 SNI，GFW 据此掐断连接（表现为超时），自定义
+     * SSLSocketFactory 无法阻止。这里自己完成 TCP→TLS→HTTP：
+     *   - TCP 直连固定 IP 表地址（绕过 DNS 污染）；
+     *   - 以 InetAddress 建 TLS 连接，默认不携带 SNI；若 CDN 因此返回
+     *     错误默认证书，再携 SNI 重试（证书校验始终完整执行）；
+     *   - 握手后用平台默认 HostnameVerifier 核对证书与目标域名；
+     *   - 手动跟随 3xx 重定向。
+     */
+    private class RawHttpsFetcher {
+        class Response(
+            val status: Int,
+            val headers: Map<String, String>,
+            val body: InputStream,
+            private val socket: Socket
+        ) : AutoCloseable {
+            override fun close() {
+                runCatching { body.close() }
+                runCatching { socket.close() }
+            }
+
+            fun header(name: String): String? = headers[name.lowercase(Locale.ROOT)]
         }
-        connection.connectTimeout = CONNECT_TIMEOUT_MS
-        connection.readTimeout = READ_TIMEOUT_MS
-        connection.instanceFollowRedirects = true
-        connection.setRequestProperty("User-Agent", "crossscale-android/0.1")
-        return connection
+
+        fun get(url: URL, redirectsLeft: Int = MAX_REDIRECTS): Response {
+            if (redirectsLeft < 0) throw IOException("too many redirects for $url")
+            val host = requireNotNull(url.host)
+            val port = if (url.port > 0) url.port else url.defaultPort
+            require(url.protocol == "https") { "only https is supported: $url" }
+
+            val ip = fixedIpFor(host) ?: InetAddress.getByName(host)
+            val ssl = try {
+                connectTls(ip, port, host, sendSni = false)
+            } catch (verifyFailure: IOException) {
+                if (verifyFailure.message?.startsWith("hostname verification") == true) {
+                    connectTls(ip, port, host, sendSni = true)
+                } else {
+                    throw verifyFailure
+                }
+            }
+
+            try {
+                val request = buildString {
+                    append("GET ").append(url.file.ifEmpty { "/" }).append(" HTTP/1.1\r\n")
+                    append("Host: ").append(host).append("\r\n")
+                    append("User-Agent: crossscale-android/0.1\r\n")
+                    append("Accept: */*\r\n")
+                    append("Connection: close\r\n\r\n")
+                }
+                ssl.outputStream.write(request.toByteArray(Charsets.US_ASCII))
+                ssl.outputStream.flush()
+
+                val reader = ssl.inputStream.bufferedReader(Charsets.ISO_8859_1)
+                val statusLine = reader.readLine()
+                    ?: throw IOException("empty response from $host")
+                val status = statusLine.split(" ").getOrNull(1)?.toIntOrNull()
+                    ?: throw IOException("malformed status line: $statusLine")
+                val headers = mutableMapOf<String, String>()
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    if (line.isEmpty()) break
+                    val idx = line.indexOf(':')
+                    if (idx > 0) {
+                        headers[line.substring(0, idx).trim().lowercase(Locale.ROOT)] =
+                            line.substring(idx + 1).trim()
+                    }
+                }
+
+                if (status in 300..399) {
+                    val location = headers["location"]
+                        ?: throw IOException("redirect without Location ($status)")
+                    ssl.close()
+                    return get(URL(url, location), redirectsLeft - 1)
+                }
+
+                val body = if (headers["transfer-encoding"]?.equals("chunked", true) == true) {
+                    ChunkedInputStream(ssl.getInputStream())
+                } else {
+                    ssl.getInputStream()
+                }
+                return Response(status, headers, body, ssl)
+            } catch (throwable: Throwable) {
+                runCatching { ssl.close() }
+                throw throwable
+            }
+        }
+
+        /** TCP 直连固定 IP → TLS 握手（可选 SNI）→ 平台默认校验器核对证书域名。 */
+        private fun connectTls(ip: InetAddress, port: Int, host: String, sendSni: Boolean): SSLSocket {
+            val plain = Socket()
+            try {
+                plain.connect(InetSocketAddress(ip, port), CONNECT_TIMEOUT_MS)
+                plain.soTimeout = READ_TIMEOUT_MS
+                val factory = SSLSocketFactory.getDefault() as SSLSocketFactory
+                // InetAddress 重载：TLS ClientHello 默认不携带 SNI。
+                val s = factory.createSocket(plain, ip.hostAddress, port, true) as SSLSocket
+                if (sendSni) {
+                    // Conscrypt 专有 API，反射调用以避免编译期依赖。
+                    runCatching {
+                        s.javaClass.methods.firstOrNull { it.name == "setHostname" }
+                            ?.invoke(s, host)
+                    }
+                }
+                s.startHandshake()
+                val verified = HttpsURLConnection.getDefaultHostnameVerifier()
+                    .verify(host, s.session)
+                if (!verified) {
+                    runCatching { s.close() }
+                    throw IOException("hostname verification failed for $host via $ip")
+                }
+                return s
+            } catch (throwable: Throwable) {
+                runCatching { plain.close() }
+                throw throwable
+            }
+        }
+
+        private companion object {
+            const val MAX_REDIRECTS = 5
+        }
+    }
+
+    /** RFC 7230 chunked 传输解码流（最小实现，仅覆盖本客户端场景）。 */
+    private class ChunkedInputStream(private val input: InputStream) : InputStream() {
+        private var remaining = 0L
+        private var done = false
+
+        override fun read(): Int = read(ByteArray(1), 0, 1).let { if (it < 0) -1 else it }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            if (done) return -1
+            if (remaining <= 0) {
+                remaining = readChunkSize()
+                if (remaining == 0L) {
+                    // 尾随头部直到空行。
+                    val reader = input.bufferedReader(Charsets.ISO_8859_1)
+                    while (reader.readLine()?.isNotEmpty() == true) { /* drain trailers */ }
+                    done = true
+                    return -1
+                }
+            }
+            val n = input.read(buffer, offset, minOf(length.toLong(), remaining).toInt())
+            if (n < 0) throw IOException("truncated chunked body")
+            remaining -= n
+            if (remaining == 0L) {
+                val cr = input.read()
+                val lf = input.read()
+                if (cr != '\r'.code || lf != '\n'.code) {
+                    throw IOException("malformed chunk terminator")
+                }
+            }
+            return n
+        }
+
+        private fun readChunkSize(): Long {
+            val sizeLine = input.bufferedReader(Charsets.ISO_8859_1).readLine()
+                ?: throw IOException("missing chunk size")
+            return sizeLine.substringBefore(';').trim().toLong(16)
+        }
     }
 
     private fun ByteArray.toHexString(): String =
@@ -236,41 +365,6 @@ private fun fixedIpFor(host: String): InetAddress? {
         val suffix = pattern.removePrefix("*")
         pattern.startsWith("*") && (host == suffix || host.endsWith(".$suffix"))
     }?.let { (_, ip) -> InetAddress.getByName(ip) }
-}
-
-/**
- * 「固定 IP + SNI 剥离」套接字工厂：
- * - GitHub 各主机用 [fixedIpFor] 查固定 IP 直连，表外主机回退系统解析；
- * - 按 IP 建连，JSSE 默认不发送 SNI，ClientHello 即完成剥离；
- * - 证书判断保留：握手链校验走系统信任库，握手后 HttpsURLConnection
- *   的默认主机名验证器仍逐跳核对证书与目标域名，不匹配直接失败。
- */
-private class StripSniSocketFactory : SSLSocketFactory() {
-    private val delegate = getDefault() as SSLSocketFactory
-
-    override fun createSocket(socket: Socket?, host: String?, port: Int, autoClose: Boolean): SSLSocket =
-        resolveAndConnect(requireNotNull(host) { "null host" }, port)
-
-    override fun createSocket(host: String?, port: Int): SSLSocket =
-        resolveAndConnect(requireNotNull(host) { "null host" }, port)
-
-    override fun createSocket(host: String?, port: Int, localHost: InetAddress?, localPort: Int): SSLSocket =
-        resolveAndConnect(requireNotNull(host) { "null host" }, port)
-
-    override fun createSocket(address: InetAddress?, port: Int): SSLSocket =
-        delegate.createSocket(address, port) as SSLSocket
-
-    override fun createSocket(address: InetAddress?, port: Int, localAddress: InetAddress?, localPort: Int): SSLSocket =
-        delegate.createSocket(address, port, localAddress, localPort) as SSLSocket
-
-    private fun resolveAndConnect(host: String, port: Int): SSLSocket {
-        val ip = fixedIpFor(host) ?: InetAddress.getByName(host)
-        return delegate.createSocket(ip, port) as SSLSocket
-    }
-
-    override fun getDefaultCipherSuites(): Array<String> = delegate.defaultCipherSuites
-
-    override fun getSupportedCipherSuites(): Array<String> = delegate.supportedCipherSuites
 }
 
 /** 解析 manifest.json 文本；版本不支持或字段缺失时抛 IOException。 */

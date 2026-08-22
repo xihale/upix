@@ -1,7 +1,9 @@
 package com.crossscale.ui.components
 
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -13,6 +15,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -36,27 +40,40 @@ fun LogViewer(logs: List<LogEntry>, modifier: Modifier = Modifier) {
         verticalArrangement = Arrangement.spacedBy(Spacing.sm)
     ) {
         items(items = logs, key = { it.id }) { logEntry ->
+            val clipboard = LocalClipboardManager.current
+            val fullText = "[${formatter.format(logEntry.timestamp)}] [${logEntry.tag}] [${logEntry.level}] ${logEntry.message}"
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .combinedClickable(
+                        onLongClick = {
+                            // 长按复制单条完整日志。
+                            clipboard.setText(AnnotatedString(fullText))
+                        },
+                        onClick = {}
+                    )
                     .padding(vertical = Spacing.xs),
                 verticalArrangement = Arrangement.spacedBy(Spacing.xs)
             ) {
-                Text(
-                    text = "[${formatter.format(logEntry.timestamp)}] [${logEntry.tag}]",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Medium
-                )
-                Text(
-                    text = buildAnnotatedString {
-                        // 仅级别标签着色，正文保持中性色，避免 E 级整行红底过重。
-                        withStyle(SpanStyle(color = levelColor(logEntry.level))) {
-                            append("[${logEntry.level}] ")
-                        }
-                        append(logEntry.message)
-                    },
-                    style = LogMonoStyle
-                )
+                SelectionContainer {
+                    Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                        Text(
+                            text = "[${formatter.format(logEntry.timestamp)}] [${logEntry.tag}]",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Medium
+                        )
+                        Text(
+                            text = buildAnnotatedString {
+                                // 仅级别标签着色，正文保持中性色，避免 E 级整行红底过重。
+                                withStyle(SpanStyle(color = levelColor(logEntry.level))) {
+                                    append("[${logEntry.level}] ")
+                                }
+                                append(logEntry.message)
+                            },
+                            style = LogMonoStyle
+                        )
+                    }
+                }
             }
         }
     }
