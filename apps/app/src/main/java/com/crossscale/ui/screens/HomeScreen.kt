@@ -266,8 +266,10 @@ fun HomeScreen(
     }
 
     if (showModelSheet) {
-        // 打开下载入口时自动拉取一次远程模型列表（VM 内部有并发去重）。
-        LaunchedEffect(Unit) { onRefreshRemoteModels() }
+        // 仅在远程列表为空时自动拉取一次；已有列表时不主动联网，靠手动刷新。
+        if (remoteUiState.remoteModels.isEmpty()) {
+            LaunchedEffect(Unit) { onRefreshRemoteModels() }
+        }
         ModalBottomSheet(
             onDismissRequest = { showModelSheet = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),

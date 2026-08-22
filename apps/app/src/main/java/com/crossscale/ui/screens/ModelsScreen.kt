@@ -56,9 +56,9 @@ fun ModelsScreen(
 ) {
     var showRemoteDialog by remember { mutableStateOf(false) }
 
-    // 点开下载入口时自动拉取一次远程模型列表（VM 内部有并发去重，已有列表时静默刷新）。
+    // 仅在远程列表为空时自动拉取一次；已有列表时不主动联网，靠手动刷新。
     LaunchedEffect(showRemoteDialog) {
-        if (showRemoteDialog) onRefreshRemoteModels()
+        if (showRemoteDialog && remoteUiState.remoteModels.isEmpty()) onRefreshRemoteModels()
     }
     Column(
         modifier = Modifier

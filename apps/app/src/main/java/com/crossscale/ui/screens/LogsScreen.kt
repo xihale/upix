@@ -22,7 +22,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import com.crossscale.R
 import com.crossscale.data.model.LogEntry
 import com.crossscale.data.model.LogLevel
@@ -75,6 +77,15 @@ fun LogsScreen(
             )
             OutlinedButton(onClick = onClearLogs) {
                 Text(stringResource(R.string.logs_clear))
+            }
+            val clipboard = LocalClipboardManager.current
+            OutlinedButton(onClick = {
+                val text = filteredLogs.joinToString(separator = "\n") { entry ->
+                    "${entry.level} [${entry.tag}] ${entry.message}"
+                }
+                clipboard.setText(AnnotatedString(text))
+            }) {
+                Text(stringResource(R.string.logs_copy))
             }
         }
         Text(

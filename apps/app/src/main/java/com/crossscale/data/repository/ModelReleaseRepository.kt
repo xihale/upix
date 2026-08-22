@@ -45,13 +45,16 @@ class ModelReleaseRepository(
                     return@runCatching parseManifest(httpGetText(MANIFEST_URL, stripSni))
                 } catch (throwable: Throwable) {
                     lastError = throwable
-                    logRepository.info(
+                    // 逐次尝试属预期内降级，仅记 debug：避免每次联网都在日志里刷屏。
+                    logRepository.debug(
                         "ModelReleaseRepository",
                         "Manifest attempt failed (sni-stripped=$stripSni): ${throwable.message}"
                     )
                 }
             }
             throw lastError ?: IOException("manifest fetch failed")
+        }.onSuccess {
+            logRepository.info("ModelReleaseRepository", "Manifest fetched")
         }.onFailure { throwable ->
             logRepository.error("ModelReleaseRepository", "Fetch manifest failed: ${throwable.message}")
         }
