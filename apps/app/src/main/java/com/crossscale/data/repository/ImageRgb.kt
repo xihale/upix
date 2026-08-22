@@ -3,9 +3,12 @@ package com.crossscale.data.repository
 import android.content.ContentResolver
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.net.Uri
+import androidx.exifinterface.media.ExifInterface
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 
 /** Decoded RGB888 image payload handed to the native layer. */
 data class DecodedRgbImage(
@@ -38,11 +41,16 @@ internal fun decodeRgb(
         onError("Unable to read input URI $uri: ${throwable.message}")
     }.getOrNull() ?: return null
 
-    val argbBitmap = if (bitmap.config == Bitmap.Config.ARGB_8888) {
-        bitmap
+    // 竖拍照片的 EXIF 朝向：解码后按角度旋转，否则人像图会被横着放大。
+    // 流只能读一次，EXIF 需要单独再开一个流。
+    val orientationDegrees = readExifOrientationDegrees { resolver.openInputStream(uri) }
+    val orientedBitmap = applyExifRotation(bitmap, orientationDegrees)
+
+    val argbBitmap = if (orientedBitmap.config == Bitmap.Config.ARGB_8888) {
+        orientedBitmap
     } else {
-        val converted = bitmap.copy(Bitmap.Config.ARGB_8888, false)
-        bitmap.recycle()
+        val converted = orientedBitmap.copy(Bitmap.Config.ARGB_8888, false)
+        orientedBitmap.recycle()
         converted ?: return null
     }
 
@@ -140,4 +148,47 @@ internal fun isExistsConflict(throwable: Throwable): Boolean {
     return throwable is IOException &&
         (throwable.message?.contains("EEXIST", ignoreCase = true) == true ||
             throwable.message?.contains("File exists", ignoreCase = true) == true)
+}
+
+// ── EXIF 朝向（缩略图与 RGB 解码共用）──────────────────────────────
+
+/**
+ * 读取 EXIF 朝向角（0/90/180/270）。流只能消费一次，[openStream] 由调用方
+ * 提供一条独立的新流；读不到或不含 EXIF 时返回 0。
+ */
+internal fun readExifOrientationDegrees(openStream: () -> InputStream?): Int {
+    return runCatching {
+        openStream()?.use { stream ->
+            val exif = ExifInterface(stream)
+            when (
+                exif.getAttributeInt(
+                    ExifInterface.TAG_ORIENTATION,
+                    ExifInterface.ORIENTATION_NORMAL
+                )
+            ) {
+                ExifInterface.ORIENTATION_ROTATE_90,
+                ExifInterface.ORIENTATION_TRANSPOSE -> 90
+
+                ExifInterface.ORIENTATION_ROTATE_180,
+                ExifInterface.ORIENTATION_FLIP_HORIZONTAL -> 180
+
+                ExifInterface.ORIENTATION_ROTATE_270,
+                ExifInterface.ORIENTATION_TRANSVERSE -> 270
+
+                else -> 0
+            }
+        } ?: 0
+    }.getOrDefault(0)
+}
+
+/** 按角度顺时针旋转 [bitmap]；0 度原样返回。非 0 度时原 bitmap 会被回收。 */
+internal fun applyExifRotation(bitmap: Bitmap, degrees: Int): Bitmap {
+    val normalizedDegrees = ((degrees % 360) + 360) % 360
+    if (normalizedDegrees == 0) {
+        return bitmap
+    }
+    val matrix = Matrix().apply { postRotate(normalizedDegrees.toFloat()) }
+    val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, false)
+    bitmap.recycle()
+    return rotated
 }

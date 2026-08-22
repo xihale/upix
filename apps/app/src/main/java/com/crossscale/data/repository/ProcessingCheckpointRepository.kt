@@ -2,6 +2,7 @@ package com.crossscale.data.repository
 
 import android.content.Context
 import java.io.File
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -47,7 +48,9 @@ data class ProcessingCheckpoint(
 
 class ProcessingCheckpointRepository(
     context: Context,
-    private val logRepository: LogRepository
+    private val logRepository: LogRepository,
+    // 可注入 IO 调度器（单测注入 TestDispatcher）
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) : ProcessingCheckpointStore {
     private val checkpointFile = File(context.filesDir, CHECKPOINT_FILE_NAME)
     private val _checkpoint = MutableStateFlow<ProcessingCheckpoint?>(null)
@@ -83,24 +86,27 @@ class ProcessingCheckpointRepository(
         }
     }
 
-    override fun loadCheckpoint(): ProcessingCheckpoint? {
+    // 读/删都走 IO 调度器：文件 IO 不允许落在主线程。
+    override suspend fun loadCheckpoint(): ProcessingCheckpoint? = withContext(ioDispatcher) {
         val loadedCheckpoint = loadCheckpointFromDisk()
         _checkpoint.value = loadedCheckpoint
-        return loadedCheckpoint
+        loadedCheckpoint
     }
 
-    override fun clearCheckpoint() {
-        runCatching {
-            if (checkpointFile.exists()) {
-                checkpointFile.delete()
+    override suspend fun clearCheckpoint() {
+        withContext(ioDispatcher) {
+            runCatching {
+                if (checkpointFile.exists()) {
+                    checkpointFile.delete()
+                }
+            }.onFailure { throwable ->
+                logRepository.error(
+                    "ProcessingCheckpointRepository",
+                    "Failed to clear checkpoint: ${throwable.message}"
+                )
             }
-        }.onFailure { throwable ->
-            logRepository.error(
-                "ProcessingCheckpointRepository",
-                "Failed to clear checkpoint: ${throwable.message}"
-            )
+            _checkpoint.value = null
         }
-        _checkpoint.value = null
     }
 
     private fun loadCheckpointFromDisk(): ProcessingCheckpoint? {

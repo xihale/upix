@@ -2,7 +2,10 @@ package com.crossscale.ui.scanner
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -23,6 +26,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.DisposableEffect
@@ -173,7 +177,9 @@ fun QRScannerScreen(
                             }
                         }
                         .addOnFailureListener { throwable ->
-                            scanError = throwable.message ?: scanFailedMessage
+                            scanError = throwable.message
+                                ?.let { raw -> "$scanFailedMessage（$raw）" }
+                                ?: scanFailedMessage
                         }
                         .addOnCompleteListener {
                             processingFrame.set(false)
@@ -193,7 +199,9 @@ fun QRScannerScreen(
                     analysis
                 )
             } catch (throwable: Throwable) {
-                scanError = throwable.message ?: cameraFailedMessage
+                scanError = throwable.message
+                    ?.let { raw -> "$cameraFailedMessage（$raw）" }
+                    ?: cameraFailedMessage
             }
         }
         cameraProviderFuture.addListener(listener, ContextCompat.getMainExecutor(context))
@@ -246,6 +254,22 @@ fun QRScannerScreen(
                             modifier = Modifier.fillMaxWidth()
                         ) {
                             Text(stringResource(R.string.scanner_grant_permission))
+                        }
+                        // 永久拒绝后系统弹窗不再出现：提供直达应用详情页的手动入口。
+                        OutlinedButton(
+                            onClick = {
+                                runCatching {
+                                    context.startActivity(
+                                        Intent(
+                                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                            Uri.fromParts("package", context.packageName, null)
+                                        )
+                                    )
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(stringResource(R.string.scanner_open_settings))
                         }
                     }
                 }

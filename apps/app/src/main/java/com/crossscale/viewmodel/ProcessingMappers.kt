@@ -47,6 +47,8 @@ internal fun ProcessingQueueItemSummary.toPersistedQueueItem(): PersistedQueueIt
         outputDirectoryUri = outputDirectoryUri,
         overwriteOriginal = overwriteOriginal,
         backupOriginal = backupOriginal,
+        // 子目录开关必须随持久化往返，否则重启后丢失（旧文件缺该键时反序列化为默认 true）。
+        processNestedFolders = processNestedFolders,
         createdAtEpochMs = createdAtEpochMs,
         expectedItems = expectedItems,
         status = status,
@@ -66,6 +68,7 @@ internal fun PersistedQueueItem.toUiQueueItem(): ProcessingQueueItemSummary {
         outputDirectoryUri = outputDirectoryUri,
         overwriteOriginal = overwriteOriginal,
         backupOriginal = backupOriginal,
+        processNestedFolders = processNestedFolders,
         createdAtEpochMs = createdAtEpochMs,
         expectedItems = expectedItems,
         status = status,

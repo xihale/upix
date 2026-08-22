@@ -13,17 +13,20 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.SaveAlt
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -52,9 +55,12 @@ fun ModelsScreen(
     remoteUiState: ModelsUiState,
     onRefreshRemoteModels: () -> Unit,
     onDownloadRemoteModel: (com.crossscale.data.model.RemoteModel) -> Unit,
-    onDismissDownloadError: (String) -> Unit
+    onDismissDownloadError: (String) -> Unit,
+    onCancelDownload: (String) -> Unit
 ) {
-    var showRemoteDialog by remember { mutableStateOf(false) }
+    var showRemoteDialog by rememberSaveable { mutableStateOf(false) }
+    // 删除为不可恢复操作：卡片只登记目标，实际删除前统一弹确认框。
+    var deleteTarget by remember { mutableStateOf<ModelLibraryEntry?>(null) }
 
     // 仅在远程列表为空时自动拉取一次；已有列表时不主动联网，靠手动刷新。
     LaunchedEffect(showRemoteDialog) {
@@ -143,8 +149,10 @@ fun ModelsScreen(
                         downloading = entry.name in downloadingFromPc,
                         onUploadToPc = { onUploadToPc(entry) },
                         onDownloadFromPc = { onDownloadFromPc(entry) },
-                        onDelete = entry.localModel?.let { local ->
-                            { onDeleteModel(local) }
+                        onDelete = if (entry.localModel != null) {
+                            { deleteTarget = entry }
+                        } else {
+                            null
                         }
                     )
                 }
@@ -161,8 +169,32 @@ fun ModelsScreen(
                 onRefresh = onRefreshRemoteModels,
                 onDownload = onDownloadRemoteModel,
                 onDismiss = { showRemoteDialog = false },
-                onDismissError = onDismissDownloadError
+                onDismissError = onDismissDownloadError,
+                onCancelDownload = onCancelDownload
             )
         }
+    }
+
+    deleteTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleteTarget = null },
+            title = { Text(stringResource(R.string.models_delete_confirm_title)) },
+            text = { Text(stringResource(R.string.models_delete_confirm_body, target.name)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        target.localModel?.let(onDeleteModel)
+                        deleteTarget = null
+                    }
+                ) {
+                    Text(stringResource(R.string.common_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { deleteTarget = null }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            }
+        )
     }
 }

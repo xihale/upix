@@ -14,6 +14,9 @@ import com.crossscale.nativelib.NCNNEngine
 import com.crossscale.nativelib.NativeWorker
 import java.io.File
 import java.io.FileOutputStream
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 class CoordinatorClient(
     context: Context,
@@ -25,7 +28,14 @@ class CoordinatorClient(
     // re-run strict-MITM handshakes for each one-shot image submit. The public,
     // UI-facing endpoint shape (data.model.RemoteEndpoint) is owned by
     // DeviceViewModel, which derives it from these outcomes.
+    // 处理与连接在不同线程读写：@Volatile 保证可见性。
+    @Volatile
     private var connectedEndpoint: ConnectedEndpoint? = null
+
+    // 连接在/失联的可观察信号：clearEndpoint（如 PC 掉线）会把 false 抛出来，
+    // DeviceViewModel 据此把 connectionState 翻成 DISCONNECTED，UI 不再永久停留在已连接。
+    private val _connected = MutableStateFlow(false)
+    val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
     /**
      * 新连接流程: ECDH 握手 + CONNECT_REQUEST/RESPONSE 配对(无图像传输)。
@@ -81,6 +91,7 @@ class CoordinatorClient(
                 peerPubKeyB64 = learnedPubKey,
                 streamEncrypted = wantsEncryptedStream
             )
+            _connected.value = true
             logRepository.info("CoordinatorClient", "Connected to $normalizedHost:$port")
             return learnedPubKey
         }
@@ -218,9 +229,9 @@ class CoordinatorClient(
         )
 
         // null/empty output == PC unreachable / handshake failed / submit error.
-        // This is the remote-fallback trigger: drop the endpoint (so the UI flips
-        // to Native and the caller falls back for this image) and surface a
-        // failure the caller can catch.
+        // Drop the endpoint (so the UI flips to DISCONNECTED) and surface a
+        // failure the caller can catch. 引擎现在的行为是中止整个批次而不是
+        // 静默回退本地，因此这里只如实报告“PC 不可达”。
         if (encodedOutput == null || encodedOutput.isEmpty()) {
             clearEndpoint(endpoint)
             val reason = runCatching { NCNNEngine.nativeGetLastError() }
@@ -228,9 +239,9 @@ class CoordinatorClient(
                 ?.trim()
                 .orEmpty()
             val message = if (reason.isNotBlank()) {
-                "PC 不可达，已切换为本地处理：$reason"
+                "PC 不可达：$reason"
             } else {
-                "PC 不可达，已切换为本地处理"
+                "PC 不可达"
             }
             logRepository.error("CoordinatorClient", message)
             return Result.failure(IllegalStateException(message))
@@ -280,6 +291,7 @@ class CoordinatorClient(
 
     private fun clearEndpoint(endpoint: ConnectedEndpoint) {
         connectedEndpoint = null
+        _connected.value = false
         logRepository.info("CoordinatorClient", "Disconnected from ${endpoint.host}:${endpoint.port}")
     }
 

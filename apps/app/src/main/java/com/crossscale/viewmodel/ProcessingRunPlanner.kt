@@ -2,7 +2,6 @@ package com.crossscale.viewmodel
 
 import android.net.Uri
 import com.crossscale.data.model.ModelInfo
-import com.crossscale.data.model.ProcessingTask
 import com.crossscale.data.repository.BatchOutputStore
 import com.crossscale.data.repository.InputSourceResolver
 import com.crossscale.data.repository.LogRepository
@@ -14,9 +13,8 @@ import com.crossscale.data.repository.ResolvedImageInput
 
 // Run planning and checkpoint bookkeeping extracted from ProcessingViewModel.
 // The planner owns no state: every function is a computation over its arguments
-// plus repository reads/writes that are injected in the constructor. The only
-// view-state it ever needed was the current task's folder preference, which is
-// now passed in explicitly via the activeTask parameter of buildRunSetup.
+// plus repository reads/writes that are injected in the constructor. It never
+// reads view state — 每次运行的目录扫描开关由调用方显式传入。
 class ProcessingRunPlanner(
     private val inputSourceRepository: InputSourceResolver,
     private val batchOutputRepository: BatchOutputStore,
@@ -32,8 +30,7 @@ class ProcessingRunPlanner(
         processNestedFolders: Boolean,
         resumeCheckpoint: ProcessingCheckpoint?,
         retryFailedOnly: Boolean,
-        resumePendingUris: Set<String>?,
-        activeTask: ProcessingTask?
+        resumePendingUris: Set<String>?
     ): ProcessingRunSetup? {
         val outputDirectory = batchOutputRepository.prepareOutputDirectory(
             source = imagePath,
@@ -54,11 +51,9 @@ class ProcessingRunPlanner(
             )
         }
 
-        // Deliberately derived from the active task (falling back to nested
-        // scan), NOT from the processNestedFolders parameter above — that
-        // parameter only configures the output directory. Renamed so it no
-        // longer shadows the parameter.
-        val scanNestedFolders = activeTask?.processNestedFolders ?: true
+        // 目录扫描使用“本次运行自己的开关”：断点续跑跟随 checkpoint 记录的
+        // 值，其余情况跟随调用参数（UI 开关 / 队列项），绝不读上一个任务。
+        val scanNestedFolders = resumeCheckpoint?.processNestedFolders ?: processNestedFolders
 
         if (resumeCheckpoint != null && resumeCheckpoint.pendingItems.isNotEmpty()) {
             val pendingImagesFromCheckpoint = resumeCheckpoint.pendingItems.mapNotNull { pendingItem ->

@@ -106,7 +106,18 @@ internal fun persistUriPermission(
             flags
         )
     } catch (_: SecurityException) {
-        // Some providers do not grant persistable permissions.
+        // Photo Picker 之类只授予只读持久化权限：请求写权限会整体被拒，
+        // 降级为仅读重试，至少保住读权限（否则一条授权都持久化不上）。
+        val readFlag = flags and Intent.FLAG_GRANT_READ_URI_PERMISSION
+        if (readFlag != 0) {
+            try {
+                context.contentResolver.takePersistableUriPermission(uri, readFlag)
+            } catch (_: SecurityException) {
+                // Some providers do not grant persistable permissions.
+            } catch (_: IllegalArgumentException) {
+                // URI does not support persistable permissions.
+            }
+        }
     } catch (_: IllegalArgumentException) {
         // URI does not support persistable permissions.
     }

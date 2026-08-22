@@ -26,11 +26,15 @@ class LogRepository {
             message = message
         )
         _logs.update { current ->
-            val next = current + entry
-            if (next.size <= maxLogCount) {
-                next
+            // 先算保留窗口再拼接，最多一次列表拷贝（原先 current+entry 与 takeLast 各拷一次）
+            if (current.size < maxLogCount) {
+                current + entry
             } else {
-                next.takeLast(maxLogCount)
+                val retained = current.size - (maxLogCount - 1)
+                ArrayList<LogEntry>(maxLogCount).apply {
+                    addAll(current.subList(retained.coerceAtLeast(0), current.size))
+                    add(entry)
+                }
             }
         }
         emitPlatformLog(level = level, tag = tag, message = message)

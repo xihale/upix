@@ -270,7 +270,10 @@ class InputSourceRepository(
             ".bmp",
             ".gif",
             ".tif",
-            ".tiff"
+            ".tiff",
+            // HEIF/HEIC 照片（部分机型默认格式）
+            ".heic",
+            ".heif"
         )
     }
 

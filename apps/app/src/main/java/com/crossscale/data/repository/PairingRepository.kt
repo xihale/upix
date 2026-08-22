@@ -4,6 +4,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 data class TrustedPC(
@@ -24,14 +27,21 @@ data class LastPairedPC(
 
 class PairingRepository(
     context: Context,
-    private val logRepository: LogRepository
+    private val logRepository: LogRepository,
+    // 可注入 IO 调度器（单测注入 TestDispatcher）
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) {
-    private val prefs: SharedPreferences = run {
-        val masterKey = MasterKey.Builder(context.applicationContext)
+    private val appContext = context.applicationContext
+
+    // 懒初始化：MasterKey + EncryptedSharedPreferences 的密钥派生很重，
+    // 不能在 Application.onCreate（主线程）里构建；首次访问发生在下面的
+    // suspend 访问器内，全部切换到 IO 线程。
+    private val prefs: SharedPreferences by lazy {
+        val masterKey = MasterKey.Builder(appContext)
             .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
             .build()
         EncryptedSharedPreferences.create(
-            context.applicationContext,
+            appContext,
             PREFS_NAME,
             masterKey,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
@@ -39,9 +49,11 @@ class PairingRepository(
         )
     }
 
-    fun saveTrustedPC(host: String, port: Int, pc: TrustedPC) {
+    suspend fun saveTrustedPC(host: String, port: Int, pc: TrustedPC) = withContext(ioDispatcher) {
         val normalizedHost = host.trim()
-        if (normalizedHost.isBlank() || port !in 1..65535 || pc.identityPubKey.isBlank()) return
+        if (normalizedHost.isBlank() || port !in 1..65535 || pc.identityPubKey.isBlank()) {
+            return@withContext
+        }
         val blob = JSONObject().apply {
             put("pk", pc.identityPubKey)
             put("fp", pc.fingerprint)
@@ -50,11 +62,13 @@ class PairingRepository(
         logRepository.info("PairingRepository", "Saved trusted PC $normalizedHost:$port (fp=${pc.fingerprint})")
     }
 
-    fun getTrustedPC(host: String, port: Int): TrustedPC? {
+    suspend fun getTrustedPC(host: String, port: Int): TrustedPC? = withContext(ioDispatcher) {
         val normalizedHost = host.trim()
-        if (normalizedHost.isBlank() || port !in 1..65535) return null
-        val blob = prefs.getString(keyFor(normalizedHost, port), null) ?: return null
-        return runCatching {
+        if (normalizedHost.isBlank() || port !in 1..65535) {
+            return@withContext null
+        }
+        val blob = prefs.getString(keyFor(normalizedHost, port), null) ?: return@withContext null
+        runCatching {
             val obj = JSONObject(blob)
             val pk = obj.optString("pk")
             if (pk.isBlank()) null else TrustedPC(identityPubKey = pk, fingerprint = obj.optString("fp"))
@@ -66,14 +80,16 @@ class PairingRepository(
      * auto-reconnect. Overwrites any previous entry. Kept in sync with the
      * per-host `paired:$host:$port` trust table by the caller on connect.
      */
-    fun saveLastPairedPC(
+    suspend fun saveLastPairedPC(
         host: String,
         port: Int,
         identityPubKey: String,
         fingerprint: String?
-    ) {
+    ) = withContext(ioDispatcher) {
         val normalizedHost = host.trim()
-        if (normalizedHost.isBlank() || port !in 1..65535 || identityPubKey.isBlank()) return
+        if (normalizedHost.isBlank() || port !in 1..65535 || identityPubKey.isBlank()) {
+            return@withContext
+        }
         val blob = JSONObject().apply {
             put("host", normalizedHost)
             put("port", port)
@@ -87,14 +103,14 @@ class PairingRepository(
         )
     }
 
-    fun getLastPairedPC(): LastPairedPC? {
-        val blob = prefs.getString(KEY_LAST_PAIRED_PC, null) ?: return null
-        return runCatching {
+    suspend fun getLastPairedPC(): LastPairedPC? = withContext(ioDispatcher) {
+        val blob = prefs.getString(KEY_LAST_PAIRED_PC, null) ?: return@withContext null
+        runCatching {
             val obj = JSONObject(blob)
             val host = obj.optString("host").trim()
             val port = obj.optInt("port", -1)
             val pk = obj.optString("pk").trim()
-            if (host.isBlank() || port !in 1..65535 || pk.isBlank()) return null
+            if (host.isBlank() || port !in 1..65535 || pk.isBlank()) return@runCatching null
             val fp = obj.optString("fp").trim().ifBlank { null }
             LastPairedPC(host = host, port = port, identityPubKey = pk, fingerprint = fp)
         }.getOrNull()

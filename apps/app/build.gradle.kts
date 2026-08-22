@@ -132,6 +132,11 @@ dependencies {
 
     // ViewModel
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    // lifecycle-aware Compose state collection (collectAsStateWithLifecycle)
+    implementation(libs.androidx.lifecycle.runtime.compose)
+
+    // EXIF orientation for image decode paths
+    implementation(libs.androidx.exifinterface)
 
     // Navigation
     implementation(libs.androidx.navigation.compose)

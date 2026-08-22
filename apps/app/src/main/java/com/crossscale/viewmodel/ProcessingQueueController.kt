@@ -1,5 +1,6 @@
 package com.crossscale.viewmodel
 
+import com.crossscale.R
 import com.crossscale.data.model.ProcessingStatus
 import com.crossscale.data.repository.InputSourceResolver
 import com.crossscale.data.repository.LogRepository
@@ -8,6 +9,7 @@ import com.crossscale.data.repository.ProcessingCheckpoint
 import com.crossscale.data.repository.ProcessingCheckpointStore
 import com.crossscale.data.repository.canRetryFailedOnly
 import com.crossscale.network.CoordinatorClient
+import com.crossscale.util.StringProvider
 import java.util.UUID
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -16,10 +18,10 @@ import kotlinx.coroutines.withContext
 
 // Batch-queue state machine extracted from ProcessingViewModel: queue CRUD with
 // PENDING/RUNNING dedup and FAILED reuse, default syncing, retry configuration,
-// and the run-next/handle-finished chaining that drives queued batches one at
-// a time. All view-state mutations and run kickoff go through the owning
+// and the run-next/handle-finished chaining that drives queued batches one at a
+// time. All view-state mutations and run kickoff go through the owning
 // ProcessingViewModel, so the recursive coupling with the run engine (engine
-// finally -> handleQueuedRunFinished -> runNextQueuedBatchIfNeeded ->
+// finally -> onRunFinished -> handleQueuedRunFinished -> runNextQueuedBatchIfNeeded ->
 // startProcessingInternal) still resolves inside the ViewModel, exactly as
 // before the extraction.
 internal class ProcessingQueueController(
@@ -28,6 +30,7 @@ internal class ProcessingQueueController(
     private val checkpointRepository: ProcessingCheckpointStore,
     private val logRepository: LogRepository,
     private val coordinatorClient: CoordinatorClient? = null,
+    private val stringProvider: StringProvider,
     private val scope: CoroutineScope,
     private val ioDispatcher: CoroutineDispatcher
 ) {
@@ -84,7 +87,11 @@ internal class ProcessingQueueController(
                 "ProcessingViewModel",
                 "Skipped duplicate enqueue for active batch ${reusableBatch.id.take(8)} source=$normalizedImagePath"
             )
-            estimateQueuedBatchExpectedItems(reusableBatch.id, normalizedImagePath)
+            estimateQueuedBatchExpectedItems(
+                queueItemId = reusableBatch.id,
+                source = normalizedImagePath,
+                processNestedFolders = reusableBatch.processNestedFolders
+            )
             return reusableBatch.id
         }
 
@@ -101,7 +108,11 @@ internal class ProcessingQueueController(
                 "ProcessingViewModel",
                 "Reused failed queued batch ${reusableBatch.id.take(8)} for source=$normalizedImagePath"
             )
-            estimateQueuedBatchExpectedItems(reusableBatch.id, normalizedImagePath)
+            estimateQueuedBatchExpectedItems(
+                queueItemId = reusableBatch.id,
+                source = normalizedImagePath,
+                processNestedFolders = reusableBatch.processNestedFolders
+            )
             return reusableBatch.id
         }
 
@@ -124,22 +135,23 @@ internal class ProcessingQueueController(
             "Enqueued batch ${queueItem.id.take(8)} source=$normalizedImagePath model=$normalizedModelName"
         )
 
-        estimateQueuedBatchExpectedItems(queueItem.id, normalizedImagePath)
+        // 预估条数时用本队列项自己的子目录开关（不再是当前任务的开关）。
+        estimateQueuedBatchExpectedItems(
+            queueItemId = queueItem.id,
+            source = normalizedImagePath,
+            processNestedFolders = processNestedFolders
+        )
         return queueItem.id
     }
 
     private fun estimateQueuedBatchExpectedItems(
         queueItemId: String,
-        source: String
+        source: String,
+        processNestedFolders: Boolean
     ) {
         scope.launch {
             val expectedItems = withContext(ioDispatcher) {
-                val task = viewModel.currentUiState().task
-                if (task != null) {
-                    inputSourceRepository.resolveImageInputs(source = source, nested = task.processNestedFolders).size
-                } else {
-                    inputSourceRepository.resolveImageInputs(source = source, nested = true).size // Default to nested for queue estimation if no active task
-                }
+                inputSourceRepository.resolveImageInputs(source = source, nested = processNestedFolders).size
             }
             updateItem(queueItemId) { item ->
                 item.copy(expectedItems = expectedItems)
@@ -159,7 +171,10 @@ internal class ProcessingQueueController(
         viewModel.updateUiState { state ->
             state.copy(isQueueRunning = true)
         }
-        runNextQueuedBatchIfNeeded(preferredBatchId = normalizedPreferredBatchId)
+        // 队列推进涉及 checkpoint 磁盘读取（suspend），放进协程执行。
+        scope.launch {
+            runNextQueuedBatchIfNeeded(preferredBatchId = normalizedPreferredBatchId)
+        }
     }
 
     fun syncPendingQueueDefaults(
@@ -228,8 +243,12 @@ internal class ProcessingQueueController(
         }
         if (updated) {
             logRepository.info("ProcessingViewModel", "Reset queued batch for retry: $normalizedBatchId")
-            if (viewModel.currentUiState().isQueueRunning && !viewModel.isProcessingJobActive()) {
-                runNextQueuedBatchIfNeeded()
+            if (viewModel.currentUiState().isQueueRunning) {
+                scope.launch {
+                    if (!viewModel.isProcessingJobActive()) {
+                        runNextQueuedBatchIfNeeded()
+                    }
+                }
             }
         }
     }
@@ -243,36 +262,39 @@ internal class ProcessingQueueController(
             return
         }
 
-        val checkpoint = findMatchingCheckpointForQueuedBatch(queueItem)
-        if (checkpoint == null || !checkpoint.canRetryFailedOnly()) {
-            logRepository.warning(
-                "ProcessingViewModel",
-                "Cannot configure failed-only retry for batch $normalizedBatchId: no matching checkpoint with failed items"
-            )
-            return
-        }
-
-        var updated = false
-        updateItem(normalizedBatchId) { item ->
-            if (item.status != PersistedQueueItemStatus.RUNNING) {
-                updated = true
-                item.copy(
-                    status = PersistedQueueItemStatus.PENDING,
-                    retryFailedOnly = true,
-                    lastErrorMessage = null,
-                    lastOutputUri = null
+        // checkpoint 匹配需要读磁盘（suspend），放进协程。
+        scope.launch {
+            val checkpoint = findMatchingCheckpointForQueuedBatch(queueItem)
+            if (checkpoint == null || !checkpoint.canRetryFailedOnly()) {
+                logRepository.warning(
+                    "ProcessingViewModel",
+                    "Cannot configure failed-only retry for batch $normalizedBatchId: no matching checkpoint with failed items"
                 )
-            } else {
-                item
+                return@launch
             }
-        }
-        if (updated) {
-            logRepository.info(
-                "ProcessingViewModel",
-                "Configured queued batch for failed-only retry: $normalizedBatchId"
-            )
-            if (viewModel.currentUiState().isQueueRunning && !viewModel.isProcessingJobActive()) {
-                runNextQueuedBatchIfNeeded()
+
+            var updated = false
+            updateItem(normalizedBatchId) { item ->
+                if (item.status != PersistedQueueItemStatus.RUNNING) {
+                    updated = true
+                    item.copy(
+                        status = PersistedQueueItemStatus.PENDING,
+                        retryFailedOnly = true,
+                        lastErrorMessage = null,
+                        lastOutputUri = null
+                    )
+                } else {
+                    item
+                }
+            }
+            if (updated) {
+                logRepository.info(
+                    "ProcessingViewModel",
+                    "Configured queued batch for failed-only retry: $normalizedBatchId"
+                )
+                if (viewModel.currentUiState().isQueueRunning && !viewModel.isProcessingJobActive()) {
+                    runNextQueuedBatchIfNeeded()
+                }
             }
         }
     }
@@ -384,7 +406,9 @@ internal class ProcessingQueueController(
         logRepository.info("ProcessingViewModel", "Paused batch queue for manual run")
     }
 
-    fun runNextQueuedBatchIfNeeded(preferredBatchId: String? = null) {
+    // 队列推进会读取 checkpoint（磁盘 IO），因此是 suspend；
+    // 主线程入口（startBatchQueue / retry*）用 scope.launch 包装。
+    suspend fun runNextQueuedBatchIfNeeded(preferredBatchId: String? = null) {
         if (!viewModel.currentUiState().isQueueRunning) {
             return
         }
@@ -418,7 +442,7 @@ internal class ProcessingQueueController(
                 handleQueuedRunFinished(
                     queueItemId = nextBatch.id,
                     status = ProcessingStatus.FAILED,
-                    lastErrorMessage = "没有可重试的失败项"
+                    lastErrorMessage = stringProvider.getString(R.string.queue_no_failed_to_retry)
                 )
                 return
             }
@@ -460,7 +484,7 @@ internal class ProcessingQueueController(
             handleQueuedRunFinished(
                 queueItemId = nextBatch.id,
                 status = ProcessingStatus.FAILED,
-                lastErrorMessage = "无法启动该批次"
+                lastErrorMessage = stringProvider.getString(R.string.queue_cannot_start_batch)
             )
             return
         }
@@ -473,7 +497,13 @@ internal class ProcessingQueueController(
         }
     }
 
-    fun handleQueuedRunFinished(
+    // 终态处理语义：
+    // - COMPLETED：行标记完成，队列继续推进下一项。
+    // - FAILED/CANCELED：行保留并标记 FAILED（带上错误信息），供 QueueSheet 的
+    //   失败重试 UI 使用；队列停止（isQueueRunning=false）。
+    // - IDLE（失败项重试成功但仍有未到期 pending）：行回到 PENDING 并继续推进，
+    //   队列不会静默滞留工作。
+    suspend fun handleQueuedRunFinished(
         queueItemId: String,
         status: ProcessingStatus?,
         lastErrorMessage: String?
@@ -498,25 +528,46 @@ internal class ProcessingQueueController(
             }
 
             ProcessingStatus.FAILED,
-            ProcessingStatus.CANCELED,
-            ProcessingStatus.IDLE -> {
+            ProcessingStatus.CANCELED -> {
                 val failureMessage = lastErrorMessage ?: when (normalizedStatus) {
-                    ProcessingStatus.CANCELED -> "已取消"
-                    ProcessingStatus.IDLE -> "批次未完成"
-                    else -> "批次失败"
+                    ProcessingStatus.CANCELED -> stringProvider.getString(R.string.queue_item_canceled)
+                    else -> stringProvider.getString(R.string.queue_item_failed)
+                }
+                val wasQueueRunning = viewModel.currentUiState().isQueueRunning
+                // 不再移除行：保留 FAILED 状态让用户能重试。
+                updateItem(queueItemId) { item ->
+                    item.copy(
+                        status = PersistedQueueItemStatus.FAILED,
+                        retryFailedOnly = false,
+                        lastErrorMessage = failureMessage
+                    )
                 }
                 viewModel.updateUiState { state ->
-                    state.copy(
-                        queueItems = state.queueItems.filterNot { item ->
-                            item.id == queueItemId
-                        },
-                        isQueueRunning = false
-                    )
+                    state.copy(isQueueRunning = false)
                 }
                 logRepository.warning(
                     "ProcessingViewModel",
-                    "Queued batch stopped and removed: ${queueItemId.take(8)} status=$normalizedStatus message=$failureMessage"
+                    "Queued batch stopped, kept as FAILED: ${queueItemId.take(8)} status=$normalizedStatus message=$failureMessage queueWasRunning=$wasQueueRunning"
                 )
+            }
+
+            ProcessingStatus.IDLE -> {
+                // 失败项重试完成但仍有延迟项：回到 PENDING（清除 retryFailedOnly），
+                // 队列继续时立即链接下一轮，避免批次被无声搁置。
+                updateItem(queueItemId) { item ->
+                    item.copy(
+                        status = PersistedQueueItemStatus.PENDING,
+                        retryFailedOnly = false,
+                        lastErrorMessage = null
+                    )
+                }
+                logRepository.info(
+                    "ProcessingViewModel",
+                    "Queued batch still has deferred items, returned to PENDING: ${queueItemId.take(8)}"
+                )
+                if (viewModel.currentUiState().isQueueRunning) {
+                    runNextQueuedBatchIfNeeded()
+                }
             }
 
             ProcessingStatus.RUNNING -> {
@@ -540,7 +591,8 @@ internal class ProcessingQueueController(
     private fun normalizeBatchId(batchId: String): String? =
         batchId.trim().ifBlank { null }
 
-    private fun findMatchingCheckpointForQueuedBatch(
+    // checkpoint 读取是 suspend（磁盘 IO 在 IO 线程）。
+    private suspend fun findMatchingCheckpointForQueuedBatch(
         queueItem: ProcessingQueueItemSummary
     ): ProcessingCheckpoint? {
         val checkpoint = checkpointRepository.loadCheckpoint() ?: return null

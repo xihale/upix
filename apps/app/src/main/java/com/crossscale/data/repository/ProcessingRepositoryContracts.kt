@@ -85,9 +85,11 @@ interface ProcessingCheckpointStore {
     /** Off-main-thread save: serialization + disk write run on Dispatchers.IO. */
     suspend fun persistCheckpoint(checkpoint: ProcessingCheckpoint)
 
-    fun loadCheckpoint(): ProcessingCheckpoint?
+    /** Off-main-thread read: disk IO must not run on the main thread. */
+    suspend fun loadCheckpoint(): ProcessingCheckpoint?
 
-    fun clearCheckpoint()
+    /** Off-main-thread delete: disk IO must not run on the main thread. */
+    suspend fun clearCheckpoint()
 }
 
 interface ProcessingQueueStore {

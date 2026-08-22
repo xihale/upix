@@ -34,6 +34,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.updateAndGet
 import kotlinx.coroutines.launch
 
 // List/Set fields are treated as immutable by convention (never mutated
@@ -333,17 +334,18 @@ class MainViewModel(
             return
         }
 
-        var addedCount = 0
-        _selectedInputSources.update { currentSources ->
+        // lambda 保持纯净：计数在 CAS 重试中不会被重复累计，改为从返回值算差值。
+        val previousSize = _selectedInputSources.value.size
+        val mergedSources = _selectedInputSources.updateAndGet { currentSources ->
             val mergedSources = currentSources.toMutableList()
             normalizedSources.forEach { source ->
                 if (source !in mergedSources) {
                     mergedSources.add(source)
-                    addedCount += 1
                 }
             }
             mergedSources
         }
+        val addedCount = mergedSources.size - previousSize
         if (addedCount <= 0) {
             return
         }

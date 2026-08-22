@@ -15,7 +15,10 @@ import java.util.zip.ZipInputStream
 import javax.net.ssl.HttpsURLConnection
 import javax.net.ssl.SSLSocket
 import javax.net.ssl.SSLSocketFactory
+import kotlin.coroutines.coroutineContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
@@ -32,7 +35,8 @@ import org.json.JSONObject
  * 核对证书与目标域名，不匹配即失败，绝不关闭校验。
  *
  * 下载流式写入 models 目录下的 .part 临时文件，校验 sha256 后解压，
- * 任一步失败即清理临时文件并返回错误信息（不抛异常）。
+ * 任一步失败即清理临时文件并返回错误信息（取消例外：CancellationException
+ * 清理 .part 后向上抛出，供调用方协程走标准取消路径）。
  */
 class ModelReleaseRepository(
     private val logRepository: LogRepository
@@ -58,7 +62,9 @@ class ModelReleaseRepository(
 
     /**
      * 下载并安装一个远程模型到 modelsDirectory。onProgress 收到
-     * (已下载字节, 总字节或 0)。成功返回安装后的模型名。
+     * (已下载字节, 总字节或 0)，节流为总量已知的 ≥1% 步进或 ≥100ms 间隔
+     * （总量未知仅按时间），循环结束后校验前补发一次最终值。协程取消时
+     * 抛 CancellationException（.part 已清理）。成功返回安装后的模型名。
      */
     suspend fun downloadModel(
         model: RemoteModel,
@@ -71,12 +77,15 @@ class ModelReleaseRepository(
             }
             return@runCatching downloadAndInstall(model, modelsDirectory, onProgress)
         }.onFailure { throwable ->
+            // 取消不是下载失败：让 CancellationException 穿透 Result 边界重新抛出，
+            // 调用方协程才能走标准取消清理（.part 已在 downloadAndInstall 内删除）。
+            if (throwable is CancellationException) throw throwable
             logRepository.error("ModelReleaseRepository", "Download ${model.name} failed: ${throwable.message}")
         }
     }
 
     /** 单次尝试：下载→sha256 校验→解压，任一步失败抛异常并清理临时文件。 */
-    private fun downloadAndInstall(
+    private suspend fun downloadAndInstall(
         model: RemoteModel,
         modelsDirectory: File,
         onProgress: (Long, Long) -> Unit
@@ -85,22 +94,39 @@ class ModelReleaseRepository(
         val zipFile = File(modelsDirectory, "${model.name}.zip.part")
         val digest = MessageDigest.getInstance("SHA-256")
         var downloaded = 0L
+        var total = 0L
         try {
             RawHttpsFetcher().get(URL(model.url)).use { response ->
                 if (response.status != HttpURLConnection.HTTP_OK) {
                     throw IOException("HTTP ${response.status} for ${model.url}")
                 }
-                val total = response.header("content-length")?.toLongOrNull() ?: 0L
+                total = response.header("content-length")?.toLongOrNull() ?: 0L
                 response.body.use { input ->
                     zipFile.outputStream().use { output ->
                         val buffer = ByteArray(DOWNLOAD_BUFFER_BYTES)
+                        var lastEmittedBytes = 0L
+                        var lastEmitNanos = System.nanoTime()
                         while (true) {
+                            // 协作式取消：让 cancelDownload 能中止阻塞读取；抛出后
+                            // 由下方 catch 删除 .part 再向上传播。
+                            coroutineContext.ensureActive()
                             val read = input.read(buffer)
                             if (read < 0) break
                             output.write(buffer, 0, read)
                             digest.update(buffer, 0, read)
                             downloaded += read
-                            onProgress(downloaded, total)
+                            // 进度节流：总量已知时累计 ≥1% 才上报；总量未知（无
+                            // Content-Length，total==0）仅按时间间隔上报。避免每个
+                            // 64KB 块都触发调用方的整表状态更新。
+                            val now = System.nanoTime()
+                            val percentReached = total > 0L &&
+                                (downloaded - lastEmittedBytes) * 100L >= total
+                            val intervalReached = now - lastEmitNanos >= PROGRESS_EMIT_INTERVAL_NS
+                            if (percentReached || intervalReached) {
+                                onProgress(downloaded, total)
+                                lastEmittedBytes = downloaded
+                                lastEmitNanos = now
+                            }
                         }
                     }
                 }
@@ -109,6 +135,10 @@ class ModelReleaseRepository(
             zipFile.delete()
             throw throwable
         }
+
+        // 收尾上报：节流可能吞掉最后一次更新，循环结束后强制补发最终值（校验前），
+        // 保证进度条走到头。
+        onProgress(downloaded, total)
 
         // 2. sha256 校验（与 manifest 互验，manifest 由发布脚本生成）。
         val actual = digest.digest().toHexString()
@@ -191,16 +221,32 @@ class ModelReleaseRepository(
             if (redirectsLeft < 0) throw IOException("too many redirects for $url")
             val host = requireNotNull(url.host)
             val port = if (url.port > 0) url.port else url.defaultPort
-            require(url.protocol == "https") { "only https is supported: $url" }
+            // 生产路径只接受 https；仅明文 http 的回环地址放行，专供本地测试桩。
+            val loopbackHttp = url.protocol != "https" &&
+                (host == "127.0.0.1" || host == "localhost" || host == "[::1]" || host == "::1")
+            if (!loopbackHttp && url.protocol != "https") {
+                throw IllegalArgumentException("only https is supported: $url")
+            }
 
-            val ip = fixedIpFor(host) ?: InetAddress.getByName(host)
-            val ssl = try {
-                connectTls(ip, port, host, sendSni = false)
-            } catch (verifyFailure: IOException) {
-                if (verifyFailure.message?.startsWith("hostname verification") == true) {
-                    connectTls(ip, port, host, sendSni = true)
-                } else {
-                    throw verifyFailure
+            val socket: Socket = if (loopbackHttp) {
+                // 明文回环连接：跳过固定 IP/TLS，直接 TCP。
+                Socket().apply {
+                    soTimeout = READ_TIMEOUT_MS
+                    connect(
+                        InetSocketAddress(InetAddress.getByName(host), port),
+                        CONNECT_TIMEOUT_MS
+                    )
+                }
+            } else {
+                val ip = fixedIpFor(host) ?: InetAddress.getByName(host)
+                try {
+                    connectTls(ip, port, host, sendSni = false)
+                } catch (verifyFailure: IOException) {
+                    if (verifyFailure.message?.startsWith("hostname verification") == true) {
+                        connectTls(ip, port, host, sendSni = true)
+                    } else {
+                        throw verifyFailure
+                    }
                 }
             }
 
@@ -212,10 +258,10 @@ class ModelReleaseRepository(
                     append("Accept: */*\r\n")
                     append("Connection: close\r\n\r\n")
                 }
-                ssl.outputStream.write(request.toByteArray(Charsets.US_ASCII))
-                ssl.outputStream.flush()
+                socket.getOutputStream().write(request.toByteArray(Charsets.US_ASCII))
+                socket.getOutputStream().flush()
 
-                val reader = ssl.inputStream.bufferedReader(Charsets.ISO_8859_1)
+                val reader = socket.getInputStream().bufferedReader(Charsets.ISO_8859_1)
                 val statusLine = reader.readLine()
                     ?: throw IOException("empty response from $host")
                 val status = statusLine.split(" ").getOrNull(1)?.toIntOrNull()
@@ -234,18 +280,18 @@ class ModelReleaseRepository(
                 if (status in 300..399) {
                     val location = headers["location"]
                         ?: throw IOException("redirect without Location ($status)")
-                    ssl.close()
+                    socket.close()
                     return get(URL(url, location), redirectsLeft - 1)
                 }
 
                 val body = if (headers["transfer-encoding"]?.equals("chunked", true) == true) {
-                    ChunkedInputStream(ssl.getInputStream())
+                    ChunkedInputStream(socket.getInputStream())
                 } else {
-                    ssl.getInputStream()
+                    socket.getInputStream()
                 }
-                return Response(status, headers, body, ssl)
+                return Response(status, headers, body, socket)
             } catch (throwable: Throwable) {
-                runCatching { ssl.close() }
+                runCatching { socket.close() }
                 throw throwable
             }
         }
@@ -338,6 +384,9 @@ class ModelReleaseRepository(
         const val CONNECT_TIMEOUT_MS = 8_000
         const val READ_TIMEOUT_MS = 15_000
         const val DOWNLOAD_BUFFER_BYTES = 64 * 1024
+
+        /** 进度上报的时间下限（100ms）：总量未知时唯一的节流依据。 */
+        const val PROGRESS_EMIT_INTERVAL_NS = 100_000_000L
     }
 }
 

@@ -23,6 +23,8 @@ import com.crossscale.data.repository.ProcessingQueueStore
 import com.crossscale.data.repository.ResolvedImageInput
 import com.crossscale.util.StringProvider
 import java.io.File
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -385,24 +387,88 @@ class ProcessingViewModelTest {
 
         val stateAfterFailure = viewModel.uiState.value
         assertFalse(stateAfterFailure.isQueueRunning)
-        assertEquals(1, stateAfterFailure.queueItems.size)
-        assertEquals(PersistedQueueItemStatus.PENDING, stateAfterFailure.queueItems.first().status)
-        assertEquals(sourceB, stateAfterFailure.queueItems.first().source)
+        // 失败的批次不再被移除：保留为 FAILED 行，供 QueueSheet 重试。
+        assertEquals(2, stateAfterFailure.queueItems.size)
+        val failedItem = stateAfterFailure.queueItems.first { item -> item.source == sourceA }
+        assertEquals(PersistedQueueItemStatus.FAILED, failedItem.status)
+        assertNotNull(failedItem.lastErrorMessage)
+        val pendingItem = stateAfterFailure.queueItems.first { item -> item.source == sourceB }
+        assertEquals(PersistedQueueItemStatus.PENDING, pendingItem.status)
         assertEquals(ProcessingStatus.FAILED, stateAfterFailure.task?.status)
 
         imageProcessingStore.failingUris.clear()
         viewModel.startBatchQueue()
         advanceUntilIdle()
 
+        // 重启队列只跑 PENDING 批次（B）；FAILED 的 A 需要显式 retry。
         assertEquals(
             listOf(failedUri, secondUri),
             imageProcessingStore.processedUris
         )
         val stateAfterRetry = viewModel.uiState.value
-        assertEquals(1, stateAfterRetry.queueItems.size)
-        assertEquals(PersistedQueueItemStatus.COMPLETED, stateAfterRetry.queueItems.first().status)
+        assertEquals(2, stateAfterRetry.queueItems.size)
+        assertEquals(
+            PersistedQueueItemStatus.FAILED,
+            stateAfterRetry.queueItems.first { item -> item.source == sourceA }.status
+        )
+        assertEquals(
+            PersistedQueueItemStatus.COMPLETED,
+            stateAfterRetry.queueItems.first { item -> item.source == sourceB }.status
+        )
         assertFalse(stateAfterRetry.isQueueRunning)
         assertEquals(ProcessingStatus.COMPLETED, stateAfterRetry.task?.status)
+    }
+
+    @Test
+    fun cancelQueuedRunKeepsRowAsFailedWithMessage() = runTest(mainDispatcherRule.testDispatcher) {
+        val source = "content://source/cancel"
+        val uri = "content://images/cancel.jpg"
+        val inputSourceResolver = FakeInputSourceResolver().apply {
+            register(source, listOf(uri))
+        }
+        val processLatch = java.util.concurrent.CountDownLatch(1)
+        val imageProcessingStore = FakeImageProcessingStore().apply {
+            processBlocker = { processLatch.await() }
+        }
+        // 处理放到真实 Default 线程并阻塞在闩上，制造可取消的运行中状态。
+        val viewModel = makeViewModel(
+            inputSourceRepository = inputSourceResolver,
+            nativeImageProcessingRepository = imageProcessingStore,
+            defaultDispatcher = Dispatchers.Default
+        )
+
+        advanceUntilIdle()
+        viewModel.enqueueBatch(
+            imagePath = source,
+            modelName = "Real-ESRGANv3-anime-x2",
+            distributedMode = false,
+            outputDirectoryUri = null
+        )
+        advanceUntilIdle()
+        viewModel.startBatchQueue()
+        advanceUntilIdle()
+        assertEquals(PersistedQueueItemStatus.RUNNING, viewModel.uiState.value.queueItems.first().status)
+        assertTrue(viewModel.uiState.value.isProcessing)
+
+        // 等处理真正开始（Default 线程阻塞在闩上），再取消并放行。
+        waitForTrue { imageProcessingStore.processingEntered }
+        viewModel.cancelProcessing()
+        processLatch.countDown()
+        // 收尾链路在真实 Default 线程与测试调度器之间往返，advanceUntilIdle 单发
+        // 会与异步恢复竞争：轮询直到行离开 RUNNING 再断言。
+        waitForTrue(pump = { advanceUntilIdle() }) {
+            viewModel.uiState.value.queueItems.first().status !=
+                PersistedQueueItemStatus.RUNNING && !viewModel.uiState.value.isProcessing
+        }
+
+        val state = viewModel.uiState.value
+        // 取消的批次保留为 FAILED 行（不再被移除），队列停止。
+        assertEquals(1, state.queueItems.size)
+        assertEquals(PersistedQueueItemStatus.FAILED, state.queueItems.first().status)
+        assertNotNull(state.queueItems.first().lastErrorMessage)
+        assertFalse(state.isQueueRunning)
+        assertEquals(ProcessingStatus.CANCELED, state.task?.status)
+        assertFalse(state.isProcessing)
     }
 
     @Test
@@ -467,18 +533,19 @@ class ProcessingViewModelTest {
         viewModel.startBatchQueue()
         advanceUntilIdle()
 
-        assertEquals(listOf(failedUri), imageProcessingStore.processedUris)
+        // 失败项重试成功后任务进入 IDLE：批次行回到 PENDING 并被队列链式推进，
+        // 剩余的延迟项随后也跑完（批次最终 COMPLETED，不静默滞留工作）。
+        assertEquals(listOf(failedUri, deferredUri), imageProcessingStore.processedUris)
         assertEquals(0, inputSourceResolver.resolveCallCount)
 
         val finalState = viewModel.uiState.value
-        assertTrue(finalState.queueItems.isEmpty())
-        assertEquals(ProcessingStatus.IDLE, finalState.task?.status)
+        assertEquals(1, finalState.queueItems.size)
+        assertEquals(PersistedQueueItemStatus.COMPLETED, finalState.queueItems.first().status)
+        assertEquals(ProcessingStatus.COMPLETED, finalState.task?.status)
         assertFalse(finalState.isQueueRunning)
 
         val updatedCheckpoint = checkpointStore.loadCheckpoint()
-        assertNotNull(updatedCheckpoint)
-        assertEquals(listOf(deferredUri), updatedCheckpoint?.pendingItems?.map { item -> item.uri })
-        assertTrue(updatedCheckpoint?.failureDetails?.isEmpty() == true)
+        assertNull(updatedCheckpoint)
     }
 
     @Test
@@ -674,7 +741,8 @@ class ProcessingViewModelTest {
         inputSourceRepository: InputSourceResolver = FakeInputSourceResolver(),
         checkpointRepository: ProcessingCheckpointStore = FakeCheckpointStore(null),
         queueRepository: ProcessingQueueStore = FakeQueueStore(),
-        nativeImageProcessingRepository: ImageProcessingStore = FakeImageProcessingStore()
+        nativeImageProcessingRepository: ImageProcessingStore = FakeImageProcessingStore(),
+        defaultDispatcher: CoroutineDispatcher = mainDispatcherRule.testDispatcher
     ): ProcessingViewModel = ProcessingViewModel(
         logRepository = LogRepository(),
         modelRepository = modelRepository,
@@ -684,7 +752,7 @@ class ProcessingViewModelTest {
         queueRepository = queueRepository,
         nativeImageProcessingRepository = nativeImageProcessingRepository,
         ioDispatcher = mainDispatcherRule.testDispatcher,
-        defaultDispatcher = mainDispatcherRule.testDispatcher,
+        defaultDispatcher = defaultDispatcher,
         stringProvider = StringProvider { _, _ -> "" }
     )
 
@@ -835,11 +903,11 @@ class ProcessingViewModelTest {
             state.value = checkpoint
         }
 
-        override fun loadCheckpoint(): ProcessingCheckpoint? {
+        override suspend fun loadCheckpoint(): ProcessingCheckpoint? {
             return state.value
         }
 
-        override fun clearCheckpoint() {
+        override suspend fun clearCheckpoint() {
             clearCallCount += 1
             state.value = null
         }
@@ -866,6 +934,13 @@ class ProcessingViewModelTest {
         val processedUris = mutableListOf<String>()
         val failingUris = mutableSetOf<String>()
 
+        // 取消测试用：处理阻塞在闩上制造可取消的“运行中”窗口。
+        var processBlocker: (() -> Unit)? = null
+
+        @Volatile
+        var processingEntered = false
+            private set
+
         override fun openSession(
             modelName: String,
             modelBasePath: String,
@@ -877,6 +952,8 @@ class ProcessingViewModelTest {
                     outputFile: File
                 ): Result<NativeProcessResult> {
                     val uri = input.uri.toString()
+                    processingEntered = true
+                    processBlocker?.invoke()
                     processedUris += uri
                     if (uri in failingUris) {
                         return Result.failure(IllegalStateException("mock failure for $uri"))

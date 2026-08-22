@@ -23,13 +23,16 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.take
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -83,6 +86,7 @@ class ProcessingViewModel(
         checkpointRepository = checkpointRepository,
         coordinatorClient = coordinatorClient,
         logRepository = logRepository,
+        ioDispatcher = ioDispatcher,
         defaultDispatcher = defaultDispatcher,
         stringProvider = stringProvider
     )
@@ -93,12 +97,22 @@ class ProcessingViewModel(
         checkpointRepository = checkpointRepository,
         logRepository = logRepository,
         coordinatorClient = coordinatorClient,
+        stringProvider = stringProvider,
         scope = viewModelScope,
         ioDispatcher = ioDispatcher
     )
 
     private var processingJob: Job? = null
     private var activeQueueItemId: String? = null
+
+    // run 代际令牌：cancelProcessing 只取消不清引用，旧 run 的收尾回调只在
+    // “它仍是当前代际”时才清理 job/队列，避免清掉新 run 的状态或用错批次 id。
+    private var runGenerationCounter = 0L
+    private var activeRunGeneration = 0L
+
+    // 启动恢复完成门闩：收集器在恢复完成前不持久化，否则“初始空队列”会先
+    // 落盘并把 processing_queue.json 删掉，随后恢复读取拿到空快照（启动竞态）。
+    private val queueRestoreCompleted = MutableStateFlow(false)
 
     init {
         restorePersistedQueueAsync()
@@ -130,20 +144,26 @@ class ProcessingViewModel(
         }
 
         viewModelScope.launch {
-            uiState
-                .map { state -> state.toQueueSnapshot() }
-                .distinctUntilChanged()
-                .conflate()
-                .collectLatest { snapshot ->
-                    // Runs on the injected IO dispatcher (test dispatcher in
-                    // unit tests, Dispatchers.IO in production); inside the
-                    // repository the serialization + write are additionally
-                    // wrapped in withContext(Dispatchers.IO). collectLatest
-                    // cancels an in-flight stale save so only the newest
-                    // snapshot hits disk.
-                    withContext(ioDispatcher) {
-                        queueRepository.persistQueue(snapshot)
-                    }
+            // 先等恢复完成，再开始持久化（修复启动竞态）。
+            queueRestoreCompleted
+                .filter { it }
+                .take(1)
+                .collectLatest {
+                    uiState
+                        .map { state -> state.toQueueSnapshot() }
+                        .distinctUntilChanged()
+                        .conflate()
+                        .collectLatest { snapshot ->
+                            // Runs on the injected IO dispatcher (test dispatcher in
+                            // unit tests, Dispatchers.IO in production); inside the
+                            // repository the serialization + write are additionally
+                            // wrapped in withContext(Dispatchers.IO). collectLatest
+                            // cancels an in-flight stale save so only the newest
+                            // snapshot hits disk.
+                            withContext(ioDispatcher) {
+                                queueRepository.persistQueue(snapshot)
+                            }
+                        }
                 }
         }
     }
@@ -230,21 +250,24 @@ class ProcessingViewModel(
             val restoredSnapshot = withContext(ioDispatcher) {
                 queueRepository.loadQueue()
             }
-            if (restoredSnapshot.items.isEmpty() && !restoredSnapshot.isQueueRunning) {
-                return@launch
-            }
-            _uiState.update { state ->
-                state.copy(
-                    queueItems = restoredSnapshot.items.map { item ->
-                        item.toUiQueueItem()
-                    },
-                    isQueueRunning = restoredSnapshot.isQueueRunning
+            if (restoredSnapshot.items.isNotEmpty() || restoredSnapshot.isQueueRunning) {
+                _uiState.update { state ->
+                    // 合并而非整体覆盖：恢复完成前新入队的项必须存活。
+                    val restoredItems = restoredSnapshot.items.map { item -> item.toUiQueueItem() }
+                    val existingIds = state.queueItems.mapTo(hashSetOf()) { item -> item.id }
+                    state.copy(
+                        queueItems = state.queueItems + restoredItems.filterNot { item ->
+                            item.id in existingIds
+                        },
+                        isQueueRunning = state.isQueueRunning || restoredSnapshot.isQueueRunning
+                    )
+                }
+                logRepository.info(
+                    "ProcessingViewModel",
+                    "Restored ${restoredSnapshot.items.size} queued batch(es)"
                 )
             }
-            logRepository.info(
-                "ProcessingViewModel",
-                "Restored ${restoredSnapshot.items.size} queued batch(es)"
-            )
+            queueRestoreCompleted.value = true
         }
     }
 
@@ -257,39 +280,46 @@ class ProcessingViewModel(
     }
 
     fun resumeLastProcessing() {
-        runFromCheckpoint(retryFailedOnly = false)
+        viewModelScope.launch {
+            runFromCheckpoint(retryFailedOnly = false)
+        }
     }
 
     fun retryFailedItems() {
-        if (processingJob?.isActive == true) {
+        if (isProcessingJobActive()) {
             return
         }
-        val checkpoint = checkpointRepository.loadCheckpoint()
-        if (checkpoint != null) {
-            if (!checkpoint.canRetryFailedOnly()) {
-                logRepository.warning("ProcessingViewModel", "No failed items available in checkpoint")
-                return
+        // checkpoint 读取是磁盘 IO：入口保持非挂起，内部起协程切 IO。
+        viewModelScope.launch {
+            val checkpoint = withContext(ioDispatcher) {
+                checkpointRepository.loadCheckpoint()
             }
-            runFromCheckpoint(retryFailedOnly = true)
-            return
+            if (checkpoint != null) {
+                if (!checkpoint.canRetryFailedOnly()) {
+                    logRepository.warning("ProcessingViewModel", "No failed items available in checkpoint")
+                    return@launch
+                }
+                runFromCheckpoint(retryFailedOnly = true)
+                return@launch
+            }
+            // No checkpoint: fall back to rerunning the whole source of the
+            // in-memory task.
+            queueController.pauseBatchQueueForManualRun()
+            val task = _uiState.value.task
+            if (task == null || task.failedItems <= 0) {
+                logRepository.warning("ProcessingViewModel", "No failed items available for retry")
+                return@launch
+            }
+            startProcessing(
+                imagePath = task.imagePath,
+                modelName = task.modelName,
+                distributedMode = task.distributedMode,
+                outputDirectoryUri = task.outputDirectoryUri,
+                overwriteOriginal = task.overwriteOriginal,
+                backupOriginal = task.backupOriginal,
+                processNestedFolders = task.processNestedFolders
+            )
         }
-        // No checkpoint: fall back to rerunning the whole source of the
-        // in-memory task.
-        queueController.pauseBatchQueueForManualRun()
-        val task = _uiState.value.task
-        if (task == null || task.failedItems <= 0) {
-            logRepository.warning("ProcessingViewModel", "No failed items available for retry")
-            return
-        }
-        startProcessing(
-            imagePath = task.imagePath,
-            modelName = task.modelName,
-            distributedMode = task.distributedMode,
-            outputDirectoryUri = task.outputDirectoryUri,
-            overwriteOriginal = task.overwriteOriginal,
-            backupOriginal = task.backupOriginal,
-            processNestedFolders = task.processNestedFolders
-        )
     }
 
     fun resumePendingItem(uri: String) {
@@ -297,7 +327,9 @@ class ProcessingViewModel(
         if (normalizedUri.isBlank()) {
             return
         }
-        runFromCheckpoint(retryFailedOnly = false, resumePendingUris = setOf(normalizedUri))
+        viewModelScope.launch {
+            runFromCheckpoint(retryFailedOnly = false, resumePendingUris = setOf(normalizedUri))
+        }
     }
 
     fun retryFailedItem(uri: String) {
@@ -305,21 +337,25 @@ class ProcessingViewModel(
         if (normalizedUri.isBlank()) {
             return
         }
-        runFromCheckpoint(retryFailedOnly = true, resumePendingUris = setOf(normalizedUri))
+        viewModelScope.launch {
+            runFromCheckpoint(retryFailedOnly = true, resumePendingUris = setOf(normalizedUri))
+        }
     }
 
     // Shared body of the manual resume/retry entry points: refuses to start
     // while a run is active, pauses a running batch queue, loads the persisted
     // checkpoint and (re)starts it.
-    private fun runFromCheckpoint(
+    private suspend fun runFromCheckpoint(
         retryFailedOnly: Boolean,
         resumePendingUris: Set<String>? = null
     ) {
-        if (processingJob?.isActive == true) {
+        if (isProcessingJobActive()) {
             return
         }
         queueController.pauseBatchQueueForManualRun()
-        val checkpoint = checkpointRepository.loadCheckpoint()
+        val checkpoint = withContext(ioDispatcher) {
+            checkpointRepository.loadCheckpoint()
+        }
         if (checkpoint == null) {
             logRepository.warning("ProcessingViewModel", "No checkpoint found to resume")
             return
@@ -340,16 +376,19 @@ class ProcessingViewModel(
     }
 
     fun discardCheckpoint() {
-        if (processingJob?.isActive == true) {
+        if (isProcessingJobActive()) {
             logRepository.warning("ProcessingViewModel", "Cannot discard checkpoint while processing is running")
             return
         }
-        if (checkpointRepository.loadCheckpoint() == null) {
-            logRepository.info("ProcessingViewModel", "No checkpoint to discard")
-            return
+        // 读/删 checkpoint 都是磁盘 IO：内部起协程，公开 API 保持非挂起。
+        viewModelScope.launch {
+            if (checkpointRepository.loadCheckpoint() == null) {
+                logRepository.info("ProcessingViewModel", "No checkpoint to discard")
+                return@launch
+            }
+            checkpointRepository.clearCheckpoint()
+            logRepository.info("ProcessingViewModel", "Discarded processing checkpoint")
         }
-        checkpointRepository.clearCheckpoint()
-        logRepository.info("ProcessingViewModel", "Discarded processing checkpoint")
     }
 
     suspend fun hasBackupFor(imagePath: String, nested: Boolean): Boolean = withContext(ioDispatcher) {
@@ -419,7 +458,11 @@ class ProcessingViewModel(
 
     internal fun currentUiState(): ProcessingUiState = _uiState.value
 
-    internal fun isProcessingJobActive(): Boolean = processingJob?.isActive == true
+    // 一个 run 在“已取消但尚未收尾完成”期间也算活跃：新的 run 会被拒绝启动，
+    // 直到旧 run 的 finally（含 NonCancellable 的 checkpoint 落盘）跑完。
+    // 选择“视为忙碌”而不是“取消并 join”：后者需要把入口变挂起函数，
+    // 与非挂起的公开 API 冲突，且实现更复杂。
+    internal fun isProcessingJobActive(): Boolean = processingJob?.isCompleted == false
 
     internal fun currentActiveQueueItemId(): String? = activeQueueItemId
 
@@ -428,26 +471,45 @@ class ProcessingViewModel(
     }
 
     internal fun launchRun(queueItemId: String?, block: suspend CoroutineScope.() -> Unit) {
-        processingJob = viewModelScope.launch(block = block)
+        runGenerationCounter += 1
+        val generation = runGenerationCounter
+        activeRunGeneration = generation
         activeQueueItemId = queueItemId
+        processingJob = viewModelScope.launch {
+            try {
+                block()
+            } finally {
+                // 收尾统一在这里：引擎的 finally 不再直接调用 onRunFinished。
+                onRunFinished(generation)
+            }
+        }
     }
 
-    internal fun onRunFinished() {
+    internal suspend fun onRunFinished(finishedRunGeneration: Long) {
+        if (finishedRunGeneration != activeRunGeneration) {
+            // 旧 run 被新 run 取代后才收尾：不动当前 run 的 job/活跃批次。
+            return
+        }
         val completedQueueItemId = activeQueueItemId
         processingJob = null
         activeQueueItemId = null
         if (completedQueueItemId != null) {
-            queueController.handleQueuedRunFinished(
-                queueItemId = completedQueueItemId,
-                status = _uiState.value.task?.status,
-                lastErrorMessage = _uiState.value.task?.lastErrorMessage
-            )
+            // run 可能是被取消的：NonCancellable 保证队列收尾（含链式推进的
+            // 磁盘读取）不会在取消的协程里被 CancellationException 打断。
+            withContext(NonCancellable) {
+                queueController.handleQueuedRunFinished(
+                    queueItemId = completedQueueItemId,
+                    status = _uiState.value.task?.status,
+                    lastErrorMessage = _uiState.value.task?.lastErrorMessage
+                )
+            }
         }
     }
 
     fun cancelProcessing() {
+        // 只取消不清引用：job 由该 run 自己的 finally（校验代际后）清理。
+        // 取消期间 isProcessingJobActive() 仍为 true，新 run 不会与收尾交错。
         processingJob?.cancel()
-        processingJob = null
         _uiState.update { state ->
             val currentTask = state.task ?: return@update state.copy(isProcessing = false)
             state.copy(

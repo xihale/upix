@@ -100,7 +100,8 @@ internal fun BottomActionDock(
             Text(text = ctaLabel, style = MaterialTheme.typography.titleMedium)
         }
 
-        if (hasBackupAvailable && !isProcessing && queueCount == 0) {
+        // 恢复入口只看备份可用性：队列存在不应劫持恢复操作。
+        if (hasBackupAvailable && !isProcessing) {
             DockCircleEntry(
                 icon = Icons.Outlined.Restore,
                 contentDescription = stringResource(R.string.home_restore_backup),

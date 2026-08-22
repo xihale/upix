@@ -1,5 +1,6 @@
 package com.crossscale.ui.screens.home
 
+import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -57,6 +58,7 @@ import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.thumbnails.decodeQueueThumbnailWithLimit
+import com.crossscale.ui.theme.ExpandSizeSpec
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.pressable
 
@@ -64,6 +66,12 @@ import com.crossscale.ui.theme.pressable
 // 明显发糊；按展示区域给更高的解码尺寸（缓存 key 已含尺寸，互不污染）。
 private const val STAGE_THUMBNAIL_TARGET_SIZE_PX = 640
 private const val PREVIEW_THUMBNAIL_TARGET_SIZE_PX = 960
+
+/**
+ * 缩略图解码结果：settled=false 表示解码中（渲染空背景，避免占位文案闪一下），
+ * settled=true 且 bitmap=null 表示确实无图，才展示回退文案。
+ */
+internal data class ThumbnailResult(val bitmap: ImageBitmap?, val settled: Boolean)
 
 /**
  * 图片舞台：超分工具的唯一视觉焦点。
@@ -86,7 +94,9 @@ internal fun ImageStage(
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(if (selectedInputs.isEmpty()) 180.dp else 320.dp),
+                .height(if (selectedInputs.isEmpty()) 180.dp else 320.dp)
+                // 空态/已选态高度切换（180↔320dp）做尺寸动画，避免舞台跳变。
+                .animateContentSize(ExpandSizeSpec),
             shape = MaterialTheme.shapes.large,
             color = MaterialTheme.colorScheme.surfaceContainer
         ) {
@@ -222,20 +232,26 @@ private fun SelectedStage(
 ) {
     val context = LocalContext.current
     val firstSource = selectedInputs.firstOrNull()
-    val stageBitmap by produceState<ImageBitmap?>(initialValue = null, firstSource) {
-        value = firstSource?.let { source ->
-            runCatching {
-                decodeQueueThumbnailWithLimit(
-                    context = context,
-                    source = source,
-                    targetSizePx = STAGE_THUMBNAIL_TARGET_SIZE_PX
-                )
-            }.getOrNull()
-        }
+    val stageResult by produceState(
+        initialValue = ThumbnailResult(bitmap = null, settled = false),
+        firstSource
+    ) {
+        value = ThumbnailResult(
+            bitmap = firstSource?.let { source ->
+                runCatching {
+                    decodeQueueThumbnailWithLimit(
+                        context = context,
+                        source = source,
+                        targetSizePx = STAGE_THUMBNAIL_TARGET_SIZE_PX
+                    )
+                }.getOrNull()
+            },
+            settled = true
+        )
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        val bitmap = stageBitmap
+        val bitmap = stageResult.bitmap
         if (bitmap != null) {
             Image(
                 bitmap = bitmap,
@@ -308,10 +324,16 @@ private fun StageThumbnail(
     onPreview: () -> Unit
 ) {
     val context = LocalContext.current
-    val bitmapState by produceState<ImageBitmap?>(initialValue = null, source) {
-        value = runCatching {
-            decodeQueueThumbnailWithLimit(context = context, source = source)
-        }.getOrNull()
+    val bitmapState by produceState(
+        initialValue = ThumbnailResult(bitmap = null, settled = false),
+        source
+    ) {
+        value = ThumbnailResult(
+            bitmap = runCatching {
+                decodeQueueThumbnailWithLimit(context = context, source = source)
+            }.getOrNull(),
+            settled = true
+        )
     }
 
     Box(modifier = Modifier.size(72.dp)) {
@@ -323,16 +345,17 @@ private fun StageThumbnail(
                 .pressable(onClick = onPreview),
             contentAlignment = Alignment.Center
         ) {
-            val bitmap = bitmapState
-            if (bitmap != null) {
-                Image(
-                    bitmap = bitmap,
+            val result = bitmapState
+            when {
+                // 解码中：只留背景，避免「预览」占位文案闪现后被图片替换。
+                !result.settled -> Unit
+                result.bitmap != null -> Image(
+                    bitmap = result.bitmap,
                     contentDescription = null,
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Crop
                 )
-            } else {
-                Text(
+                else -> Text(
                     text = if (isCorrupted) {
                         stringResource(R.string.hero_thumbnail_corrupted)
                     } else {
@@ -403,14 +426,20 @@ internal fun PreviewBottomSheet(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    val previewBitmap by produceState<ImageBitmap?>(initialValue = null, source) {
-        value = runCatching {
-            decodeQueueThumbnailWithLimit(
-                context = context,
-                source = source,
-                targetSizePx = PREVIEW_THUMBNAIL_TARGET_SIZE_PX
-            )
-        }.getOrNull()
+    val previewResult by produceState(
+        initialValue = ThumbnailResult(bitmap = null, settled = false),
+        source
+    ) {
+        value = ThumbnailResult(
+            bitmap = runCatching {
+                decodeQueueThumbnailWithLimit(
+                    context = context,
+                    source = source,
+                    targetSizePx = PREVIEW_THUMBNAIL_TARGET_SIZE_PX
+                )
+            }.getOrNull(),
+            settled = true
+        )
     }
 
     ModalBottomSheet(
@@ -433,9 +462,17 @@ internal fun PreviewBottomSheet(
                     .background(MaterialTheme.colorScheme.surfaceContainerHigh),
                 contentAlignment = Alignment.Center
             ) {
-                val bitmap = previewBitmap
-                if (bitmap == null) {
-                    Text(
+                val result = previewResult
+                when {
+                    // 解码中：只留背景，避免「暂无预览」闪现。
+                    !result.settled -> Unit
+                    result.bitmap != null -> Image(
+                        bitmap = result.bitmap,
+                        contentDescription = null,
+                        modifier = Modifier.fillMaxSize(),
+                        contentScale = ContentScale.Fit
+                    )
+                    else -> Text(
                         text = if (isCorrupted) {
                             stringResource(R.string.hero_image_corrupted)
                         } else {
@@ -447,13 +484,6 @@ internal fun PreviewBottomSheet(
                         } else {
                             MaterialTheme.colorScheme.onSurfaceVariant
                         }
-                    )
-                } else {
-                    Image(
-                        bitmap = bitmap,
-                        contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit
                     )
                 }
             }

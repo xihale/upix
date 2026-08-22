@@ -44,7 +44,8 @@ fun RemoteModelsDialog(
     onRefresh: () -> Unit,
     onDownload: (RemoteModel) -> Unit,
     onDismiss: () -> Unit,
-    onDismissError: (String) -> Unit = {}
+    onDismissError: (String) -> Unit = {},
+    onCancelDownload: (String) -> Unit = {}
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -100,7 +101,8 @@ fun RemoteModelsDialog(
                                 installed = model.name in installedModelNames,
                                 downloadState = downloads[model.name],
                                 onDownload = onDownload,
-                                onDismissError = onDismissError
+                                onDismissError = onDismissError,
+                                onCancelDownload = onCancelDownload
                             )
                         }
                     }
@@ -121,7 +123,8 @@ private fun RemoteModelRow(
     installed: Boolean,
     downloadState: RemoteModelDownloadState?,
     onDownload: (RemoteModel) -> Unit,
-    onDismissError: (String) -> Unit
+    onDismissError: (String) -> Unit,
+    onCancelDownload: (String) -> Unit
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
         Row(
@@ -139,7 +142,7 @@ private fun RemoteModelRow(
                     text = stringResource(
                         R.string.models_remote_item_summary,
                         model.scale,
-                        formatSize(model.sizeBytes)
+                        formatSizeBytes(model.sizeBytes)
                     ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -152,10 +155,41 @@ private fun RemoteModelRow(
                     color = MaterialTheme.colorScheme.primary
                 )
 
-                downloadState != null && !downloadState.failed -> LinearProgressIndicator(
-                    progress = { downloadState.progress },
-                    modifier = Modifier.fillMaxWidth(0.35f)
-                )
+                downloadState != null && !downloadState.failed -> Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+                ) {
+                    if (downloadState.indeterminate) {
+                        // 总大小未知（如服务端不返回 Content-Length）：不确定进度 + 已下载字节提示。
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(Spacing.xs)
+                        ) {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth(0.35f)
+                            )
+                            Text(
+                                text = stringResource(
+                                    R.string.download_downloaded_bytes,
+                                    formatSizeBytes(downloadState.downloadedBytes)
+                                ),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    } else {
+                        LinearProgressIndicator(
+                            progress = { downloadState.progress },
+                            modifier = Modifier.fillMaxWidth(0.35f)
+                        )
+                    }
+                    TextButton(onClick = { onCancelDownload(model.name) }) {
+                        Text(
+                            text = stringResource(R.string.models_download_cancel),
+                            style = MaterialTheme.typography.labelMedium
+                        )
+                    }
+                }
 
                 downloadState != null && downloadState.failed -> TextButton(
                     onClick = {
@@ -184,7 +218,8 @@ private fun RemoteModelRow(
     }
 }
 
-private fun formatSize(bytes: Long): String = when {
+/** 字节数转可读大小（B/KB/MB），模型卡片与远程下载列表共用。 */
+internal fun formatSizeBytes(bytes: Long): String = when {
     bytes >= 1024 * 1024 -> String.format(Locale.ROOT, "%.1fMB", bytes / 1024f / 1024f)
     bytes >= 1024 -> String.format(Locale.ROOT, "%.0fKB", bytes / 1024f)
     else -> "${bytes}B"

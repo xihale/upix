@@ -215,4 +215,31 @@
     <string name="scanner_permission_denied">未授予相机权限，无法扫码。</string>
     <string name="scanner_scan_failed">扫码失败，请重试。</string>
     <string name="scanner_camera_failed">启动相机失败。</string>
+    <string name="scanner_open_settings">前往设置</string>
+
+    <!-- Confirmations / feedback (audit contract keys) -->
+    <string name="common_confirm">确定</string>
+    <string name="start_need_image_and_model">请先选择图片与模型</string>
+    <string name="queue_no_pending_items">队列中没有待处理任务</string>
+    <string name="queue_open_output_failed">打开结果失败，文件可能已被移动或删除</string>
+    <string name="storage_write_permission_denied">未授予存储权限，队列未启动</string>
+    <string name="queue_clear_confirm_title">清空队列</string>
+    <string name="queue_clear_confirm_body">将移除全部 %1$d 个队列条目，并清空已选图片。</string>
+    <string name="logs_clear_confirm_title">清空日志</string>
+    <string name="logs_clear_confirm_body">确定清空全部日志吗？</string>
+    <string name="models_delete_confirm_title">删除模型</string>
+    <string name="models_delete_confirm_body">确定从手机删除「%1$s」吗？此操作不可恢复。</string>
+    <string name="checkpoint_discard_confirm_title">丢弃断点</string>
+    <string name="checkpoint_discard_confirm_body">确定丢弃上次任务的断点记录吗？</string>
+    <string name="checkpoint_more_items">还有 %1$d 项未展示</string>
+    <string name="logs_copied_count">已复制 %1$d 条日志</string>
+    <string name="log_entry_copied">已复制该条日志</string>
+    <string name="models_download_cancel">取消下载</string>
+    <string name="connection_port_invalid">端口无效</string>
+    <string name="download_downloaded_bytes">已下载 %1$s</string>
+    <string name="queue_item_canceled">已取消</string>
+    <string name="queue_item_incomplete">批次未完成</string>
+    <string name="queue_item_failed">批次失败</string>
+    <string name="queue_cannot_start_batch">无法启动该批次</string>
+    <string name="queue_no_failed_to_retry">没有可重试的失败项</string>
 </resources>

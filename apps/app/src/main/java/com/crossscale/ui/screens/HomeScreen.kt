@@ -49,6 +49,7 @@ import com.crossscale.data.model.ModelInfo
 import com.crossscale.data.model.RemoteEndpoint
 import com.crossscale.data.model.RemoteModel
 import com.crossscale.data.repository.OutputImageFormat
+import com.crossscale.data.repository.PersistedQueueItemStatus
 import com.crossscale.ui.components.RemoteModelsDialog
 import com.crossscale.ui.components.StageProgressOverlay
 import com.crossscale.ui.screens.home.BottomActionDock
@@ -109,7 +110,8 @@ fun HomeScreen(
     onRetryFailedItem: (String) -> Unit,
     onDiscardCheckpoint: () -> Unit,
     hasBackupAvailable: Boolean = false,
-    onRestoreBackup: () -> Unit = {}
+    onRestoreBackup: () -> Unit = {},
+    onCancelDownload: (String) -> Unit = {}
 ) {
     val notSelectedLabel = stringResource(R.string.common_not_selected)
     val snackbarConnectingMessage = stringResource(R.string.home_snackbar_connecting)
@@ -119,20 +121,32 @@ fun HomeScreen(
 
     val selectedInputs = state.selectedInputSources
     val corruptedSources = state.corruptedInputSources
-    val selectedOutput = prettyOutputPath(state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/CrossScale")
+    // remember 持稳定实例：输入未变时不重建 List/String，恢复下游可跳过性。
+    val selectedOutput = remember(state.selectedOutputDirectoryUri) {
+        prettyOutputPath(state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/CrossScale")
+    }
     val queueItems = processingUiState.queueItems
     // 倍率针对当前模型：只列出同系列（名称去掉 -xN 后缀）的倍率；
     // 系列内没有其他倍率时为空，参数卡即隐藏倍率选择。
-    val selectedFamily = state.selectedModel?.name?.let { name ->
-        name.substringBeforeLast("-x", missingDelimiterValue = name)
-    }
-    val availableScales = state.models
-        .filter { model ->
-            model.name.substringBeforeLast("-x", missingDelimiterValue = model.name) == selectedFamily
+    val availableScales = remember(state.models, state.selectedModel?.name) {
+        val selectedFamily = state.selectedModel?.name?.let { name ->
+            name.substringBeforeLast("-x", missingDelimiterValue = name)
         }
-        .map { model -> model.scaleFactor }
-        .distinct()
-        .sorted()
+        state.models
+            .filter { model ->
+                model.name.substringBeforeLast("-x", missingDelimiterValue = model.name) == selectedFamily
+            }
+            .map { model -> model.scaleFactor }
+            .distinct()
+            .sorted()
+    }
+    // 队列角标只统计待处理 + 运行中：完成/失败条目不代表剩余工作量。
+    val queueCount = remember(queueItems) {
+        queueItems.count { item ->
+            item.status == PersistedQueueItemStatus.PENDING ||
+                item.status == PersistedQueueItemStatus.RUNNING
+        }
+    }
 
     var showModelSheet by rememberSaveable { mutableStateOf(false) }
     var showFormatSheet by rememberSaveable { mutableStateOf(false) }
@@ -147,6 +161,8 @@ fun HomeScreen(
     LaunchedEffect(connectionState) {
         val previous = prevConnectionState.value
         if (previous != connectionState) {
+            // 先落新状态再挂起等 snackbar：挂起期间状态再变不会用旧 previous 判错文案。
+            prevConnectionState.value = connectionState
             val message = when (connectionState) {
                 ConnectionState.CONNECTING -> snackbarConnectingMessage
                 ConnectionState.CONNECTED -> snackbarConnectedMessage
@@ -159,17 +175,16 @@ fun HomeScreen(
                 }
             }
             snackbarHostState.showSnackbar(message)
-            prevConnectionState.value = connectionState
         }
     }
 
     // PC 掉线回退（处理中）：ProcessingViewModel 在远程不可达、已切换本地处理时
-    // 发出一次性信号；展示 snackbar 后清除，避免重复弹出。
+    // 发出一次性信号；先清除再展示，避免 showSnackbar 挂起期间重建导致重放。
     LaunchedEffect(remoteFallbackMessage) {
         val message = remoteFallbackMessage
         if (!message.isNullOrBlank()) {
-            snackbarHostState.showSnackbar(message)
             onClearRemoteFallbackMessage()
+            snackbarHostState.showSnackbar(message)
         }
     }
 
@@ -249,7 +264,7 @@ fun HomeScreen(
             modifier = Modifier.align(Alignment.BottomCenter),
             isProcessing = isProcessing,
             hasBackupAvailable = hasBackupAvailable,
-            queueCount = queueItems.size,
+            queueCount = queueCount,
             onShowQueue = {
                 queueSheetVisible = true
             },
@@ -382,7 +397,8 @@ fun HomeScreen(
             onRefresh = onRefreshRemoteModels,
             onDownload = onDownloadRemoteModel,
             onDismiss = { showRemoteModelsDialog = false },
-            onDismissError = onDismissDownloadError
+            onDismissError = onDismissDownloadError,
+            onCancelDownload = onCancelDownload
         )
     }
 }
@@ -437,7 +453,8 @@ private fun BoxScope.StageProcessingOverlay(
     }
 }
 
-/** 顶部标识条：品牌名 + 连接状态文本（直接消费现成连接数据）。 */@Composable
+/** 顶部标识条：品牌名 + 连接状态文本（直接消费现成连接数据）。 */
+@Composable
 private fun HomeIdentityBar(
     connectionState: ConnectionState,
     connectedEndpoint: com.crossscale.data.model.RemoteEndpoint?

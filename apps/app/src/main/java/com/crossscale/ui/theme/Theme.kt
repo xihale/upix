@@ -109,7 +109,11 @@ fun CrossScaleTheme(
             // statusBarColor is deprecated (API 35+) and a no-op under edge-to-edge;
             // MainActivity enables edge-to-edge, so only the icon appearance remains.
             val window = (view.context as? Activity)?.window ?: return@SideEffect
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
+            WindowCompat.getInsetsController(window, view).apply {
+                isAppearanceLightStatusBars = !darkTheme
+                // 导航栏图标同步设置：edge-to-edge 下深色主题若保持浅色图标会被洗白。
+                isAppearanceLightNavigationBars = !darkTheme
+            }
         }
     }
 

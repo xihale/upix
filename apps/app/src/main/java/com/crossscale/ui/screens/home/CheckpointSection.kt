@@ -14,12 +14,14 @@ import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -54,6 +56,8 @@ internal fun CheckpointSection(
 ) {
     val checkpointSummary = processingUiState.checkpointSummary ?: return
     var detailsExpanded by remember { mutableStateOf(false) }
+    // 丢弃断点不可恢复：先弹确认框再执行。
+    var showDiscardConfirm by remember { mutableStateOf(false) }
 
     Surface(
         modifier = Modifier
@@ -114,7 +118,7 @@ internal fun CheckpointSection(
                         modifier = Modifier.size(20.dp)
                     )
                 }
-                IconButton(onClick = onDiscardCheckpoint) {
+                IconButton(onClick = { showDiscardConfirm = true }) {
                     Icon(
                         imageVector = Icons.Outlined.DeleteSweep,
                         contentDescription = stringResource(R.string.checkpoint_discard),
@@ -142,8 +146,9 @@ internal fun CheckpointSection(
             }
 
             if (detailsExpanded) {
+                val pendingItemDetails = checkpointSummary.pendingItemDetails
                 Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
-                    checkpointSummary.pendingItemDetails.take(10).forEach { item ->
+                    pendingItemDetails.take(10).forEach { item ->
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
@@ -183,9 +188,43 @@ internal fun CheckpointSection(
                             }
                         }
                     }
+                    // 明细最多展示 10 条，超出部分用计数行提示。
+                    if (pendingItemDetails.size > 10) {
+                        Text(
+                            text = stringResource(
+                                R.string.checkpoint_more_items,
+                                pendingItemDetails.size - 10
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
             }
         }
+    }
+
+    if (showDiscardConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDiscardConfirm = false },
+            title = { Text(stringResource(R.string.checkpoint_discard_confirm_title)) },
+            text = { Text(stringResource(R.string.checkpoint_discard_confirm_body)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDiscardConfirm = false
+                        onDiscardCheckpoint()
+                    }
+                ) {
+                    Text(stringResource(R.string.common_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDiscardConfirm = false }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            }
+        )
     }
 }
 

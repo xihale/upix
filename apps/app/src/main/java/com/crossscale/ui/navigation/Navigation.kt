@@ -8,7 +8,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import com.crossscale.data.model.ProcessingStatus
-import androidx.compose.runtime.collectAsState
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
@@ -22,8 +22,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import com.crossscale.AppContainer
 import com.crossscale.clearBatchQueue
-import com.crossscale.data.model.ConnectionState
-import com.crossscale.data.model.RemoteEndpoint
 import com.crossscale.openQueuedBatchOutput
 import com.crossscale.removeQueuedBatch
 import com.crossscale.restoreBackup
@@ -63,17 +61,12 @@ fun CrossScaleNavigation(
     val processingViewModel: ProcessingViewModel = viewModel(factory = ProcessingViewModel.factory(container))
     val modelsViewModel: ModelsViewModel = viewModel(factory = ModelsViewModel.factory(container))
 
-    val mainUiState by mainViewModel.uiState.collectAsState()
-    val deviceUiState by deviceViewModel.uiState.collectAsState()
-    val processingUiState by processingViewModel.uiState.collectAsState()
-    val modelsUiState by modelsViewModel.uiState.collectAsState()
-    val connectionState: ConnectionState by deviceViewModel.connectionState.collectAsState()
-    val connectedEndpoint: RemoteEndpoint? by deviceViewModel.connectedEndpoint.collectAsState()
-    val remoteFallbackMessage: String? by processingViewModel.remoteFallbackMessage.collectAsState()
+    // 仅 mainUiState（低频：选择/配置变化）在导航层收集；高频流（处理进度、
+    // 下载进度、连接状态）下沉到各自目的地收集，避免任一更新重跑整个 NavHost。
+    val mainUiState by mainViewModel.uiState.collectAsStateWithLifecycle()
     val logRepository = container.logRepository
     val appSettings = container.appSettingsRepository
 
-    var hasBackupAvailable by rememberSaveable { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     // 加密数据流开关(SharedPreferences 持久化, 默认关闭=吞吐优先)。
@@ -82,26 +75,10 @@ fun CrossScaleNavigation(
     }
     val isStreamEncrypted = streamEncryptedState.value
 
-    LaunchedEffect(mainUiState.selectedImagePath, mainUiState.processNestedFolders) {
-        val path = mainUiState.selectedImagePath
-        hasBackupAvailable = if (path != null) {
-            processingViewModel.hasBackupFor(path, mainUiState.processNestedFolders)
-        } else {
-            false
-        }
-    }
-
     // App 启动即尝试自动重连上次的 PC (1:1 模型)。成功 -> Remote 模式;
     // 失败/无记录 -> Native 模式。mDNS 自动发现已移除。
     LaunchedEffect(Unit) {
         deviceViewModel.tryAutoReconnect()
-    }
-
-    // 处理完成后清空主页 hero（已选图片），避免残留上一轮输入。
-    LaunchedEffect(processingUiState.task?.status) {
-        if (processingUiState.task?.status == ProcessingStatus.COMPLETED) {
-            mainViewModel.clearSelectedImage()
-        }
     }
 
     val inputSelection = rememberInputSelection(
@@ -121,6 +98,34 @@ fun CrossScaleNavigation(
         popExitTransition = { NavPopExitTransition }
     ) {
         composable(AppScreen.Home.route) {
+            // 高频流在目的地内收集：处理进度/下载进度/连接状态只失效本目的地。
+            val processingUiState by processingViewModel.uiState.collectAsStateWithLifecycle()
+            val modelsUiState by modelsViewModel.uiState.collectAsStateWithLifecycle()
+            val connectionState by deviceViewModel.connectionState.collectAsStateWithLifecycle()
+            val connectedEndpoint by deviceViewModel.connectedEndpoint.collectAsStateWithLifecycle()
+            val remoteFallbackMessage by processingViewModel.remoteFallbackMessage.collectAsStateWithLifecycle()
+            var hasBackupAvailable by rememberSaveable { mutableStateOf(false) }
+
+            LaunchedEffect(mainUiState.selectedImagePath, mainUiState.processNestedFolders) {
+                val path = mainUiState.selectedImagePath
+                hasBackupAvailable = if (path != null) {
+                    processingViewModel.hasBackupFor(path, mainUiState.processNestedFolders)
+                } else {
+                    false
+                }
+            }
+
+            // 处理完成后清空主页 hero（已选图片）：按 taskId 消费一次，
+            // 旋转/返回重放不再清掉用户新选的图。
+            var lastClearedTaskId by rememberSaveable { mutableStateOf<String?>(null) }
+            LaunchedEffect(processingUiState.task?.id, processingUiState.task?.status) {
+                val task = processingUiState.task
+                if (task?.status == ProcessingStatus.COMPLETED && lastClearedTaskId != task.id) {
+                    lastClearedTaskId = task.id
+                    mainViewModel.clearSelectedImage()
+                }
+            }
+
             DestinationContainer {
                 HomeScreen(
                     state = mainUiState,
@@ -151,8 +156,10 @@ fun CrossScaleNavigation(
                     onRefreshRemoteModels = modelsViewModel::refreshRemoteModels,
                     onDownloadRemoteModel = modelsViewModel::downloadRemoteModel,
                     onDismissDownloadError = modelsViewModel::dismissDownloadError,
+                    onCancelDownload = modelsViewModel::cancelDownload,
                     onStartProcessing = {
                         startProcessing(
+                            context = context,
                             mainUiState = mainUiState,
                             processingUiState = processingUiState,
                             processingViewModel = processingViewModel,
@@ -215,6 +222,9 @@ fun CrossScaleNavigation(
             }
         }
         composable(AppScreen.Devices.route) {
+            val deviceUiState by deviceViewModel.uiState.collectAsStateWithLifecycle()
+            val connectionState by deviceViewModel.connectionState.collectAsStateWithLifecycle()
+            val connectedEndpoint by deviceViewModel.connectedEndpoint.collectAsStateWithLifecycle()
             DestinationContainer {
                 ConnectionScreen(
                     state = deviceUiState,
@@ -252,6 +262,7 @@ fun CrossScaleNavigation(
             }
         }
         composable(AppScreen.SettingsModels.route) {
+            val modelsUiState by modelsViewModel.uiState.collectAsStateWithLifecycle()
             DestinationContainer {
                 ModelsScreen(
                     library = mainUiState.library,
@@ -267,12 +278,13 @@ fun CrossScaleNavigation(
                     remoteUiState = modelsUiState,
                     onRefreshRemoteModels = modelsViewModel::refreshRemoteModels,
                     onDownloadRemoteModel = modelsViewModel::downloadRemoteModel,
-                    onDismissDownloadError = modelsViewModel::dismissDownloadError
+                    onDismissDownloadError = modelsViewModel::dismissDownloadError,
+                    onCancelDownload = modelsViewModel::cancelDownload
                 )
             }
         }
         composable(AppScreen.SettingsLogs.route) {
-            val logs by logRepository.logs.collectAsState()
+            val logs by logRepository.logs.collectAsStateWithLifecycle()
             DestinationContainer {
                 LogsScreen(
                     logs = logs,

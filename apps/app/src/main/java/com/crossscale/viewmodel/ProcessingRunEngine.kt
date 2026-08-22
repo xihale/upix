@@ -37,6 +37,7 @@ internal class ProcessingRunEngine(
     private val checkpointRepository: ProcessingCheckpointStore,
     private val coordinatorClient: CoordinatorClient?,
     private val logRepository: LogRepository,
+    private val ioDispatcher: CoroutineDispatcher,
     private val defaultDispatcher: CoroutineDispatcher,
     private val stringProvider: StringProvider
 ) {
@@ -82,6 +83,7 @@ internal class ProcessingRunEngine(
         val useRemote = coordinatorClient?.isConnected() == true
         val effectiveDistributedMode = useRemote
 
+        // 快速失败路径保留在主线程：模型查表是内存操作。
         val modelInfo = modelRepository.getModelByName(modelName)
         if (modelInfo == null) {
             val errorMessage = stringProvider.getString(
@@ -109,56 +111,128 @@ internal class ProcessingRunEngine(
             return false
         }
 
-        val setup = planner.buildRunSetup(
-            imagePath = imagePath,
-            modelName = modelName,
-            requestedOutputDirectoryUri = outputDirectoryUri,
-            overwriteOriginal = overwriteOriginal,
-            backupOriginal = backupOriginal,
-            processNestedFolders = processNestedFolders,
-            resumeCheckpoint = resumeCheckpoint,
-            retryFailedOnly = retryFailedOnly,
-            resumePendingUris = resumePendingUris,
-            activeTask = viewModel.currentUiState().task
-        )
-        if (setup == null) {
-            logRepository.warning("ProcessingViewModel", "Unable to prepare processing inputs: $imagePath")
-            return false
-        }
-
         val taskId = resumeCheckpoint?.taskId ?: UUID.randomUUID().toString()
         val createdAt = resumeCheckpoint?.createdAtEpochMs ?: System.currentTimeMillis()
-        val outputDirectory = setup.outputDirectory
-        val runImages = setup.runImages
-        val allImages = setup.allImages
-        val pendingImages = setup.pendingImages
-        val totalItems = setup.totalItems
-        val completedCount = setup.completedItems
-        val initialFailures = setup.failureDetails
-        val initialFailureList = planner.orderedFailureDetails(initialFailures)
-        val initialLastError = resumeCheckpoint?.lastErrorMessage
+        val modelBasePath = planner.modelBasePathFor(modelInfo)
 
-        if (pendingImages.isEmpty()) {
-            checkpointRepository.clearCheckpoint()
-            if (!queueItemId.isNullOrBlank()) {
-                val existingOutputUri = batchOutputRepository.firstReadyOutputUri(
-                    outputDirectory = outputDirectory,
-                    inputs = allImages
+        // 先亮出 RUNNING 占位任务：点击后立即反馈“进行中”，也让取消按钮可用。
+        viewModel.updateUiState { state ->
+            state.copy(
+                task = ProcessingTask(
+                    id = taskId,
+                    imagePath = imagePath,
+                    modelName = modelName,
+                    distributedMode = effectiveDistributedMode,
+                    overwriteOriginal = overwriteOriginal,
+                    backupOriginal = backupOriginal,
+                    processNestedFolders = processNestedFolders,
+                    progress = 0.0f,
+                    status = ProcessingStatus.RUNNING
+                ),
+                isProcessing = true
+            )
+        }
+
+        viewModel.launchRun(queueItemId) {
+            // 规划阶段（整棵目录遍历 + 逐图解码探测 + 逐图 SAF 查询 + 输出目录
+            // 准备）可能很慢，移到 run 协程内用 IO 调度器执行，绝不阻塞主线程。
+            val setup = withContext(ioDispatcher) {
+                planner.buildRunSetup(
+                    imagePath = imagePath,
+                    modelName = modelName,
+                    requestedOutputDirectoryUri = outputDirectoryUri,
+                    overwriteOriginal = overwriteOriginal,
+                    backupOriginal = backupOriginal,
+                    processNestedFolders = processNestedFolders,
+                    resumeCheckpoint = resumeCheckpoint,
+                    retryFailedOnly = retryFailedOnly,
+                    resumePendingUris = resumePendingUris
                 )
-                if (!existingOutputUri.isNullOrBlank()) {
-                    viewModel.updateUiState { state ->
-                        state.copy(
-                            queueItems = state.queueItems.map { item ->
-                                if (item.id == queueItemId) {
-                                    item.copy(lastOutputUri = existingOutputUri)
-                                } else {
-                                    item
-                                }
-                            }
+            }
+            if (setup == null) {
+                logRepository.warning("ProcessingViewModel", "Unable to prepare processing inputs: $imagePath")
+                viewModel.updateUiState { state ->
+                    val currentTask = state.task
+                    state.copy(
+                        task = (currentTask ?: ProcessingTask(
+                            id = taskId,
+                            imagePath = imagePath,
+                            modelName = modelName,
+                            distributedMode = effectiveDistributedMode,
+                            progress = 0.0f,
+                            status = ProcessingStatus.IDLE
+                        )).copy(
+                            status = ProcessingStatus.FAILED,
+                            currentItemName = null,
+                            lastErrorMessage = stringProvider.getString(R.string.queue_cannot_start_batch)
+                        ),
+                        isProcessing = false
+                    )
+                }
+                return@launchRun
+            }
+
+            val outputDirectory = setup.outputDirectory
+            val runImages = setup.runImages
+            val allImages = setup.allImages
+            val pendingImages = setup.pendingImages
+            val totalItems = setup.totalItems
+            val completedCount = setup.completedItems
+            val initialFailures = setup.failureDetails
+            val initialFailureList = planner.orderedFailureDetails(initialFailures)
+            val initialLastError = resumeCheckpoint?.lastErrorMessage
+
+            if (pendingImages.isEmpty()) {
+                checkpointRepository.clearCheckpoint()
+                if (!queueItemId.isNullOrBlank()) {
+                    val existingOutputUri = withContext(ioDispatcher) {
+                        batchOutputRepository.firstReadyOutputUri(
+                            outputDirectory = outputDirectory,
+                            inputs = allImages
                         )
                     }
+                    if (!existingOutputUri.isNullOrBlank()) {
+                        viewModel.updateUiState { state ->
+                            state.copy(
+                                queueItems = state.queueItems.map { item ->
+                                    if (item.id == queueItemId) {
+                                        item.copy(lastOutputUri = existingOutputUri)
+                                    } else {
+                                        item
+                                    }
+                                }
+                            )
+                        }
+                    }
                 }
+                viewModel.updateUiState { state ->
+                    state.copy(
+                        task = ProcessingTask(
+                            id = taskId,
+                            imagePath = imagePath,
+                            modelName = modelName,
+                            distributedMode = effectiveDistributedMode,
+                            outputDirectory = outputDirectory.displayPath,
+                            outputDirectoryUri = outputDirectory.outputDirectoryUri,
+                            overwriteOriginal = outputDirectory.overwriteOriginal,
+                            backupOriginal = outputDirectory.backupOriginal,
+                            processNestedFolders = outputDirectory.processNestedFolders,
+                            completedItems = totalItems,
+                            pendingItems = 0,
+                            totalItems = totalItems,
+                            progress = 1.0f,
+                            status = ProcessingStatus.COMPLETED
+                        ),
+                        isProcessing = false
+                    )
+                }
+                logRepository.info(
+                    "ProcessingViewModel",
+                    "All outputs already exist for source=$imagePath, outputDir=${outputDirectory.displayPath}"
+                )
+                return@launchRun
             }
+
             viewModel.updateUiState { state ->
                 state.copy(
                     task = ProcessingTask(
@@ -171,55 +245,24 @@ internal class ProcessingRunEngine(
                         overwriteOriginal = outputDirectory.overwriteOriginal,
                         backupOriginal = outputDirectory.backupOriginal,
                         processNestedFolders = outputDirectory.processNestedFolders,
-                        completedItems = totalItems,
-                        pendingItems = 0,
+                        currentItemName = runImages.firstOrNull()?.displayName,
+                        completedItems = completedCount,
+                        pendingItems = pendingImages.size,
+                        failedItems = initialFailures.size,
+                        failureDetails = initialFailureList,
                         totalItems = totalItems,
-                        progress = 1.0f,
-                        status = ProcessingStatus.COMPLETED
+                        progress = planner.progressOf(completedCount, totalItems),
+                        status = ProcessingStatus.RUNNING,
+                        lastErrorMessage = initialLastError
                     ),
-                    isProcessing = false
+                    isProcessing = true
                 )
             }
             logRepository.info(
                 "ProcessingViewModel",
-                "All outputs already exist for source=$imagePath, outputDir=${outputDirectory.displayPath}"
+                "Started task $taskId with model=$modelName, total=$totalItems, completed=$completedCount, pending=${pendingImages.size}, run=${runImages.size}, retryFailedOnly=$retryFailedOnly, outputDir=${outputDirectory.displayPath}"
             )
-            return true
-        }
 
-        viewModel.updateUiState { state ->
-            state.copy(
-                    task = ProcessingTask(
-                        id = taskId,
-                        imagePath = imagePath,
-                        modelName = modelName,
-                        distributedMode = effectiveDistributedMode,
-                        outputDirectory = outputDirectory.displayPath,
-                        outputDirectoryUri = outputDirectory.outputDirectoryUri,
-                        overwriteOriginal = outputDirectory.overwriteOriginal,
-                        backupOriginal = outputDirectory.backupOriginal,
-                        processNestedFolders = outputDirectory.processNestedFolders,
-                        currentItemName = runImages.firstOrNull()?.displayName,
-                    completedItems = completedCount,
-                    pendingItems = pendingImages.size,
-                    failedItems = initialFailures.size,
-                    failureDetails = initialFailureList,
-                    totalItems = totalItems,
-                    progress = planner.progressOf(completedCount, totalItems),
-                    status = ProcessingStatus.RUNNING,
-                    lastErrorMessage = initialLastError
-                ),
-                isProcessing = true
-            )
-        }
-        logRepository.info(
-            "ProcessingViewModel",
-            "Started task $taskId with model=$modelName, total=$totalItems, completed=$completedCount, pending=${pendingImages.size}, run=${runImages.size}, retryFailedOnly=$retryFailedOnly, outputDir=${outputDirectory.displayPath}"
-        )
-
-        val modelBasePath = planner.modelBasePathFor(modelInfo)
-
-        viewModel.launchRun(queueItemId) {
             var successfulCount = completedCount
             var lastError: String? = initialLastError
             val pendingByUri = LinkedHashMap<String, ResolvedImageInput>()
@@ -324,7 +367,10 @@ internal class ProcessingRunEngine(
                         )
                     }
 
-                    val outputFile = batchOutputRepository.outputFileFor(outputDirectory = outputDirectory, input = item)
+                    // 输出文件路径推导涉及临时目录创建，归入 IO 调度器。
+                    val outputFile = withContext(ioDispatcher) {
+                        batchOutputRepository.outputFileFor(outputDirectory = outputDirectory, input = item)
+                    }
 
                     val startedAt = System.currentTimeMillis()
                     val currentSession = processingSession
@@ -359,7 +405,9 @@ internal class ProcessingRunEngine(
                             errorMessage = lastError,
                             attempts = previousAttempts + 1
                         )
-                        batchOutputRepository.discardOutputFile(outputFile)
+                        withContext(ioDispatcher) {
+                            batchOutputRepository.discardOutputFile(outputFile)
+                        }
                         saveCheckpointSnapshot()
                         viewModel.updateUiState { state ->
                             val currentTask = state.task ?: return@updateUiState state
@@ -386,11 +434,14 @@ internal class ProcessingRunEngine(
                     val itemUri = item.uri.toString()
 
                     if (result.isSuccess) {
-                        val commitResult = batchOutputRepository.commitOutput(
-                            outputDirectory = outputDirectory,
-                            input = item,
-                            outputFile = outputFile
-                        )
+                        // 提交输出（SAF/MediaStore 写入）是文件 IO，切到 IO 线程。
+                        val commitResult = withContext(ioDispatcher) {
+                            batchOutputRepository.commitOutput(
+                                outputDirectory = outputDirectory,
+                                input = item,
+                                outputFile = outputFile
+                            )
+                        }
                         if (commitResult.isSuccess) {
                             successfulCount += 1
                             pendingByUri.remove(itemUri)
@@ -425,7 +476,9 @@ internal class ProcessingRunEngine(
                                 errorMessage = lastError,
                                 attempts = previousAttempts + 1
                             )
-                            batchOutputRepository.discardOutputFile(outputFile)
+                            withContext(ioDispatcher) {
+                                batchOutputRepository.discardOutputFile(outputFile)
+                            }
                             logRepository.error(
                                 "ProcessingViewModel",
                                 "Failed to store output for ${item.displayName}: $lastError (pending=${pendingByUri.size})"
@@ -441,7 +494,9 @@ internal class ProcessingRunEngine(
                             errorMessage = lastError,
                             attempts = previousAttempts + 1
                         )
-                        batchOutputRepository.discardOutputFile(outputFile)
+                        withContext(ioDispatcher) {
+                            batchOutputRepository.discardOutputFile(outputFile)
+                        }
                         logRepository.error(
                             "ProcessingViewModel",
                             "Failed to process ${item.displayName}: $lastError (pending=${pendingByUri.size})"
@@ -472,10 +527,12 @@ internal class ProcessingRunEngine(
                     // Record the first ready output so the queue sheet can open
                     // the result with the system image viewer on tap.
                     if (!queueItemId.isNullOrBlank()) {
-                        val outputUri = batchOutputRepository.firstReadyOutputUri(
-                            outputDirectory = outputDirectory,
-                            inputs = allImages
-                        )
+                        val outputUri = withContext(ioDispatcher) {
+                            batchOutputRepository.firstReadyOutputUri(
+                                outputDirectory = outputDirectory,
+                                inputs = allImages
+                            )
+                        }
                         if (outputUri != null) {
                             viewModel.updateUiState { state ->
                                 state.copy(
@@ -594,7 +651,6 @@ internal class ProcessingRunEngine(
                         )
                     }
                 }
-                viewModel.onRunFinished()
             }
         }
         return true

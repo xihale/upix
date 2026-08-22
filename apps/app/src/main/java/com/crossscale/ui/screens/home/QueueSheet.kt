@@ -26,6 +26,7 @@ import androidx.compose.material.icons.outlined.Inbox
 import androidx.compose.material.icons.outlined.Pause
 import androidx.compose.material.icons.outlined.PlayArrow
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.FilledTonalIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -41,13 +42,14 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -94,6 +96,8 @@ internal fun QueueBottomSheetContent(
     val queueItems = processingUiState.queueItems
     val pendingQueueCount = remember(queueItems) { countPendingQueueItems(queueItems) }
     val failedQueueCount = remember(queueItems) { countFailedQueueItems(queueItems) }
+    // 清空为批量破坏性操作：先弹确认框再执行。
+    var showClearConfirm by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -143,7 +147,10 @@ internal fun QueueBottomSheetContent(
                     )
                 }
             }
-            IconButton(onClick = onClearBatchQueue, enabled = queueItems.isNotEmpty()) {
+            IconButton(
+                onClick = { showClearConfirm = true },
+                enabled = queueItems.isNotEmpty()
+            ) {
                 Icon(
                     imageVector = Icons.Outlined.DeleteSweep,
                     contentDescription = stringResource(R.string.queue_clear),
@@ -206,6 +213,29 @@ internal fun QueueBottomSheetContent(
         }
 
         Spacer(modifier = Modifier.height(Spacing.lg))
+    }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            title = { Text(stringResource(R.string.queue_clear_confirm_title)) },
+            text = { Text(stringResource(R.string.queue_clear_confirm_body, queueItems.size)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearConfirm = false
+                        onClearBatchQueue()
+                    }
+                ) {
+                    Text(stringResource(R.string.common_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirm = false }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            }
+        )
     }
 }
 
@@ -461,10 +491,16 @@ private fun QueueStatusPill(status: PersistedQueueItemStatus) {
 @Composable
 private fun QueueItemThumbnail(source: String) {
     val context = LocalContext.current
-    val bitmapState by produceState<ImageBitmap?>(initialValue = null, source) {
-        value = runCatching {
-            decodeQueueThumbnailWithLimit(context = context, source = source)
-        }.getOrNull()
+    val bitmapState by produceState(
+        initialValue = ThumbnailResult(bitmap = null, settled = false),
+        source
+    ) {
+        value = ThumbnailResult(
+            bitmap = runCatching {
+                decodeQueueThumbnailWithLimit(context = context, source = source)
+            }.getOrNull(),
+            settled = true
+        )
     }
 
     Box(
@@ -473,16 +509,20 @@ private fun QueueItemThumbnail(source: String) {
             .clip(MaterialTheme.shapes.small),
         contentAlignment = Alignment.Center
     ) {
-        val imageBitmap = bitmapState
-        if (imageBitmap != null) {
-            Image(
-                bitmap = imageBitmap,
+        val result = bitmapState
+        when {
+            // 解码完成前不渲染占位文案，避免「无预览」闪一下再被图片替换。
+            !result.settled -> Unit
+            result.bitmap != null -> Image(
+                bitmap = result.bitmap,
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
                 contentScale = ContentScale.Crop
             )
-        } else {
-            Text(text = stringResource(R.string.queue_no_image), style = MaterialTheme.typography.labelSmall)
+            else -> Text(
+                text = stringResource(R.string.queue_no_image),
+                style = MaterialTheme.typography.labelSmall
+            )
         }
     }
 }

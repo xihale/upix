@@ -77,14 +77,15 @@ class DeviceViewModel(
      * no PC has ever been paired.
      */
     fun tryAutoReconnect() {
-        val pc = pairingRepository.getLastPairedPC()
-        if (pc == null) {
-            logRepository.info("DeviceViewModel", "No last paired PC, staying disconnected")
-            return
-        }
-        val wantsEncrypted = isStreamEncryptionEnabled()
-        deviceRepository.setConnecting()
         viewModelScope.launch {
+            // EncryptedSharedPreferences 首次构建 + 读取都在 IO 线程，不碰主线程。
+            val pc = withContext(Dispatchers.IO) { pairingRepository.getLastPairedPC() }
+            if (pc == null) {
+                logRepository.info("DeviceViewModel", "No last paired PC, staying disconnected")
+                return@launch
+            }
+            val wantsEncrypted = isStreamEncryptionEnabled()
+            deviceRepository.setConnecting()
             val learned = performConnection(pc.host, pc.port, pc.identityPubKey, wantsEncrypted)
             if (learned != null) {
                 establishTrustedConnection(pc.host, pc.port, learned)
@@ -174,14 +175,18 @@ class DeviceViewModel(
             return
         }
         val normalizedHost = host.trim()
-        val trusted = pairingRepository.getTrustedPC(normalizedHost, port)
-        val knownKey = trusted?.identityPubKey
-        requestConnection(
-            host = normalizedHost,
-            port = port,
-            peerPubKeyB64 = knownKey,
-            wantsEncryptedStream = isStreamEncryptionEnabled()
-        )
+        viewModelScope.launch {
+            // 信任表读取（EncryptedSharedPreferences）在 IO 线程执行。
+            val trusted = withContext(Dispatchers.IO) {
+                pairingRepository.getTrustedPC(normalizedHost, port)
+            }
+            requestConnection(
+                host = normalizedHost,
+                port = port,
+                peerPubKeyB64 = trusted?.identityPubKey,
+                wantsEncryptedStream = isStreamEncryptionEnabled()
+            )
+        }
     }
 
     /**
@@ -196,16 +201,18 @@ class DeviceViewModel(
             return
         }
         _pendingFingerprintConfirm.value = null
-        establishTrustedConnection(
-            host = pending.host,
-            port = pending.port,
-            learnedPubKeyB64 = pending.learnedPubKeyB64,
-            fingerprint = pending.fingerprint
-        )
-        logRepository.info(
-            "DeviceViewModel",
-            "Fingerprint confirmed, trusted PC saved: ${pending.host}:${pending.port} (fp=${pending.fingerprint})"
-        )
+        viewModelScope.launch {
+            establishTrustedConnection(
+                host = pending.host,
+                port = pending.port,
+                learnedPubKeyB64 = pending.learnedPubKeyB64,
+                fingerprint = pending.fingerprint
+            )
+            logRepository.info(
+                "DeviceViewModel",
+                "Fingerprint confirmed, trusted PC saved: ${pending.host}:${pending.port} (fp=${pending.fingerprint})"
+            )
+        }
     }
 
     /**
@@ -256,6 +263,22 @@ class DeviceViewModel(
 
     // ---- internals ----
 
+    init {
+        // 真实掉线（如 PC 处理中途失联触发 clearEndpoint）要把 connectionState
+        // 翻成 DISCONNECTED，否则 UI 会永远停留在“已连接”。
+        viewModelScope.launch {
+            var wasConnected = coordinatorClient.connected.value
+            coordinatorClient.connected.collect { isConnected ->
+                if (wasConnected && !isConnected &&
+                    deviceRepository.connectionState.value == ConnectionState.CONNECTED
+                ) {
+                    deviceRepository.setDisconnected()
+                }
+                wasConnected = isConnected
+            }
+        }
+    }
+
     private fun isStreamEncryptionEnabled(): Boolean {
         return appSettingsRepository.isStreamEncrypted()
     }
@@ -292,14 +315,17 @@ class DeviceViewModel(
     }
 
     /** Strict/known-key success: persist trust + last paired PC, flip to CONNECTED. */
-    private fun establishTrustedConnection(
+    private suspend fun establishTrustedConnection(
         host: String,
         port: Int,
         learnedPubKeyB64: String,
         fingerprint: String = computeFingerprint(learnedPubKeyB64)
     ) {
-        pairingRepository.saveTrustedPC(host, port, TrustedPC(learnedPubKeyB64, fingerprint))
-        pairingRepository.saveLastPairedPC(host, port, learnedPubKeyB64, fingerprint)
+        // 信任表写入（EncryptedSharedPreferences）在 IO 线程执行。
+        withContext(Dispatchers.IO) {
+            pairingRepository.saveTrustedPC(host, port, TrustedPC(learnedPubKeyB64, fingerprint))
+            pairingRepository.saveLastPairedPC(host, port, learnedPubKeyB64, fingerprint)
+        }
         deviceRepository.setConnected(RemoteEndpoint(host = host, port = port, fingerprint = fingerprint))
     }
 

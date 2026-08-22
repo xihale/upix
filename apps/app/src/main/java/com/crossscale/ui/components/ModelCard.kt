@@ -98,7 +98,8 @@ fun ModelCard(
                 }
 
                 if (onDelete != null) {
-                    IconButton(onClick = onDelete) {
+                    // 上传/下载进行中禁止删除，避免传输中删掉本地文件。
+                    IconButton(onClick = onDelete, enabled = !busy) {
                         Icon(
                             imageVector = Icons.Outlined.Delete,
                             contentDescription = stringResource(R.string.models_delete),
@@ -116,10 +117,7 @@ fun ModelCard(
                 Text(
                     text = listOf(
                         stringResource(R.string.config_scale_value, entry.scaleFactor),
-                        stringResource(
-                            R.string.models_spec_size,
-                            entry.totalSize / 1024 / 1024
-                        )
+                        formatSizeBytes(entry.totalSize)
                     ).joinToString(" · "),
                     style = specTextStyle,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

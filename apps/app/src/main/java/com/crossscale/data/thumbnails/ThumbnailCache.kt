@@ -2,15 +2,22 @@ package com.crossscale.data.thumbnails
 
 import android.util.LruCache
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 
 private const val THUMBNAIL_DECODE_PARALLELISM = 2
 
 internal object ThumbnailMemoryCache {
-    private const val THUMBNAIL_CACHE_SIZE = 96
+    // 缓存按字节计价（KB）：以堆上限 1/8 为预算，避免大图条目挤爆小图。
+    private const val BYTES_PER_KB = 1024
+    private val THUMBNAIL_CACHE_KB =
+        (Runtime.getRuntime().maxMemory() / 8 / BYTES_PER_KB).toInt()
     private const val SOURCE_CANDIDATE_CACHE_SIZE = 128
-    private val thumbnailCache = LruCache<String, ImageBitmap>(THUMBNAIL_CACHE_SIZE)
+    private val thumbnailCache = object : LruCache<String, ImageBitmap>(THUMBNAIL_CACHE_KB) {
+        override fun sizeOf(key: String, value: ImageBitmap): Int =
+            value.asAndroidBitmap().byteCount / BYTES_PER_KB
+    }
     private val sourceCandidateCache = LruCache<String, List<String>>(SOURCE_CANDIDATE_CACHE_SIZE)
 
     fun getThumbnail(sourceKey: String): ImageBitmap? {

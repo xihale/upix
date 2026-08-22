@@ -8,6 +8,8 @@ import android.provider.DocumentsContract
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import com.crossscale.data.repository.InputSourceSpec
+import com.crossscale.data.repository.applyExifRotation
+import com.crossscale.data.repository.readExifOrientationDegrees
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -58,7 +60,13 @@ private fun decodeQueueThumbnail(
             BitmapFactory.decodeStream(stream, null, decodeOptions)
         } ?: continue
 
-        val imageBitmap = thumbnail.asImageBitmap()
+        // 竖拍照片按 EXIF 朝向旋转，避免缩略图横躺；流只能读一次，EXIF 单独再开一条。
+        val orientationDegrees = readExifOrientationDegrees {
+            openThumbnailInputStream(context = context, source = thumbnailSource)
+        }
+        val orientedThumbnail = applyExifRotation(thumbnail, orientationDegrees)
+
+        val imageBitmap = orientedThumbnail.asImageBitmap()
         ThumbnailMemoryCache.putThumbnail(candidateKey, imageBitmap)
         ThumbnailMemoryCache.putThumbnail(sourceKey, imageBitmap)
         return imageBitmap

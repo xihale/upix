@@ -1,13 +1,11 @@
 package com.crossscale.ui.components
 
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LocalRippleConfiguration
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.res.stringResource
 import androidx.navigation.NavDestination
@@ -20,8 +18,7 @@ import com.crossscale.ui.navigation.AppScreen
 fun BottomNavigationBar(navController: NavController) {
     val items = AppScreen.bottomNavigationItems
 
-    CompositionLocalProvider(LocalRippleConfiguration provides null) {
-        NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
+    NavigationBar(containerColor = MaterialTheme.colorScheme.surfaceContainer) {
         val navBackStackEntry by navController.currentBackStackEntryAsState()
         val currentDestination = navBackStackEntry?.destination
 
@@ -31,9 +28,10 @@ fun BottomNavigationBar(navController: NavController) {
 
             NavigationBarItem(
                 icon = {
+                    // label 已朗读，图标不再带 contentDescription，避免 TalkBack 双报。
                     Icon(
                         imageVector = if (selected) screen.selectedIcon else screen.icon,
-                        contentDescription = title
+                        contentDescription = null
                     )
                 },
                 label = { Text(title) },
@@ -53,7 +51,6 @@ fun BottomNavigationBar(navController: NavController) {
                     }
                 }
             )
-        }
         }
     }
 }
