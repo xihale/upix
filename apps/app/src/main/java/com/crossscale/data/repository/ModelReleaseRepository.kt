@@ -203,8 +203,8 @@ class ModelReleaseRepository(
         const val MANIFEST_URL =
             "https://github.com/xihale/crossscale/releases/download/models/manifest.json"
 
-        /** 连接策略序列：false=系统解析直连；true=固定 IP 直连 + SNI 剥离。 */
-        val CONNECT_STRATEGIES = listOf(false, true)
+        /** 连接策略：默认固定 IP 直连 + SNI 剥离，不做无谓的直连尝试。 */
+        val CONNECT_STRATEGIES = listOf(true)
 
         const val CONNECT_TIMEOUT_MS = 8_000
         const val READ_TIMEOUT_MS = 15_000
