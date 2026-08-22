@@ -267,6 +267,8 @@ class MainViewModel(
         viewModelScope.launch {
             val directory = File(modelsDirectory(), entry.name)
             val result = withContext(Dispatchers.IO) {
+                // 目标目录可能不存在（首次下载该模型），必须先建目录。
+                directory.mkdirs()
                 coordinatorClient.downloadModelFromPC(
                     name = entry.name,
                     destParamPath = File(directory, "${entry.name}.param").absolutePath,

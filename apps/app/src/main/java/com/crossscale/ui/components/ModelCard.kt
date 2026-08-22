@@ -10,7 +10,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.CloudUpload
+import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -65,10 +67,8 @@ fun ModelCard(
                     text = entry.name,
                     style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
-                    modifier = Modifier.weight(1f, fill = false)
+                    modifier = Modifier.weight(1f)
                 )
-                LocationBadge(text = stringResource(R.string.models_badge_phone), enabled = entry.onPhone)
-                LocationBadge(text = stringResource(R.string.models_badge_pc), enabled = entry.onPc)
 
                 val busy = uploading || downloading
                 if (!entry.onPhone && entry.onPc) {
@@ -108,41 +108,41 @@ fun ModelCard(
                 }
             }
 
-            Text(
-                text = listOf(
-                    stringResource(R.string.config_scale_value, entry.scaleFactor),
-                    stringResource(
-                        R.string.models_spec_size,
-                        entry.totalSize / 1024 / 1024
+            // 规格行：x2 · 2MB 后跟双端存在图标（只画实际存在的端）。
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+            ) {
+                Text(
+                    text = listOf(
+                        stringResource(R.string.config_scale_value, entry.scaleFactor),
+                        stringResource(
+                            R.string.models_spec_size,
+                            entry.totalSize / 1024 / 1024
+                        )
+                    ).joinToString(" · "),
+                    style = specTextStyle,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+                if (entry.onPhone) {
+                    Icon(
+                        imageVector = Icons.Outlined.Smartphone,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                ).joinToString(" · "),
-                style = specTextStyle,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1
-            )
+                }
+                if (entry.onPc) {
+                    Icon(
+                        imageVector = Icons.Outlined.Computer,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
         }
     }
 }
 
-@Composable
-private fun LocationBadge(text: String, enabled: Boolean) {
-    Surface(
-        shape = RoundedCornerShape(50),
-        color = if (enabled) {
-            MaterialTheme.colorScheme.secondaryContainer
-        } else {
-            MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f)
-        }
-    ) {
-        Text(
-            text = text,
-            style = MaterialTheme.typography.labelSmall,
-            color = if (enabled) {
-                MaterialTheme.colorScheme.onSecondaryContainer
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
-            },
-            modifier = Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.xs)
-        )
-    }
-}
