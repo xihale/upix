@@ -28,7 +28,7 @@ target("crossscale-core")
         assert(dump, "dump-spirv target missing")
         local bin = dump:targetfile()
         if not os.isfile(bin) then
-            os.execv(os.programfile(), {"build", "dump-spirv", "-y", "-P", os.projectdir()})
+            os.execv(os.programfile(), {"build", "dump-spirv"})
             bin = dump:targetfile()
         end
         print("generating " .. spirv_pack)

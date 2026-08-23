@@ -24,15 +24,6 @@ android {
         ndk {
             abiFilters += "arm64-v8a"
         }
-
-        externalNativeBuild {
-            cmake {
-                arguments += listOf(
-                    "-DANDROID_STL=c++_shared",
-                    "-DANDROID_TOOLCHAIN=clang"
-                )
-            }
-        }
     }
 
     // Security fix: Define signing configs separately. Release build uses
@@ -67,11 +58,6 @@ android {
         }
         debug {
             isDebuggable = true
-            externalNativeBuild {
-                cmake {
-                    cppFlags += "-g"
-                }
-            }
         }
     }
 
@@ -101,14 +87,24 @@ android {
         }
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "4.1.2"
-        }
-    }
-
     ndkVersion = "29.0.14206865"
+}
+
+val repoRoot = rootProject.projectDir.parentFile
+val buildNativeScript = rootProject.projectDir.resolve("scripts/build_native.sh")
+
+// Native is always xmake -m release (-O3 / stripped), matching the old CMake
+// flags. Debug APKs still load this .so; JNI debugging is not the debug build.
+tasks.register<Exec>("xmakeNative") {
+    group = "build"
+    description = "Build libcrossscale-native.so with xmake"
+    workingDir = repoRoot
+    commandLine(buildNativeScript.absolutePath, "release", "arm64-v8a")
+}
+
+afterEvaluate {
+    tasks.named("preDebugBuild").configure { dependsOn("xmakeNative") }
+    tasks.named("preReleaseBuild").configure { dependsOn("xmakeNative") }
 }
 
 kotlin {
