@@ -10,8 +10,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
-import androidx.camera.core.ExperimentalGetImage
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -49,15 +49,10 @@ import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.crossscale.R
-import com.google.mlkit.vision.barcode.BarcodeScannerOptions
-import com.google.mlkit.vision.barcode.BarcodeScanning
-import com.google.mlkit.vision.barcode.common.Barcode
-import com.google.mlkit.vision.common.InputImage
 import com.crossscale.ui.theme.Spacing
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
-@ExperimentalGetImage
 @Composable
 fun QRScannerScreen(
     onPayloadScanned: (String) -> Unit,
@@ -81,12 +76,6 @@ fun QRScannerScreen(
         )
     }
 
-    val scannerOptions = remember {
-        BarcodeScannerOptions.Builder()
-            .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
-            .build()
-    }
-    val barcodeScanner = remember { BarcodeScanning.getClient(scannerOptions) }
     val cameraExecutor = remember { Executors.newSingleThreadExecutor() }
     val hasScanned = remember { AtomicBoolean(false) }
 
@@ -110,7 +99,6 @@ fun QRScannerScreen(
         onDispose {
             ScannerMode.exit()
             cameraExecutor.shutdown()
-            barcodeScanner.close()
         }
     }
 
@@ -152,39 +140,19 @@ fun QRScannerScreen(
                         imageProxy.close()
                         return@setAnalyzer
                     }
-
-                    val mediaImage = imageProxy.image
-                    if (mediaImage == null) {
+                    try {
+                        val payload = decodeQrPayload(imageProxy)
+                        if (payload != null && hasScanned.compareAndSet(false, true)) {
+                            onPayloadScanned(payload)
+                        }
+                    } catch (throwable: Throwable) {
+                        scanError = throwable.message
+                            ?.let { raw -> "$scanFailedMessage（$raw）" }
+                            ?: scanFailedMessage
+                    } finally {
                         processingFrame.set(false)
                         imageProxy.close()
-                        return@setAnalyzer
                     }
-
-                    val image = InputImage.fromMediaImage(
-                        mediaImage,
-                        imageProxy.imageInfo.rotationDegrees
-                    )
-
-                    barcodeScanner.process(image)
-                        .addOnSuccessListener { barcodes ->
-                            val payload = barcodes
-                                .asSequence()
-                                .mapNotNull { it.rawValue?.trim() }
-                                .firstOrNull { it.isNotEmpty() }
-
-                            if (payload != null && hasScanned.compareAndSet(false, true)) {
-                                onPayloadScanned(payload)
-                            }
-                        }
-                        .addOnFailureListener { throwable ->
-                            scanError = throwable.message
-                                ?.let { raw -> "$scanFailedMessage（$raw）" }
-                                ?: scanFailedMessage
-                        }
-                        .addOnCompleteListener {
-                            processingFrame.set(false)
-                            imageProxy.close()
-                        }
                 }
             }
 
@@ -304,4 +272,21 @@ fun QRScannerScreen(
             )
         }
     }
+}
+
+private fun decodeQrPayload(imageProxy: ImageProxy): String? {
+    val plane = imageProxy.planes.firstOrNull() ?: return null
+    val yPlane = QrPayloadDecoder.compactYPlane(
+        buffer = plane.buffer,
+        width = imageProxy.width,
+        height = imageProxy.height,
+        rowStride = plane.rowStride,
+        pixelStride = plane.pixelStride
+    )
+    return QrPayloadDecoder.decodeYPlane(
+        yPlane = yPlane,
+        width = imageProxy.width,
+        height = imageProxy.height,
+        rotationDegrees = imageProxy.imageInfo.rotationDegrees
+    )
 }

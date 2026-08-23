@@ -36,3 +36,12 @@
 
 # Keep EncryptedSharedPreferences and security-crypto internals
 -keep class androidx.security.crypto.** { *; }
+
+# Tink (via security-crypto) references these annotations; they are compile-only
+# and used to arrive transitively via ML Kit. Compile-only: ignore at R8 time.
+-dontwarn com.google.errorprone.annotations.CanIgnoreReturnValue
+-dontwarn com.google.errorprone.annotations.CheckReturnValue
+-dontwarn com.google.errorprone.annotations.Immutable
+-dontwarn com.google.errorprone.annotations.RestrictedApi
+-dontwarn javax.annotation.Nullable
+-dontwarn javax.annotation.concurrent.GuardedBy

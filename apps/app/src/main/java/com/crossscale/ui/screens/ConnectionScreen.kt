@@ -1,6 +1,5 @@
 package com.crossscale.ui.screens
 
-import androidx.camera.core.ExperimentalGetImage
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -45,7 +44,6 @@ import com.crossscale.viewmodel.DeviceUiState
  * 顶部大状态卡（状态标题 + 地址/指纹 + 操作按钮），下方使用说明分区卡。
  * 已连 → 标题 + 断开；连接中 → spinner；断开 → 扫码/手动入口。
  */
-@ExperimentalGetImage
 @Composable
 fun ConnectionScreen(
     state: DeviceUiState,

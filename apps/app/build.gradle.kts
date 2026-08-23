@@ -150,8 +150,9 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
 
-    // ML Kit for QR code scanning
-    implementation(libs.mlkit.barcode.scanning)
+    // QR decode. Bundled ML Kit barcode-scanning pulled ~5 MB native/ABI
+    // (libbarhopper) plus tflite models; this app only scans QR payloads.
+    implementation(libs.zxing.core)
 
     // JSON
     implementation(libs.kotlinx.serialization.json)

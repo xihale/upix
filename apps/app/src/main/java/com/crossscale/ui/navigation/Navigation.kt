@@ -1,6 +1,5 @@
 package com.crossscale.ui.navigation
 
-import androidx.camera.core.ExperimentalGetImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -48,7 +47,6 @@ import com.crossscale.viewmodel.ProcessingViewModel
  * 直接绑定 VM 方法。跨 VM 的复合编排回调（startProcessing 等）位于
  * AppCallbacks.kt，此处仅做接线；不经过逐参数透传的回调墙。
  */
-@ExperimentalGetImage
 @Composable
 fun CrossScaleNavigation(
     container: AppContainer,
