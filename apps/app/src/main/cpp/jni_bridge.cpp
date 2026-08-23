@@ -579,7 +579,9 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImage(
         output_config.output_format = "png";
     }
     if (!is_supported_output_format(output_config.output_format)) {
-        LOGE("Unsupported output format: %s", output_config.output_format.c_str());
+        const std::string message = "Unsupported output format: " + output_config.output_format;
+        LOGE("%s", message.c_str());
+        set_jni_last_error(message);
         return nullptr;
     }
     
@@ -654,7 +656,10 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImage(
             output_config.output_quality
         );
         if (!encoded_result.has_value()) {
-            LOGE("Failed to encode output image: %s", encoded_result.error().message.c_str());
+            const std::string message =
+                "Failed to encode output image: " + encoded_result.error().message;
+            LOGE("%s", message.c_str());
+            set_jni_last_error(message);
             return nullptr;
         }
 

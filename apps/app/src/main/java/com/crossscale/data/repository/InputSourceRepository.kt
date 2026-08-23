@@ -254,9 +254,14 @@ class InputSourceRepository(
                 boundsOptions.outWidth > 0 && boundsOptions.outHeight > 0
             } == true
         }.onFailure { throwable ->
+            val avifHint = if (isAvifName(displayName)) {
+                " (${avifDecodeErrorMessage(displayName)})"
+            } else {
+                ""
+            }
             logRepository.warning(
                 "InputSourceRepository",
-                "Failed to decode image $displayName: ${throwable.message}"
+                "Failed to decode image $displayName: ${throwable.message}$avifHint"
             )
         }.getOrDefault(false)
     }
@@ -273,7 +278,8 @@ class InputSourceRepository(
             ".tiff",
             // HEIF/HEIC 照片（部分机型默认格式）
             ".heic",
-            ".heif"
+            ".heif",
+            ".avif"
         )
     }
 

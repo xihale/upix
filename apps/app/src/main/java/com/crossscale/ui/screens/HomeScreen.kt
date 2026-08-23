@@ -513,10 +513,11 @@ private fun prettyOutputPath(uri: String): String {
     }
 }
 
-/** 输出格式选项文本：「跟随原图」走资源，PNG/JPG/WebP 用常量。 */
+/** 输出格式选项文本：「跟随原图」走资源，其余用常量。 */
 private fun outputFormatLabel(format: OutputImageFormat, followLabel: String): String = when (format) {
     OutputImageFormat.FOLLOW -> followLabel
     OutputImageFormat.PNG -> "PNG"
     OutputImageFormat.JPG -> "JPG"
     OutputImageFormat.WEBP -> "WebP"
+    OutputImageFormat.AVIF -> "AVIF"
 }

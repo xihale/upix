@@ -4,6 +4,9 @@ target("crossscale-core")
     add_packages("ncnn", "libwebp", "libpng", "libjpeg", "glaze", "libsodium")
     add_packages("libdeflate")
     add_includedirs(".", {public = true})
+    if is_plat("linux", "bsd") then
+        add_syslinks("dl")
+    end
     
     -- Auto-collect share sources, excluding platform-specific files handled below.
     add_files(

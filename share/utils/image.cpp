@@ -1,4 +1,5 @@
 #include "image.hpp"
+#include "image_avif.hpp"
 #include "logger.hpp"
 
 #include <algorithm>
@@ -471,6 +472,9 @@ auto Image::load(const std::filesystem::path& path)
             return load_jpeg(file_data.value());
         } else if (ext == ".webp") {
             return load_webp(file_data.value());
+        } else if (ext == ".avif" || avif_codec::looks_like_avif(
+                                         file_data->data(), file_data->size())) {
+            return avif_codec::load(file_data.value());
         } else {
             return std::unexpected(ImageError{8, "Unsupported image format: " + ext});
         }
@@ -562,6 +566,10 @@ auto Image::save_to_memory(const std::string& format, int quality) const
             std::vector<uint8_t> encoded(out_buffer, out_buffer + out_size);
             std::free(out_buffer);
             return encoded;
+        }
+
+        if (output_format == "avif") {
+            return avif_codec::save(*this, clamped_quality);
         }
 
         if (output_format == "webp") {

@@ -19,8 +19,8 @@ data class DecodedRgbImage(
 
 internal const val RGB_CHANNELS = 3
 
-private const val DEFAULT_OUTPUT_FORMAT = "png"
 private const val MAX_RGB_BUFFER_HEAP_RATIO = 0.85
+private const val ANDROID_AVIF_DECODE_SDK = 31
 
 /**
  * Decodes [uri] into a packed RGB (3 bytes/pixel) buffer for the native layer:
@@ -31,6 +31,7 @@ private const val MAX_RGB_BUFFER_HEAP_RATIO = 0.85
 internal fun decodeRgb(
     resolver: ContentResolver,
     uri: Uri,
+    displayName: String? = null,
     onError: (message: String) -> Unit
 ): DecodedRgbImage? {
     val bitmap = runCatching {
@@ -39,7 +40,13 @@ internal fun decodeRgb(
         }
     }.onFailure { throwable ->
         onError("Unable to read input URI $uri: ${throwable.message}")
-    }.getOrNull() ?: return null
+    }.getOrNull()
+    if (bitmap == null) {
+        if (isAvifName(displayName) || isAvifUri(resolver, uri)) {
+            onError(avifDecodeErrorMessage(displayName ?: uri.toString()))
+        }
+        return null
+    }
 
     // 竖拍照片的 EXIF 朝向：解码后按角度旋转，否则人像图会被横着放大。
     // 流只能读一次，EXIF 需要单独再开一个流。
@@ -131,12 +138,33 @@ private fun hasSufficientHeapForRgbBuffer(
 
 /** Output encoding format requested from the native layer for [file]'s extension. */
 internal fun outputFormatFor(file: File): String {
-    return when (file.extension.trim().lowercase()) {
-        "png" -> "png"
-        "jpg" -> "jpg"
-        "jpeg" -> "jpeg"
-        "webp" -> "webp"
-        else -> DEFAULT_OUTPUT_FORMAT
+    return outputFormatForExtension(file.extension)
+}
+
+internal fun decodeEncodedImageBounds(encodedBytes: ByteArray): Pair<Int, Int>? {
+    val options = BitmapFactory.Options().apply {
+        inJustDecodeBounds = true
+    }
+    BitmapFactory.decodeByteArray(encodedBytes, 0, encodedBytes.size, options)
+    if (options.outWidth > 0 && options.outHeight > 0) {
+        return options.outWidth to options.outHeight
+    }
+    return AvifFormat.sniffDimensions(encodedBytes)
+}
+
+internal fun isAvifName(name: String?): Boolean {
+    return name?.substringAfterLast('.', "")?.equals("avif", ignoreCase = true) == true
+}
+
+private fun isAvifUri(resolver: ContentResolver, uri: Uri): Boolean {
+    return resolver.getType(uri)?.equals("image/avif", ignoreCase = true) == true
+}
+
+internal fun avifDecodeErrorMessage(label: String): String {
+    return if (android.os.Build.VERSION.SDK_INT < ANDROID_AVIF_DECODE_SDK) {
+        "无法解码 AVIF（需要 Android 12 及以上）：$label"
+    } else {
+        "无法解码 AVIF：$label"
     }
 }
 

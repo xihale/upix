@@ -28,7 +28,7 @@ public:
 
     ~Image() = default;
 
-    // Load from file (supports PNG, JPEG, WebP, BMP)
+    // Load from file (PNG, JPEG, WebP; AVIF via system libavif if present)
     static auto load(const std::filesystem::path& path)
         -> expected<Image, ImageError>;
 

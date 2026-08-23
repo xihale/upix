@@ -27,6 +27,7 @@
 #include "cli_app.hpp"
 #include "common.hpp"
 #include "utils/image.hpp"
+#include "utils/image_avif.hpp"
 #include "utils/logger.hpp"
 #include "utils/unix_socket.hpp"
 #include "core/config.hpp"
@@ -83,6 +84,14 @@ std::pair<uint32_t, uint32_t> sniff_image_dimensions(const fs::path& path) {
             f.seekg(static_cast<std::streamoff>(seg_len) - 2, std::ios::cur);
         }
     }
+
+    if (got >= 12 && sig[4] == 'f' && sig[5] == 't' && sig[6] == 'y' && sig[7] == 'p') {
+        f.seekg(0);
+        std::vector<unsigned char> header(256 * 1024);
+        f.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
+        const auto n = static_cast<size_t>(f.gcount());
+        return crossscale::avif_codec::sniff_dimensions(header.data(), n);
+    }
     return {0, 0};
 }
 
@@ -121,7 +130,9 @@ int run_batch(const args::Process& a) {
         fs::create_directories(output_path);
 
         // Gather image files recursively
-        std::vector<std::string> extensions = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".tif"};
+        std::vector<std::string> extensions = {
+            ".png", ".jpg", ".jpeg", ".webp", ".avif", ".bmp", ".tiff", ".tif"
+        };
         std::vector<std::pair<std::string, std::string>> tasks;
         for (auto& p : fs::recursive_directory_iterator(input_path)) {
             if (!p.is_regular_file()) continue;

@@ -3,7 +3,6 @@ package com.crossscale.data.repository
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.net.Uri
 import com.crossscale.R
 import com.crossscale.nativelib.NCNNEngine
 import java.io.File
@@ -396,7 +395,7 @@ class NativeImageProcessingRepository(
             val activeEnginePtr = enginePtr
             require(activeEnginePtr != 0L) { "Native session already closed" }
 
-            val decoded = decodeInput(input.uri)
+            val decoded = decodeInput(input)
             requireNotNull(decoded) {
                 "Failed to decode image input: ${input.displayName}"
             }
@@ -407,6 +406,9 @@ class NativeImageProcessingRepository(
                     "actual=${decoded.rgbBytes.size}, expected=$expectedRgbBytes"
             }
             val outputFormat = outputFormatFor(outputFile)
+            require(outputFormat != AVIF_OUTPUT_FORMAT) {
+                "本地无法编码 AVIF。请连接 PC 远程处理，或改用 PNG/JPEG/WebP"
+            }
             logRepository.info(
                 "NativeImageProcessingRepository",
                 "Start native processing: input=${input.displayName}, uri=${input.uri}, " +
@@ -471,10 +473,11 @@ class NativeImageProcessingRepository(
             enginePtr = 0L
         }
 
-        private fun decodeInput(uri: Uri): DecodedRgbImage? {
+        private fun decodeInput(input: ResolvedImageInput): DecodedRgbImage? {
             return decodeRgb(
                 resolver = context.contentResolver,
-                uri = uri
+                uri = input.uri,
+                displayName = input.displayName
             ) { message ->
                 logRepository.error("NativeImageProcessingRepository", message)
             }
@@ -487,15 +490,11 @@ class NativeImageProcessingRepository(
             displayName: String
         ) {
             require(encodedBytes.isNotEmpty()) { "Output image buffer is empty: $displayName" }
-            val options = BitmapFactory.Options().apply {
-                inJustDecodeBounds = true
-            }
-            BitmapFactory.decodeByteArray(encodedBytes, 0, encodedBytes.size, options)
-            val decodedWidth = options.outWidth
-            val decodedHeight = options.outHeight
-            require(decodedWidth > 0 && decodedHeight > 0) {
+            val bounds = decodeEncodedImageBounds(encodedBytes)
+            require(bounds != null) {
                 "Encoded output is not decodable: $displayName"
             }
+            val (decodedWidth, decodedHeight) = bounds
             require(decodedWidth == expectedWidth && decodedHeight == expectedHeight) {
                 "Output dimensions mismatch for $displayName: actual=${decodedWidth}x${decodedHeight}, " +
                     "expected=${expectedWidth}x${expectedHeight}"

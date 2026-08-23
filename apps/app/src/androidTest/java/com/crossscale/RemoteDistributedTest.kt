@@ -89,6 +89,9 @@ class RemoteDistributedTest {
             "png"  -> eq(0, 0x89) && eq(1, 0x50) && eq(2, 0x4E) && eq(3, 0x47) // ‰PNG
             "webp" -> eq(0, 0x52) && eq(1, 0x49) && eq(2, 0x46) && eq(3, 0x46) && // RIFF
                       eq(8, 0x57) && eq(9, 0x45) && eq(10, 0x42) && eq(11, 0x50)  // WEBP
+            "avif" -> eq(4, 'f'.code) && eq(5, 't'.code) && eq(6, 'y'.code) && eq(7, 'p'.code) &&
+                      (eq(8, 'a'.code) && eq(9, 'v'.code) && eq(10, 'i'.code) && eq(11, 'f'.code) ||
+                          bytes.take(32).windowed(4).any { it[0] == 'a'.toByte() && it[1] == 'v'.toByte() && it[2] == 'i'.toByte() && it[3] == 'f'.toByte() })
             else   -> false
         }
         val head = bytes.take(4).joinToString("") { "%02x".format(it) }
@@ -131,9 +134,16 @@ class RemoteDistributedTest {
         // And the result must decode + be upscaled beyond the 64x64 input.
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(encoded, 0, encoded.size, opts)
+        var outWidth = opts.outWidth
+        var outHeight = opts.outHeight
+        if (outWidth <= 0 && format == "avif") {
+            val ispe = com.crossscale.data.repository.AvifFormat.sniffDimensions(encoded)
+            outWidth = ispe?.first ?: 0
+            outHeight = ispe?.second ?: 0
+        }
         assertTrue(
-            "submit($format) did not decode (outWidth=${opts.outWidth})",
-            opts.outWidth > 64 && opts.outHeight > 64
+            "submit($format) did not decode (outWidth=$outWidth)",
+            outWidth > 64 && outHeight > 64
         )
     }
 
@@ -153,4 +163,7 @@ class RemoteDistributedTest {
 
     @Test
     fun d_distributedUpscale_webp() = roundTripInFormat("webp")
+
+    @Test
+    fun e_distributedUpscale_avif() = roundTripInFormat("avif")
 }

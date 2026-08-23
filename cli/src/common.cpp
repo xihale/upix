@@ -42,6 +42,7 @@ auto infer_format_from_extension(const std::string& path) -> std::string {
     if (ext == "png") return "png";
     if (ext == "jpg" || ext == "jpeg") return "jpg";
     if (ext == "webp") return "webp";
+    if (ext == "avif") return "avif";
     return "";
 }
 

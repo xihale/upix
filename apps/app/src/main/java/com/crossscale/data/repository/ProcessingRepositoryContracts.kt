@@ -29,15 +29,24 @@ interface InputSourceResolver {
 /**
  * 输出格式设置：FOLLOW 表示跟随原图扩展名（现状行为），
  * 其余枚举在生成输出文件名时强制对应扩展名。
+ *
+ * AVIF 只能由 PC 端系统 libavif 编码。本地处理时强制 AVIF 会直接失败；
+ * FOLLOW 遇到 .avif 原图时本地落到 PNG。
  */
 enum class OutputImageFormat(val forcedExtension: String?) {
     FOLLOW(null),
     PNG("png"),
     JPG("jpg"),
-    WEBP("webp")
+    WEBP("webp"),
+    AVIF("avif")
 }
 
 interface BatchOutputStore {
+    fun outputFormatSetting(): OutputImageFormat = OutputImageFormat.FOLLOW
+
+    /** Remote PC can encode AVIF; local device cannot. */
+    fun setWriteAvif(enabled: Boolean) {}
+
     fun prepareOutputDirectory(
         source: String,
         modelName: String,

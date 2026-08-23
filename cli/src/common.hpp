@@ -40,7 +40,7 @@ void signal_handler(int);
 void serve_signal_handler(int);
 
 // ── Image / format helpers ──────────────────────────────────────────────────
-// Infer output format ("png"/"jpg"/"webp") from a file extension; "" if unknown.
+// Infer output format ("png"/"jpg"/"webp"/"avif") from a file extension; "" if unknown.
 auto infer_format_from_extension(const std::string& path) -> std::string;
 
 // Render a progress line to stderr:  45.2% [12/27 tiles, ETA 3.2s]

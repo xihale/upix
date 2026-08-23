@@ -183,6 +183,7 @@
     <string name="processing_error_native_session">本地处理引擎启动失败：%1$s</string>
     <string name="processing_error_save_output">保存输出文件失败</string>
     <string name="processing_error_unknown_processing">处理时发生未知错误</string>
+    <string name="processing_error_local_avif">本地无法编码 AVIF。请连接 PC 远程处理，或改用 PNG/JPEG/WebP</string>
     <string name="processing_error_unknown_failure">发生未知错误</string>
 
     <!-- Settings screen -->

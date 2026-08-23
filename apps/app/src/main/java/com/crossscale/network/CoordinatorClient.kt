@@ -1,13 +1,13 @@
 package com.crossscale.network
 
 import android.content.Context
-import android.graphics.BitmapFactory
 import android.net.Uri
 import com.crossscale.data.model.PcModel
 import com.crossscale.data.repository.LogRepository
 import com.crossscale.data.repository.NativeProcessResult
 import com.crossscale.data.repository.ResolvedImageInput
 import com.crossscale.data.repository.RGB_CHANNELS
+import com.crossscale.data.repository.decodeEncodedImageBounds
 import com.crossscale.data.repository.decodeRgb
 import com.crossscale.data.repository.outputFormatFor
 import com.crossscale.nativelib.NCNNEngine
@@ -203,7 +203,8 @@ class CoordinatorClient(
 
         val decodedInput = decodeRgb(
             resolver = appContext.contentResolver,
-            uri = input.uri
+            uri = input.uri,
+            displayName = input.displayName
         ) { message ->
             logRepository.error("CoordinatorClient", message)
         } ?: return Result.failure(
@@ -296,14 +297,7 @@ class CoordinatorClient(
     }
 
     private fun decodeOutputBounds(encodedBytes: ByteArray): Pair<Int, Int>? {
-        val options = BitmapFactory.Options().apply {
-            inJustDecodeBounds = true
-        }
-        BitmapFactory.decodeByteArray(encodedBytes, 0, encodedBytes.size, options)
-        if (options.outWidth <= 0 || options.outHeight <= 0) {
-            return null
-        }
-        return options.outWidth to options.outHeight
+        return decodeEncodedImageBounds(encodedBytes)
     }
 
     private fun writeOutputBytes(file: File, encodedBytes: ByteArray): Result<Unit> {

@@ -55,7 +55,8 @@ bool is_supported_output_format(const std::string& format) {
         "png",
         "jpg",
         "jpeg",
-        "webp"
+        "webp",
+        "avif"
     };
     for (const char* candidate : kSupportedFormats) {
         if (format == candidate) {
@@ -140,7 +141,7 @@ auto ProcessingConfig::validate() const -> std::vector<std::string> {
     }
     const std::string normalized_format = normalize_output_format(output_format);
     if (!normalized_format.empty() && !is_supported_output_format(normalized_format)) {
-        errors.push_back("output_format must be one of: png, jpg, jpeg, webp");
+        errors.push_back("output_format must be one of: png, jpg, jpeg, webp, avif");
     }
 
     return errors;

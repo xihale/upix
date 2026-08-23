@@ -8,6 +8,7 @@ import com.crossscale.data.repository.ImageProcessingSession
 import com.crossscale.data.repository.ImageProcessingStore
 import com.crossscale.data.repository.LogRepository
 import com.crossscale.data.repository.ModelProvider
+import com.crossscale.data.repository.OutputImageFormat
 import com.crossscale.data.repository.ProcessingCheckpoint
 import com.crossscale.data.repository.ProcessingCheckpointStore
 import com.crossscale.data.repository.ProcessingFailureDetail
@@ -82,6 +83,7 @@ internal class ProcessingRunEngine(
         // otherwise we process on-device. Local-device-as-worker is gone.
         val useRemote = coordinatorClient?.isConnected() == true
         val effectiveDistributedMode = useRemote
+        batchOutputRepository.setWriteAvif(useRemote)
 
         // 快速失败路径保留在主线程：模型查表是内存操作。
         val modelInfo = modelRepository.getModelByName(modelName)
@@ -89,6 +91,30 @@ internal class ProcessingRunEngine(
             val errorMessage = stringProvider.getString(
                 R.string.processing_error_model_not_found, modelName
             )
+            logRepository.error("ProcessingViewModel", errorMessage)
+            viewModel.updateUiState { state ->
+                state.copy(
+                    task = ProcessingTask(
+                        id = resumeCheckpoint?.taskId ?: UUID.randomUUID().toString(),
+                        imagePath = imagePath,
+                        modelName = modelName,
+                        distributedMode = effectiveDistributedMode,
+                        overwriteOriginal = overwriteOriginal,
+                        backupOriginal = backupOriginal,
+                        processNestedFolders = processNestedFolders,
+                        pendingItems = 0,
+                        progress = 0.0f,
+                        status = ProcessingStatus.FAILED,
+                        lastErrorMessage = errorMessage
+                    ),
+                    isProcessing = false
+                )
+            }
+            return false
+        }
+
+        if (!useRemote && batchOutputRepository.outputFormatSetting() == OutputImageFormat.AVIF) {
+            val errorMessage = stringProvider.getString(R.string.processing_error_local_avif)
             logRepository.error("ProcessingViewModel", errorMessage)
             viewModel.updateUiState { state ->
                 state.copy(

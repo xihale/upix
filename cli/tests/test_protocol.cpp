@@ -163,6 +163,8 @@ int main() {
         // output_format slot is exactly 8 bytes (regression guard for the
         // recently-added field: a layout change flips this size).
         CHECK(sizeof(s.output_format) == 8);
+        std::strncpy(s.output_format, "avif", sizeof(s.output_format) - 1);
+        CHECK(std::strcmp(s.output_format, "avif") == 0);
     }
     {
         ClientConnectRequest r{};

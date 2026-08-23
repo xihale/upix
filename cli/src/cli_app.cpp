@@ -56,7 +56,7 @@ auto build_app() -> std::unique_ptr<CLI::App> {
         ->check(CLI::Range(0, 100));
     proc->add_option("--output-format", proc_args.output_format,
                      "Output format (default: auto from extension)")
-        ->check(CLI::IsMember({"png", "jpg", "jpeg", "webp"}));
+        ->check(CLI::IsMember({"png", "jpg", "jpeg", "webp", "avif"}));
     proc->add_option("--config", proc_args.config_file, "Config file path");
     proc->callback([tile_size_opt, jobs_opt] {
         proc_args.tile_size_explicit = tile_size_opt->count() > 0;

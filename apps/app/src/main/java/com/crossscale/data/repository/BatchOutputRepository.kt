@@ -46,6 +46,15 @@ class BatchOutputRepository(
     @Volatile
     var requestedOutputFormat: OutputImageFormat = OutputImageFormat.FOLLOW
 
+    @Volatile
+    private var writeAvif: Boolean = false
+
+    override fun outputFormatSetting(): OutputImageFormat = requestedOutputFormat
+
+    override fun setWriteAvif(enabled: Boolean) {
+        writeAvif = enabled
+    }
+
     override fun prepareOutputDirectory(
         source: String,
         modelName: String,
@@ -541,29 +550,20 @@ class BatchOutputRepository(
             .replace(Regex("[^A-Za-z0-9._-]"), "_")
             .take(64)
             .ifBlank { "image" }
-        val extension = if (outputDirectory.overwriteOriginal) {
-            // 覆盖原图：输出写回原路径，扩展名必须与原图一致，格式设置不生效。
-            normalizedOutputExtension(input.displayName)
-        } else {
-            requestedOutputFormat.forcedExtension ?: normalizedOutputExtension(input.displayName)
-        }
+        val extension = resolveOutputExtension(
+            displayName = input.displayName,
+            requested = requestedOutputFormat,
+            overwriteOriginal = outputDirectory.overwriteOriginal,
+            writeAvif = writeAvif
+        )
         return "$baseName.$extension"
-    }
-
-    private fun normalizedOutputExtension(displayName: String): String {
-        return when (displayName.substringAfterLast('.', "").lowercase()) {
-            "jpg" -> "jpg"
-            "jpeg" -> "jpeg"
-            "webp" -> "webp"
-            "png" -> "png"
-            else -> "png"
-        }
     }
 
     private fun mimeTypeForOutputName(outputName: String): String {
         return when (outputName.substringAfterLast('.', "").lowercase()) {
             "jpg", "jpeg" -> JPEG_MIME_TYPE
             "webp" -> WEBP_MIME_TYPE
+            "avif" -> AVIF_MIME_TYPE
             else -> PNG_MIME_TYPE
         }
     }
@@ -1071,6 +1071,7 @@ class BatchOutputRepository(
         private const val PNG_MIME_TYPE = "image/png"
         private const val JPEG_MIME_TYPE = "image/jpeg"
         private const val WEBP_MIME_TYPE = "image/webp"
+        private const val AVIF_MIME_TYPE = "image/avif"
         private const val CONTENT_SCHEME_PREFIX = "content://"
         private const val MAX_CREATE_DOCUMENT_RETRIES = 99
     }

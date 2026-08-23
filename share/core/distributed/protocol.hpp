@@ -89,7 +89,7 @@ struct ClientTaskSubmit {
     uint32_t tile_size;
     uint32_t tile_overlap;
     uint32_t image_data_length;
-    char output_format[8];  // "jpg"/"png"/"webp"
+    char output_format[8];  // "jpg"/"png"/"webp"/"avif"
     uint8_t output_quality; // 1..100
 };
 
