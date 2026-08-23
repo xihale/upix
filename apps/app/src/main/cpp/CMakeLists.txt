@@ -168,6 +168,12 @@ if(CROSSSCALE_USE_NCNN)
         ${SHARE_DIR}/core/tile_processor.cpp
     )
     if(ANDROID_ABI STREQUAL "arm64-v8a")
+        if(NOT EXISTS "${SHARE_DIR}/core/spirv_pack.bin")
+            message(FATAL_ERROR
+                "Missing ${SHARE_DIR}/core/spirv_pack.bin\n"
+                "Generate it on the host first:\n"
+                "  xmake build dump-spirv && xmake run dump-spirv share/core/spirv_pack.bin")
+        endif()
         enable_language(ASM)
         list(APPEND SHARED_SOURCES ${SHARE_DIR}/core/spirv_pack.S)
         set_source_files_properties(${SHARE_DIR}/core/spirv_pack.S PROPERTIES

@@ -44,7 +44,6 @@ apps/app/src/main/cpp/third_party/
 
 # Models (large files — distributed via GitHub release, never committed)
 *.bin
-!share/core/spirv_pack.bin
 *.param
 *.onnx
 *.tflite

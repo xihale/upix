@@ -40,7 +40,7 @@ end
 -- so the latest ncnn (20260526) fails to resolve its glslang-nihui dependency.
 -- 20260113 is the newest ncnn version with a matching glslang-nihui release.
 -- Runtime ncnn looks up a frozen SPIR-V pack and does not link glslang.
--- dump-spirv uses the glslang-linked variant to generate that pack.
+-- dump-spirv (glslang-linked ncnn) generates share/core/spirv_pack.bin if missing.
 add_requires("ncnn~runtime 20260113", {configs = {vulkan = true, online_spirv = false}})
 add_requires("ncnn~glslang 20260113", {configs = {vulkan = true, online_spirv = true, skip_device_defines = true}})
 add_requires("libwebp")
