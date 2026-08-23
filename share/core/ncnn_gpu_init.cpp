@@ -13,6 +13,7 @@
 #include <gpu.h>
 #include <command.h>
 #include <pipeline.h>
+#include "spirv_pack.hpp"
 #endif
 #include <algorithm>
 #include <chrono>
@@ -100,6 +101,7 @@ std::mutex g_vulkan_init_mutex;
                     if (best_gpu_idx >= 0) {
                         vkdev_ = ncnn::get_gpu_device(best_gpu_idx);
                         if (vkdev_ != nullptr) {
+                            spirv_pack::register_ncnn_lookup();
                             LOG_INFO("Engine", "Selected Vulkan GPU index " + std::to_string(best_gpu_idx));
                             attempt_ok = true;
                         }

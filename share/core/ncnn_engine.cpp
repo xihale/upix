@@ -12,9 +12,12 @@
 #include "ncnn_engine_impl.hpp"
 #if NCNN_VULKAN
 #include "vulkan_shaders.hpp"
+#include "gpu_precision.hpp"
+#include "spirv_pack.hpp"
 #endif
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <thread>
@@ -135,51 +138,63 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
         if (current_device_ == DeviceType::GPU_VULKAN && vkdev_ != nullptr) {
             gpu_model_load_lock = std::unique_lock<std::mutex>(g_vulkan_model_load_mutex);
             LOG_INFO("Engine", "Serializing Vulkan model load to avoid concurrent queue submits");
+            spirv_pack::register_ncnn_lookup();
             net_->set_vulkan_device(vkdev_);
             net_->opt.use_vulkan_compute = true;
             const auto& gpu_info = vkdev_->info;
-
-            // Detect mobile GPU families where fp16 arithmetic has been observed
-            // to produce NaN/Inf in the residual blocks of Real-ESRGAN models.
-            // The residual accumulators overflow fp16's 65504 range. We keep
-            // fp16_packed/fp16_storage for bandwidth savings (still a big win) but
-            // do the actual math in fp32 for numerical stability. Override with
-            // CROSSSCALE_GPU_ENABLE_FP16_ARITH=1 to force-enable on known-good GPUs.
-            const char* gpu_name_raw = gpu_info.device_name();
-            const auto gpu_name = gpu_name_raw
-                ? std::string_view(gpu_name_raw) : std::string_view{};
-            const bool is_adreno   = gpu_name.find("Adreno") != std::string_view::npos;
-            const bool is_mali     = gpu_name.find("Mali") != std::string_view::npos;
-            const bool is_powervr  = gpu_name.find("PowerVR") != std::string_view::npos ||
-                                     gpu_name.find("Imagination") != std::string_view::npos;
-            const bool is_mobile_gpu = is_adreno || is_mali || is_powervr;
 
             static const bool force_fp16_arithmetic = []() {
                 const char* v = std::getenv("CROSSSCALE_GPU_ENABLE_FP16_ARITH");
                 return v != nullptr && std::string(v) == "1";
             }();
-            const bool disable_fp16_arith = is_mobile_gpu && !force_fp16_arithmetic;
 
-            net_->opt.use_fp16_packed = !disable_gpu_fp16 && gpu_info.support_fp16_packed();
-            net_->opt.use_fp16_storage = !disable_gpu_fp16 && gpu_info.support_fp16_storage();
-            net_->opt.use_fp16_arithmetic = !disable_gpu_fp16 && !disable_fp16_arith &&
-                                             gpu_info.support_fp16_arithmetic();
-            net_->opt.use_int8_storage = !disable_gpu_int8 && gpu_info.support_int8_storage();
-            unsigned int hw_threads = std::thread::hardware_concurrency();
-            int tuned_threads = 2;
-            if (hw_threads > 0) {
-                tuned_threads = std::clamp(static_cast<int>(hw_threads / 4), 1, 4);
+            auto fallback_cpu = [&](const char* why) {
+                LOG_WARNING("Engine", std::string(why) + ", falling back to CPU");
+                net_->opt.use_vulkan_compute = false;
+                net_->opt.use_fp16_packed = false;
+                net_->opt.use_fp16_storage = false;
+                net_->opt.use_fp16_arithmetic = false;
+                net_->opt.use_int8_storage = false;
+                current_device_ = DeviceType::CPU;
+                if (inference_threads_ > 0) {
+                    net_->opt.num_threads = inference_threads_;
+                }
+            };
+
+            if (disable_gpu_fp16) {
+                fallback_cpu("CROSSSCALE_GPU_DISABLE_FP16=1: frozen SPIR-V pack requires fp16 storage");
+            } else {
+                if (disable_gpu_int8) {
+                    LOG_WARNING("Engine",
+                                "CROSSSCALE_GPU_DISABLE_INT8=1 ignored: frozen SPIR-V pack includes int8 storage");
+                }
+                const auto caps = gpu_feature_caps(gpu_info);
+                const auto profile = select_profile(caps, force_fp16_arithmetic);
+                if (!profile) {
+                    fallback_cpu("GPU lacks frozen SPIR-V pack features");
+                } else {
+                    apply_profile(net_->opt, *profile);
+                    unsigned int hw_threads = std::thread::hardware_concurrency();
+                    int tuned_threads = 2;
+                    if (hw_threads > 0) {
+                        tuned_threads = std::clamp(static_cast<int>(hw_threads / 4), 1, 4);
+                    }
+                    net_->opt.num_threads = tuned_threads;
+                    char key_hex[16];
+                    std::snprintf(key_hex, sizeof(key_hex), "%x", option_key(net_->opt));
+                    LOG_INFO(
+                        "Engine",
+                        std::string("Vulkan precision profile=") + profile_name(*profile) +
+                            " key=0x" + key_hex +
+                            " fp16_packed=" + std::to_string(net_->opt.use_fp16_packed ? 1 : 0) +
+                            " fp16_storage=" + std::to_string(net_->opt.use_fp16_storage ? 1 : 0) +
+                            " fp16_arithmetic=" + std::to_string(net_->opt.use_fp16_arithmetic ? 1 : 0) +
+                            " int8_storage=" + std::to_string(net_->opt.use_int8_storage ? 1 : 0) +
+                            " local_memory=" +
+                            std::to_string(net_->opt.use_shader_local_memory ? 1 : 0)
+                    );
+                }
             }
-            net_->opt.num_threads = tuned_threads;
-            LOG_INFO(
-                "Engine",
-                "Vulkan precision profile: fp16_packed=" +
-                    std::to_string(net_->opt.use_fp16_packed ? 1 : 0) +
-                    ", fp16_storage=" + std::to_string(net_->opt.use_fp16_storage ? 1 : 0) +
-                    ", fp16_arithmetic=" + std::to_string(net_->opt.use_fp16_arithmetic ? 1 : 0) +
-                    (disable_fp16_arith ? " (disabled: mobile GPU NaN risk)" : "") +
-                    ", int8_storage=" + std::to_string(net_->opt.use_int8_storage ? 1 : 0)
-            );
         } else {
             net_->opt.use_vulkan_compute = false;
             net_->opt.use_fp16_packed = false;
@@ -204,11 +219,29 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
         }
 #endif
         
+#if NCNN_VULKAN
+        const uint32_t frozen_key = option_key(net_->opt);
+        const bool expect_frozen_key = current_device_ == DeviceType::GPU_VULKAN &&
+                                       net_->opt.use_vulkan_compute;
+#endif
         // Load param file
         int ret = net_->load_param(param_path.c_str());
         if (ret != 0) {
             return std::unexpected(EngineError{3, "Failed to load param file: " + param_path + " (error " + std::to_string(ret) + ")"});
         }
+#if NCNN_VULKAN
+        if (expect_frozen_key && option_key(net_->opt) != frozen_key) {
+            char before[16];
+            char after[16];
+            std::snprintf(before, sizeof(before), "%x", frozen_key);
+            std::snprintf(after, sizeof(after), "%x", option_key(net_->opt));
+            return std::unexpected(EngineError{
+                3,
+                std::string("GPU Option sanitized away from frozen SPIR-V pack (0x") + before +
+                    " -> 0x" + after + ")"
+            });
+        }
+#endif
         
         // Load model weights
         ret = net_->load_model(bin_path.c_str());

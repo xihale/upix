@@ -2,6 +2,8 @@ set_project("crossscale")
 set_version("0.1.0")
 set_languages("c++23")
 
+add_repositories("crossscale-local " .. os.scriptdir())
+
 add_rules("mode.debug", "mode.release")
 
 if is_mode("debug") then
@@ -37,7 +39,10 @@ end
 -- Pin to 20260113: glslang-nihui (a vulkan build dep of ncnn) has no 20260526 release,
 -- so the latest ncnn (20260526) fails to resolve its glslang-nihui dependency.
 -- 20260113 is the newest ncnn version with a matching glslang-nihui release.
-add_requires("ncnn 20260113", {configs = {vulkan = true}})
+-- Runtime ncnn looks up a frozen SPIR-V pack and does not link glslang.
+-- dump-spirv uses the glslang-linked variant to generate that pack.
+add_requires("ncnn~runtime 20260113", {configs = {vulkan = true, online_spirv = false}})
+add_requires("ncnn~glslang 20260113", {configs = {vulkan = true, online_spirv = true, skip_device_defines = true}})
 add_requires("libwebp")
 add_requires("libpng")
 add_requires("libjpeg")
@@ -52,4 +57,4 @@ add_requires("libcurl")
 add_requires("openssl")
 add_requires("libzip")
 
-includes("share", "share/perf", "cli")
+includes("share", "share/perf", "cli", "tools")

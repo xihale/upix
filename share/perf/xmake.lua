@@ -9,7 +9,7 @@ target("crossscale-perf")
     -- gpu-reuse test drives ncnn's public Vulkan API directly (builds its own
     -- ncnn::Net + VkCompute in the test), so it needs the ncnn package itself,
     -- not just the transitive dep through crossscale-core.
-    add_packages("ncnn")
+    add_packages("ncnn~runtime")
     add_includedirs(".", {public = true})
 
     if not is_plat("android") then

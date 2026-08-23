@@ -25,6 +25,9 @@
 #include "perf/workload.hpp"
 
 #include "core/engine.hpp"
+#include "core/gpu_precision.hpp"
+#include "core/spirv_pack.hpp"
+#include "core/vulkan_shaders.hpp"
 #include "utils/benchmark.hpp"  // Timer
 #include "utils/logger.hpp"
 
@@ -220,11 +223,13 @@ auto build_reuse_context(const TestConfig& cfg) -> std::unique_ptr<ReuseContext>
     ctx->net->set_vulkan_device(ctx->vkdev);
     auto& opt = ctx->net->opt;
     opt.use_vulkan_compute = true;
-    const auto& gpu_info = ctx->vkdev->info;
-    opt.use_fp16_packed = gpu_info.support_fp16_packed();
-    opt.use_fp16_storage = gpu_info.support_fp16_storage();
-    opt.use_fp16_arithmetic = gpu_info.support_fp16_arithmetic();
-    opt.use_int8_storage = gpu_info.support_int8_storage();
+    spirv_pack::register_ncnn_lookup();
+    const auto profile = select_profile(gpu_feature_caps(ctx->vkdev->info), false);
+    if (!profile) {
+        LOG_ERROR("Perf", "gpu-reuse: GPU lacks frozen SPIR-V pack features");
+        return nullptr;
+    }
+    apply_profile(opt, *profile);
 
     if (ctx->net->load_param(cfg.model_param.c_str()) != 0) {
         LOG_ERROR("Perf", "gpu-reuse: load_param failed");
@@ -241,8 +246,10 @@ auto build_reuse_context(const TestConfig& cfg) -> std::unique_ptr<ReuseContext>
     // Compile + create the two layout pipelines (same shaders as the engine).
     std::vector<uint32_t> spirv_hwc_to_chw;
     std::vector<uint32_t> spirv_chw_to_hwc;
-    if (ncnn::compile_spirv_module(kHwcToChwComp, ctx->net->opt, spirv_hwc_to_chw) != 0 ||
-        ncnn::compile_spirv_module(kChwToHwcComp, ctx->net->opt, spirv_chw_to_hwc) != 0) {
+    if (!spirv_pack::load_or_compile_custom(detail::CustomShader::HwcToChw, kHwcToChwComp,
+                                           ctx->net->opt, spirv_hwc_to_chw) ||
+        !spirv_pack::load_or_compile_custom(detail::CustomShader::ChwToHwc, kChwToHwcComp,
+                                           ctx->net->opt, spirv_chw_to_hwc)) {
         LOG_ERROR("Perf", "gpu-reuse: spirv compile failed");
         return nullptr;
     }

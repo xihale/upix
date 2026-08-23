@@ -191,8 +191,12 @@ for abi in "${ABIS[@]}"; do
     # Versions are pinned so the sync is deterministic and works offline from
     # the local xrepo store/cache. Unpinned resolves drift to newer upstream
     # versions and forces full source downloads (observed hanging on clones).
-    sync_package "${abi}" "ncnn 20250916" "vulkan=true" "libncnn.a" "ncnn/net.h"
-    sync_package "${abi}" "glslang-nihui 20250916" "" "libglslang.a" "glslang"
+    # ncnn is the project overlay (packages/n/ncnn): frozen SPIR-V, no glslang.
+    # xrepo searches the project repo added below so the overlay wins.
+    if ! xmake repo -l 2>/dev/null | grep -q 'crossscale-local'; then
+        xmake repo --add -y crossscale-local "$(cd "${SCRIPT_DIR}/../.." && pwd)"
+    fi
+    sync_package "${abi}" "ncnn 20260113" "vulkan=true,online_spirv=false" "libncnn.a" "ncnn/net.h"
     sync_package "${abi}" "libomp 19.1.0" "" "libomp.so" "omp.h"
     sync_package "${abi}" "glaze v7.0.2" "" "" "glaze"
     sync_package "${abi}" "zlib 1.3.1" "" "libz.a" "zlib.h"

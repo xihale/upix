@@ -7,6 +7,8 @@
 #include "ncnn_engine_impl.hpp"
 #if NCNN_VULKAN
 #include "vulkan_shaders.hpp"
+#include "gpu_precision.hpp"
+#include "spirv_pack.hpp"
 #endif
 #include "tile_processor.hpp"
 #include "utils/logger.hpp"
@@ -1824,31 +1826,41 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         {
             std::lock_guard<std::mutex> lock(spirv_mutex);
             if (spirv_hwc_to_chw.empty()) {
-                if (ncnn::compile_spirv_module(detail::kHwcToChwComp, net_->opt, spirv_hwc_to_chw) != 0) {
+                if (!spirv_pack::load_or_compile_custom(detail::CustomShader::HwcToChw,
+                                                        detail::kHwcToChwComp, net_->opt,
+                                                        spirv_hwc_to_chw)) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan HWC->CHW shader");
                     return false;
                 }
             }
             if (spirv_chw_to_hwc.empty()) {
-                if (ncnn::compile_spirv_module(detail::kChwToHwcComp, net_->opt, spirv_chw_to_hwc) != 0) {
+                if (!spirv_pack::load_or_compile_custom(detail::CustomShader::ChwToHwc,
+                                                        detail::kChwToHwcComp, net_->opt,
+                                                        spirv_chw_to_hwc)) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan CHW->HWC shader");
                     return false;
                 }
             }
             if (spirv_hwc_u8_to_chw.empty()) {
-                if (ncnn::compile_spirv_module(detail::kHwcU8ToChwComp, net_->opt, spirv_hwc_u8_to_chw) != 0) {
+                if (!spirv_pack::load_or_compile_custom(detail::CustomShader::HwcU8ToChw,
+                                                        detail::kHwcU8ToChwComp, net_->opt,
+                                                        spirv_hwc_u8_to_chw)) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan HWC-u8->CHW shader");
                     u8_shader_ready = false;
                 }
             }
             if (spirv_chw_to_hwc_u8.empty()) {
-                if (ncnn::compile_spirv_module(detail::kChwToHwcU8Comp, net_->opt, spirv_chw_to_hwc_u8) != 0) {
+                if (!spirv_pack::load_or_compile_custom(detail::CustomShader::ChwToHwcU8,
+                                                        detail::kChwToHwcU8Comp, net_->opt,
+                                                        spirv_chw_to_hwc_u8)) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan CHW->HWC-u8 shader");
                     u8_shader_ready = false;
                 }
             }
             if (spirv_hwc_to_u8.empty()) {
-                if (ncnn::compile_spirv_module(detail::kHwcFloatToU8Comp, net_->opt, spirv_hwc_to_u8) != 0) {
+                if (!spirv_pack::load_or_compile_custom(detail::CustomShader::HwcFloatToU8,
+                                                        detail::kHwcFloatToU8Comp, net_->opt,
+                                                        spirv_hwc_to_u8)) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan HWC-float->u8 shader");
                     u8_shader_ready = false;
                 }
@@ -1927,13 +1939,17 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         {
             std::lock_guard<std::mutex> lock(spirv_mutex);
             if (spirv_crop.empty()) {
-                if (ncnn::compile_spirv_module(detail::kHwcCropToChwComp, net_->opt, spirv_crop) != 0) {
+                if (!spirv_pack::load_or_compile_custom(detail::CustomShader::HwcCropToChw,
+                                                        detail::kHwcCropToChwComp, net_->opt,
+                                                        spirv_crop)) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan HWC crop shader");
                     return false;
                 }
             }
             if (spirv_crop_u8.empty()) {
-                if (ncnn::compile_spirv_module(detail::kHwcCropU8ToChwComp, net_->opt, spirv_crop_u8) != 0) {
+                if (!spirv_pack::load_or_compile_custom(detail::CustomShader::HwcCropU8ToChw,
+                                                        detail::kHwcCropU8ToChwComp, net_->opt,
+                                                        spirv_crop_u8)) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan HWC-u8 crop shader");
                     crop_u8_ready = false;
                 }
@@ -1975,25 +1991,33 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         {
             std::lock_guard<std::mutex> lock(spirv_mutex);
             if (spirv_clear.empty()) {
-                if (ncnn::compile_spirv_module(detail::kClearComp, net_->opt, spirv_clear) != 0) {
+                if (!spirv_pack::load_or_compile_custom(detail::CustomShader::Clear, detail::kClearComp,
+                                                        net_->opt, spirv_clear)) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan clear shader");
                     return false;
                 }
             }
             if (spirv_blend.empty()) {
-                if (ncnn::compile_spirv_module(detail::kBlendTileComp, net_->opt, spirv_blend) != 0) {
+                if (!spirv_pack::load_or_compile_custom(detail::CustomShader::BlendTile,
+                                                        detail::kBlendTileComp, net_->opt,
+                                                        spirv_blend)) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan blend shader");
                     return false;
                 }
             }
             if (spirv_normalize.empty()) {
-                if (ncnn::compile_spirv_module(detail::kNormalizeByWeightComp, net_->opt, spirv_normalize) != 0) {
+                if (!spirv_pack::load_or_compile_custom(detail::CustomShader::NormalizeByWeight,
+                                                        detail::kNormalizeByWeightComp, net_->opt,
+                                                        spirv_normalize)) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan normalize shader");
                     return false;
                 }
             }
             if (spirv_normalize_quantize.empty()) {
-                if (ncnn::compile_spirv_module(detail::kNormalizeQuantizeByWeightComp, net_->opt, spirv_normalize_quantize) != 0) {
+                if (!spirv_pack::load_or_compile_custom(
+                        detail::CustomShader::NormalizeQuantizeByWeight,
+                        detail::kNormalizeQuantizeByWeightComp, net_->opt,
+                        spirv_normalize_quantize)) {
                     LOG_WARNING("Engine", "Failed to compile Vulkan normalize+quantize shader");
                     return false;
                 }

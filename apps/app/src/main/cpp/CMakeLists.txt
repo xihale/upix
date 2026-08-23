@@ -77,23 +77,33 @@ if(EXISTS "${NCNN_STATIC_LIB}")
     import_static_library(ncnn_static "${NCNN_STATIC_LIB}")
     list(APPEND NCNN_LIB_TARGETS ncnn_static)
 
-    import_static_library(glslang_static "${NATIVE_LIB_DIR}/libglslang.a")
-    import_static_library(glslang_default_resource_limits_static "${NATIVE_LIB_DIR}/libglslang-default-resource-limits.a")
-    import_static_library(spirv_static "${NATIVE_LIB_DIR}/libSPIRV.a")
-    import_static_library(machine_independent_static "${NATIVE_LIB_DIR}/libMachineIndependent.a")
-    import_static_library(generic_code_gen_static "${NATIVE_LIB_DIR}/libGenericCodeGen.a")
-    import_static_library(os_dependent_static "${NATIVE_LIB_DIR}/libOSDependent.a")
     import_shared_library(omp_shared "${NATIVE_LIB_DIR}/libomp.so")
+    list(APPEND NCNN_LIB_TARGETS omp_shared)
 
-    list(APPEND NCNN_LIB_TARGETS
-        glslang_static
-        glslang_default_resource_limits_static
-        spirv_static
-        machine_independent_static
-        generic_code_gen_static
-        os_dependent_static
-        omp_shared
-    )
+    # glslang is only present when ncnn was built with online SPIR-V.
+    # Frozen-pack builds omit it.
+    import_optional_static_library(glslang_static "${NATIVE_LIB_DIR}/libglslang.a")
+    if(TARGET glslang_static)
+        import_static_library(glslang_default_resource_limits_static "${NATIVE_LIB_DIR}/libglslang-default-resource-limits.a")
+        import_static_library(spirv_static "${NATIVE_LIB_DIR}/libSPIRV.a")
+        import_optional_static_library(machine_independent_static "${NATIVE_LIB_DIR}/libMachineIndependent.a")
+        import_optional_static_library(generic_code_gen_static "${NATIVE_LIB_DIR}/libGenericCodeGen.a")
+        import_optional_static_library(os_dependent_static "${NATIVE_LIB_DIR}/libOSDependent.a")
+        list(APPEND NCNN_LIB_TARGETS
+            glslang_static
+            glslang_default_resource_limits_static
+            spirv_static
+        )
+        if(TARGET machine_independent_static)
+            list(APPEND NCNN_LIB_TARGETS machine_independent_static)
+        endif()
+        if(TARGET generic_code_gen_static)
+            list(APPEND NCNN_LIB_TARGETS generic_code_gen_static)
+        endif()
+        if(TARGET os_dependent_static)
+            list(APPEND NCNN_LIB_TARGETS os_dependent_static)
+        endif()
+    endif()
 else()
     set(CROSSSCALE_USE_NCNN OFF)
     message(WARNING "ncnn library not found at ${NATIVE_LIB_DIR}, building with Android stub engine")
@@ -157,6 +167,12 @@ if(CROSSSCALE_USE_NCNN)
         ${SHARE_DIR}/core/ncnn_engine.cpp
         ${SHARE_DIR}/core/tile_processor.cpp
     )
+    if(ANDROID_ABI STREQUAL "arm64-v8a")
+        enable_language(ASM)
+        list(APPEND SHARED_SOURCES ${SHARE_DIR}/core/spirv_pack.S)
+        set_source_files_properties(${SHARE_DIR}/core/spirv_pack.S PROPERTIES
+            COMPILE_FLAGS "-I${SHARE_DIR}/core")
+    endif()
 else()
     list(APPEND SHARED_SOURCES
         ${CMAKE_SOURCE_DIR}/ncnn_engine_stub_android.cpp

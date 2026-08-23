@@ -5,7 +5,7 @@ target("crossscale-cli")
     set_kind("binary")
 
     add_deps("crossscale-core", "crossscale-perf")
-    add_packages("ncnn", "libwebp", "glaze", "qr-code-generator-cpp", "cli11", "libsodium", "libcurl", "openssl", "libzip")
+    add_packages("ncnn~runtime", "libwebp", "glaze", "qr-code-generator-cpp", "cli11", "libsodium", "libcurl", "openssl", "libzip")
 
     add_files(
         "src/main.cpp",
@@ -41,6 +41,13 @@ target("test_image_avif")
         add_syslinks("dl")
     end
     add_files("$(projectdir)/cli/tests/test_image_avif.cpp")
+    set_targetdir("$(projectdir)/cli/build")
+
+target("test_gpu_precision")
+    set_kind("binary")
+    add_packages("ncnn~runtime")
+    add_includedirs("$(projectdir)/share")
+    add_files("$(projectdir)/cli/tests/test_gpu_precision.cpp")
     set_targetdir("$(projectdir)/cli/build")
 
 target("test_model_downloader")

@@ -11,6 +11,7 @@
 // creation time; they are intentionally left untouched here.
 
 #include <platform.h>
+#include <cstdint>
 #include <mutex>
 
 #if NCNN_VULKAN
@@ -531,6 +532,41 @@ void main()
 #endif
 }
 )";
+
+enum class CustomShader : uint32_t {
+    HwcToChw = 1,
+    HwcU8ToChw = 2,
+    HwcCropToChw = 3,
+    HwcCropU8ToChw = 4,
+    ChwToHwc = 5,
+    ChwToHwcU8 = 6,
+    HwcFloatToU8 = 7,
+    Clear = 8,
+    BlendTile = 9,
+    NormalizeByWeight = 10,
+    NormalizeQuantizeByWeight = 11,
+};
+
+struct CustomShaderSrc {
+    CustomShader id;
+    const char* name;
+    const char* source;
+};
+
+inline constexpr CustomShaderSrc kCustomShaders[] = {
+    {CustomShader::HwcToChw, "hwc_to_chw", kHwcToChwComp},
+    {CustomShader::HwcU8ToChw, "hwc_u8_to_chw", kHwcU8ToChwComp},
+    {CustomShader::HwcCropToChw, "hwc_crop_to_chw", kHwcCropToChwComp},
+    {CustomShader::HwcCropU8ToChw, "hwc_crop_u8_to_chw", kHwcCropU8ToChwComp},
+    {CustomShader::ChwToHwc, "chw_to_hwc", kChwToHwcComp},
+    {CustomShader::ChwToHwcU8, "chw_to_hwc_u8", kChwToHwcU8Comp},
+    {CustomShader::HwcFloatToU8, "hwc_float_to_u8", kHwcFloatToU8Comp},
+    {CustomShader::Clear, "clear", kClearComp},
+    {CustomShader::BlendTile, "blend_tile", kBlendTileComp},
+    {CustomShader::NormalizeByWeight, "normalize_by_weight", kNormalizeByWeightComp},
+    {CustomShader::NormalizeQuantizeByWeight, "normalize_quantize_by_weight",
+     kNormalizeQuantizeByWeightComp},
+};
 
 #endif // NCNN_VULKAN
 
