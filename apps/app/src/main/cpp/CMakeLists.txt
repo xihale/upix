@@ -185,6 +185,8 @@ endif()
 # Compiler flags
 target_compile_options(crossscale-native PRIVATE
     -O3
+    -ffunction-sections
+    -fdata-sections
     -fexceptions
     -frtti
     -Wall
@@ -202,7 +204,15 @@ target_link_libraries(crossscale-native
     ${jnigraphics-lib}
 )
 
-# Export ANativeActivity_onCreate for native activity
+# JNIEXPORT keeps Java_* entry points visible. Hidden default + gc-sections lets
+# the linker drop unused ncnn/glslang/codec objects instead of exporting them.
 set_target_properties(crossscale-native PROPERTIES
-    CXX_VISIBILITY_PRESET default
+    C_VISIBILITY_PRESET hidden
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN ON
+)
+target_link_options(crossscale-native PRIVATE
+    -Wl,--gc-sections
+    -Wl,--exclude-libs,ALL
+    -Wl,--as-needed
 )

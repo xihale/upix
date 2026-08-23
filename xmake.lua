@@ -12,6 +12,13 @@ end
 if is_mode("release") then
     set_optimize("fastest")
     set_strip("all")
+    add_cxflags("-ffunction-sections", "-fdata-sections")
+    if is_plat("linux", "android") then
+        add_cxflags("-fvisibility=hidden")
+        add_ldflags("-Wl,--gc-sections", "-Wl,--exclude-libs,ALL")
+    elseif is_plat("macosx") then
+        add_ldflags("-Wl,-dead_strip")
+    end
 end
 
 -- Security hardening flags
