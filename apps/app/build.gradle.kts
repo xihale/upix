@@ -22,7 +22,7 @@ android {
             useSupportLibrary = true
         }
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            abiFilters += "arm64-v8a"
         }
 
         externalNativeBuild {
@@ -52,6 +52,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -89,6 +90,14 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        }
+        jniLibs {
+            // Compress .so in the APK. Install still extracts them, so 16 KB
+            // page alignment is preserved; sideload size is what shrinks.
+            useLegacyPackaging = true
+            // LLVM OpenMP TSan helper, copied from the libomp xrepo package
+            // and unused at runtime (libcrossscale-native does not NEEDED it).
+            excludes += "**/libarcher.so"
         }
     }
 

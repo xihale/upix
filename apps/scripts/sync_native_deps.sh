@@ -40,7 +40,7 @@ fi
 
 ABIS=("$@")
 if [[ "${#ABIS[@]}" -eq 0 ]]; then
-    ABIS=("arm64-v8a" "armeabi-v7a" "x86_64")
+    ABIS=("arm64-v8a")
 fi
 
 JNI_LIBS_DIR="${ANDROID_DIR}/app/src/main/jniLibs"
@@ -141,6 +141,12 @@ copy_package_artifacts() {
 
     while IFS= read -r lib_file; do
         [[ -z "${lib_file}" ]] && continue
+        case "$(basename "${lib_file}")" in
+            libarcher.so|libarcher_static.a)
+                # OpenMP TSan helper; AGP would pack the .so into the APK.
+                continue
+                ;;
+        esac
         if [[ -f "${lib_file}" ]]; then
             cp -f "${lib_file}" "${abi_dir}/"
         fi
