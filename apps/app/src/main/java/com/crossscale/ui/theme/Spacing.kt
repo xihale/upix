@@ -5,7 +5,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 /**
- * 统一间距比例（4dp 基网格）。
+ * 统一间距比例（4dp 基网格，规范来源：docs/DESIGN_LANGUAGE.md §3）。
+ * Padding/gap 必须取自本对象；裸 .dp 仅允许用于组件固有尺寸（spec Appendix A）。
  * 页面横向边距请用 [LocalScreenMargin]：MD3 布局规范 compact 16dp /
  * medium+ 24dp，随窗口宽度类自适应。
  */
