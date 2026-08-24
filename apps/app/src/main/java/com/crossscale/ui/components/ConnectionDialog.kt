@@ -10,10 +10,6 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import com.crossscale.R
@@ -29,10 +25,8 @@ fun ConnectionDialog(
         return
     }
 
-    var host by remember { mutableStateOf("") }
-    var port by remember { mutableStateOf("9527") }
-    var hostBlank by remember { mutableStateOf(false) }
-    var portInvalid by remember { mutableStateOf(false) }
+    // remember 位置保持在早退之后：与重构前一致，字段值在开关间保留、不随隐藏重置。
+    val fields = rememberHostPortFields()
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -40,24 +34,18 @@ fun ConnectionDialog(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 OutlinedTextField(
-                    value = host,
-                    onValueChange = {
-                        host = it
-                        hostBlank = false
-                    },
+                    value = fields.host,
+                    onValueChange = fields::onHostChange,
                     singleLine = true,
-                    isError = hostBlank,
+                    isError = fields.hostBlank,
                     label = { Text(stringResource(R.string.connection_host_label)) }
                 )
                 OutlinedTextField(
-                    value = port,
-                    onValueChange = {
-                        port = it
-                        portInvalid = false
-                    },
+                    value = fields.port,
+                    onValueChange = fields::onPortChange,
                     singleLine = true,
-                    isError = portInvalid,
-                    supportingText = if (portInvalid) {
+                    isError = fields.portInvalid,
+                    supportingText = if (fields.portInvalid) {
                         { Text(stringResource(R.string.connection_port_invalid)) }
                     } else {
                         null
@@ -76,13 +64,9 @@ fun ConnectionDialog(
             Button(
                 onClick = {
                     // 本地校验：host 非空、端口为 1..65535，不通过则就地报错、不关框。
-                    val trimmedHost = host.trim()
-                    val portNumber = port.trim().toIntOrNull()
-                    val portValid = portNumber != null && portNumber in 1..65535
-                    hostBlank = trimmedHost.isBlank()
-                    portInvalid = !portValid
-                    if (trimmedHost.isNotBlank() && portValid) {
-                        onConnect(trimmedHost, port.trim())
+                    val connected = fields.validate()
+                    if (connected != null) {
+                        onConnect(connected.first, connected.second)
                         onDismiss()
                     }
                 }

@@ -345,7 +345,7 @@ Ordered, each independently compilable:
 
 **Merge candidates (verify during `components-refactor`, then execute):**
 - Extract `ThumbnailCell(bitmapState, size, onClick…)` shared by `HeroArea.StageThumbnail` and the queue-sheet thumbnail cell (both decode via `decodeQueueThumbnailWithLimit` and render `small`-radius wells).
-- `ConnectionDialog` vs `ConnectionScreen` manual form share field/validation logic; extract a small `HostPortFields` state holder rather than merging the composables (dialog stays for quick-pair flow).
+- ✅ **Done — `HostPortFields` extraction** — shared state holder at `ui/components/HostPortFields.kt` (field values + host/port validation); `ConnectionDialog` delegates to it and stays for the quick-pair flow. Note: the screen-side inline form had already been folded into the dialog before extraction, so the dialog is the single form consumer.
 
 **Deletions:** none required — every existing composable has a live caller. `tertiary*` colors stay defined but banned (D3).
 
@@ -385,5 +385,5 @@ grep -rn "shadowElevation\|defaultElevation\|tonalElevation" apps/app/src/main/j
 | Keep as-is | `CrossScaleTopAppBar`, `SecondaryScreenScaffold`, `SectionHeader`, `BottomNavigationBar`+`AdaptiveNavigation*`, `ImageStage`/`EmptyStage`/`PreviewBottomSheet`, `ParameterCard`, `CheckpointSection`, `ModelCard`, `StageProgressOverlay`, `LogViewer`, `RemoteModelsDialog`, `ConnectionDialog`, `FingerprintConfirmDialog`, `QueueSheet`, `pressable`/`pressScale`/`smoothProgress` |
 | Edit (§10) | `Theme.kt`, `ParameterCard`, `SettingsGroupCard`, `StatusCard`, Models empty state, `HeroArea` circle, dock `Badge`, `BottomNavigationBar` |
 | Rename | ✅ Done: `ui/screens/home/BottomActionBar.kt` → `ui/screens/home/BottomActionDock.kt` |
-| Merge candidate | `HostPortFields` extraction · shared `ThumbnailCell`: ✅ done, now `home/ThumbnailCell.kt` (used by `HeroArea` and `QueueSheet`) |
+| Merge candidate | ✅ Done: `HostPortFields` state holder (`ui/components/HostPortFields.kt`, consumed by `ConnectionDialog`) · shared `ThumbnailCell`: ✅ done, now `home/ThumbnailCell.kt` (used by `HeroArea` and `QueueSheet`) |
 | Delete | — (nothing dead found) |
