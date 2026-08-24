@@ -1,7 +1,11 @@
 package com.crossscale.ui.screens.home
 
 import android.net.Uri
-import androidx.compose.foundation.Image
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -43,7 +47,6 @@ import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -51,15 +54,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.repository.InputSourceSpec
 import com.crossscale.data.repository.PersistedQueueItemStatus
-import com.crossscale.data.thumbnails.decodeQueueThumbnailWithLimit
+import com.crossscale.ui.theme.EnterMotionSpec
+import com.crossscale.ui.theme.EnterSizeSpec
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
 import com.crossscale.ui.theme.pressable
@@ -176,13 +178,13 @@ internal fun QueueBottomSheetContent(
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(Spacing.sm)
+                    verticalArrangement = Arrangement.spacedBy(Spacing.md)
                 ) {
                     Icon(
                         imageVector = Icons.Outlined.Inbox,
                         contentDescription = null,
-                        tint = MaterialTheme.colorScheme.outline,
-                        modifier = Modifier.size(32.dp)
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(24.dp)
                     )
                     Text(
                         text = stringResource(R.string.queue_empty),
@@ -423,7 +425,12 @@ private fun QueueItemCard(
                 }
             }
 
-            if (isRunning) {
+            // 运行中条目底部的不确定进度条：出现/收起做 fade + 纵向展开，不跳变。
+            AnimatedVisibility(
+                visible = isRunning,
+                enter = fadeIn(EnterMotionSpec) + expandVertically(EnterSizeSpec),
+                exit = shrinkVertically(EnterSizeSpec) + fadeOut(EnterMotionSpec)
+            ) {
                 LinearProgressIndicator(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -489,42 +496,18 @@ private fun QueueStatusPill(status: PersistedQueueItemStatus) {
     }
 }
 
+/** 队列行头图：回落态刻意保持透明底（列表行内不铺常驻井，与舞台瓦片不同）。 */
 @Composable
 private fun QueueItemThumbnail(source: String) {
-    val context = LocalContext.current
-    val bitmapState by produceState(
-        initialValue = ThumbnailResult(bitmap = null, settled = false),
-        source
+    ThumbnailCell(
+        source = source,
+        size = 48.dp,
+        persistentWell = false
     ) {
-        value = ThumbnailResult(
-            bitmap = runCatching {
-                decodeQueueThumbnailWithLimit(context = context, source = source)
-            }.getOrNull(),
-            settled = true
+        Text(
+            text = stringResource(R.string.queue_no_image),
+            style = MaterialTheme.typography.labelSmall
         )
-    }
-
-    Box(
-        modifier = Modifier
-            .size(48.dp)
-            .clip(MaterialTheme.shapes.small),
-        contentAlignment = Alignment.Center
-    ) {
-        val result = bitmapState
-        when {
-            // 解码完成前不渲染占位文案，避免「无预览」闪一下再被图片替换。
-            !result.settled -> Unit
-            result.bitmap != null -> Image(
-                bitmap = result.bitmap,
-                contentDescription = null,
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
-            )
-            else -> Text(
-                text = stringResource(R.string.queue_no_image),
-                style = MaterialTheme.typography.labelSmall
-            )
-        }
     }
 }
 

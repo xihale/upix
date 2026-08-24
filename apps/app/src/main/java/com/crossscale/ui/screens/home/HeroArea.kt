@@ -252,13 +252,26 @@ private fun SelectedStage(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        val bitmap = stageResult.bitmap
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap,
+        val result = stageResult
+        when {
+            // 解码中：安静的 surfaceContainerHigh 占位井（规范：加载态不用动效骨架）。
+            !result.settled -> Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            )
+            result.bitmap != null -> Image(
+                bitmap = result.bitmap,
                 contentDescription = null,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
+            )
+            // 解码失败（极少数损坏源）：安静回退文案，不阻断继续选图。
+            else -> Text(
+                text = stringResource(R.string.hero_no_preview),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.align(Alignment.Center)
             )
         }
     }
@@ -324,52 +337,27 @@ private fun StageThumbnail(
     onDelete: () -> Unit,
     onPreview: () -> Unit
 ) {
-    val context = LocalContext.current
-    val bitmapState by produceState(
-        initialValue = ThumbnailResult(bitmap = null, settled = false),
-        source
-    ) {
-        value = ThumbnailResult(
-            bitmap = runCatching {
-                decodeQueueThumbnailWithLimit(context = context, source = source)
-            }.getOrNull(),
-            settled = true
-        )
-    }
-
     Box(modifier = Modifier.size(72.dp)) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .clip(MaterialTheme.shapes.small)
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                .pressable(onClick = onPreview),
-            contentAlignment = Alignment.Center
+        ThumbnailCell(
+            source = source,
+            size = 72.dp,
+            persistentWell = true,
+            modifier = Modifier.fillMaxSize(),
+            onClick = onPreview
         ) {
-            val result = bitmapState
-            when {
-                // 解码中：只留背景，避免「预览」占位文案闪现后被图片替换。
-                !result.settled -> Unit
-                result.bitmap != null -> Image(
-                    bitmap = result.bitmap,
-                    contentDescription = null,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop
-                )
-                else -> Text(
-                    text = if (isCorrupted) {
-                        stringResource(R.string.hero_thumbnail_corrupted)
-                    } else {
-                        stringResource(R.string.hero_thumbnail_preview)
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (isCorrupted) {
-                        MaterialTheme.colorScheme.error
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    }
-                )
-            }
+            Text(
+                text = if (isCorrupted) {
+                    stringResource(R.string.hero_thumbnail_corrupted)
+                } else {
+                    stringResource(R.string.hero_thumbnail_preview)
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = if (isCorrupted) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                }
+            )
         }
         // 视觉保持 22dp 圆标，触控目标经 minimumInteractiveComponentSize
         // 扩到 48dp（MD3 最小触控要求），避免 IconButton size 覆盖压掉命中区。
@@ -381,7 +369,7 @@ private fun StageThumbnail(
                 .size(22.dp)
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-                .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, CircleShape)
                 .clickable(onClick = onDelete),
             contentAlignment = Alignment.Center
         ) {
