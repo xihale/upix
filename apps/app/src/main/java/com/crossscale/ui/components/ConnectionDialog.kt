@@ -25,7 +25,7 @@ fun ConnectionDialog(
         return
     }
 
-    // remember 位置保持在早退之后：与重构前一致，字段值在开关间保留、不随隐藏重置。
+    // remember 位置保持在早退之后：与重构前 dialog 相同的生命周期——隐藏即离开组合，字段值每次打开都重置；组合内 remember、非 saveable，属有意为之。
     val fields = rememberHostPortFields()
 
     AlertDialog(

@@ -27,7 +27,8 @@ import com.crossscale.data.model.ModelLibraryEntry
 import com.crossscale.ui.theme.Spacing
 
 /**
- * 模型库卡：名称 + 双端存在徽标（手机/电脑）+ 规格单行 mono 小字 + 行尾操作。
+ * 模型库卡：名称 + 双端存在徽标（手机/电脑）+ 规格行走 §2.1 机值槽（`valueStyleFor` →
+ * `ValueMono`，titleSmall 14/20 mono）+ 行尾操作。
  * 单端存在的模型显示上传/下载动作；双端都有则无动作，仅可删除本地副本。
  */
 @Composable
