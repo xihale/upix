@@ -310,7 +310,7 @@ Small `TopAppBar` only — no large/collapsing bars. Title `titleLarge`, no logo
 `NavigationBar(containerColor = surfaceContainer)`, three fixed destinations (Home / Devices / Settings). Selected pill keeps the M3 default `secondaryContainer` — **deliberately not teal**: selection is orientation, not action. Outlined icon idle ↔ filled icon selected, label always visible. Medium windows: `NavigationRail` same container; expanded: `PermanentNavigationDrawer` (sheet `surfaceContainer`, drawer header = app name in `titleSmall/onSurfaceVariant`). Selection logic and `navigateTo` are shared (§10 dedupe).
 
 ### 9.8 Progress states
-- **Stage overlay** (processing): full-stage scrim `surface@55%`; bottom-aligned block: smoothed `LinearProgressIndicator(progress = { smoothProgress(x) })` full width → status line `titleSmall` → counts `labelSmall/onSurfaceVariant` → current filename mono `labelSmall` → error mono in `error` → `TextButton(error)` cancel. This exact stack is `ProcessingProgress.StageProgressOverlay`; reuse it, don't restyle per screen.
+- **Stage overlay** (processing): full-stage scrim `surface@55%`; bottom-aligned block: smoothed `LinearProgressIndicator(progress = { smoothProgress(x) })` full width → status line `titleSmall` → counts `labelSmall/onSurfaceVariant` → current filename via `valueStyleFor(text)` in `onSurfaceVariant` (machine-value mono `ValueMono` titleSmall 14/20 when ASCII; falls back to plain `titleSmall` system scale when non-ASCII — §2.1/§2.2) → error line styled through the same `valueStyleFor(...)` CJK-fallback rule, colored `error` → `TextButton(error)` cancel. This exact stack is `ProcessingProgress.StageProgressOverlay`; reuse it, don't restyle per screen.
 - **Inline busy:** `CircularProgressIndicator(20dp, strokeWidth 2dp)` replacing an action icon.
 - **Unknown duration** (connecting): indeterminate spinner inside `ConnectingCard`; no fake percentages anywhere.
 
@@ -335,13 +335,13 @@ Count badge caps display at "99+". Recolor from error-red default to `Badge(colo
 
 Ordered, each independently compilable:
 
-1. **`theme/Theme.kt`** — delete the `Build.VERSION.SDK_INT >= S` dynamic-color branch (D1); add the `Shapes(...)` block from §4 to `MaterialExpressiveTheme(shapes = ...)`.
-2. **Radius moves** — switch `shapes.large` → `shapes.medium` on the four card Surfaces: `home/ParameterCard.kt`, `screens/SettingsScreen.kt` (`SettingsGroupCard`), `screens/ConnectionScreen.kt` (`StatusCard`), `screens/ModelsScreen.kt` (empty-state Surface). Hero `ImageStage` and preview media frame stay `large`.
-3. **Hairline softening** — `home/HeroArea.kt` thumbnail delete circle: border color `outline` → `outlineVariant`.
-4. **Badge recolor** — `home/BottomActionBar.kt` queue `Badge` → `primaryContainer`/`onPrimaryContainer` (§9.11).
-5. **navigateTo dedupe** — make `AdaptiveNavigation.kt`'s private `navigateTo` internal; delete the inline copy in `BottomNavigationBar.kt` and call the shared fun.
+1. ✅ **Done — `theme/Theme.kt`** — delete the `Build.VERSION.SDK_INT >= S` dynamic-color branch (D1); add the `Shapes(...)` block from §4 to `MaterialExpressiveTheme(shapes = ...)`. (Executed: branch deleted; shipped as `CrossScaleShapes` Shapes block, `ui/theme/Theme.kt:100-105`.)
+2. ✅ **Done — Radius moves** — switch `shapes.large` → `shapes.medium` on the four card Surfaces: `home/ParameterCard.kt` (:105), `screens/SettingsScreen.kt` (:288, `SettingsGroupCard`), `screens/ConnectionScreen.kt` (:196, `StatusCard`), `screens/ModelsScreen.kt` (:269, empty-state Surface). Hero `ImageStage` and preview media frame stay `large`. (Executed: all four plus the connection error banner at `ConnectionScreen.kt:159` are `shapes.medium`.)
+3. ✅ **Done — Hairline softening** — `home/HeroArea.kt` thumbnail delete circle: border color `outline` → `outlineVariant`. (Executed: `HeroArea.kt:372`.)
+4. ✅ **Done — Badge recolor** — `ui/screens/home/BottomActionDock.kt` queue `Badge` → `primaryContainer`/`onPrimaryContainer` (§9.11). (Executed: `BottomActionDock.kt:126-128`, including the "99+" display cap.)
+5. ✅ **Done — navigateTo dedupe** — make `AdaptiveNavigation.kt`'s private `navigateTo` internal; delete the inline copy in `BottomNavigationBar.kt` and call the shared fun. (Executed: shared fun declared internal at `AdaptiveNavigation.kt:58`; call sites `AdaptiveNavigation.kt:98`, `AdaptiveNavigation.kt:144`, `BottomNavigationBar.kt:38`; inline copy deleted.)
 6. ✅ **Done — File rename** — `ui/screens/home/BottomActionBar.kt` → `ui/screens/home/BottomActionDock.kt` (file name matches its only composable; real location is `screens/home/`, not `components/` as first drafted).
-7. **Mono hygiene** — `ModelCard.kt`: replace local `specTextStyle` with `valueStyleFor(...)` (§2.2).
+7. ✅ **Done — Mono hygiene** — `ModelCard.kt`: replace local `specTextStyle` with `valueStyleFor(...)` (§2.2). (Executed by node gsr-h: vararg `valueStyleFor` at `Type.kt:149`; unsanctioned `monoLabelStyle` helper removed per the §2.2 amendment.)
 
 **Merge candidates (verify during `components-refactor`, then execute):**
 - Extract `ThumbnailCell(bitmapState, size, onClick…)` shared by `HeroArea.StageThumbnail` and the queue-sheet thumbnail cell (both decode via `decodeQueueThumbnailWithLimit` and render `small`-radius wells).
