@@ -12,7 +12,6 @@ import androidx.compose.material.icons.outlined.CloudUpload
 import androidx.compose.material.icons.outlined.Computer
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Smartphone
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -22,7 +21,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.model.ModelLibraryEntry
@@ -41,20 +39,14 @@ fun ModelCard(
     onDownloadFromPc: () -> Unit,
     onDelete: (() -> Unit)?
 ) {
-    val specTextStyle = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace)
-
     Surface(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainer
     ) {
         Column(
-            modifier = Modifier.padding(
-                start = Spacing.lg,
-                end = Spacing.sm,
-                top = Spacing.md,
-                bottom = Spacing.md
-            ),
+            // §9.2 卡片配方：统一 Spacing.lg 内距（行尾 IconButton 自带 48dp 触控盒，无需让位内缩）。
+            modifier = Modifier.padding(Spacing.lg),
             verticalArrangement = Arrangement.spacedBy(Spacing.sm)
         ) {
             Row(
@@ -72,7 +64,7 @@ fun ModelCard(
                 val busy = uploading || downloading
                 if (!entry.onPhone && entry.onPc) {
                     if (downloading) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        BusyIndicator()
                     } else {
                         IconButton(onClick = onDownloadFromPc, enabled = !busy) {
                             Icon(
@@ -84,7 +76,7 @@ fun ModelCard(
                     }
                 } else if (entry.onPhone && !entry.onPc) {
                     if (uploading) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        BusyIndicator()
                     } else {
                         IconButton(onClick = onUploadToPc, enabled = !busy) {
                             Icon(
@@ -118,7 +110,7 @@ fun ModelCard(
                         stringResource(R.string.config_scale_value, entry.scaleFactor),
                         formatSizeBytes(entry.totalSize)
                     ).joinToString(" · "),
-                    style = specTextStyle,
+                    style = monoLabelStyle(),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
                 )

@@ -12,7 +12,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -23,12 +22,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.model.RemoteModel
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.viewmodel.RemoteModelDownloadState
-import java.util.Locale
 
 /**
  * 远程模型下载对话框：列出 GitHub "models" release 中的模型，
@@ -56,13 +53,13 @@ fun RemoteModelsDialog(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(stringResource(R.string.models_remote_title))
-                if (isLoading) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(20.dp),
-                        strokeWidth = 2.dp
-                    )
-                } else {
-                    IconButton(onClick = onRefresh) {
+                // 加载中不再用 spinner 整个替换刷新钮（避免同一位置控件跳变）：
+                // 刷新钮常驻、加载时禁用，忙碌指示器并列展示在左侧。
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isLoading) {
+                        BusyIndicator()
+                    }
+                    IconButton(onClick = onRefresh, enabled = !isLoading) {
                         Icon(
                             imageVector = Icons.Outlined.Refresh,
                             contentDescription = stringResource(R.string.models_refresh)
@@ -218,9 +215,3 @@ private fun RemoteModelRow(
     }
 }
 
-/** 字节数转可读大小（B/KB/MB），模型卡片与远程下载列表共用。 */
-internal fun formatSizeBytes(bytes: Long): String = when {
-    bytes >= 1024 * 1024 -> String.format(Locale.ROOT, "%.1fMB", bytes / 1024f / 1024f)
-    bytes >= 1024 -> String.format(Locale.ROOT, "%.0fKB", bytes / 1024f)
-    else -> "${bytes}B"
-}
