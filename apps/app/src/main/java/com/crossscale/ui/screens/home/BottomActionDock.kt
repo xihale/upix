@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
@@ -21,11 +22,10 @@ import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
-import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -40,18 +40,21 @@ import com.crossscale.ui.theme.pressScale
 import androidx.compose.foundation.layout.Spacer
 
 /**
- * 底部悬浮操作区：MD3 Expressive 官方 HorizontalFloatingToolbar 模式——
- * 主 CTA（Button，[DockCtaHeight] = Expressive L 档）作 leadingContent：
- * 空闲为实底主色「开始超分」；处理中变为错误红「停止」（[onStop]），
- * 不再禁用——用户无需进队列面板即可随时中止。恢复/队列入口为 toolbar 内
- * IconButton（自带 48dp 触控目标与容器投影）。
+ * 底部悬浮操作区：Surface 药丸容器（非 HorizontalFloatingToolbar——其 collapsed
+ * 态在部分版本会折叠掉全部内容，导致主 CTA 不可见）。主 CTA（Button，
+ * [DockCtaHeight] = Expressive L 档）永远直接可见：空闲为实底主色「开始超分」；
+ * 处理中变为错误红「停止」（[onStop]），不禁用——用户无需进队列面板即可随时中止。
+ * 恢复/队列入口为药丸内 IconButton（自带 48dp 触控目标）。
  * Scaffold 的 bottomBar(NavigationBar) 已消费导航栏 insets，
  * 故这里只保留底部悬浮间距。
  */
 
 /** 主 CTA 高度（56dp = MD3 Expressive L 档；spec Appendix A / §9.3）。 */
 internal val DockCtaHeight = 56.dp
-@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+
+/** 药丸容器圆角：全高圆弧，与 MD3 floating toolbar 视觉一致。 */
+private val DockContainerShape = RoundedCornerShape(percent = 50)
+
 @Composable
 internal fun BottomActionDock(
     modifier: Modifier = Modifier,
@@ -70,10 +73,18 @@ internal fun BottomActionDock(
         // 按压缩放与按钮共用同一 interactionSource（Motion token：100ms 0.97）。
         val ctaInteractionSource = remember { MutableInteractionSource() }
 
-        HorizontalFloatingToolbar(
-            expanded = false,
-            modifier = Modifier.padding(start = Spacing.lg, end = Spacing.lg, bottom = Spacing.lg),
-            leadingContent = {
+        Surface(
+            shape = DockContainerShape,
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            shadowElevation = 6.dp,
+            modifier = Modifier.padding(start = Spacing.lg, end = Spacing.lg, bottom = Spacing.lg)
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                // 左侧贴 CTA（按钮自带内边距），右侧留出图标触控呼吸空间。
+                modifier = Modifier.padding(start = Spacing.xs, end = Spacing.xs)
+            ) {
                 // 同一 CTA 承载开始/停止两个互斥状态：空闲主色可点，处理中
                 // 变错误红仍可点（点击即取消），避免「转圈不可控」的死端。
                 Button(
@@ -115,8 +126,7 @@ internal fun BottomActionDock(
                         }
                     }
                 }
-            },
-            content = {
+
                 // 恢复入口只看备份可用性：队列存在不应劫持恢复操作。
                 if (hasBackupAvailable && !isProcessing) {
                     IconButton(onClick = onRestore) {
@@ -148,6 +158,6 @@ internal fun BottomActionDock(
                     }
                 }
             }
-        )
+        }
     }
 }
