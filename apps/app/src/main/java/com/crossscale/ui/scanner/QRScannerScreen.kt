@@ -38,7 +38,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
@@ -184,11 +183,11 @@ fun QRScannerScreen(
         }
     }
 
-    // 全屏相机体验：纯黑背景 + 顶部关闭按钮 + 中央取景框 + 底部提示。
+    // 全屏相机体验：scrim 角色遮罩 + 顶部关闭按钮 + 中央取景框 + 底部提示。
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black)
+            .background(MaterialTheme.colorScheme.scrim)
     ) {
         if (cameraPermissionGranted) {
             AndroidView(
@@ -268,7 +267,7 @@ fun QRScannerScreen(
             Text(
                 text = stringResource(R.string.scanner_hint),
                 style = MaterialTheme.typography.bodyMedium,
-                color = Color.White.copy(alpha = 0.85f)
+                color = MaterialTheme.colorScheme.inverseOnSurface
             )
         }
     }

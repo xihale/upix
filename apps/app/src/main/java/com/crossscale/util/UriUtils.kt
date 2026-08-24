@@ -55,34 +55,31 @@ private fun resolveOutputViewUri(
     rawOutput: String
 ): Uri? {
     if (rawOutput.startsWith("/")) {
-        val file = File(rawOutput)
-        if (!file.exists()) {
-            return null
-        }
-        return FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        return fileViewUri(context, File(rawOutput))
     }
 
     val parsedUri = runCatching { Uri.parse(rawOutput) }.getOrNull() ?: return null
     return when (parsedUri.scheme?.lowercase()) {
-        null -> {
-            val file = File(rawOutput)
-            if (!file.exists()) {
-                null
-            } else {
-                FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-            }
-        }
+        null -> fileViewUri(context, File(rawOutput))
         "content" -> parsedUri
-        "file" -> {
-            val file = File(parsedUri.path.orEmpty())
-            if (!file.exists()) {
-                null
-            } else {
-                FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-            }
-        }
+        "file" -> fileViewUri(context, File(parsedUri.path.orEmpty()))
         else -> null
     }
+}
+
+/**
+ * 文件路径 → FileProvider content URI。路径不在 file_paths.xml 任何已配置
+ * root 下时 getUriForFile 会抛 IllegalArgumentException——历史队列记录里可能
+ * 存有现在未映射的输出路径，这里返回 null 让上层给出「打开失败」提示，
+ * 而不是让点击行为直接闪退。
+ */
+private fun fileViewUri(context: Context, file: File): Uri? {
+    if (!file.exists()) {
+        return null
+    }
+    return runCatching {
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    }.getOrNull()
 }
 
 internal fun needsLegacyWritePermission(): Boolean {

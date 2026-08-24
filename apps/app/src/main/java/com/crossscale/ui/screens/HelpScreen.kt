@@ -12,6 +12,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import com.crossscale.R
+import com.crossscale.ui.theme.LocalScreenMargin
 import com.crossscale.ui.theme.Spacing
 
 @Composable
@@ -20,15 +21,10 @@ fun HelpScreen() {
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(horizontal = Spacing.xl)
+            .padding(horizontal = LocalScreenMargin.current)
             .padding(top = Spacing.md, bottom = Spacing.xxl),
         verticalArrangement = Arrangement.spacedBy(Spacing.md)
     ) {
-        Text(
-            text = stringResource(R.string.common_help),
-            style = MaterialTheme.typography.titleLarge
-        )
-
         val steps = listOf(
             R.string.help_step_1,
             R.string.help_step_2,

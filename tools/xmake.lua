@@ -34,3 +34,4 @@ target("crossscale-core")
         print("generating " .. spirv_pack)
         os.execv(bin, {spirv_pack})
     end)
+

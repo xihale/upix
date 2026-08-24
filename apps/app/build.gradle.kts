@@ -129,6 +129,13 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
+    // Expressive API（MaterialExpressiveTheme/MotionScheme）在 material3 1.4 为 internal，
+    // 显式提升到 1.5 后可用；BOM 仍管 UI/adaptive 系列其余工件。
+    implementation("androidx.compose.material3:material3:1.5.0-alpha17")
+    // MD3 adaptive: window adaptive info + list-detail pane scaffold (BOM-managed)
+    implementation(libs.androidx.compose.adaptive)
+    implementation(libs.androidx.compose.adaptive.layout)
+    implementation(libs.androidx.compose.adaptive.navigation)
 
     // Material icon vector sets. Not part of the Compose BOM; pinned via
     // libs.materialIcons (1.7.8, final release of the independent version line).

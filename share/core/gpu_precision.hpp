@@ -5,9 +5,16 @@
 // bit-for-bit. Two profiles cover the devices this app actually runs on:
 //
 //   Integrated — phones / laptop iGPUs: fp16 packed+storage, fp32 math
-//                (Adreno/Mali residual blocks overflow fp16's 65504 range),
-//                no shader local memory (ncnn already disables it on type!=0).
-//   Discrete   — PC dGPUs: fp16 packed+storage+arith, local memory on.
+//                (Adreno/Mali residual blocks overflow fp16's 65504 range).
+//   Discrete   — PC dGPUs: fp16 packed+storage+arith.
+//
+// use_shader_local_memory stays OFF in BOTH profiles: ncnn's local-memory
+// winograd/deconvolution pack4 shaders fail to compile under the frozen dump
+// when combined with fp16 arithmetic (16 layer shaders), which leaves holes in
+// the pack and crashes the runtime with "binding_count not match". Without
+// local memory those convolutions select their gemm variants, which do
+// compile. fp16 arithmetic alone only drops convolution1d pack4 variants,
+// which no SR model uses.
 //
 // Cooperative matrix and subgroup ops stay off in both. int8 storage stays on
 // (u8 tile queue). Uniform-as-fp16/int8 stays off so a missing VkFeature does
@@ -74,7 +81,7 @@ inline void apply_profile(ncnn::Option& opt, GpuPrecisionProfile profile) {
     opt.use_int8_storage = true;
     opt.use_int8_arithmetic = false;
     opt.use_int8_uniform = false;
-    opt.use_shader_local_memory = discrete;
+    opt.use_shader_local_memory = false;
     opt.use_cooperative_matrix = false;
     opt.use_subgroup_ops = false;
 }

@@ -286,6 +286,74 @@ int compile_spirv_module(int shader_type_index, const Option& opt, std::vector<u
         return -1;
     }]])
 
+        -- vkCreateBuffer/vkCreateImage OOM returns a null handle; the fastMalloc
+        -- sites below fed it straight into vkGet*MemoryRequirements, which the
+        -- Adreno driver dereferences → SIGSEGV instead of a clean error return.
+        must_replace("src/allocator.cpp",
+[[    block->buffer = create_buffer(new_block_size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    block->offset = 0;]],
+[[    block->buffer = create_buffer(new_block_size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    if (!block->buffer)
+    {
+        delete block;
+        return 0;
+    }
+    block->offset = 0;]])
+        must_replace("src/allocator.cpp",
+[[    block->buffer = create_buffer(new_block_size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    block->offset = 0;]],
+[[    block->buffer = create_buffer(new_block_size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    if (!block->buffer)
+    {
+        delete block;
+        return 0;
+    }
+    block->offset = 0;]])
+        must_replace("src/allocator.cpp",
+[[    ptr->buffer = create_buffer(size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    ptr->offset = 0;]],
+[[    ptr->buffer = create_buffer(size, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    if (!ptr->buffer)
+    {
+        delete ptr;
+        return 0;
+    }
+    ptr->offset = 0;]])
+        must_replace("src/allocator.cpp",
+[[    ptr->buffer = create_buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    ptr->offset = 0;]],
+[[    ptr->buffer = create_buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    if (!ptr->buffer)
+    {
+        delete ptr;
+        return 0;
+    }
+    ptr->offset = 0;]])
+        must_replace("src/allocator.cpp",
+[[    ptr->image = create_image(width, height, depth, format, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
+    ptr->width = width;]],
+[[    ptr->image = create_image(width, height, depth, format, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    if (!ptr->image)
+    {
+        delete ptr;
+        return 0;
+    }
+
+    ptr->width = width;]])
+        must_replace("src/allocator.cpp",
+[[    ptr->image = create_image(width, height, depth, format, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+
+    ptr->width = width;]],
+[[    ptr->image = create_image(width, height, depth, format, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+    if (!ptr->image)
+    {
+        delete ptr;
+        return 0;
+    }
+
+    ptr->width = width;]])
+
         local moltenvk = package:dep("moltenvk")
         if moltenvk and not moltenvk:config("shared") then
             io.replace("src/CMakeLists.txt", "if(NOT NCNN_SHARED_LIB AND APPLE)", "if(APPLE)", {plain = true})

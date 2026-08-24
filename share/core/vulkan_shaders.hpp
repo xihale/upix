@@ -151,6 +151,7 @@ layout (push_constant) uniform parameter
     int tile_w;
     int tile_h;
     int dst_cstep;
+    int border_replicate;
 } p;
 
 void main()
@@ -163,10 +164,21 @@ void main()
 
     int src_x = p.tile_x + gx;
     int src_y = p.tile_y + gy;
-    src_x = abs(src_x);
-    src_y = abs(src_y);
-    src_x = (p.src_w - 1) - abs(src_x - (p.src_w - 1));
-    src_y = (p.src_h - 1) - abs(src_y - (p.src_h - 1));
+    if (p.border_replicate != 0)
+    {
+        // Pre-padding models: out-of-image context must replicate the edge
+        // pixel (BORDER_REPLICATE), matching copy_make_border / the
+        // whole-image path, not mirror it.
+        src_x = clamp(src_x, 0, p.src_w - 1);
+        src_y = clamp(src_y, 0, p.src_h - 1);
+    }
+    else
+    {
+        src_x = abs(src_x);
+        src_y = abs(src_y);
+        src_x = (p.src_w - 1) - abs(src_x - (p.src_w - 1));
+        src_y = (p.src_h - 1) - abs(src_y - (p.src_h - 1));
+    }
 
     const int src_idx = (src_y * p.src_w + src_x) * p.channels + gz;
     const int dst_idx = gz * p.dst_cstep + gy * p.tile_w + gx;
@@ -205,6 +217,7 @@ layout (push_constant) uniform parameter
     int tile_w;
     int tile_h;
     int dst_cstep;
+    int border_replicate;
 } p;
 
 void main()
@@ -218,10 +231,21 @@ void main()
 
     int src_x = p.tile_x + gx;
     int src_y = p.tile_y + gy;
-    src_x = abs(src_x);
-    src_y = abs(src_y);
-    src_x = (p.src_w - 1) - abs(src_x - (p.src_w - 1));
-    src_y = (p.src_h - 1) - abs(src_y - (p.src_h - 1));
+    if (p.border_replicate != 0)
+    {
+        // Pre-padding models: out-of-image context must replicate the edge
+        // pixel (BORDER_REPLICATE), matching copy_make_border / the
+        // whole-image path, not mirror it.
+        src_x = clamp(src_x, 0, p.src_w - 1);
+        src_y = clamp(src_y, 0, p.src_h - 1);
+    }
+    else
+    {
+        src_x = abs(src_x);
+        src_y = abs(src_y);
+        src_x = (p.src_w - 1) - abs(src_x - (p.src_w - 1));
+        src_y = (p.src_h - 1) - abs(src_y - (p.src_h - 1));
+    }
 
     const int src_idx = (src_y * p.src_w + src_x) * p.channels + gz;
     const int dst_idx = gz * p.dst_cstep + gy * p.tile_w + gx;

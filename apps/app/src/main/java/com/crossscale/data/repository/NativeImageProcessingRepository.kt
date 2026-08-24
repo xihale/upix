@@ -305,7 +305,7 @@ class NativeImageProcessingRepository(
         width: Int,
         height: Int
     ): ByteArray? {
-        return runCatching {
+        val result = runCatching {
             NCNNEngine.nativeProcessImage(
                 enginePtr,
                 inputBytes,
@@ -315,12 +315,32 @@ class NativeImageProcessingRepository(
                 VALIDATION_OUTPUT_FORMAT,
                 DEFAULT_OUTPUT_QUALITY
             )
-        }.onFailure { throwable ->
+        }
+        result.onFailure { throwable ->
             logRepository.warning(
                 "NativeImageProcessingRepository",
                 "Validation probe failed: ${throwable.message}"
             )
-        }.getOrNull()
+        }
+        // nativeProcessImage signals engine failures by returning null (not by
+        // throwing); the actual reason is only in nativeGetLastError(). Without
+        // this, the "GPU probe returned empty output" fallback warning carries
+        // no root cause and the failure is only visible in logcat.
+        val output = result.getOrNull()
+        if (output == null) {
+            val nativeError = runCatching {
+                NCNNEngine.nativeGetLastError().orEmpty()
+            }.getOrDefault("")
+            logRepository.warning(
+                "NativeImageProcessingRepository",
+                if (nativeError.isBlank()) {
+                    "Validation probe returned null (no native error recorded)"
+                } else {
+                    "Validation probe returned null: $nativeError"
+                }
+            )
+        }
+        return output
     }
 
     private fun decodeValidationBitmap(encodedBytes: ByteArray): Bitmap? {

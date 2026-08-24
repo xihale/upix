@@ -7,12 +7,12 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
+import com.crossscale.ui.theme.SectionLabelStyle
 import com.crossscale.ui.theme.Spacing
 
 /**
- * 统一分区标题：labelLarge + onSurfaceVariant + 宽字距，置于分组卡上方。
+ * 统一分区标题：SectionLabelStyle（labelLarge + 宽字距，主题层定义）+
+ * onSurfaceVariant，置于分组卡上方。
  */
 @Composable
 fun SectionHeader(
@@ -22,10 +22,7 @@ fun SectionHeader(
 ) {
     Text(
         text = text,
-        style = MaterialTheme.typography.labelLarge.copy(
-            fontWeight = FontWeight.Medium,
-            letterSpacing = 1.2.sp
-        ),
+        style = SectionLabelStyle,
         color = color,
         modifier = modifier
             .fillMaxWidth()

@@ -126,6 +126,12 @@ std::mutex g_vulkan_init_mutex;
     }
 
     void NCNNEngineImpl::detect_model_info(const std::string& param_path) {
+        // Reset per-model state: the same engine can load a second model after
+        // unload, and a stale prepadding/flag from the previous model would
+        // misroute the next one's pipelines.
+        model_prepadding_ = 0;
+        model_has_border_crop_ = false;
+
         // Parse param file to detect input/output shapes
         std::ifstream file(param_path);
         if (!file.is_open()) {
@@ -226,6 +232,7 @@ std::mutex g_vulkan_init_mutex;
         }
 
         if (has_crop_layer) {
+            model_has_border_crop_ = true;
             switch (scale_factor_) {
                 case 2: model_prepadding_ = 18; break;
                 case 3: model_prepadding_ = 14; break;
@@ -235,7 +242,9 @@ std::mutex g_vulkan_init_mutex;
             LOG_WARNING("Engine",
                 "Model uses internal border crops; applying prepadding=" +
                 std::to_string(model_prepadding_) +
-                (model_prepadding_ > 0 ? "" : " (unsupported scale, GPU tile pipeline disabled)"));
+                (model_prepadding_ > 0
+                     ? "; GPU tile pipelines tile with replicate-border context"
+                     : " (unsupported scale; GPU tile pipelines disabled)"));
         }
 
         // If we couldn't detect, try inferring from model metadata or use default

@@ -5,6 +5,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,10 +13,14 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.foundation.rememberScrollState
@@ -27,6 +32,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -40,6 +46,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
@@ -50,6 +57,7 @@ import com.crossscale.data.model.RemoteEndpoint
 import com.crossscale.data.model.RemoteModel
 import com.crossscale.data.repository.OutputImageFormat
 import com.crossscale.data.repository.PersistedQueueItemStatus
+import com.crossscale.ui.components.CrossScaleTopAppBar
 import com.crossscale.ui.components.RemoteModelsDialog
 import com.crossscale.ui.components.StageProgressOverlay
 import com.crossscale.ui.screens.home.BottomActionDock
@@ -60,6 +68,8 @@ import com.crossscale.ui.screens.home.PreviewBottomSheet
 import com.crossscale.ui.screens.home.QueueBottomSheetContent
 import com.crossscale.ui.theme.EnterMotionSpec
 import com.crossscale.ui.theme.EnterSizeSpec
+import com.crossscale.ui.theme.LocalScreenMargin
+import com.crossscale.ui.theme.MaxContentWidth
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
 import com.crossscale.viewmodel.MainUiState
@@ -188,20 +198,39 @@ fun HomeScreen(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-        Column(
+    Scaffold(
+        topBar = {
+            CrossScaleTopAppBar(
+                title = stringResource(R.string.app_name),
+                actions = {
+                    HomeConnectionStatus(
+                        connectionState = connectionState,
+                        connectedEndpoint = connectedEndpoint
+                    )
+                }
+            )
+        },
+        containerColor = MaterialTheme.colorScheme.background,
+        // 顶层 app shell 已统一消费系统栏 insets（compact 由 NavigationBar 占位、
+        // medium+ 由外层 navigationBarsPadding），这里不再叠加。
+        contentWindowInsets = WindowInsets(0, 0, 0, 0)
+    ) { innerPadding ->
+        Box(
             modifier = Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = Spacing.xl)
-                .padding(bottom = 140.dp),
-            verticalArrangement = Arrangement.spacedBy(Spacing.lg)
+                .padding(innerPadding),
+            // 宽屏正文列限宽居中；悬浮 Dock/Snackbar 仍按全宽对齐。
+            contentAlignment = Alignment.TopCenter
         ) {
-            HomeIdentityBar(
-                connectionState = connectionState,
-                connectedEndpoint = connectedEndpoint
-            )
-
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .widthIn(max = MaxContentWidth)
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = LocalScreenMargin.current)
+                    .padding(top = Spacing.md, bottom = BottomDockClearance),
+                verticalArrangement = Arrangement.spacedBy(Spacing.lg)
+            ) {
             ImageStage(
                 selectedInputs = selectedInputs,
                 corruptedSources = corruptedSources,
@@ -260,24 +289,25 @@ fun HomeScreen(
             }
         }
 
-        BottomActionDock(
-            modifier = Modifier.align(Alignment.BottomCenter),
-            isProcessing = isProcessing,
-            hasBackupAvailable = hasBackupAvailable,
-            queueCount = queueCount,
-            onShowQueue = {
-                queueSheetVisible = true
-            },
-            onStart = onStartProcessing,
-            onRestore = onRestoreBackup
-        )
+            BottomActionDock(
+                modifier = Modifier.align(Alignment.BottomCenter),
+                isProcessing = isProcessing,
+                hasBackupAvailable = hasBackupAvailable,
+                queueCount = queueCount,
+                onShowQueue = {
+                    queueSheetVisible = true
+                },
+                onStart = onStartProcessing,
+                onRestore = onRestoreBackup
+            )
 
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 120.dp)
-        )
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = SnackbarAboveDockPadding)
+            )
+        }
     }
 
     if (showModelSheet) {
@@ -285,6 +315,8 @@ fun HomeScreen(
         if (remoteUiState.remoteModels.isEmpty()) {
             LaunchedEffect(Unit) { onRefreshRemoteModels() }
         }
+        // 大屏取舍：官方暂无 SideSheet 组件，medium+ 上 ModalBottomSheet
+        // 自动限宽居中展示（不拉伸全宽），作为侧栏方案的过渡实现。
         ModalBottomSheet(
             onDismissRequest = { showModelSheet = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -403,6 +435,15 @@ fun HomeScreen(
     }
 }
 
+/**
+ * 底部悬浮 Dock 占位推导：56dp CTA + 16dp 悬浮间距 + 24dp 滚动间隙，
+ * 供滚动列底部预留与 Snackbar 避让共用，替代散落的魔法数。
+ */
+private val BottomDockClearance = 56.dp + 16.dp + 24.dp
+
+/** Snackbar 在 Dock 之上再留 12dp 间隙。 */
+private val SnackbarAboveDockPadding = 56.dp + 16.dp + 12.dp
+
 /** Sheet 内单选项：M3 官方 ListItem + RadioButton 单选列表模式。 */
 @Composable
 private fun SelectSheetItem(
@@ -453,9 +494,9 @@ private fun BoxScope.StageProcessingOverlay(
     }
 }
 
-/** 顶部标识条：品牌名 + 连接状态文本（直接消费现成连接数据）。 */
+/** 顶栏连接状态指示：状态点 + 文本，颜色随连接状态（原 HomeIdentityBar 升级为 TopAppBar actions）。 */
 @Composable
-private fun HomeIdentityBar(
+private fun HomeConnectionStatus(
     connectionState: ConnectionState,
     connectedEndpoint: com.crossscale.data.model.RemoteEndpoint?
 ) {
@@ -465,25 +506,27 @@ private fun HomeIdentityBar(
         ConnectionState.CONNECTING -> R.string.config_mode_connecting to MaterialTheme.colorScheme.primary
     }
 
+    val statusLabel = stringResource(statusLabelRes)
+    val endpoint = connectedEndpoint?.let { "${it.host}:${it.port}" }
+    val text = if (connectionState == ConnectionState.CONNECTED && endpoint != null) {
+        "$statusLabel $endpoint"
+    } else {
+        statusLabel
+    }
+
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = Spacing.md, bottom = Spacing.xs),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
+        modifier = Modifier.padding(end = Spacing.md),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
     ) {
-        Text(
-            text = stringResource(R.string.app_name),
-            style = MaterialTheme.typography.titleLarge
+        Box(
+            modifier = Modifier
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(statusColor)
         )
-        val statusLabel = stringResource(statusLabelRes)
-        val endpoint = connectedEndpoint?.let { "${it.host}:${it.port}" }
         Text(
-            text = if (connectionState == ConnectionState.CONNECTED && endpoint != null) {
-                "$statusLabel $endpoint"
-            } else {
-                statusLabel
-            },
+            text = text,
             style = MaterialTheme.typography.labelMedium,
             color = statusColor,
             maxLines = 1

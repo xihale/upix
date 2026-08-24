@@ -1,14 +1,17 @@
 package com.crossscale.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -19,6 +22,7 @@ import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -33,8 +37,11 @@ import com.crossscale.R
 import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.RemoteEndpoint
 import com.crossscale.ui.components.ConnectionDialog
+import com.crossscale.ui.components.CrossScaleTopAppBar
 import com.crossscale.ui.components.FingerprintConfirmDialog
 import com.crossscale.ui.scanner.QRScannerScreen
+import com.crossscale.ui.theme.LocalScreenMargin
+import com.crossscale.ui.theme.MaxContentWidth
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.ui.theme.ValueMono
 import com.crossscale.viewmodel.DeviceUiState
@@ -68,20 +75,30 @@ fun ConnectionScreen(
             onClose = { showQrScanner.value = false }
         )
     } else {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = Spacing.xl)
-                .padding(top = Spacing.md, bottom = Spacing.xxl),
-            verticalArrangement = Arrangement.spacedBy(Spacing.lg)
-        ) {
-            Text(
-                text = stringResource(R.string.connection_title),
-                style = MaterialTheme.typography.titleLarge
-            )
-
-            state.connectionError?.let { err ->
+        Scaffold(
+            topBar = {
+                CrossScaleTopAppBar(title = stringResource(R.string.connection_title))
+            },
+            containerColor = MaterialTheme.colorScheme.background,
+            // 顶层 app shell 已统一消费系统栏 insets，这里不再叠加。
+            contentWindowInsets = WindowInsets(0, 0, 0, 0)
+        ) { innerPadding ->
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(innerPadding),
+                contentAlignment = Alignment.TopCenter
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .widthIn(max = MaxContentWidth)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = LocalScreenMargin.current)
+                        .padding(top = Spacing.md, bottom = Spacing.xxl),
+                    verticalArrangement = Arrangement.spacedBy(Spacing.lg)
+                ) {
+                state.connectionError?.let { err ->
                 Surface(
                     color = MaterialTheme.colorScheme.errorContainer,
                     contentColor = MaterialTheme.colorScheme.onErrorContainer,
@@ -112,16 +129,18 @@ fun ConnectionScreen(
                 }
             }
 
-            when (connectionState) {
-                ConnectionState.CONNECTED -> ConnectedStatusCard(
-                    endpoint = connectedEndpoint,
-                    onDisconnect = onDisconnect
-                )
-                ConnectionState.CONNECTING -> ConnectingCard()
-                ConnectionState.DISCONNECTED -> DisconnectedActions(
-                    onScanQr = { showQrScanner.value = true },
-                    onManual = { onShowManualConnectDialog(true) }
-                )
+                when (connectionState) {
+                    ConnectionState.CONNECTED -> ConnectedStatusCard(
+                        endpoint = connectedEndpoint,
+                        onDisconnect = onDisconnect
+                    )
+                    ConnectionState.CONNECTING -> ConnectingCard()
+                    ConnectionState.DISCONNECTED -> DisconnectedActions(
+                        onScanQr = { showQrScanner.value = true },
+                        onManual = { onShowManualConnectDialog(true) }
+                    )
+                }
+                }
             }
         }
     }

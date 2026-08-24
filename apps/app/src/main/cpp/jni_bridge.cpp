@@ -629,6 +629,10 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImage(
     const int output_height = static_cast<int>(output_height64);
     const jsize output_size = static_cast<jsize>(output_size64);
 
+    // Clear stale errors so a successful call leaves nativeGetLastError()
+    // empty; every nullptr return below sets a specific message instead.
+    set_jni_last_error("");
+
     try {
         std::vector<uint8_t> output_u8(static_cast<size_t>(output_size));
 
@@ -644,7 +648,10 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImage(
         input_data = nullptr;
 
         if (!result.has_value()) {
-            LOGE("Engine processing failed: %s", result.error().message.c_str());
+            const std::string message =
+                "Engine processing failed: " + result.error().message;
+            LOGE("%s", message.c_str());
+            set_jni_last_error(message);
             return nullptr;
         }
 
@@ -667,6 +674,7 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImage(
         jbyteArray output = env->NewByteArray(static_cast<jsize>(encoded.size()));
         if (output == nullptr) {
             LOGE("Failed to allocate output byte array");
+            set_jni_last_error("Failed to allocate output byte array");
             return nullptr;
         }
         env->SetByteArrayRegion(
@@ -689,12 +697,20 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImage(
             output_height,
             channels
         );
+        set_jni_last_error(
+            "Out of memory during native processing buffers: input=" +
+            std::to_string(width) + "x" + std::to_string(height) + "x" +
+            std::to_string(channels) + " output=" +
+            std::to_string(output_width) + "x" + std::to_string(output_height) + "x" +
+            std::to_string(channels)
+        );
         return nullptr;
     } catch (const std::exception& exception) {
         if (input_data != nullptr) {
             env->ReleaseByteArrayElements(input_image, input_data, JNI_ABORT);
         }
         LOGE("Unexpected native processing exception: %s", exception.what());
+        set_jni_last_error(std::string("Unexpected native processing exception: ") + exception.what());
         return nullptr;
     }
 }

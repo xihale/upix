@@ -4,6 +4,7 @@
 #include <functional>
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <vector>
 #include <future>
 #include <cstdint>
@@ -37,6 +38,17 @@ inline constexpr int kErrOutOfMemory = 230;
 
 inline bool is_oom_error(const EngineError& e) {
     return e.code == kErrOutOfMemory || e.message.find("out of memory") != std::string::npos;
+}
+
+// ncnn propagates mid-run Vulkan allocation failure as an empty (0x0x0) output
+// mat — VkMat::create guards the failed fastMalloc — so an all-zero result
+// from a shape check is OOM, not a shape bug. Classify it as kErrOutOfMemory
+// so the fallback ladder picks it up instead of failing the whole job.
+inline std::optional<EngineError> empty_gpu_output_error(int w, int h, int c) {
+    if (w == 0 && h == 0 && c == 0) {
+        return EngineError{kErrOutOfMemory, "Vulkan output empty (out of GPU memory)"};
+    }
+    return std::nullopt;
 }
 
 struct GPUTileTaskU8 {

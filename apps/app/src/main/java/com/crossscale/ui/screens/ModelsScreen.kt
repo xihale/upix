@@ -35,6 +35,7 @@ import com.crossscale.R
 import com.crossscale.data.model.ModelLibraryEntry
 import com.crossscale.ui.components.ModelCard
 import com.crossscale.ui.components.RemoteModelsDialog
+import com.crossscale.ui.theme.LocalScreenMargin
 import com.crossscale.ui.theme.Spacing
 import com.crossscale.viewmodel.ModelsUiState
 
@@ -69,14 +70,10 @@ fun ModelsScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = Spacing.xl)
+            .padding(horizontal = LocalScreenMargin.current)
             .padding(top = Spacing.md),
         verticalArrangement = Arrangement.spacedBy(Spacing.md)
     ) {
-        Text(
-            text = stringResource(R.string.models_title),
-            style = MaterialTheme.typography.titleLarge
-        )
         Text(
             text = stringResource(R.string.models_discovered_summary, library.size),
             style = MaterialTheme.typography.bodySmall,

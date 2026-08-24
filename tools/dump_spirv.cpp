@@ -82,9 +82,15 @@ std::vector<uint8_t> zlib_compress(const std::vector<uint8_t>& raw) {
 } // namespace
 
 int main(int argc, char** argv) {
+    // `xmake run dump-spirv -- <path>` passes the separator itself as argv[1];
+    // skip it so the documented invocation does not write a file named "--".
     std::string out_path = "share/core/spirv_pack.bin";
-    if (argc >= 2) {
-        out_path = argv[1];
+    for (int i = 1; i < argc; ++i) {
+        if (std::strcmp(argv[i], "--") == 0) {
+            continue;
+        }
+        out_path = argv[i];
+        break;
     }
 
     if (ncnn::create_gpu_instance() != 0) {
@@ -138,13 +144,26 @@ int main(int argc, char** argv) {
         const uint32_t key = crossscale::option_key(named.opt);
         std::fprintf(stderr, "profile %s key=0x%x\n", named.name, key);
 
+        std::vector<int> holes;
         for (int i = 0; i < kMaxShaderIndex; ++i) {
             std::vector<uint32_t> spv;
             if (ncnn::compile_spirv_module(i, named.opt, spv) != 0 || spv.empty()) {
-                ++failed;
+                holes.push_back(i);
                 continue;
             }
             add_spv(kKindLayer, static_cast<uint32_t>(i), key, spv);
+        }
+        // Some holes are expected (alternate specializations that are never
+        // requested under a profile), but they must be visible: a profile
+        // change that silently widens the hole set is exactly how a broken
+        // pack gets frozen. Diff this line when the pack changes.
+        if (!holes.empty()) {
+            std::fprintf(stderr, "  %s holes (%zu):", named.name, holes.size());
+            for (int h : holes) {
+                std::fprintf(stderr, " %d", h);
+            }
+            std::fprintf(stderr, "\n");
+            failed += static_cast<int>(holes.size());
         }
 
         for (const auto& shader : crossscale::detail::kCustomShaders) {

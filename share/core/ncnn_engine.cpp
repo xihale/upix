@@ -335,10 +335,17 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             }
 
             auto vk_result = process_vulkan_with_gpu_layout(input, output, width, height, channels, cancel_flag);
-            if (!vk_result.has_value()) {
+            if (vk_result.has_value()) {
+                return {};
+            }
+            if (!is_oom_error(vk_result.error())) {
                 return std::unexpected(EngineError{22, "Vulkan layout pipeline failed: " + vk_result.error().message});
             }
-            return {};
+            // Device memory refused (preflight or mid-run): fall through to the
+            // CPU section below — no device memory needed, same pre-padding
+            // semantics (replicate border), so tile callers keep working.
+            LOG_WARNING("Engine", vk_result.error().message +
+                ", falling back to CPU path");
         }
 #endif
         
@@ -626,7 +633,11 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
             }
 
             bool fell_back_to_cpu = false;
-            if (gpu_tile_pipeline_ready_) {
+            // supports_gpu_tile_pipeline() (not just gpu_tile_pipeline_ready_):
+            // Crop-layer models without a known prepadding margin must skip
+            // both tile pipelines and would fail with error 201 the moment
+            // process_tiles_gpu re-checks the same gate.
+            if (supports_gpu_tile_pipeline()) {
                 LOG_INFO("Engine", "Processing u8 input through Vulkan float tile pipeline (fallback)");
 
                 const size_t in_total = static_cast<size_t>(width) * height * channels;
@@ -707,17 +718,32 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                 }
             }
 
+            const size_t compat_in_total = static_cast<size_t>(width) * height * channels;
+            const int compat_out_width = width * scale_factor_;
+            const int compat_out_height = height * scale_factor_;
+            const size_t compat_out_total =
+                static_cast<size_t>(compat_out_width) * compat_out_height * channels;
+
+            if (!fell_back_to_cpu) {
+                // Whole-image host staging: the CPU path below allocates the
+                // same float buffers, so a shortfall here is terminal —
+                // refuse cleanly instead of throwing mid-run. Every sibling
+                // path preflights this; the compat path never did. The
+                // device budget is preflighted at the entry of
+                // process_vulkan_with_gpu_layout; the OOM error it returns
+                // is handled below.
+                if (auto oom = check_host_memory(
+                        (compat_in_total + compat_out_total) * sizeof(float), get_memory_info())) {
+                    return std::unexpected(*oom);
+                }
+            }
+
             if (!fell_back_to_cpu) {
                 LOG_WARNING("Engine", "Vulkan tile pipeline unavailable, switching to non-tile Vulkan float compatibility path");
 
-                const size_t in_total = static_cast<size_t>(width) * height * channels;
-                const int out_width = width * scale_factor_;
-                const int out_height = height * scale_factor_;
-                const size_t out_total = static_cast<size_t>(out_width) * out_height * channels;
+                std::vector<float> input_float = u8_to_float_buffer(input, compat_in_total);
 
-                std::vector<float> input_float = u8_to_float_buffer(input, in_total);
-
-                std::vector<float> output_float(out_total);
+                std::vector<float> output_float(compat_out_total);
                 auto vk_result = process_vulkan_with_gpu_layout(
                     input_float.data(),
                     output_float.data(),
@@ -726,11 +752,17 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                     channels,
                     cancel_flag
                 );
-                if (!vk_result.has_value()) {
+                if (vk_result.has_value()) {
+                    return float_to_u8_checked(output_float.data(), output, compat_out_total);
+                }
+                if (!is_oom_error(vk_result.error())) {
                     return std::unexpected(EngineError{24, "Vulkan float compatibility path failed: " + vk_result.error().message});
                 }
-
-                return float_to_u8_checked(output_float.data(), output, out_total);
+                // Device memory shortfall: the CPU tile path below needs no
+                // device memory at all (its host staging already passed the
+                // preflight above).
+                LOG_WARNING("Engine", vk_result.error().message +
+                    ", falling back to CPU tile pipeline");
             }
         }
 #endif
@@ -782,6 +814,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
             // Pre-padding models: run each item through the single-image path,
             // which pads the border on the way in and crops it on the way out.
             if (model_prepadding_ > 0) {
+                bool fell_back_to_cpu = false;
                 for (size_t i = 0; i < inputs.size(); ++i) {
                     if (cancel_flag) {
                         return std::unexpected(EngineError{3, "Processing cancelled"});
@@ -789,10 +822,22 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                     auto item_result = process_vulkan_with_gpu_layout(
                         inputs[i], outputs[i], width, height, channels, cancel_flag);
                     if (!item_result.has_value()) {
-                        return item_result;
+                        if (!is_oom_error(item_result.error())) {
+                            return item_result;
+                        }
+                        // Device memory refused (preflight or mid-run). Skip the
+                        // batched Vulkan section below — it never pads — and
+                        // finish the whole batch on the CPU tail.
+                        LOG_WARNING("Engine", item_result.error().message +
+                            ", falling back to CPU whole-image path");
+                        fell_back_to_cpu = true;
+                        break;
                     }
                 }
-                return {};
+                if (!fell_back_to_cpu) {
+                    return {};
+                }
+                return Engine::process_batch(inputs, outputs, width, height, channels, cancel_flag);
             }
 
             if (cancel_flag) {
@@ -893,6 +938,9 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                 }
 
                 if (out_gpu.w != out_width || out_gpu.h != out_height || out_gpu.c != channels) {
+                    if (auto oom = empty_gpu_output_error(out_gpu.w, out_gpu.h, out_gpu.c)) {
+                        return std::unexpected(*oom);
+                    }
                     return std::unexpected(EngineError{16, "Vulkan output shape mismatch (got " + std::to_string(out_gpu.w) + "x" + std::to_string(out_gpu.h) + "x" + std::to_string(out_gpu.c) + ", want " + std::to_string(out_width) + "x" + std::to_string(out_height) + "x" + std::to_string(channels) + ")"});
                 }
 
@@ -933,10 +981,12 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
 
     bool NCNNEngineImpl::supports_gpu_tile_pipeline() const {
 #if NCNN_VULKAN
-        // Pre-padding models need CPU-side border replication before upload;
-        // the GPU tile pipelines crop tiles straight from the full-image buffer
-        // and cannot provide that context, so route them through engine.process().
-        return model_prepadding_ == 0 &&
+        // The tile pipelines grow each tile's crop rect by model_prepadding_
+        // (replicate at the image border), so the internal border crops cancel
+        // and pre-padding models tile fine. Only Crop-layer models WITHOUT a
+        // known margin (model_prepadding_ == 0, unsupported scale) stay
+        // excluded — they would lose tile borders to the internal crops.
+        return (!model_has_border_crop_ || model_prepadding_ > 0) &&
                current_device_ == DeviceType::GPU_VULKAN &&
                vkdev_ != nullptr &&
                gpu_layout_pipeline_ready_ &&
@@ -948,7 +998,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
 
     bool NCNNEngineImpl::supports_gpu_tile_pipeline_u8() const {
 #if NCNN_VULKAN
-        return model_prepadding_ == 0 &&
+        return (!model_has_border_crop_ || model_prepadding_ > 0) &&
                current_device_ == DeviceType::GPU_VULKAN &&
                vkdev_ != nullptr &&
                gpu_layout_u8_pipeline_ready_ &&
@@ -1102,8 +1152,9 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
         // The per-tile feature-map working set scales with tile²; shrink until
         // its estimate fits within 1/8 of the heap budget. For the RRDB family
         // this is ~(t+2*16)² × 64 ch × 2 B (fp16) × ~16 live blobs × batch 2.
+        // Pre-padding models feed the net (t + 2*prepadding), which counts too.
         while (tilesize > 32) {
-            const double t = static_cast<double>(tilesize) + 2 * 16;
+            const double t = static_cast<double>(tilesize) + 2 * 16 + 2 * model_prepadding_;
             const double working_set_mb = t * t * 64 * 2 * 16 * 2 / (1024.0 * 1024.0);
             if (working_set_mb <= static_cast<double>(heap_budget_mb) / 8.0) {
                 break;

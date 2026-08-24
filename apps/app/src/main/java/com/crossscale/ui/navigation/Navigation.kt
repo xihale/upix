@@ -26,11 +26,13 @@ import com.crossscale.removeQueuedBatch
 import com.crossscale.restoreBackup
 import com.crossscale.startProcessing
 import com.crossscale.ui.input.rememberInputSelection
+import com.crossscale.ui.components.SecondaryScreenScaffold
 import com.crossscale.ui.screens.ConnectionScreen
 import com.crossscale.ui.screens.HelpScreen
 import com.crossscale.ui.screens.HomeScreen
 import com.crossscale.ui.screens.LogsScreen
 import com.crossscale.ui.screens.ModelsScreen
+import com.crossscale.ui.screens.SettingsDetail
 import com.crossscale.ui.screens.SettingsScreen
 import com.crossscale.ui.theme.NavEnterTransition
 import com.crossscale.ui.theme.NavExitTransition
@@ -239,6 +241,9 @@ fun CrossScaleNavigation(
             }
         }
         composable(AppScreen.Settings.route) {
+            // medium+ 双栏 detail pane 直接嵌入子页：在此收集所需状态。
+            val modelsUiState by modelsViewModel.uiState.collectAsStateWithLifecycle()
+            val logs by logRepository.logs.collectAsStateWithLifecycle()
             DestinationContainer {
                 SettingsScreen(
                     selectedModelName = mainUiState.selectedModel?.name,
@@ -255,13 +260,42 @@ fun CrossScaleNavigation(
                     onStreamEncryptedChange = { enabled ->
                         appSettings.setStreamEncrypted(enabled)
                         streamEncryptedState.value = enabled
+                    },
+                    detailPaneContent = { detail ->
+                        when (detail) {
+                            SettingsDetail.MODELS -> ModelsScreen(
+                                library = mainUiState.library,
+                                phoneModelNames = mainUiState.models.map { it.name }.toSet(),
+                                onRefreshModels = mainViewModel::refreshModels,
+                                onImportModels = inputSelection::importModels,
+                                onDeleteModel = mainViewModel::deleteModel,
+                                modelDirectoryPath = mainUiState.modelDirectoryPath,
+                                uploadingToPc = mainUiState.uploadingToPc,
+                                downloadingFromPc = mainUiState.downloadingFromPc,
+                                onUploadToPc = mainViewModel::uploadModelToPc,
+                                onDownloadFromPc = mainViewModel::downloadModelFromPc,
+                                remoteUiState = modelsUiState,
+                                onRefreshRemoteModels = modelsViewModel::refreshRemoteModels,
+                                onDownloadRemoteModel = modelsViewModel::downloadRemoteModel,
+                                onDismissDownloadError = modelsViewModel::dismissDownloadError,
+                                onCancelDownload = modelsViewModel::cancelDownload
+                            )
+                            SettingsDetail.LOGS -> LogsScreen(
+                                logs = logs,
+                                onClearLogs = logRepository::clear
+                            )
+                            SettingsDetail.HELP -> HelpScreen()
+                        }
                     }
                 )
             }
         }
         composable(AppScreen.SettingsModels.route) {
             val modelsUiState by modelsViewModel.uiState.collectAsStateWithLifecycle()
-            DestinationContainer {
+            SecondaryScreenScaffold(
+                titleRes = AppScreen.SettingsModels.titleRes,
+                onBack = { navController.popBackStack() }
+            ) {
                 ModelsScreen(
                     library = mainUiState.library,
                     phoneModelNames = mainUiState.models.map { it.name }.toSet(),
@@ -283,7 +317,10 @@ fun CrossScaleNavigation(
         }
         composable(AppScreen.SettingsLogs.route) {
             val logs by logRepository.logs.collectAsStateWithLifecycle()
-            DestinationContainer {
+            SecondaryScreenScaffold(
+                titleRes = AppScreen.SettingsLogs.titleRes,
+                onBack = { navController.popBackStack() }
+            ) {
                 LogsScreen(
                     logs = logs,
                     onClearLogs = logRepository::clear
@@ -291,7 +328,10 @@ fun CrossScaleNavigation(
             }
         }
         composable(AppScreen.Help.route) {
-            DestinationContainer {
+            SecondaryScreenScaffold(
+                titleRes = AppScreen.Help.titleRes,
+                onBack = { navController.popBackStack() }
+            ) {
                 HelpScreen()
             }
         }

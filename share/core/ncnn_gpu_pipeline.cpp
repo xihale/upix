@@ -51,9 +51,11 @@ size_t full_output_gpu_bytes(size_t out_width, size_t out_height, int channels,
 
 // Per-tile inference working set: input tile + fp16 feature maps (~64ch,
 // ~16 live blobs in light mode), times the in-flight batch. Rough, on
-// purpose — the runtime fallback ladder catches underestimates.
-size_t tile_working_set_bytes(const TileConfig& config, int channels) {
-    const double t = static_cast<double>(config.tile_size) + 2 * std::max(0, config.overlap);
+// purpose — the runtime fallback ladder catches underestimates. For
+// pre-padding models the net consumes (tile + 2*prepad)², not tile².
+size_t tile_working_set_bytes(const TileConfig& config, int channels, int prepadding) {
+    const double t = static_cast<double>(config.tile_size) + 2 * std::max(0, config.overlap) +
+                     2 * std::max(0, prepadding);
     const double batch = std::max(1, config.batch_size);
     return static_cast<size_t>(t * t * 64 * 2 * 16 * batch + t * t * channels * 2 * batch);
 }
@@ -117,6 +119,14 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             int pad_bottom = 0;
             int tile_x = 0;
             int tile_y = 0;
+            // Net input rect (blend-space tile grown by model_prepadding_ on
+            // every side): what actually goes into the model. Its internal
+            // border crops shrink the output back to in_w x in_h, so every
+            // blend / shape check below keeps using the fields above.
+            int net_in_w = 0;
+            int net_in_h = 0;
+            int net_tile_x = 0;
+            int net_tile_y = 0;
         };
 
         struct QueueTaskState {
@@ -163,6 +173,16 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             info.in_h = tile_in_h;
             info.tile_x = rx - info.pad_left;
             info.tile_y = ry - info.pad_top;
+            // Pre-padding models: the net needs a replicate-border margin.
+            // Growing the crop rect into real neighboring pixels provides it
+            // in the interior; the shader clamps (replicates) at the image
+            // border. The 2*prepad the internal crops remove brings the
+            // output back to in_w*scale, so blend math is unaffected.
+            const int prepad = model_prepadding_;
+            info.net_in_w = tile_in_w + 2 * prepad;
+            info.net_in_h = tile_in_h + 2 * prepad;
+            info.net_tile_x = info.tile_x - prepad;
+            info.net_tile_y = info.tile_y - prepad;
             return info;
         };
 
@@ -216,7 +236,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             total_need_bytes +=
                 full_output_gpu_bytes(states[i].out_width, states[i].out_height, task.channels, true) +
                 static_cast<size_t>(task.input_width) * task.input_height * task.channels +
-                tile_working_set_bytes(task.config, task.channels);
+                tile_working_set_bytes(task.config, task.channels, model_prepadding_);
         }
         if (auto oom = check_gpu_memory_budget(*this, total_need_bytes, "u8 queue pipeline")) {
             return std::unexpected(*oom);
@@ -346,6 +366,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             }
 
             if (out_gpu.w != tile_out_full_w || out_gpu.h != tile_out_full_h || out_gpu.c != channels) {
+                if (auto oom = empty_gpu_output_error(out_gpu.w, out_gpu.h, out_gpu.c)) {
+                    return std::unexpected(*oom);
+                }
                 return std::unexpected(EngineError{209, "Vulkan output shape mismatch (got " + std::to_string(out_gpu.w) + "x" + std::to_string(out_gpu.h) + "x" + std::to_string(out_gpu.c) + ", want " + std::to_string(tile_out_full_w) + "x" + std::to_string(tile_out_full_h) + "x" + std::to_string(channels) + ")"});
             }
 
@@ -382,7 +405,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         bool need_init_submit = true;
         std::vector<int> submitted_tiles(states.size(), 0);
         std::vector<ncnn::VkMat> pre_bindings(2);
-        std::vector<ncnn::vk_constant_type> pre_constants(8);
+        std::vector<ncnn::vk_constant_type> pre_constants(9);
         std::vector<ncnn::VkMat> batch_output_keepalive;
         batch_output_keepalive.reserve(submit_budget);
         std::vector<std::pair<TileInputKey, ncnn::VkMat>> inflight_tile_inputs;
@@ -459,7 +482,8 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                         return std::unexpected(EngineError{206, "Invalid tile dimensions"});
                     }
 
-                    auto pooled_input = acquire_tile_input(tile_in_w, tile_in_h, state.task->channels);
+                    // Net input: blend-space tile grown by model_prepadding_.
+                    auto pooled_input = acquire_tile_input(pad_info.net_in_w, pad_info.net_in_h, state.task->channels);
                     ncnn::VkMat in_gpu_chw = std::move(pooled_input.second);
 
                     pre_bindings[0] = state.in_gpu_full;
@@ -468,15 +492,16 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                     pre_constants[0].i = state.task->input_width;
                     pre_constants[1].i = state.task->input_height;
                     pre_constants[2].i = state.task->channels;
-                    pre_constants[3].i = pad_info.tile_x;
-                    pre_constants[4].i = pad_info.tile_y;
-                    pre_constants[5].i = tile_in_w;
-                    pre_constants[6].i = tile_in_h;
+                    pre_constants[3].i = pad_info.net_tile_x;
+                    pre_constants[4].i = pad_info.net_tile_y;
+                    pre_constants[5].i = pad_info.net_in_w;
+                    pre_constants[6].i = pad_info.net_in_h;
                     pre_constants[7].i = static_cast<int>(in_gpu_chw.cstep);
+                    pre_constants[8].i = (model_prepadding_ > 0) ? 1 : 0;  // border replicate
 
                     ncnn::VkMat pre_dispatcher;
-                    pre_dispatcher.w = tile_in_w;
-                    pre_dispatcher.h = tile_in_h;
+                    pre_dispatcher.w = pad_info.net_in_w;
+                    pre_dispatcher.h = pad_info.net_in_h;
                     pre_dispatcher.c = state.task->channels;
                     cmd.record_pipeline(preproc_hwc_crop_u8_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
 
@@ -675,7 +700,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 *this,
                 full_output_gpu_bytes(out_width, out_height, channels, false) +
                     static_cast<size_t>(input_width) * input_height * channels * 4 +
-                    tile_working_set_bytes(config, channels),
+                    tile_working_set_bytes(config, channels, model_prepadding_),
                 "float tile pipeline")) {
             return std::unexpected(*oom);
         }
@@ -739,6 +764,14 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             int pad_bottom = 0;
             int tile_x = 0;
             int tile_y = 0;
+            // Net input rect (blend-space tile grown by model_prepadding_ on
+            // every side): what actually goes into the model. Its internal
+            // border crops shrink the output back to in_w x in_h, so every
+            // blend / shape check below keeps using the fields above.
+            int net_in_w = 0;
+            int net_in_h = 0;
+            int net_tile_x = 0;
+            int net_tile_y = 0;
         };
 
         const int pad = std::max(0, config.overlap);
@@ -771,6 +804,16 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             info.in_h = tile_in_h;
             info.tile_x = rx - info.pad_left;
             info.tile_y = ry - info.pad_top;
+            // Pre-padding models: the net needs a replicate-border margin.
+            // Growing the crop rect into real neighboring pixels provides it
+            // in the interior; the shader clamps (replicates) at the image
+            // border. The 2*prepad the internal crops remove brings the
+            // output back to in_w*scale, so blend math is unaffected.
+            const int prepad = model_prepadding_;
+            info.net_in_w = tile_in_w + 2 * prepad;
+            info.net_in_h = tile_in_h + 2 * prepad;
+            info.net_tile_x = info.tile_x - prepad;
+            info.net_tile_y = info.tile_y - prepad;
             return info;
         };
 
@@ -849,6 +892,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             }
 
             if (out_gpu.w != tile_out_full_w || out_gpu.h != tile_out_full_h || out_gpu.c != channels) {
+                if (auto oom = empty_gpu_output_error(out_gpu.w, out_gpu.h, out_gpu.c)) {
+                    return std::unexpected(*oom);
+                }
                 return std::unexpected(EngineError{209, "Vulkan output shape mismatch (got " + std::to_string(out_gpu.w) + "x" + std::to_string(out_gpu.h) + "x" + std::to_string(out_gpu.c) + ", want " + std::to_string(tile_out_full_w) + "x" + std::to_string(tile_out_full_h) + "x" + std::to_string(channels) + ")"});
             }
 
@@ -935,26 +981,28 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                             return std::unexpected(EngineError{206, "Invalid tile dimensions"});
                         }
 
+                        // Net input: blend-space tile grown by model_prepadding_.
                         ncnn::VkMat in_gpu_chw;
-                        in_gpu_chw.create(tile_in_w, tile_in_h, channels, in_elemsize, 1, blob_vkallocator);
+                        in_gpu_chw.create(pad_info.net_in_w, pad_info.net_in_h, channels, in_elemsize, 1, blob_vkallocator);
 
                         std::vector<ncnn::VkMat> pre_bindings(2);
                         pre_bindings[0] = in_gpu_full;
                         pre_bindings[1] = in_gpu_chw;
 
-                        std::vector<ncnn::vk_constant_type> pre_constants(8);
+                        std::vector<ncnn::vk_constant_type> pre_constants(9);
                         pre_constants[0].i = input_width;
                         pre_constants[1].i = input_height;
                         pre_constants[2].i = channels;
-                        pre_constants[3].i = pad_info.tile_x;
-                        pre_constants[4].i = pad_info.tile_y;
-                        pre_constants[5].i = tile_in_w;
-                        pre_constants[6].i = tile_in_h;
+                        pre_constants[3].i = pad_info.net_tile_x;
+                        pre_constants[4].i = pad_info.net_tile_y;
+                        pre_constants[5].i = pad_info.net_in_w;
+                        pre_constants[6].i = pad_info.net_in_h;
                         pre_constants[7].i = static_cast<int>(in_gpu_chw.cstep);
+                        pre_constants[8].i = (model_prepadding_ > 0) ? 1 : 0;  // border replicate
 
                         ncnn::VkMat pre_dispatcher;
-                        pre_dispatcher.w = tile_in_w;
-                        pre_dispatcher.h = tile_in_h;
+                        pre_dispatcher.w = pad_info.net_in_w;
+                        pre_dispatcher.h = pad_info.net_in_h;
                         pre_dispatcher.c = channels;
                         cmd.record_pipeline(preproc_hwc_crop_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
 
@@ -1012,17 +1060,21 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                         return std::nullopt;
                     }
 
-                    std::vector<float> tile_input(tile_in_total);
-                    for (int y = 0; y < tile_in_h; ++y) {
-                        int src_y = pad_info.tile_y + y;
-                        src_y = std::abs(src_y);
-                        src_y = (input_height - 1) - std::abs(src_y - (input_height - 1));
-                        for (int x = 0; x < tile_in_w; ++x) {
-                            int src_x = pad_info.tile_x + x;
-                            src_x = std::abs(src_x);
-                            src_x = (input_width - 1) - std::abs(src_x - (input_width - 1));
+                    // Net input: blend-space tile grown by model_prepadding_,
+                    // replicate (clamp) at the image border like the GPU
+                    // crop shader; mirror everywhere else, as before.
+                    const bool replicate = model_prepadding_ > 0;
+                    std::vector<float> tile_input(static_cast<size_t>(pad_info.net_in_w) * pad_info.net_in_h * channels);
+                    for (int y = 0; y < pad_info.net_in_h; ++y) {
+                        int src_y = pad_info.net_tile_y + y;
+                        src_y = replicate ? std::clamp(src_y, 0, input_height - 1)
+                                          : (input_height - 1) - std::abs(std::abs(src_y) - (input_height - 1));
+                        for (int x = 0; x < pad_info.net_in_w; ++x) {
+                            int src_x = pad_info.net_tile_x + x;
+                            src_x = replicate ? std::clamp(src_x, 0, input_width - 1)
+                                              : (input_width - 1) - std::abs(std::abs(src_x) - (input_width - 1));
                             const size_t src_idx = (static_cast<size_t>(src_y) * input_width + src_x) * channels;
-                            const size_t dst_idx = (static_cast<size_t>(y) * tile_in_w + x) * channels;
+                            const size_t dst_idx = (static_cast<size_t>(y) * pad_info.net_in_w + x) * channels;
                             std::memcpy(
                                 tile_input.data() + dst_idx,
                                 input_data + src_idx,
@@ -1060,28 +1112,31 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                         return std::unexpected(EngineError{206, "Invalid tile dimensions"});
                     }
 
-                    ncnn::Mat in_cpu(static_cast<int>(tile_in_total),
+                    // Net input: blend-space tile grown by model_prepadding_.
+                    const size_t net_in_total =
+                        static_cast<size_t>(pad_info.net_in_w) * pad_info.net_in_h * channels;
+                    ncnn::Mat in_cpu(static_cast<int>(net_in_total),
                                      current_batch->input_buffers[idx].data(),
                                      4u);
                     ncnn::VkMat in_gpu_hwc;
                     cmd.record_clone(in_cpu, in_gpu_hwc, opt);
 
                     ncnn::VkMat in_gpu_chw;
-                    in_gpu_chw.create(tile_in_w, tile_in_h, channels, in_elemsize, 1, blob_vkallocator);
+                    in_gpu_chw.create(pad_info.net_in_w, pad_info.net_in_h, channels, in_elemsize, 1, blob_vkallocator);
 
                     std::vector<ncnn::VkMat> pre_bindings(2);
                     pre_bindings[0] = in_gpu_hwc;
                     pre_bindings[1] = in_gpu_chw;
 
                     std::vector<ncnn::vk_constant_type> pre_constants(4);
-                    pre_constants[0].i = tile_in_w;
-                    pre_constants[1].i = tile_in_h;
+                    pre_constants[0].i = pad_info.net_in_w;
+                    pre_constants[1].i = pad_info.net_in_h;
                     pre_constants[2].i = channels;
                     pre_constants[3].i = static_cast<int>(in_gpu_chw.cstep);
 
                     ncnn::VkMat pre_dispatcher;
-                    pre_dispatcher.w = tile_in_w;
-                    pre_dispatcher.h = tile_in_h;
+                    pre_dispatcher.w = pad_info.net_in_w;
+                    pre_dispatcher.h = pad_info.net_in_h;
                     pre_dispatcher.c = channels;
                     cmd.record_pipeline(preproc_hwc_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
                     auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, batch_keepalive,
@@ -1200,7 +1255,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         if (auto oom = check_gpu_memory_budget(
                 *this,
                 full_output_gpu_bytes(out_width, out_height, channels, true) +
-                    tile_working_set_bytes(config, channels),
+                    tile_working_set_bytes(config, channels, model_prepadding_),
                 "u8 tile pipeline")) {
             return std::unexpected(*oom);
         }
@@ -1263,6 +1318,14 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             int pad_bottom = 0;
             int tile_x = 0;
             int tile_y = 0;
+            // Net input rect (blend-space tile grown by model_prepadding_ on
+            // every side): what actually goes into the model. Its internal
+            // border crops shrink the output back to in_w x in_h, so every
+            // blend / shape check below keeps using the fields above.
+            int net_in_w = 0;
+            int net_in_h = 0;
+            int net_tile_x = 0;
+            int net_tile_y = 0;
         };
 
         const int pad = std::max(0, config.overlap);
@@ -1295,6 +1358,16 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             info.in_h = tile_in_h;
             info.tile_x = rx - info.pad_left;
             info.tile_y = ry - info.pad_top;
+            // Pre-padding models: the net needs a replicate-border margin.
+            // Growing the crop rect into real neighboring pixels provides it
+            // in the interior; the shader clamps (replicates) at the image
+            // border. The 2*prepad the internal crops remove brings the
+            // output back to in_w*scale, so blend math is unaffected.
+            const int prepad = model_prepadding_;
+            info.net_in_w = tile_in_w + 2 * prepad;
+            info.net_in_h = tile_in_h + 2 * prepad;
+            info.net_tile_x = info.tile_x - prepad;
+            info.net_tile_y = info.tile_y - prepad;
             return info;
         };
 
@@ -1373,6 +1446,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             }
 
             if (out_gpu.w != tile_out_full_w || out_gpu.h != tile_out_full_h || out_gpu.c != channels) {
+                if (auto oom = empty_gpu_output_error(out_gpu.w, out_gpu.h, out_gpu.c)) {
+                    return std::unexpected(*oom);
+                }
                 return std::unexpected(EngineError{209, "Vulkan output shape mismatch (got " + std::to_string(out_gpu.w) + "x" + std::to_string(out_gpu.h) + "x" + std::to_string(out_gpu.c) + ", want " + std::to_string(tile_out_full_w) + "x" + std::to_string(tile_out_full_h) + "x" + std::to_string(channels) + ")"});
             }
 
@@ -1494,26 +1570,28 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                             return std::unexpected(EngineError{206, "Invalid tile dimensions"});
                         }
 
+                        // Net input: blend-space tile grown by model_prepadding_.
                         ncnn::VkMat in_gpu_chw;
-                        in_gpu_chw.create(tile_in_w, tile_in_h, channels, in_elemsize, 1, blob_vkallocator);
+                        in_gpu_chw.create(pad_info.net_in_w, pad_info.net_in_h, channels, in_elemsize, 1, blob_vkallocator);
 
                         std::vector<ncnn::VkMat> pre_bindings(2);
                         pre_bindings[0] = in_gpu_full;
                         pre_bindings[1] = in_gpu_chw;
 
-                        std::vector<ncnn::vk_constant_type> pre_constants(8);
+                        std::vector<ncnn::vk_constant_type> pre_constants(9);
                         pre_constants[0].i = input_width;
                         pre_constants[1].i = input_height;
                         pre_constants[2].i = channels;
-                        pre_constants[3].i = pad_info.tile_x;
-                        pre_constants[4].i = pad_info.tile_y;
-                        pre_constants[5].i = tile_in_w;
-                        pre_constants[6].i = tile_in_h;
+                        pre_constants[3].i = pad_info.net_tile_x;
+                        pre_constants[4].i = pad_info.net_tile_y;
+                        pre_constants[5].i = pad_info.net_in_w;
+                        pre_constants[6].i = pad_info.net_in_h;
                         pre_constants[7].i = static_cast<int>(in_gpu_chw.cstep);
+                        pre_constants[8].i = (model_prepadding_ > 0) ? 1 : 0;  // border replicate
 
                         ncnn::VkMat pre_dispatcher;
-                        pre_dispatcher.w = tile_in_w;
-                        pre_dispatcher.h = tile_in_h;
+                        pre_dispatcher.w = pad_info.net_in_w;
+                        pre_dispatcher.h = pad_info.net_in_h;
                         pre_dispatcher.c = channels;
                         cmd.record_pipeline(preproc_hwc_crop_u8_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
 
@@ -1592,17 +1670,21 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                         return std::nullopt;
                     }
 
-                    std::vector<uint8_t> tile_input(tile_in_total);
-                    for (int y = 0; y < tile_in_h; ++y) {
-                        int src_y = pad_info.tile_y + y;
-                        src_y = std::abs(src_y);
-                        src_y = (input_height - 1) - std::abs(src_y - (input_height - 1));
-                        for (int x = 0; x < tile_in_w; ++x) {
-                            int src_x = pad_info.tile_x + x;
-                            src_x = std::abs(src_x);
-                            src_x = (input_width - 1) - std::abs(src_x - (input_width - 1));
+                    // Net input: blend-space tile grown by model_prepadding_,
+                    // replicate (clamp) at the image border like the GPU
+                    // crop shader; mirror everywhere else, as before.
+                    const bool replicate = model_prepadding_ > 0;
+                    std::vector<uint8_t> tile_input(static_cast<size_t>(pad_info.net_in_w) * pad_info.net_in_h * channels);
+                    for (int y = 0; y < pad_info.net_in_h; ++y) {
+                        int src_y = pad_info.net_tile_y + y;
+                        src_y = replicate ? std::clamp(src_y, 0, input_height - 1)
+                                          : (input_height - 1) - std::abs(std::abs(src_y) - (input_height - 1));
+                        for (int x = 0; x < pad_info.net_in_w; ++x) {
+                            int src_x = pad_info.net_tile_x + x;
+                            src_x = replicate ? std::clamp(src_x, 0, input_width - 1)
+                                              : (input_width - 1) - std::abs(std::abs(src_x) - (input_width - 1));
                             const size_t src_idx = (static_cast<size_t>(src_y) * input_width + src_x) * channels;
-                            const size_t dst_idx = (static_cast<size_t>(y) * tile_in_w + x) * channels;
+                            const size_t dst_idx = (static_cast<size_t>(y) * pad_info.net_in_w + x) * channels;
                             std::memcpy(
                                 tile_input.data() + dst_idx,
                                 input_data + src_idx,
@@ -1640,28 +1722,31 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                         return std::unexpected(EngineError{206, "Invalid tile dimensions"});
                     }
 
-                    ncnn::Mat in_cpu(static_cast<int>(tile_in_total),
+                    // Net input: blend-space tile grown by model_prepadding_.
+                    const size_t net_in_total =
+                        static_cast<size_t>(pad_info.net_in_w) * pad_info.net_in_h * channels;
+                    ncnn::Mat in_cpu(static_cast<int>(net_in_total),
                                      current_batch->input_buffers[idx].data(),
                                      1u);
                     ncnn::VkMat in_gpu_hwc;
                     cmd.record_clone(in_cpu, in_gpu_hwc, opt);
 
                     ncnn::VkMat in_gpu_chw;
-                    in_gpu_chw.create(tile_in_w, tile_in_h, channels, in_elemsize, 1, blob_vkallocator);
+                    in_gpu_chw.create(pad_info.net_in_w, pad_info.net_in_h, channels, in_elemsize, 1, blob_vkallocator);
 
                     std::vector<ncnn::VkMat> pre_bindings(2);
                     pre_bindings[0] = in_gpu_hwc;
                     pre_bindings[1] = in_gpu_chw;
 
                     std::vector<ncnn::vk_constant_type> pre_constants(4);
-                    pre_constants[0].i = tile_in_w;
-                    pre_constants[1].i = tile_in_h;
+                    pre_constants[0].i = pad_info.net_in_w;
+                    pre_constants[1].i = pad_info.net_in_h;
                     pre_constants[2].i = channels;
                     pre_constants[3].i = static_cast<int>(in_gpu_chw.cstep);
 
                     ncnn::VkMat pre_dispatcher;
-                    pre_dispatcher.w = tile_in_w;
-                    pre_dispatcher.h = tile_in_h;
+                    pre_dispatcher.w = pad_info.net_in_w;
+                    pre_dispatcher.h = pad_info.net_in_h;
                     pre_dispatcher.c = channels;
                     cmd.record_pipeline(preproc_hwc_u8_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
                     auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, batch_keepalive,
@@ -2102,6 +2187,44 @@ auto NCNNEngineImpl::process_vulkan_with_gpu_layout(
     const float* input, float* output, int width, int height,
     int channels, const std::atomic<bool>& cancel_flag)
     -> expected<void, EngineError> {
+    // Whole-image device preflight: the widest live blobs are the body
+    // features (~64ch fp16 at input resolution, a few of them) plus the
+    // fp16 in/out images. On mobile GPUs the driver heap budget reports
+    // the whole unified RAM pool, not what is actually free — clamp it to
+    // host availability so oversized frames fail here with a clean OOM
+    // error (callers fall back) instead of dying mid-graph inside ncnn.
+    {
+        size_t budget_mb = get_device_memory_budget_mb();
+        if (budget_mb > 0) {
+            const char* device_name = vkdev_ ? vkdev_->info.device_name() : nullptr;
+            const std::string_view name_sv = device_name ? device_name : "";
+            const bool mobile = name_sv.find("Adreno") != std::string_view::npos ||
+                                name_sv.find("Mali") != std::string_view::npos ||
+                                name_sv.find("PowerVR") != std::string_view::npos ||
+                                name_sv.find("Imagination") != std::string_view::npos;
+            bool clamped = false;
+            if (mobile) {
+                const size_t host_avail_mb = get_memory_info().second;
+                if (host_avail_mb > 0 && host_avail_mb < budget_mb) {
+                    budget_mb = host_avail_mb;
+                    clamped = true;
+                }
+            }
+            const size_t in_total = static_cast<size_t>(width) * height * channels;
+            const size_t out_total = in_total * scale_factor_ * scale_factor_;
+            const size_t device_need =
+                static_cast<size_t>(width) * height * 64 * 2 * 4 +
+                (in_total + out_total) * 2;
+            if (device_need > budget_mb * 1024 * 1024) {
+                std::ostringstream oss;
+                oss << "out of GPU memory for whole-image Vulkan path: need ~"
+                    << device_need / (1024 * 1024) << "MB, budget " << budget_mb
+                    << "MB" << (clamped ? " (clamped to host availability)" : "");
+                return std::unexpected(EngineError{kErrOutOfMemory, oss.str()});
+            }
+        }
+    }
+
     // Pre-padding models: replicate-pad the frame so the model's internal
     // border crops cancel out. The model then emits exactly width*scale for
     // the ORIGINAL frame, straight into the caller's buffer.
@@ -2240,6 +2363,9 @@ auto NCNNEngineImpl::process_vulkan_with_gpu_layout_run(
         }
 
         if (out_gpu.w != out_width || out_gpu.h != out_height || out_gpu.c != channels) {
+            if (auto oom = empty_gpu_output_error(out_gpu.w, out_gpu.h, out_gpu.c)) {
+                return std::unexpected(*oom);
+            }
             return std::unexpected(EngineError{16, "Vulkan output shape mismatch (got " + std::to_string(out_gpu.w) + "x" + std::to_string(out_gpu.h) + "x" + std::to_string(out_gpu.c) + ", want " + std::to_string(out_width) + "x" + std::to_string(out_height) + "x" + std::to_string(channels) + ")"});
         }
 

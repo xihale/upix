@@ -46,7 +46,7 @@ val Typography = Typography(
     ),
     headlineSmall = TextStyle(
         fontFamily = FontFamily.Default,
-        fontWeight = FontWeight.SemiBold,
+        fontWeight = FontWeight.Normal,
         fontSize = 24.sp,
         lineHeight = 32.sp,
         letterSpacing = 0.sp
@@ -83,15 +83,15 @@ val Typography = Typography(
         fontFamily = FontFamily.Default,
         fontWeight = FontWeight.Normal,
         fontSize = 14.sp,
-        lineHeight = 22.sp,
-        letterSpacing = 0.2.sp
+        lineHeight = 20.sp,
+        letterSpacing = 0.25.sp
     ),
     bodySmall = TextStyle(
         fontFamily = FontFamily.Default,
         fontWeight = FontWeight.Normal,
         fontSize = 12.sp,
-        lineHeight = 18.sp,
-        letterSpacing = 0.2.sp
+        lineHeight = 16.sp,
+        letterSpacing = 0.4.sp
     ),
     labelLarge = TextStyle(
         fontFamily = FontFamily.Default,
@@ -123,6 +123,12 @@ val LogMonoStyle = Typography.bodySmall.copy(fontFamily = FontFamily.Monospace)
  * 配置值等宽样式：文件名 / 路径 / 数字等机器可读取值使用。
  */
 val ValueMono = Typography.titleSmall.copy(fontFamily = FontFamily.Monospace)
+
+/**
+ * 分组小节标题（SectionHeader）：labelLarge 基础上加宽字距，
+ * 收口在主题层，避免组件内联 .sp 偏移。
+ */
+val SectionLabelStyle = Typography.labelLarge.copy(letterSpacing = 1.2.sp)
 
 /**
  * 按文本内容选择等宽或系统字体：等宽字体无 CJK 字形，

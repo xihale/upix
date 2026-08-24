@@ -8,8 +8,6 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.res.stringResource
-import androidx.navigation.NavDestination
-import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import com.crossscale.ui.navigation.AppScreen
@@ -52,24 +50,5 @@ fun BottomNavigationBar(navController: NavController) {
                 }
             )
         }
-    }
-}
-
-private fun isScreenSelected(currentDestination: NavDestination?, screen: AppScreen): Boolean {
-    if (currentDestination == null) {
-        return false
-    }
-    if (currentDestination.hierarchy.any { destination -> destination.route == screen.route }) {
-        return true
-    }
-    return when (screen) {
-        AppScreen.Settings -> {
-            currentDestination.hierarchy.any { destination ->
-                val route = destination.route ?: return@any false
-                route == AppScreen.Help.route || route.startsWith("${AppScreen.Settings.route}/")
-            }
-        }
-
-        else -> false
     }
 }

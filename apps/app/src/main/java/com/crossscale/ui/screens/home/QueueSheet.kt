@@ -345,7 +345,7 @@ private fun QueueItemCard(
                     )
                 },
                 supportingContent = {
-                    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                    Column {
                         Text(
                             text = stringResource(R.string.queue_allocation_label, allocationSummary),
                             style = MaterialTheme.typography.labelSmall,
@@ -441,7 +441,8 @@ private fun QueueItemAction(
     onClick: () -> Unit,
     enabled: Boolean = true
 ) {
-    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.size(32.dp)) {
+    // 不覆盖尺寸：IconButton 默认保证 48dp 最小触控目标（MD3 无障碍要求）。
+    IconButton(onClick = onClick, enabled = enabled) {
         Icon(
             imageVector = iconVector,
             contentDescription = stringResource(contentDescriptionRes),
@@ -483,7 +484,7 @@ private fun QueueStatusPill(status: PersistedQueueItemStatus) {
         Text(
             text = stringResource(labelRes),
             style = MaterialTheme.typography.labelSmall,
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 3.dp)
+            modifier = Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.xs)
         )
     }
 }

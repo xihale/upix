@@ -17,6 +17,8 @@
     <string name="common_status_processing">处理中</string>
     <string name="common_status_completed">已完成</string>
     <string name="common_status_failed">失败</string>
+    <string name="cd_back">返回</string>
+    <string name="settings_detail_empty">从左侧选择要查看的内容</string>
 
     <!-- Bottom navigation / destinations -->
     <string name="nav_home">主页</string>

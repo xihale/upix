@@ -16,8 +16,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.unit.dp
 import com.crossscale.R
+import com.crossscale.ui.theme.Spacing
 
 @Composable
 fun ConnectionDialog(
@@ -38,7 +38,7 @@ fun ConnectionDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.connection_title)) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
                 OutlinedTextField(
                     value = host,
                     onValueChange = {

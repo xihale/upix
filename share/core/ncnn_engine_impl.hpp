@@ -128,7 +128,14 @@ private:
     // Fixed replicate-border prepadding required by the loaded model
     // (Real-CUGAN "se" family crops its receptive-field border internally;
     // callers must pad input so out == in*scale still holds). 0 = none.
+    // The GPU tile pipelines honor it by growing each tile's net-input rect
+    // by this margin (replicate at the image border).
     int model_prepadding_ = 0;
+    // True when the param contains Crop layers, even at scales where no known
+    // prepadding margin exists — only those margin-less models are barred
+    // from the GPU tile pipelines (the internal crops would silently eat
+    // tile borders with no prepadding to cancel them).
+    bool model_has_border_crop_ = false;
     // Per-engine CPU inference thread cap; 0 = ncnn default (all logical CPUs).
     int inference_threads_ = 0;
 };

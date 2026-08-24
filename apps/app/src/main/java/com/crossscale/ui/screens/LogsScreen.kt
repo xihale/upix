@@ -34,6 +34,7 @@ import com.crossscale.R
 import com.crossscale.data.model.LogEntry
 import com.crossscale.data.model.LogLevel
 import com.crossscale.ui.components.LogViewer
+import com.crossscale.ui.theme.LocalScreenMargin
 import com.crossscale.ui.theme.Spacing
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -77,19 +78,14 @@ fun LogsScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = Spacing.xl)
+            .padding(horizontal = LocalScreenMargin.current)
             .padding(top = Spacing.md, bottom = Spacing.md),
         verticalArrangement = Arrangement.spacedBy(Spacing.md)
     ) {
         Row(
             modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+            horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
         ) {
-            Text(
-                text = stringResource(R.string.common_logs),
-                style = MaterialTheme.typography.titleLarge
-            )
             OutlinedButton(onClick = { showClearConfirm = true }) {
                 Text(stringResource(R.string.logs_clear))
             }

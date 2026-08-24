@@ -21,45 +21,51 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 
 /**
- * 统一动效规范（克制、可预期）：
- * - 时长一律 <300ms；进入/退出统一 ease-out（EmphasizedEasing）。
+ * 统一动效规范（MD3 转场 token）：
+ * - 转场按 MD3 规范：进入 emphasized-decelerate（400ms）、退出
+ *   emphasized-accelerate（200ms），曲线取官方值；组件内 spring 动效
+ *   交给 Expressive 主题的 MotionScheme。
  * - 禁止 ease-in 进入、禁止 scale(0) 起始；只动 transform/alpha。
  * - 已知限制：Compose 无 prefers-reduced-motion 等价系统 API，全局降级暂不可做。
  */
 
-/** 统一 ease-out 曲线。 */
-val EmphasizedEasing = CubicBezierEasing(0.23f, 1f, 0.32f, 1f)
+/** MD3 emphasized decelerate（进入屏幕）。 */
+val EmphasizedDecelerateEasing = CubicBezierEasing(0.05f, 0.7f, 0.1f, 1f)
+
+/** MD3 emphasized accelerate（退出屏幕）。 */
+val EmphasizedAccelerateEasing = CubicBezierEasing(0.3f, 0f, 0.8f, 0.15f)
 
 const val PressTween = 100
 const val EnterTween = 140
 const val ExpandTween = 180
 
-/** NavHost 目的地退场 fade（160ms），稍留时长避免生硬截断感。 */
-const val NavExitTween = 160
+/** MD3 转场时长：进入 400ms（decelerate）、退出 200ms（accelerate）。 */
+const val NavEnterTween = 400
+const val NavExitTween = 200
 
-/** 按压缩放（120ms）。 */
-val PressMotionSpec = tween<Float>(PressTween, easing = EmphasizedEasing)
+/** 按压缩放（100ms，decelerate）。 */
+val PressMotionSpec = tween<Float>(PressTween, easing = EmphasizedDecelerateEasing)
 
 /** 进入/退出 alpha（200ms）。 */
-val EnterMotionSpec = tween<Float>(EnterTween, easing = EmphasizedEasing)
+val EnterMotionSpec = tween<Float>(EnterTween, easing = EmphasizedDecelerateEasing)
 
 /** 折叠区/出现消失的高度展开（250ms）。 */
-val ExpandSizeSpec = tween<IntSize>(ExpandTween, easing = EmphasizedEasing)
+val ExpandSizeSpec = tween<IntSize>(ExpandTween, easing = EmphasizedDecelerateEasing)
 
 /** AnimatedVisibility 进入/退出的尺寸 spec（200ms，与 fade 同步）。 */
-val EnterSizeSpec = tween<IntSize>(EnterTween, easing = EmphasizedEasing)
+val EnterSizeSpec = tween<IntSize>(EnterTween, easing = EmphasizedDecelerateEasing)
 
-/** NavHost 目的地进入：纯 fade（90ms），轻快不做位移。 */
-val NavEnterTransition: EnterTransition = fadeIn(tween(90, easing = EmphasizedEasing))
+/** NavHost 目的地进入：纯 fade（400ms emphasized-decelerate），不做位移。 */
+val NavEnterTransition: EnterTransition = fadeIn(tween(NavEnterTween, easing = EmphasizedDecelerateEasing))
 
-/** NavHost 目的地退出：纯快速 fade（90ms），不做位移，降低转场期间双屏重绘成本。 */
-val NavExitTransition: ExitTransition = fadeOut(tween(NavExitTween))
+/** NavHost 目的地退出：纯 fade（200ms emphasized-accelerate），不做位移。 */
+val NavExitTransition: ExitTransition = fadeOut(tween(NavExitTween, easing = EmphasizedAccelerateEasing))
 
-/** 返回键进入（pop）：纯 fade（90ms）。 */
-val NavPopEnterTransition: EnterTransition = fadeIn(tween(90, easing = EmphasizedEasing))
+/** 返回键进入（pop）：与正向进入一致（400ms decelerate）。 */
+val NavPopEnterTransition: EnterTransition = NavEnterTransition
 
-/** 返回键退出（pop）：纯 fade（120ms）。 */
-val NavPopExitTransition: ExitTransition = fadeOut(tween(120, easing = EmphasizedEasing))
+/** 返回键退出（pop）：与正向退出一致（200ms accelerate）。 */
+val NavPopExitTransition: ExitTransition = NavExitTransition
 
 /**
  * 给定 interactionSource，按下时缩到 0.97（graphicsLayer，仅 transform）。

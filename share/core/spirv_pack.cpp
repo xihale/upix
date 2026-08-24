@@ -151,11 +151,27 @@ bool copy(uint32_t kind, uint32_t id, uint32_t opt_key, std::vector<uint32_t>& o
     return true;
 }
 
+namespace {
+
+// Misses are engine bugs (dump/run key skew) and used to fail silently with
+// only ncnn's downstream "binding_count not match" + SIGSEGV as symptoms —
+// log the key so the culprit is identifiable in the field.
+std::string key_hex(uint32_t key) {
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "0x%x", key);
+    return buf;
+}
+
+} // namespace
+
 bool load_or_compile_custom(detail::CustomShader id, const char* src, const ncnn::Option& opt,
                             std::vector<uint32_t>& out) {
-    if (copy_custom(id, option_key(opt), out)) {
+    const uint32_t key = option_key(opt);
+    if (copy_custom(id, key, out)) {
         return true;
     }
+    LOG_WARNING("Engine", "SPIR-V pack miss: custom=" +
+        std::to_string(static_cast<uint32_t>(id)) + " key=" + key_hex(key));
     if (ncnn::compile_spirv_module(src, opt, out) != 0) {
         return false;
     }
@@ -163,9 +179,12 @@ bool load_or_compile_custom(detail::CustomShader id, const char* src, const ncnn
 }
 
 int lookup_layer(int shader_type_index, const ncnn::Option& opt, std::vector<uint32_t>& spirv) {
-    if (copy(kKindLayer, static_cast<uint32_t>(shader_type_index), option_key(opt), spirv)) {
+    const uint32_t key = option_key(opt);
+    if (copy(kKindLayer, static_cast<uint32_t>(shader_type_index), key, spirv)) {
         return 0;
     }
+    LOG_WARNING("Engine", "SPIR-V pack miss: layer=" +
+        std::to_string(shader_type_index) + " key=" + key_hex(key));
     return -1;
 }
 

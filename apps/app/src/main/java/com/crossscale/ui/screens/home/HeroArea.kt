@@ -36,6 +36,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -370,26 +371,26 @@ private fun StageThumbnail(
                 )
             }
         }
-        Surface(
+        // 视觉保持 22dp 圆标，触控目标经 minimumInteractiveComponentSize
+        // 扩到 48dp（MD3 最小触控要求），避免 IconButton size 覆盖压掉命中区。
+        Box(
             modifier = Modifier
                 .align(Alignment.TopEnd)
                 .offset(x = 3.dp, y = (-3).dp)
-                .size(22.dp),
-            shape = CircleShape,
-            color = MaterialTheme.colorScheme.surfaceContainerHighest,
-            contentColor = MaterialTheme.colorScheme.onSurface,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
+                .minimumInteractiveComponentSize()
+                .size(22.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
+                .clickable(onClick = onDelete),
+            contentAlignment = Alignment.Center
         ) {
-            IconButton(
-                onClick = onDelete,
-                modifier = Modifier.size(22.dp)
-            ) {
-                Icon(
-                    imageVector = Icons.Outlined.Close,
-                    contentDescription = stringResource(R.string.hero_thumbnail_remove_cd),
-                    modifier = Modifier.size(13.dp)
-                )
-            }
+            Icon(
+                imageVector = Icons.Outlined.Close,
+                contentDescription = stringResource(R.string.hero_thumbnail_remove_cd),
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(13.dp)
+            )
         }
     }
 }

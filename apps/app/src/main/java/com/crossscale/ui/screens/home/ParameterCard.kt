@@ -125,7 +125,6 @@ internal fun ParameterCard(
                         modifier = Modifier
                             .weight(1f)
                             .padding(start = Spacing.md),
-                        verticalArrangement = Arrangement.spacedBy(1.dp)
                     ) {
                         Text(
                             text = stringResource(R.string.home_model_setting_label),
@@ -210,7 +209,6 @@ internal fun ParameterCard(
                         modifier = Modifier
                             .weight(1f)
                             .padding(start = Spacing.md),
-                        verticalArrangement = Arrangement.spacedBy(1.dp)
                     ) {
                         Text(
                             text = stringResource(R.string.home_output_path_label),
