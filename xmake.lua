@@ -41,12 +41,56 @@ if is_mode("release") and not is_plat("android") then
     add_cxflags("-Werror")
 end
 
+-- Native-ISA tuning (linux desktop only): detect the build host's SIMD
+-- support so we can drop ncnn x86 kernel dispatch variants this CPU could
+-- never execute (shrinks every host binary by several MB), and raise our own
+-- code baseline to match. Resulting binaries assume an AVX2-class CPU
+-- (Haswell 2013+); build redistributable binaries with: xmake f --native_isa=n
+option("native_isa")
+    set_default(true)
+    set_showmenu(true)
+    set_description("Tune desktop builds for the build host's SIMD support")
+option_end()
+
+-- The description scope cannot run processes or read files, so host probing
+-- happens in this rule's on_load, which runs with full API access.
+rule("crossscale.host_isa")
+    on_load(function (target)
+        if not has_config("native_isa") then return end
+        if os.host() ~= "linux" or target:plat() ~= "linux" or target:arch() ~= "x86_64" then return end
+        -- try's return protocol differs between scopes; assign via closure instead.
+        local flags
+        try {
+            function ()
+                flags = os.iorun("grep -m1 '^flags' /proc/cpuinfo")
+            end,
+            catch {
+                function () flags = nil end
+            }
+        }
+        if type(flags) ~= "string" then return end
+        local padded = " " .. flags:gsub("%s+", " ") .. " "
+        local function has(flag)
+            return padded:find(" " .. flag .. " ", 1, true) ~= nil
+        end
+        if has("avx2") and has("fma") then
+            -- x86-64-v3 = AVX2+FMA+F16C+BMI baseline; portable across modern
+            -- CPUs while letting the compiler emit FMA/F16C without pinning.
+            target:add("cxflags", "-march=x86-64-v3")
+        end
+    end)
+rule_end()
+
+-- ncnn package: "auto" lets its install script probe the host CPU and skip
+-- compiling kernel variants it could never dispatch to ("all" = upstream).
+local ncnn_x86_isa = has_config("native_isa") and is_plat("linux") and "auto" or "all"
+
 -- Pin to 20260113: glslang-nihui (a vulkan build dep of ncnn) has no 20260526 release,
 -- so the latest ncnn (20260526) fails to resolve its glslang-nihui dependency.
 -- 20260113 is the newest ncnn version with a matching glslang-nihui release.
 -- Runtime ncnn looks up a frozen SPIR-V pack and does not link glslang.
 -- dump-spirv (glslang-linked ncnn) generates share/core/spirv_pack.bin if missing.
-add_requires("ncnn~runtime 20260113", {configs = {vulkan = true, online_spirv = false}})
+add_requires("ncnn~runtime 20260113", {configs = {vulkan = true, online_spirv = false, x86_isa = ncnn_x86_isa}})
 add_requires("libwebp", "libpng", "libjpeg", "glaze", "libsodium")
 add_requires("libdeflate", {system = not is_plat("android")})
 if is_plat("android") then
@@ -54,7 +98,7 @@ if is_plat("android") then
 end
 
 if not is_plat("android") then
-    add_requires("ncnn~glslang 20260113", {configs = {vulkan = true, online_spirv = true, skip_device_defines = true}})
+    add_requires("ncnn~glslang 20260113", {configs = {vulkan = true, online_spirv = true, skip_device_defines = true, x86_isa = ncnn_x86_isa}})
     add_requires("qr-code-generator-cpp")
     add_requires("cli11")
     add_requires("libcurl")

@@ -16,6 +16,11 @@ package("ncnn")
     add_configs("c_api",         {description = "Build ncnn with C api", default = false, type = "boolean"})
     add_configs("online_spirv",  {description = "Compile SPIR-V online with glslang", default = true, type = "boolean"})
     add_configs("skip_device_defines", {description = "Omit live GpuInfo macros from SPIR-V", default = false, type = "boolean"})
+    -- x86 kernel dispatch variants: "auto" probes the build host's CPU and
+    -- skips compiling variants it could never dispatch to (they are
+    -- runtime-dispatched, so this is dead weight). Falls back to upstream
+    -- defaults when the host cannot be probed, and is a no-op on non-x86.
+    add_configs("x86_isa",      {description = "x86 kernel ISA set (auto = detect build host)", default = "auto", type = "string", values = {"auto", "all"}})
 
     add_configs("simpleomp",     {description = "Enable minimal openmp runtime emulation", default = false, type = "boolean"})
     add_configs("simpleocv",     {description = "Enable minimal opencv structure emulation", default = false, type = "boolean"})
@@ -372,6 +377,29 @@ int compile_spirv_module(int shader_type_index, const Option& opt, std::vector<u
         table.insert(configs, "-DNCNN_VULKAN=" .. (package:config("vulkan") and "ON" or "OFF"))
         table.insert(configs, "-DNCNN_ONLINE_SPIRV=" .. ((package:config("vulkan") and package:config("online_spirv")) and "ON" or "OFF"))
         table.insert(configs, "-DNCNN_SKIP_DEVICE_DEFINES=" .. (package:config("skip_device_defines") and "ON" or "OFF"))
+        if package:config("x86_isa") == "auto" and os.host() == "linux" then
+            -- try's return protocol differs between scopes; assign via closure.
+            local flags
+            try {
+                function ()
+                    flags = os.iorun("grep -m1 '^flags' /proc/cpuinfo")
+                end,
+                catch {
+                    function () flags = nil end
+                }
+            }
+            if type(flags) == "string" then
+                local padded = " " .. flags:gsub("%s+", " ") .. " "
+                local function has(flag)
+                    return padded:find(" " .. flag .. " ", 1, true) ~= nil
+                end
+                local avx512 = has("avx2") and has("fma")
+                        and has("avx512f") and has("avx512cd")
+                        and has("avx512bw") and has("avx512dq") and has("avx512vl")
+                table.insert(configs, "-DNCNN_AVX512=" .. (avx512 and "ON" or "OFF"))
+                table.insert(configs, "-DNCNN_XOP=" .. (has("xop") and "ON" or "OFF"))
+            end
+        end
         table.insert(configs, "-DNCNN_OPENMP=" .. (package:config("openmp") and "ON" or "OFF"))
         table.insert(configs, "-DNCNN_THREADS=" .. (package:config("threads") and "ON" or "OFF"))
         table.insert(configs, "-DNCNN_C_API=" .. (package:config("c_api") and "ON" or "OFF"))

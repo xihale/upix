@@ -4,6 +4,7 @@
 target("crossscale-perf")
     set_kind("static")
     set_default(false)
+    add_rules("crossscale.host_isa")
 
     add_deps("crossscale-core")
     -- gpu-reuse test drives ncnn's public Vulkan API directly (builds its own

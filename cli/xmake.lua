@@ -3,6 +3,7 @@
 -- (or imported locally with `crossscale model import`).
 target("crossscale-cli")
     set_kind("binary")
+    add_rules("crossscale.host_isa")
 
     add_deps("crossscale-core", "crossscale-perf")
     add_packages("ncnn~runtime", "libwebp", "glaze", "qr-code-generator-cpp", "cli11", "libsodium", "libcurl", "openssl", "libzip")
