@@ -190,6 +190,19 @@ Source of truth: `ui/theme/Spacing.kt`. Base grid **4dp**.
 - Touch targets ≥ 48dp: use `IconButton`, or `minimumInteractiveComponentSize()` when the visual element is smaller (see the 22dp delete circle).
 - **Padding/gap values must come from `Spacing.*`.** Raw `.dp` is allowed only for intrinsic component *sizes* (Appendix A list).
 
+> **Amendment (2026-08-24): §3 drift audit — adaptive navigation drawer.** Full sweep of
+> `ui/**` (single/multi-line `.padding(...)`, `spacedBy`, `Spacer`, `PaddingValues`, dp
+> arithmetic) found four raw-dp padding/gap sites, all in `components/AdaptiveNavigation.kt`.
+> Dispositions: the header spacer `16.dp` → `Spacing.lg` (pixel-exact tokenization); the
+> expanded-window drawer-sheet gutter `28.dp` (Column horizontal padding + header top inset)
+> and the `2.dp` vertical spacing between `NavigationDrawerItem` rows stay raw under Appendix A
+> exceptions. Rationale, verified against the published material3 **1.5.0-alpha17** sources:
+> `PermanentDrawerSheet` applies only system-bar `windowInsets` — it supplies no spec gutter or
+> top spacer of its own, so there is nothing to inherit and no double-padding risk; and M3
+> stacks drawer items flush (no default inter-item gap), so the `2.dp` is a deliberate
+> fine-tune of item metrics. Both values are off the 4dp grid; deleting or re-tokenizing them
+> would silently change rendered pixels and needs its own §11 amendment.
+
 ---
 
 ## 4. Shape
@@ -376,7 +389,7 @@ grep -rn "shadowElevation\|defaultElevation\|tonalElevation" apps/app/src/main/j
 
 ## Appendix A — Approved raw-dp component sizes
 
-180dp (empty stage) · 320dp (loaded stage) · 56dp (dock CTA height) · 72dp (thumbnail/action tile cells) · 220–520dp (preview media box bounds) · 22dp visual / 48dp hit target (thumbnail delete circle) · icon sizes 13/16/20/22/24/40 · spinner 20dp(stroke 2)/22dp(stroke 2.5) · 840dp (max content width). Anything else needs an appendix update.
+180dp (empty stage) · 320dp (loaded stage) · 56dp (dock CTA height) · 72dp (thumbnail/action tile cells) · 220–520dp (preview media box bounds) · 22dp visual / 48dp hit target (thumbnail delete circle) · icon sizes 13/16/20/22/24/40 · spinner 20dp(stroke 2)/22dp(stroke 2.5) · 840dp (max content width) · **28dp** (drawer-sheet content gutter + header top inset, expanded-window nav drawer; §3 amendment 2026-08-24) · **2dp** (vertical spacing between `NavigationDrawerItem` rows; §3 amendment 2026-08-24). Anything else needs an appendix update.
 
 ## Appendix B — Composable disposition
 

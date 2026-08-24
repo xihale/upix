@@ -23,6 +23,7 @@ import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavController
 import androidx.navigation.compose.currentBackStackEntryAsState
 import com.crossscale.ui.navigation.AppScreen
+import com.crossscale.ui.theme.Spacing
 
 /**
  * MD3 adaptive 导航：compact 用 NavigationBar（见 [BottomNavigationBar]），
@@ -124,7 +125,7 @@ fun AppNavigationDrawer(
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(Spacing.lg))
                     items.forEach { screen ->
                         val selected = isScreenSelected(currentDestination, screen)
                         val title = stringResource(screen.titleRes)
