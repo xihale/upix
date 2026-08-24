@@ -66,6 +66,7 @@ import com.crossscale.ui.components.RemoteModelsDialog
 import com.crossscale.ui.components.StageProgressOverlay
 import com.crossscale.ui.screens.home.BottomActionDock
 import com.crossscale.ui.screens.home.CheckpointSection
+import com.crossscale.ui.screens.home.DockCtaHeight
 import com.crossscale.ui.screens.home.ImageStage
 import com.crossscale.ui.screens.home.ParameterCard
 import com.crossscale.ui.screens.home.PreviewBottomSheet
