@@ -14,13 +14,11 @@
 
 ---
 
-## 复杂度治理
+## 技术债
 
 | 文档 | 定位 | 何时看 |
 |------|------|--------|
-| [PONYTAIL_AUDIT.md](PONYTAIL_AUDIT.md) | 过度工程审计：26 项的当前状态（21 已闭环 / 5 待办 / 其余保留） | 想知道哪些死代码/投机抽象还在、哪些已清 |
-
----
+| [TECH_DEBT.md](TECH_DEBT.md) | 经核实的简化待办（4 项，按收益排序） | 想找点低风险清理活干的时候 |
 
 ## 性能报告（历史数据快照）
 
@@ -34,12 +32,4 @@
 
 [decisions/](decisions/) 下归档了 8 份设计文档（specs/）与实施计划（plans/），记录已执行/已评估的架构变更。**入口**：[decisions/README.md](decisions/README.md)。
 
-最重要的一份是 [四层架构简化总纲](decisions/specs/2026-07-28-architecture-simplification-design.md)：Layer 1-3 已执行，Layer 4 部分待办（已迁入 PONYTAIL_AUDIT.md）。
-
----
-
-## 其他
-
-| 文档 | 定位 |
-|------|------|
-| [web-dashboard-idea.md](web-dashboard-idea.md) | TUI/Web 监控面板的早期构想笔记（未实现） |
+最重要的一份是 [四层架构简化总纲](decisions/specs/2026-07-28-architecture-simplification-design.md)：Layer 1-3 已执行，Layer 4 部分待办（已迁入 TECH_DEBT.md）。

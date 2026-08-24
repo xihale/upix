@@ -18,7 +18,7 @@
 | Layer 1 | [plans/2026-07-28-layer1-cleanup.md](plans/2026-07-28-layer1-cleanup.md) | ✅ 已执行 | 死代码删除（`ConnectionInfo`/`MSG_IMAGE_TILE`）；`share/xmake.lua` 与 Android `CMakeLists.txt` 改为 glob 自动收集（消除双向漂移） |
 | Layer 2 | [plans/2026-07-28-layer2-file-splitting.md](plans/2026-07-28-layer2-file-splitting.md) | ✅ 已执行 | 4 个巨型文件拆分：`ncnn_engine.cpp` 3892→3 文件、`coordinator.cpp`→3 文件、`ProcessingViewModel.kt` 拆分、`cmd_process.cpp`→8 个 `cmd_*.cpp`。A/B md5 验证零逻辑变更 |
 | Layer 3 | [plans/2026-07-28-layer3-protocol-role-pruning.md](plans/2026-07-28-layer3-protocol-role-pruning.md) | ✅ 已执行 | 删除 CLI `client` 子命令（`cmd_client.cpp`）；订正仍描述已删 stub（`xor_encrypt`/C++ `MDNSDiscovery`）的过时文档 |
-| Layer 4 | [plans/2026-07-28-layer4-abstraction-consolidation.md](plans/2026-07-28-layer4-abstraction-consolidation.md) | ⏳ 部分执行 | §5.1（`expected.hpp`→`std::expected`）与 §5.2（`config.cpp`→glaze）在 plan 编写时已发现是 no-op（早已完成）。**两个真实 Task 未执行**：① `engine_setup` 去重（9 处 create→init→scan→load 序列未合并）；② 9 个死 GPU env 未删（见 [`../PONYTAIL_AUDIT.md`](../PONYTAIL_AUDIT.md) 待办 A） |
+| Layer 4 | [plans/2026-07-28-layer4-abstraction-consolidation.md](plans/2026-07-28-layer4-abstraction-consolidation.md) | ⏳ 部分执行 | §5.1（`expected.hpp`→`std::expected`）与 §5.2（`config.cpp`→glaze）在 plan 编写时已发现是 no-op（早已完成）。**两个真实 Task 未执行**：① `engine_setup` 去重（9 处 create→init→scan→load 序列未合并）；② 9 个死 GPU env 未删（待办 A，已在 Layer 4 §5.2 闭环） |
 
 ---
 
@@ -36,4 +36,4 @@
 
 - **specs/** 是设计文档（"做什么、为什么"），**plans/** 是实施计划（"怎么做、分几步"）。一对 spec+plan 对应一次架构变更。
 - 这些文档记录的是**决策当时的代码状态**，部分行号/文件名已随重构失效。当前代码以 [`../ARCHITECTURE.md`](../ARCHITECTURE.md) 为准。
-- 未执行的待办项（Layer 4 的两个 Task）已迁移到 [`../PONYTAIL_AUDIT.md`](../PONYTAIL_AUDIT.md) 的"待办"区，避免散落。
+- 未执行的待办项（Layer 4 的两个 Task）已迁移到 [TECH_DEBT.md](../TECH_DEBT.md)，避免散落。

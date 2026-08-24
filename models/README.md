@@ -89,3 +89,10 @@ pruned unless `--no-prune`.
 CrossScale automatically infers:
 - Scale factor (2x, 4x, etc., from the `x2`/`x4` filename suffix)
 - Input channels (RGB or Grayscale, from the param file)
+
+## Attribution & Licensing
+
+Bundled models are converted from [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)
+(© Xintao Wang and contributors, BSD 3-Clause License) to ncnn format. The Real-ESRGAN
+license applies to the model weights; see the root [LICENSE](../LICENSE) for the
+CrossScale code license.

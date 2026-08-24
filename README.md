@@ -28,6 +28,15 @@ xmake
 
 The binary will be located at `build/linux/x86_64/release/crossscale-cli` (path may vary by platform).
 
+### Build Android App
+
+```bash
+cd apps
+./gradlew assembleDebug   # or open in Android Studio
+```
+
+The native engine (`libcrossscale-native.so`) is built with xmake by a Gradle task (`xmakeNative` in `apps/app/build.gradle.kts`) that runs before each APK build; see `apps/xmake.lua`.
+
 ## Usage
 
 ### Single Image
@@ -172,8 +181,29 @@ Load with `--config FILE`. CLI flags override the loaded configuration.
 
 ## Development
 
-See `AGENTS.md` for build, test, and lint commands, as well as coding style guidelines.
+See [docs/README.md](docs/README.md) for documentation navigation:
+[ARCHITECTURE.md](docs/ARCHITECTURE.md) is the single source of truth for system layout,
+[TECH_DEBT.md](docs/TECH_DEBT.md) tracks known simplification opportunities.
 
 ## License
 
-[To be added]
+CrossScale is licensed under the [MIT License](LICENSE).
+
+### Third-party components
+
+| Component | License | Notes |
+|-----------|---------|-------|
+| [ncnn](https://github.com/Tencent/ncnn) | BSD 3-Clause | Inference engine (Tencent). Copyright © 2017 Tencent |
+| [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) | BSD 3-Clause | Source of the bundled super-resolution models (converted to ncnn format) |
+| libpng / libjpeg / libwebp | libpng / IJG / BSD 3-Clause | Image codecs |
+| glaze | MIT | JSON serialization |
+| libsodium | ISC | Encrypted pairing channel |
+| CLI11 | BSD 3-Clause | CLI parsing |
+| OpenSSL / libcurl | Apache-2.0 / curl | Model download transport |
+| AndroidX / Jetpack Compose / CameraX / zxing | Apache 2.0 | Android app UI, camera QR scanning |
+
+Android dependencies are declared in `apps/app/build.gradle.kts`; the full C++ dependency
+list lives in [xmake.lua](xmake.lua).
+
+All third-party licenses are permissive and compatible with redistribution under MIT;
+the respective copyright notices above must be retained in distributions.
