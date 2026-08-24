@@ -13,12 +13,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -31,7 +36,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.model.ConnectionState
@@ -47,9 +56,9 @@ import com.crossscale.ui.theme.ValueMono
 import com.crossscale.viewmodel.DeviceUiState
 
 /**
- * 连接屏（严格 1:1 手机↔PC）：
- * 顶部大状态卡（状态标题 + 地址/指纹 + 操作按钮），下方使用说明分区卡。
- * 已连 → 标题 + 断开；连接中 → spinner；断开 → 扫码/手动入口。
+ * 连接屏（严格 1:1 手机↔PC）：单一状态卡承载全部状态——状态徽标（唯一强调色点）+
+ * 状态标题 + 等宽字体地址/指纹 + 主操作。未连接时主按钮给扫码（首选路径），
+ * 手动输入为次级描边按钮；错误条独立于状态卡之上，安静可忽略。
  */
 @Composable
 fun ConnectionScreen(
@@ -98,48 +107,24 @@ fun ConnectionScreen(
                         .padding(top = Spacing.md, bottom = Spacing.xxl),
                     verticalArrangement = Arrangement.spacedBy(Spacing.lg)
                 ) {
-                state.connectionError?.let { err ->
-                Surface(
-                    color = MaterialTheme.colorScheme.errorContainer,
-                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
-                    shape = MaterialTheme.shapes.medium,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(
-                                start = Spacing.lg,
-                                end = Spacing.sm,
-                                top = Spacing.sm,
-                                bottom = Spacing.sm
-                            ),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
-                    ) {
-                        Text(
-                            text = err,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.weight(1f)
+                    state.connectionError?.let { err ->
+                        ConnectionErrorBanner(
+                            message = err,
+                            onDismiss = onClearConnectionError
                         )
-                        TextButton(onClick = onClearConnectionError) {
-                            Text(stringResource(R.string.connection_ignore))
-                        }
                     }
-                }
-            }
 
-                when (connectionState) {
-                    ConnectionState.CONNECTED -> ConnectedStatusCard(
-                        endpoint = connectedEndpoint,
-                        onDisconnect = onDisconnect
-                    )
-                    ConnectionState.CONNECTING -> ConnectingCard()
-                    ConnectionState.DISCONNECTED -> DisconnectedActions(
-                        onScanQr = { showQrScanner.value = true },
-                        onManual = { onShowManualConnectDialog(true) }
-                    )
-                }
+                    when (connectionState) {
+                        ConnectionState.CONNECTED -> ConnectedStatusCard(
+                            endpoint = connectedEndpoint,
+                            onDisconnect = onDisconnect
+                        )
+                        ConnectionState.CONNECTING -> ConnectingCard()
+                        ConnectionState.DISCONNECTED -> DisconnectedActions(
+                            onScanQr = { showQrScanner.value = true },
+                            onManual = { onShowManualConnectDialog(true) }
+                        )
+                    }
                 }
             }
         }
@@ -162,42 +147,111 @@ fun ConnectionScreen(
     }
 }
 
-/** 状态主卡通用骨架：标题 + 副信息 + 底部操作区；状态差异只用文字与必要 spinner 表达。 */
+/** 错误条：errorContainer 卡 + 图标 + 可忽略；不抢状态卡的主视觉。 */
 @Composable
-private fun StatusCardScaffold(
-    title: String,
-    subtitle: String? = null,
-    progressInstead: Boolean = false,
-    actions: @Composable () -> Unit
+private fun ConnectionErrorBanner(
+    message: String,
+    onDismiss: () -> Unit
 ) {
     Surface(
+        color = MaterialTheme.colorScheme.errorContainer,
+        contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        shape = MaterialTheme.shapes.medium,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    start = Spacing.lg,
+                    end = Spacing.sm,
+                    top = Spacing.sm,
+                    bottom = Spacing.sm
+                ),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.ErrorOutline,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp)
+            )
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(R.string.connection_ignore))
+            }
+        }
+    }
+}
+
+/** 状态卡通用骨架：居中一列，徽标 → 标题 → 详情 → 操作。 */
+@Composable
+private fun StatusCard(content: @Composable () -> Unit) {
+    Surface(
         modifier = Modifier.fillMaxWidth(),
-        shape = MaterialTheme.shapes.large,
+        shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainer
     ) {
         Column(
-            modifier = Modifier.padding(Spacing.xl),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(Spacing.xxl),
             verticalArrangement = Arrangement.spacedBy(Spacing.md),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            if (progressInstead) {
-                CircularProgressIndicator(
-                    modifier = Modifier.size(24.dp),
-                    strokeWidth = 2.5.dp
-                )
-            }
-            Text(
-                text = title,
-                style = MaterialTheme.typography.titleMedium
+            content()
+        }
+    }
+}
+
+/** 圆形 tonal 状态徽标：连接态用 primaryContainer（页面唯一强调），其余用中性容器。 */
+@Composable
+private fun StatusBadge(
+    container: Color,
+    contentColor: Color,
+    icon: ImageVector
+) {
+    Surface(
+        shape = CircleShape,
+        color = container,
+        contentColor = contentColor,
+        modifier = Modifier.size(56.dp)
+    ) {
+        Box(contentAlignment = Alignment.Center) {
+            Icon(
+                imageVector = icon,
+                contentDescription = null,
+                modifier = Modifier.size(26.dp)
             )
-            if (subtitle != null) {
-                Text(
-                    text = subtitle,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            actions()
+        }
+    }
+}
+
+/** 地址与指纹统一走等宽字体，地址一行截断、指纹可长按选中肉眼核对。 */
+@Composable
+private fun EndpointDetails(endpoint: RemoteEndpoint) {
+    Text(
+        text = "${endpoint.host}:${endpoint.port}",
+        style = ValueMono,
+        color = MaterialTheme.colorScheme.onSurface,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        textAlign = TextAlign.Center
+    )
+    endpoint.fingerprint?.takeIf { fp -> fp.isNotBlank() }?.let { fp ->
+        SelectionContainer {
+            Text(
+                text = stringResource(R.string.connection_fingerprint, fp),
+                style = MaterialTheme.typography.bodySmall.copy(fontFamily = ValueMono.fontFamily),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                textAlign = TextAlign.Center
+            )
         }
     }
 }
@@ -207,35 +261,40 @@ private fun ConnectedStatusCard(
     endpoint: RemoteEndpoint?,
     onDisconnect: () -> Unit
 ) {
-    StatusCardScaffold(
-        title = stringResource(R.string.connection_status_connected),
-        subtitle = endpoint?.let { "${it.host}:${it.port}" }
-    ) {
-        Column(
-            verticalArrangement = Arrangement.spacedBy(Spacing.md),
-            horizontalAlignment = Alignment.CenterHorizontally
+    StatusCard {
+        StatusBadge(
+            container = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+            icon = Icons.Outlined.CheckCircle
+        )
+        Text(
+            text = stringResource(R.string.connection_status_connected),
+            style = MaterialTheme.typography.titleMedium
+        )
+        if (endpoint != null) {
+            EndpointDetails(endpoint)
+        }
+        OutlinedButton(
+            onClick = onDisconnect,
+            modifier = Modifier.padding(top = Spacing.xs)
         ) {
-            endpoint?.fingerprint?.takeIf { fp -> fp.isNotBlank() }?.let { fp ->
-                Text(
-                    text = stringResource(R.string.connection_fingerprint, fp),
-                    style = ValueMono,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1
-                )
-            }
-            FilledTonalButton(onClick = onDisconnect) {
-                Text(stringResource(R.string.connection_disconnect))
-            }
+            Text(stringResource(R.string.connection_disconnect))
         }
     }
 }
 
 @Composable
 private fun ConnectingCard() {
-    StatusCardScaffold(
-        progressInstead = true,
-        title = stringResource(R.string.connection_connecting_title)
-    ) {
+    StatusCard {
+        CircularProgressIndicator(
+            modifier = Modifier.size(28.dp),
+            strokeWidth = 3.dp
+        )
+        Text(
+            text = stringResource(R.string.connection_connecting_title),
+            style = MaterialTheme.typography.titleMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -244,30 +303,39 @@ private fun DisconnectedActions(
     onScanQr: () -> Unit,
     onManual: () -> Unit
 ) {
-    StatusCardScaffold(
-        title = stringResource(R.string.connection_status_disconnected)
-    ) {
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(Spacing.md)
+    StatusCard {
+        StatusBadge(
+            container = MaterialTheme.colorScheme.surfaceContainerHighest,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            icon = Icons.Outlined.LinkOff
+        )
+        Text(
+            text = stringResource(R.string.connection_status_disconnected),
+            style = MaterialTheme.typography.titleMedium
+        )
+        // 首选路径（扫码）为实心主按钮，手动输入退居描边；纵向等宽更从容。
+        Button(
+            onClick = onScanQr,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(top = Spacing.sm)
         ) {
-            FilledTonalButton(onClick = onScanQr) {
-                Icon(
-                    imageVector = Icons.Outlined.QrCodeScanner,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(Spacing.xs))
-                Text(stringResource(R.string.connection_scan_qr))
-            }
-            OutlinedButton(onClick = onManual) {
-                Icon(
-                    imageVector = Icons.Outlined.Edit,
-                    contentDescription = null,
-                    modifier = Modifier.size(18.dp)
-                )
-                Spacer(modifier = Modifier.width(Spacing.xs))
-                Text(stringResource(R.string.connection_manual_input))
-            }
+            Icon(
+                imageVector = Icons.Outlined.QrCodeScanner,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(Spacing.xs))
+            Text(stringResource(R.string.connection_scan_qr))
+        }
+        OutlinedButton(onClick = onManual, modifier = Modifier.fillMaxWidth()) {
+            Icon(
+                imageVector = Icons.Outlined.Edit,
+                contentDescription = null,
+                modifier = Modifier.size(18.dp)
+            )
+            Spacer(modifier = Modifier.width(Spacing.xs))
+            Text(stringResource(R.string.connection_manual_input))
         }
     }
 }

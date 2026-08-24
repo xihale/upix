@@ -245,7 +245,7 @@ fun QRScannerScreen(
                 verticalArrangement = Arrangement.spacedBy(Spacing.md)
             ) {
                 Surface(
-                    shape = MaterialTheme.shapes.large,
+                    shape = MaterialTheme.shapes.medium,
                     color = MaterialTheme.colorScheme.surfaceContainer
                 ) {
                     Column(

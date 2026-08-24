@@ -99,9 +99,10 @@ internal fun ParameterCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            // 高级设置折叠区展开（250ms ease-out，统一 spec）。
+            // 高级设置折叠区展开（180ms ease-out，统一 spec）。
             .animateContentSize(ExpandSizeSpec),
-        shape = MaterialTheme.shapes.large,
+        // 设计规范：所有分组卡统一 shapes.medium（16dp），仅舞台更大。
+        shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainer
     ) {
         Column {
