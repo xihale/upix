@@ -14,7 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.outlined.List
+import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
@@ -136,7 +136,7 @@ internal fun BottomActionDock(
                         }
                     ) {
                         Icon(
-                            imageVector = Icons.Outlined.List,
+                            imageVector = Icons.AutoMirrored.Outlined.List,
                             contentDescription = stringResource(R.string.home_open_queue_cd)
                         )
                     }

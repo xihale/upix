@@ -202,6 +202,10 @@
     <string name="help_step_1">选择图片或文件夹</string>
     <string name="help_step_2">选择模型与输出路径</string>
     <string name="help_step_3">点「开始超分」</string>
+    <string name="help_section_steps">快速上手</string>
+    <string name="help_step_1_desc">从相册挑选图片，或导入整个文件夹批量处理</string>
+    <string name="help_step_2_desc">选择合适的超分模型，并指定结果保存位置</string>
+    <string name="help_step_3_desc">确认参数后点击开始，结果会保存到所选输出目录</string>
 
     <!-- Logs screen -->
     <string name="logs_result_count">共 %1$d 条</string>

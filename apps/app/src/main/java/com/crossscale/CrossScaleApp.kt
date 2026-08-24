@@ -22,8 +22,12 @@ import com.crossscale.ui.scanner.ScannerMode
 import com.crossscale.ui.theme.LocalScreenMargin
 import com.crossscale.ui.theme.Spacing
 
+/** MD3 adaptive 断点（dp）：medium=600、expanded=840。 */
+private const val MediumWidthBreakpointDp = 600
+private const val ExpandedWidthBreakpointDp = 840
+
 /**
- * MD3 adaptive app shell：按窗口宽度类切换导航形态——
+ * MD3 adaptive app shell：按窗口宽度类切换导航形态，
  * compact(<600dp) NavigationBar / medium(600-839dp) NavigationRail /
  * expanded+(840dp+) 常驻抽屉。页面边距 token（16/24dp）随档位经
  * LocalScreenMargin 下发。
@@ -33,9 +37,9 @@ import com.crossscale.ui.theme.Spacing
 fun CrossScaleApp(container: AppContainer) {
     val navController = rememberNavController()
     val windowSizeClass = currentWindowAdaptiveInfo().windowSizeClass
-    // isWidthAtLeastBreakpoint 参数为 dp 整数值（600 = medium、840 = expanded）。
-    val isMedium = windowSizeClass.isWidthAtLeastBreakpoint(600)
-    val isExpanded = windowSizeClass.isWidthAtLeastBreakpoint(840)
+    // isWidthAtLeastBreakpoint 参数为 dp 整数值。
+    val isMedium = windowSizeClass.isWidthAtLeastBreakpoint(MediumWidthBreakpointDp)
+    val isExpanded = windowSizeClass.isWidthAtLeastBreakpoint(ExpandedWidthBreakpointDp)
     val scannerActive = ScannerMode.isActive
     // 扫码页自管系统栏沉浸；rail/drawer 模式（无 bottomBar）由外层消费导航栏 insets。
     val navigationModifier = if (scannerActive) {
