@@ -62,7 +62,7 @@ internal fun CheckpointSection(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            // 明细折叠区展开（250ms ease-out，与参数卡折叠一致）。
+            // 明细折叠区展开（180ms ease-out，与参数卡折叠一致）。
             .animateContentSize(ExpandSizeSpec),
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainer

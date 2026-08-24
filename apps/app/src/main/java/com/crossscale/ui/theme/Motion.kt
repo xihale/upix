@@ -26,6 +26,9 @@ import androidx.compose.ui.unit.dp
  *   emphasized-accelerate（200ms），曲线取官方值；组件内 spring 动效
  *   交给 Expressive 主题的 MotionScheme。
  * - 禁止 ease-in 进入、禁止 scale(0) 起始；只动 transform/alpha。
+ * - 无循环/装饰性动效（无 shimmer/脉冲点/渐变动画），加载 = 安静占位 + 确定性进度。
+ * - 本文件是自定义动效 token 的规范来源（docs/DESIGN_LANGUAGE.md §7）；组件级
+ *   spring 动效继承 Expressive MotionScheme，不得逐组件对抗默认值。
  * - 已知限制：Compose 无 prefers-reduced-motion 等价系统 API，全局降级暂不可做。
  */
 
@@ -46,13 +49,13 @@ const val NavExitTween = 200
 /** 按压缩放（100ms，decelerate）。 */
 val PressMotionSpec = tween<Float>(PressTween, easing = EmphasizedDecelerateEasing)
 
-/** 进入/退出 alpha（200ms）。 */
+/** 进入/退出 alpha（140ms）。 */
 val EnterMotionSpec = tween<Float>(EnterTween, easing = EmphasizedDecelerateEasing)
 
-/** 折叠区/出现消失的高度展开（250ms）。 */
+/** 折叠区/出现消失的高度展开（180ms）。 */
 val ExpandSizeSpec = tween<IntSize>(ExpandTween, easing = EmphasizedDecelerateEasing)
 
-/** AnimatedVisibility 进入/退出的尺寸 spec（200ms，与 fade 同步）。 */
+/** AnimatedVisibility 进入/退出的尺寸 spec（140ms，与 fade 同步）。 */
 val EnterSizeSpec = tween<IntSize>(EnterTween, easing = EmphasizedDecelerateEasing)
 
 /** NavHost 目的地进入：纯 fade（400ms emphasized-decelerate），不做位移。 */
