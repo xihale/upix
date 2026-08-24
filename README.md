@@ -181,9 +181,8 @@ Load with `--config FILE`. CLI flags override the loaded configuration.
 
 ## Development
 
-See [docs/README.md](docs/README.md) for documentation navigation:
-[ARCHITECTURE.md](docs/ARCHITECTURE.md) is the single source of truth for system layout,
-[TECH_DEBT.md](docs/TECH_DEBT.md) tracks known simplification opportunities.
+See [docs/README.md](docs/README.md) for documentation navigation.
+[ARCHITECTURE.md](docs/ARCHITECTURE.md) is the single source of truth for system layout.
 
 ## License
 

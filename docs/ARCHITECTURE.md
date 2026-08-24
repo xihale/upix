@@ -202,7 +202,7 @@ auto_tile_size=true 时：
 
 **为什么与 coordinator 独立**：两者职责正交。serve 解决"单图固定开销"（无状态，1连接=1请求，持引擎，UnixSocket 本地）；coordinator 解决"多设备任务分配"（有状态，worker 注册/心跳/任务循环，不持引擎，TCP 局域网）。合并会让一个类同时管本地无状态 RPC + 分布式有状态调度，职责膨胀。两者真正共享的是协议帧格式（已复用 `Protocol::serialize`）和 `TileProcessor`（都用 `process_image_u8`）。
 
-完整设计见 `docs/decisions/serve-daemon-design.md`。
+完整设计见 git 历史中的 `docs/SERVE_DAEMON_DESIGN.md`（已随仓库精简移除）。
 
 ---
 
@@ -343,9 +343,8 @@ DeviceViewModel → MDNSDiscovery (NsdManager 发现) 或 QR 扫描 → JoinInvi
 | 文档 | 内容 |
 |------|------|
 | `docs/README.md` | 文档导航入口 |
-| `docs/decisions/serve-daemon-design.md` | serve 守护进程完整设计 |
-| `docs/decisions/architecture-simplification.md` | 2026-07 架构简化决策（4 层） |
-| `docs/decisions/ponytail-audit.md` | 全仓库过度工程审计（含执行状态） |
-| `docs/perf/` | 性能测试报告 |
-| `AGENTS.md` | 构建命令、代码风格、仓库结构（开发指南） |
 | `README.md` | 用户向使用说明 |
+| `docs/DESIGN_LANGUAGE.md` | Android 端 UI 设计语言 |
+| `models/README.md` | 模型分发与格式说明 |
+
+历史设计文档（serve 守护进程、架构简化 ADR、性能报告）已从仓库移除，见 git 历史。
