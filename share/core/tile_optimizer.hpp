@@ -68,7 +68,6 @@ inline auto TileSizeOptimizer::benchmark_tile_size(
 
         // 估算内存使用
         ModelConstraints dummy_model;
-        dummy_model.scale_factor = scale;
         dummy_model.memory_multiplier = 10.0f;
         result.memory_usage_mb = calculate_tile_memory(tile_size, 3, scale, dummy_model);
 
@@ -83,8 +82,6 @@ inline auto TileSizeOptimizer::benchmark_tile_size(
 
 inline auto TileSizeOptimizer::profile_device(Engine& engine) -> DevicePerformanceProfile {
     DevicePerformanceProfile profile;
-    profile.device_type = engine.current_device();
-    profile.device_name = engine.model_name();
     profile.available_memory_mb = engine.get_memory_info().second;
 
     return profile;

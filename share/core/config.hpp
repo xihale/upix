@@ -47,11 +47,8 @@ auto resolve_output_path(
     const ProcessingConfig& config
 ) -> std::filesystem::path;
 
-// 设备性能档案
+// 设备性能档案（auto-tile 探测用，仅保留实际消费的字段）
 struct DevicePerformanceProfile {
-    DeviceType device_type = DeviceType::CPU;
-    std::string device_name;
-
     size_t available_memory_mb = 0;
 
     struct TileBenchmark {
@@ -65,8 +62,6 @@ struct DevicePerformanceProfile {
 // 模型约束
 struct ModelConstraints {
     std::string model_name;
-    int input_channels = 3;
-    int scale_factor = 2;
     size_t model_size_mb = 0;
     float memory_multiplier = 10.0f;
     int min_tile_size = 0;

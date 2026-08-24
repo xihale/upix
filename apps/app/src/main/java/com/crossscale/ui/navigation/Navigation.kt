@@ -29,6 +29,7 @@ import com.crossscale.ui.input.rememberInputSelection
 import com.crossscale.ui.components.SecondaryScreenScaffold
 import com.crossscale.ui.screens.ConnectionScreen
 import com.crossscale.ui.screens.HelpScreen
+import com.crossscale.ui.screens.HomeCallbacks
 import com.crossscale.ui.screens.HomeScreen
 import com.crossscale.ui.screens.LogsScreen
 import com.crossscale.ui.screens.ModelsScreen
@@ -133,92 +134,94 @@ fun CrossScaleNavigation(
                     connectionState = connectionState,
                     connectedEndpoint = connectedEndpoint,
                     remoteFallbackMessage = remoteFallbackMessage,
-                    onClearRemoteFallbackMessage = processingViewModel::clearRemoteFallbackMessage,
-                    onSelectModel = mainViewModel::selectModel,
-                    onSelectScale = mainViewModel::selectModelByScale,
-                    onSelectImages = inputSelection::pickImages,
-                    onSelectImageFolder = inputSelection::pickImageFolder,
-                    onClearInputSources = {
-                        mainViewModel.clearSelectedImage()
-                        processingViewModel.clearBatchQueue()
-                    },
-                    onRemoveInputSource = { source ->
-                        mainViewModel.removeInputSource(source)
-                        processingViewModel.removeQueuedBatchesBySource(source)
-                    },
-                    onSelectOutputFolder = inputSelection::pickOutputFolder,
-                    onUseDefaultOutputFolder = mainViewModel::useDefaultOutputDirectory,
-                    onToggleOverwriteOriginal = mainViewModel::setOverwriteOriginalImage,
-                    onToggleBackupOriginal = mainViewModel::setBackupOriginalImage,
-                    onToggleProcessNestedFolders = mainViewModel::setProcessNestedFolders,
-                    onSelectOutputFormat = mainViewModel::setOutputImageFormat,
                     remoteUiState = modelsUiState,
-                    onRefreshRemoteModels = modelsViewModel::refreshRemoteModels,
-                    onDownloadRemoteModel = modelsViewModel::downloadRemoteModel,
-                    onDismissDownloadError = modelsViewModel::dismissDownloadError,
-                    onCancelDownload = modelsViewModel::cancelDownload,
-                    onStartProcessing = {
-                        startProcessing(
-                            context = context,
-                            mainUiState = mainUiState,
-                            processingUiState = processingUiState,
-                            processingViewModel = processingViewModel,
-                            logRepository = logRepository,
-                            startQueueWithWritePermissionCheck = inputSelection::startQueueWithWritePermissionCheck
-                        )
-                    },
-                    onStartBatchQueue = {
-                        processingViewModel.syncPendingQueueDefaults(
-                            distributedMode = mainUiState.useRemote,
-                            outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
-                            overwriteOriginal = mainUiState.overwriteOriginalImage,
-                            backupOriginal = mainUiState.backupOriginalImage,
-                            processNestedFolders = mainUiState.processNestedFolders
-                        )
-                        inputSelection.startQueueWithWritePermissionCheck(null)
-                    },
-                    onPauseBatchQueue = processingViewModel::pauseBatchQueue,
-                    onRetryQueuedBatch = processingViewModel::retryQueuedBatch,
-                    onRetryQueuedBatchFailedOnly = processingViewModel::retryQueuedBatchFailedOnly,
-                    onOpenQueuedBatchOutput = { batchId ->
-                        openQueuedBatchOutput(
-                            context = context,
-                            batchId = batchId,
-                            processingViewModel = processingViewModel,
-                            logRepository = logRepository
-                        )
-                    },
-                    onRemoveQueuedBatch = { batchId ->
-                        removeQueuedBatch(
-                            batchId = batchId,
-                            mainViewModel = mainViewModel,
-                            processingViewModel = processingViewModel
-                        )
-                    },
-                    onClearBatchQueue = {
-                        clearBatchQueue(
-                            mainUiState = mainUiState,
-                            mainViewModel = mainViewModel,
-                            processingViewModel = processingViewModel
-                        )
-                    },
-                    onCancelProcessing = processingViewModel::cancelProcessing,
-                    onResumeProcessing = processingViewModel::resumeLastProcessing,
-                    onRetryFailedItems = processingViewModel::retryFailedItems,
-                    onResumePendingItem = processingViewModel::resumePendingItem,
-                    onRetryFailedItem = processingViewModel::retryFailedItem,
-                    onDiscardCheckpoint = processingViewModel::discardCheckpoint,
                     hasBackupAvailable = hasBackupAvailable,
-                    onResolveQueuedBatchOutputUri = processingViewModel::outputUriForQueuedBatch,
-                    onRestoreBackup = {
-                        restoreBackup(
-                            context = context,
-                            mainUiState = mainUiState,
-                            processingViewModel = processingViewModel,
-                            scope = scope,
-                            onBackupAvailabilityChanged = { hasBackupAvailable = it }
-                        )
-                    }
+                    callbacks = HomeCallbacks(
+                        onClearRemoteFallbackMessage = processingViewModel::clearRemoteFallbackMessage,
+                        onSelectModel = mainViewModel::selectModel,
+                        onSelectScale = mainViewModel::selectModelByScale,
+                        onSelectImages = inputSelection::pickImages,
+                        onSelectImageFolder = inputSelection::pickImageFolder,
+                        onClearInputSources = {
+                            mainViewModel.clearSelectedImage()
+                            processingViewModel.clearBatchQueue()
+                        },
+                        onRemoveInputSource = { source ->
+                            mainViewModel.removeInputSource(source)
+                            processingViewModel.removeQueuedBatchesBySource(source)
+                        },
+                        onSelectOutputFolder = inputSelection::pickOutputFolder,
+                        onUseDefaultOutputFolder = mainViewModel::useDefaultOutputDirectory,
+                        onToggleOverwriteOriginal = mainViewModel::setOverwriteOriginalImage,
+                        onToggleBackupOriginal = mainViewModel::setBackupOriginalImage,
+                        onToggleProcessNestedFolders = mainViewModel::setProcessNestedFolders,
+                        onSelectOutputFormat = mainViewModel::setOutputImageFormat,
+                        onRefreshRemoteModels = modelsViewModel::refreshRemoteModels,
+                        onDownloadRemoteModel = modelsViewModel::downloadRemoteModel,
+                        onDismissDownloadError = modelsViewModel::dismissDownloadError,
+                        onStartProcessing = {
+                            startProcessing(
+                                context = context,
+                                mainUiState = mainUiState,
+                                processingUiState = processingUiState,
+                                processingViewModel = processingViewModel,
+                                logRepository = logRepository,
+                                startQueueWithWritePermissionCheck = inputSelection::startQueueWithWritePermissionCheck
+                            )
+                        },
+                        onStartBatchQueue = {
+                            processingViewModel.syncPendingQueueDefaults(
+                                distributedMode = mainUiState.useRemote,
+                                outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
+                                overwriteOriginal = mainUiState.overwriteOriginalImage,
+                                backupOriginal = mainUiState.backupOriginalImage,
+                                processNestedFolders = mainUiState.processNestedFolders
+                            )
+                            inputSelection.startQueueWithWritePermissionCheck(null)
+                        },
+                        onPauseBatchQueue = processingViewModel::pauseBatchQueue,
+                        onRetryQueuedBatch = processingViewModel::retryQueuedBatch,
+                        onRetryQueuedBatchFailedOnly = processingViewModel::retryQueuedBatchFailedOnly,
+                        onOpenQueuedBatchOutput = { batchId ->
+                            openQueuedBatchOutput(
+                                context = context,
+                                batchId = batchId,
+                                processingViewModel = processingViewModel,
+                                logRepository = logRepository
+                            )
+                        },
+                        onRemoveQueuedBatch = { batchId ->
+                            removeQueuedBatch(
+                                batchId = batchId,
+                                mainViewModel = mainViewModel,
+                                processingViewModel = processingViewModel
+                            )
+                        },
+                        onClearBatchQueue = {
+                            clearBatchQueue(
+                                mainUiState = mainUiState,
+                                mainViewModel = mainViewModel,
+                                processingViewModel = processingViewModel
+                            )
+                        },
+                        onCancelProcessing = processingViewModel::cancelProcessing,
+                        onResumeProcessing = processingViewModel::resumeLastProcessing,
+                        onRetryFailedItems = processingViewModel::retryFailedItems,
+                        onResumePendingItem = processingViewModel::resumePendingItem,
+                        onRetryFailedItem = processingViewModel::retryFailedItem,
+                        onDiscardCheckpoint = processingViewModel::discardCheckpoint,
+                        onRestoreBackup = {
+                            restoreBackup(
+                                context = context,
+                                mainUiState = mainUiState,
+                                processingViewModel = processingViewModel,
+                                scope = scope,
+                                onBackupAvailabilityChanged = { hasBackupAvailable = it }
+                            )
+                        },
+                        onCancelDownload = modelsViewModel::cancelDownload,
+                        onResolveQueuedBatchOutputUri = processingViewModel::outputUriForQueuedBatch
+                    )
                 )
             }
         }

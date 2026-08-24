@@ -310,8 +310,6 @@ int run_batch(const args::Process& a) {
                 crossscale::TileSizeOptimizer optimizer;
                 crossscale::ModelConstraints mc;
                 mc.model_name = model_name_used;
-                mc.scale_factor = eng.get_scale_factor();
-                mc.input_channels = prepared.channels;
                 mc.model_size_mb = static_cast<float>(model_total_size) / (1024 * 1024);
                 mc.min_tile_size = local_config.min_tile_size;
                 mc.max_tile_size = local_config.max_tile_size;

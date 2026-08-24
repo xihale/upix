@@ -291,8 +291,6 @@ int cmd_process(const args::Process& a) {
         crossscale::TileSizeOptimizer optimizer;
         crossscale::ModelConstraints model_constraints;
         model_constraints.model_name = model_name_resolved;
-        model_constraints.scale_factor = scale;
-        model_constraints.input_channels = image.channels();
         model_constraints.model_size_mb = selected_model->total_size / (1024 * 1024);
         model_constraints.min_tile_size = config.min_tile_size;
         model_constraints.max_tile_size = config.max_tile_size;
