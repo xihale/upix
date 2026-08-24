@@ -77,6 +77,8 @@ Source of truth: `ui/theme/Color.kt` (hex values below are copied verbatim from 
 | errorContainer | `#FFDAD6` | inverseOnSurface | `#F0F1EF` |
 | onErrorContainer | `#410002` | inversePrimary | `#A5F2E2` |
 
+(`surfaceTint` = primary, `surfaceBright` `#F9FDFB`, `surfaceDim` `#D6DBD9`: theme-internal only, never referenced by app code.)
+
 ### 1.3 Usage rules
 
 **Canvas hierarchy (the "elevation" ramp):**
@@ -354,6 +356,8 @@ Corrupted-media fallbacks follow the same recipe with `error`-colored short labe
 ### 9.11 Badges & chips
 Count badge caps display at "99+". Recolor from error-red default to `Badge(colors = BadgeDefaults.colorsWith(containerColor = primaryContainer, contentColor = onPrimaryContainer)))` — counts are information, not alarms (edit listed in §10). Status chips: `Surface(CircleShape)`, `labelSmall`, padding h-sm/v-xs, container per the §1.3 status table.
 
+**Amendment 2026-08-24 — logs language policy (closes the raw-enum i18n question):** interactive chrome on the logs screen is fully localized: level FilterChips resolve display names through new `log_level_*` strings (`调试/信息/警告/错误/严重`, `LogsScreen.levelDisplayName`); the `LogLevel` enum and filter pipeline are untouched. Inside the mono log body (`LogViewer`) and clipboard copy-out (`LogsScreen` copy-all, per-entry long-press), raw English enum levels (`[ERROR]`) and free-form code tags stay deliberate: dev-tool aesthetic mirroring logcat conventions, copy-paste-stable for issue reports. This split is policy, not a localization gap.
+
 ---
 
 ## 10. Migration plan (mechanical edits)
@@ -363,7 +367,7 @@ Ordered, each independently compilable:
 1. ✅ **Done — `theme/Theme.kt`** — delete the `Build.VERSION.SDK_INT >= S` dynamic-color branch (D1); add the `Shapes(...)` block from §4 to `MaterialExpressiveTheme(shapes = ...)`. (Executed: branch deleted; shipped as `CrossScaleShapes` Shapes block, `ui/theme/Theme.kt:100-105`.)
 2. ✅ **Done — Radius moves** — switch `shapes.large` → `shapes.medium` on the four card Surfaces: `home/ParameterCard.kt` (:105), `screens/SettingsScreen.kt` (:288, `SettingsGroupCard`), `screens/ConnectionScreen.kt` (:196, `StatusCard`), `screens/ModelsScreen.kt` (:269, empty-state Surface). Hero `ImageStage` and preview media frame stay `large`. (Executed: all four plus the connection error banner at `ConnectionScreen.kt:159` are `shapes.medium`.)
 3. ✅ **Done — Hairline softening** — `home/HeroArea.kt` thumbnail delete circle: border color `outline` → `outlineVariant`. (Executed: `HeroArea.kt:372`.)
-4. ✅ **Done — Badge recolor** — `ui/screens/home/BottomActionDock.kt` queue `Badge` → `primaryContainer`/`onPrimaryContainer` (§9.11). (Executed: `BottomActionDock.kt:129-131`, including the "99+" display cap.)
+4. ✅ **Done — Badge recolor** — `ui/screens/home/BottomActionDock.kt` queue `Badge` → `primaryContainer`/`onPrimaryContainer` (§9.11). (Executed: `BottomActionDock.kt:134-140`, including the "99+" display cap; reverified at HEAD e556d7a — the badge block drifted to :134-140 and the cap `Text` sits at :139.)
 5. ✅ **Done — navigateToTab dedupe** — make `AdaptiveNavigation.kt`'s shared destination-switch fun internal (`internal fun navigateToTab(navController, screen)`); delete the inline copy in `BottomNavigationBar.kt` and call the shared fun. (Executed: shared fun declared internal at `AdaptiveNavigation.kt:59`; call sites `AdaptiveNavigation.kt:99`, `AdaptiveNavigation.kt:145`, `BottomNavigationBar.kt:38`; inline copy deleted.)
 6. ✅ **Done — File rename** — `ui/screens/home/BottomActionBar.kt` → `ui/screens/home/BottomActionDock.kt` (file name matches its only composable; real location is `screens/home/`, not `components/` as first drafted).
 7. ✅ **Done — Mono hygiene** — `ModelCard.kt`: replace local `specTextStyle` with `valueStyleFor(...)` (§2.2). (Executed by node gsr-h: vararg `valueStyleFor` at `Type.kt:149`; unsanctioned `monoLabelStyle` helper removed per the §2.2 amendment.)
@@ -408,7 +412,46 @@ grep -rn "shadowElevation\|defaultElevation\|tonalElevation" apps/app/src/main/j
 | Disposition | Composables |
 |---|---|
 | Keep as-is | `CrossScaleTopAppBar`, `SecondaryScreenScaffold`, `SectionHeader`, `BottomNavigationBar`+`AdaptiveNavigation*`, `ImageStage`/`EmptyStage`/`PreviewBottomSheet`, `ParameterCard`, `CheckpointSection`, `ModelCard`, `StageProgressOverlay`, `LogViewer`, `RemoteModelsDialog`, `ConnectionDialog`, `FingerprintConfirmDialog`, `QueueSheet`, `pressable`/`pressScale`/`smoothProgress` |
-| Edit (§10) | ✅ Done: `Theme.kt` shapes block (`Theme.kt:100-105`) · ✅ Done: `ParameterCard` medium (`ParameterCard.kt:105`) · ✅ Done: `SettingsGroupCard` medium (`SettingsScreen.kt:288`) · ✅ Done: `StatusCard` medium (`ConnectionScreen.kt:196`) + connection error banner medium (`ConnectionScreen.kt:159`) · ✅ Done: Models empty-state medium (`ModelsScreen.kt:269`) · ✅ Done: `HeroArea` delete-circle outlineVariant (`HeroArea.kt:372`) · ✅ Done: dock `Badge` primaryContainer/onPrimaryContainer with "99+" cap (`BottomActionDock.kt:129-131`) · ✅ Done: `BottomNavigationBar` dedupe via shared `navigateToTab` (`BottomNavigationBar.kt:38`) |
+| Edit (§10) | ✅ Done: `Theme.kt` shapes block (`Theme.kt:100-105`) · ✅ Done: `ParameterCard` medium (`ParameterCard.kt:105`) · ✅ Done: `SettingsGroupCard` medium (`SettingsScreen.kt:288`) · ✅ Done: `StatusCard` medium (`ConnectionScreen.kt:196`) + connection error banner medium (`ConnectionScreen.kt:159`) · ✅ Done: Models empty-state medium (`ModelsScreen.kt:269`) · ✅ Done: `HeroArea` delete-circle outlineVariant (`HeroArea.kt:372`) · ✅ Done: dock `Badge` primaryContainer/onPrimaryContainer with "99+" cap (`BottomActionDock.kt:134-140`) · ✅ Done: `BottomNavigationBar` dedupe via shared `navigateToTab` (`BottomNavigationBar.kt:38`) |
 | Rename | ✅ Done: `ui/screens/home/BottomActionBar.kt` → `ui/screens/home/BottomActionDock.kt` |
 | Merge candidate | ✅ Done: `HostPortFields` state holder (`ui/components/HostPortFields.kt`, consumed by `ConnectionDialog`) · shared `ThumbnailCell`: ✅ done, now `home/ThumbnailCell.kt` (used by `HeroArea` and `QueueSheet`) |
 | Delete | — (nothing dead found) |
+
+## Appendix C — WCAG 2.x contrast audit (static brand palette)
+
+Added 2026-08-24 (accessibility hardening pass). All ratios are computed from the `ui/theme/Color.kt` hex values in §1.1/§1.2 with the WCAG 2.x relative-luminance formula: linearize each sRGB channel (`c/12.92` if `c ≤ 0.03928`, else `((c+0.055)/1.055)^2.4`), then `L = 0.2126R + 0.7152G + 0.0722B`, then `ratio = (L_lighter + 0.05) / (L_darker + 0.05)`. Thresholds: **≥ 4.5** for body text (WCAG 1.4.3), **≥ 3.0** for UI components / graphical objects (WCAG 1.4.11). The computation script is deliberately kept out of the repo; the tables below are reproducible from the cited hex values alone.
+
+**Scope assumptions.** (1) `Theme.kt` still routes Android 12+ to system *dynamic color* (`Theme.kt:124-125`), so these ratios govern the static brand-palette path (the Android ≤ 11 fallback and any non-dynamic rendering); dynamic-scheme output is sampled per device and is out of scope here. (2) No measured pair involves alpha compositing — the app's only sanctioned translucency (stage mask `surface@55%`, sheet scrim `scrim@18%`, §1.3) is overlay usage, not a fg/bg pair.
+
+| Pair | Scheme | FG | BG | Ratio | Role | Threshold | Verdict |
+|---|---|---|---|---|---|---|---|
+| P1 `onSurfaceVariant` / `surfaceContainerLow` | Dark | `#BAC6D6` | `#121C2E` | 9.86 | body text | ≥ 4.5 | PASS |
+| P1 `onSurfaceVariant` / `surfaceContainerLow` | Light | `#404947` | `#F5FAF8` | 8.80 | body text | ≥ 4.5 | PASS |
+| P2 `onSurfaceVariant` / `surfaceContainerHigh` | Dark | `#BAC6D6` | `#1C2740` | 8.59 | body text | ≥ 4.5 | PASS |
+| P2 `onSurfaceVariant` / `surfaceContainerHigh` | Light | `#404947` | `#E9EFED` | 7.97 | body text | ≥ 4.5 | PASS |
+| P3 `onPrimaryContainer` / `primaryContainer` | Dark | `#A5F2E2` | `#0E4A42` | 7.90 | body text in tonal container | ≥ 4.5 | PASS |
+| P3 `onPrimaryContainer` / `primaryContainer` | Light | `#00201B` | `#A4F2E2` | 13.40 | body text in tonal container | ≥ 4.5 | PASS |
+| P4a `error` / `errorContainer` | Dark | `#FFB4AB` | `#93000A` | 5.51 | UI component (icon/graphic) | ≥ 3.0 | PASS |
+| P4a `error` / `errorContainer` | Light | `#BA1A1A` | `#FFDAD6` | 5.00 | UI component (icon/graphic) | ≥ 3.0 | PASS |
+| P4b `onErrorContainer` / `errorContainer` | Dark | `#FFDAD6` | `#93000A` | 7.24 | body text (failed chips/banner) | ≥ 4.5 | PASS |
+| P4b `onErrorContainer` / `errorContainer` | Light | `#410002` | `#FFDAD6` | 13.26 | body text (failed chips/banner) | ≥ 4.5 | PASS |
+| P5 LogViewer dimmed header (`onSurfaceVariant` / `surfaceContainerLow`) | Dark | `#BAC6D6` | `#121C2E` | 9.86 | body-small monospace | ≥ 4.5 | PASS |
+| P5 LogViewer dimmed header (`onSurfaceVariant` / `surfaceContainerLow`) | Light | `#404947` | `#F5FAF8` | 8.80 | body-small monospace | ≥ 4.5 | PASS |
+| P6 neutral level dot (`onSurfaceVariant`) over unselected-chip canvas (`background`) | Dark | `#BAC6D6` | `#0A101E` | 10.98 | UI component (8dp dot) | ≥ 3.0 | PASS |
+| P6 neutral level dot (`onSurfaceVariant`) over unselected-chip canvas (`background`) | Light | `#404947` | `#F5FAF8` | 8.80 | UI component (8dp dot) | ≥ 3.0 | PASS |
+| P6b neutral level dot over selected-chip container (`secondaryContainer`, M3 default) | Dark | `#BAC6D6` | `#273951` | 6.78 | UI component (8dp dot) | ≥ 3.0 | PASS |
+| P6b neutral level dot over selected-chip container (`secondaryContainer`, M3 default) | Light | `#404947` | `#D5E4F9` | 7.20 | UI component (8dp dot) | ≥ 3.0 | PASS |
+| P7a `outlineVariant` hairlines over `surfaceContainer` | Dark | `#2B3850` | `#162136` | 1.37 | hairline (informational) | n/a | n/a |
+| P7a `outlineVariant` hairlines over `surfaceContainer` | Light | `#C0C9C7` | `#EFF5F3` | 1.53 | hairline (informational) | n/a | n/a |
+| P7b `outlineVariant` hairlines over `background` | Dark | `#2B3850` | `#0A101E` | 1.61 | hairline (informational) | n/a | n/a |
+| P7b `outlineVariant` hairlines over `background` | Light | `#C0C9C7` | `#F5FAF8` | 1.60 | hairline (informational) | n/a | n/a |
+
+**Notes.**
+
+1. **Slot sources (all `ui/theme/Color.kt`).** Dark: `onSurfaceVariant`:43, `surfaceContainerLow`:47, `surfaceContainerHigh`:49, `primaryContainer`:24, `onPrimaryContainer`:25, `secondaryContainer`:29, `background`:38, `surfaceContainer`:48, `outlineVariant`:62, `error`:64, `errorContainer`:66, `onErrorContainer`:67. Light: `primaryContainer`:72, `onPrimaryContainer`:73, `secondaryContainer`:77, `background`:86, `surfaceContainer`:96, `surfaceContainerLow`:95, `surfaceContainerHigh`:97, `onSurfaceVariant`:91, `outlineVariant`:110, `error`:112, `errorContainer`:114, `onErrorContainer`:115.
+2. **P3 usage sites.** Dock queue badge `BottomActionDock.kt:134-140`; help step badges `HelpScreen.kt:111-123`; scanner permission circle `QRScannerScreen.kt:262-269`. Rows are judged at the 4.5 bar because the badge and step badges carry text ("99+", step numerals); the permission circle is icon-only and needs only 3.0 — it passes under either reading.
+3. **P4 usage sites.** Failed-state status chips `QueueSheet.kt:485-490` (`onErrorContainer` on `errorContainer`); connection error banner `ConnectionScreen.kt` (§10 item 2 cites :159). `error`-over-`errorContainer` is treated as icon/graphic-on-container at the 3.0 component bar.
+4. **P5 finding.** The dimmed header line `[HH:mm:ss] [tag]` is a `Text` colored `onSurfaceVariant` (`LogViewer.kt:85-89`), hosted inside a `Surface(color = surfaceContainerLow)` (`LogsScreen.kt:183-189`), styled `LogMonoStyle` = `bodySmall` + monospace (`Type.kt:123`). Same physical pair as P1, classified small-text/body.
+5. **P6 finding.** The neutral dot slot is `onSurfaceVariant` per `levelDotColor` (`LogsScreen.kt:226-229`, kept consistent with `LogViewer.levelColor`); the dot renders in `FilterChip`'s `leadingIcon` (`LogsScreen.kt:158-175`). Unselected M3 `FilterChip` containers are transparent, so the effective background is the screen canvas `background` set by `SecondaryScreenScaffold` (`AppTopBar.kt:76`); the selected state uses the M3 default `secondaryContainer`. Both states measured.
+6. **P7 is informational only.** Hairlines are decorative separators; WCAG sets no contrast minimum for them, and §6's softening intent accepts low ratios deliberately. Listed so future audits do not re-flag them.
+7. **Result: no failing pair at either threshold in either scheme**, so no sanctioned-slot remedy is required anywhere. Closest margin to its bar: light `error`/`errorContainer` at 5.00 against the 3.0 component bar; every body-text pair clears 4.5 by ≥ 1.74.

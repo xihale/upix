@@ -19,12 +19,10 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -37,11 +35,11 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.model.LogEntry
@@ -50,7 +48,11 @@ import com.crossscale.ui.components.LogViewer
 import com.crossscale.ui.theme.LocalScreenMargin
 import com.crossscale.ui.theme.Spacing
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * 日志屏：单列三段式——搜索框、筛选/工具行、日志面板。
+ * 复制/清空收进筛选行右侧（幽灵 IconButton），不再单独占一行；
+ * 结果数并入同行尾部弱化展示，减少垂直碎片。
+ */
 @Composable
 fun LogsScreen(
     logs: List<LogEntry>,
@@ -95,39 +97,6 @@ fun LogsScreen(
             .padding(top = Spacing.md, bottom = Spacing.md),
         verticalArrangement = Arrangement.spacedBy(Spacing.md)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
-        ) {
-            OutlinedButton(onClick = { showClearConfirm = true }) {
-                Icon(
-                    imageVector = Icons.Outlined.DeleteSweep,
-                    contentDescription = null,
-                    modifier = Modifier.padding(end = Spacing.xs).size(18.dp)
-                )
-                Text(stringResource(R.string.logs_clear))
-            }
-            OutlinedButton(onClick = {
-                val text = filteredLogs.joinToString(separator = "\n") { entry ->
-                    "${entry.level} [${entry.tag}] ${entry.message}"
-                }
-                clipboard.setText(AnnotatedString(text))
-                Toast.makeText(context, copiedCountMessage, Toast.LENGTH_SHORT).show()
-            }) {
-                Icon(
-                    imageVector = Icons.Outlined.ContentCopy,
-                    contentDescription = null,
-                    modifier = Modifier.padding(end = Spacing.xs).size(18.dp)
-                )
-                Text(stringResource(R.string.logs_copy))
-            }
-        }
-        Text(
-            text = stringResource(R.string.logs_result_count, filteredLogs.size),
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            style = MaterialTheme.typography.labelMedium
-        )
-
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
@@ -153,27 +122,67 @@ fun LogsScreen(
             }
         )
 
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-            item {
-                FilterChip(
-                    selected = selectedLevel == null,
-                    onClick = { selectedLevelOrdinal = -1 },
-                    label = { Text(stringResource(R.string.logs_filter_all)) }
+        // 筛选 + 工具同一行：级别 chips 可横向滚动，右侧计数与复制/清空固定。
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
+        ) {
+            LazyRow(
+                modifier = Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                item {
+                    FilterChip(
+                        selected = selectedLevel == null,
+                        onClick = { selectedLevelOrdinal = -1 },
+                        label = { Text(stringResource(R.string.logs_filter_all)) }
+                    )
+                }
+                items(LogLevel.entries) { level ->
+                    FilterChip(
+                        selected = selectedLevel == level,
+                        onClick = { selectedLevelOrdinal = level.ordinal },
+                        leadingIcon = {
+                            // 级别色点：E/C 红（error），其余级别中性（onSurfaceVariant）。
+                            Box(
+                                modifier = Modifier
+                                    .size(LevelDotSize)
+                                    .background(color = levelDotColor(level), shape = CircleShape)
+                            )
+                        },
+                        label = { Text(levelDisplayName(level)) }
+                    )
+                }
+            }
+
+            Text(
+                text = stringResource(R.string.logs_result_count, filteredLogs.size),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                style = MaterialTheme.typography.labelMedium
+            )
+
+            IconButton(onClick = {
+                val text = filteredLogs.joinToString(separator = "\n") { entry ->
+                    "${entry.level} [${entry.tag}] ${entry.message}"
+                }
+                clipboard.setText(AnnotatedString(text))
+                Toast.makeText(context, copiedCountMessage, Toast.LENGTH_SHORT).show()
+            }) {
+                Icon(
+                    imageVector = Icons.Outlined.ContentCopy,
+                    contentDescription = stringResource(R.string.logs_copy),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            items(LogLevel.entries) { level ->
-                FilterChip(
-                    selected = selectedLevel == level,
-                    onClick = { selectedLevelOrdinal = level.ordinal },
-                    leadingIcon = {
-                        // 级别色点：E/C 红（error），其余级别中性（onSurfaceVariant）。
-                        Box(
-                            modifier = Modifier
-                                .size(LevelDotSize)
-                                .background(color = levelDotColor(level), shape = CircleShape)
-                        )
-                    },
-                    label = { Text(level.name) }
+
+            // 清空为破坏性动作：确认弹窗兜底（§9.3）。
+            IconButton(onClick = { showClearConfirm = true }) {
+                Icon(
+                    imageVector = Icons.Outlined.DeleteSweep,
+                    contentDescription = stringResource(R.string.logs_clear),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
@@ -216,6 +225,19 @@ fun LogsScreen(
 
 /** 级别色点直径：小到不喧宾夺主，大到颜色可辨。 */
 private val LevelDotSize = 8.dp
+
+/**
+ * 筛选 chip 的级别显示名：走 strings.xml（log_level_*），枚举与过滤管线不动。
+ * 日志正文与剪贴板里的 [LEVEL] 保持原始英文枚举——开发工具美学，见 §9.11 修订（2026-08-24）。
+ */
+@Composable
+private fun levelDisplayName(level: LogLevel): String = when (level) {
+    LogLevel.DEBUG -> stringResource(R.string.log_level_debug)
+    LogLevel.INFO -> stringResource(R.string.log_level_info)
+    LogLevel.WARNING -> stringResource(R.string.log_level_warning)
+    LogLevel.ERROR -> stringResource(R.string.log_level_error)
+    LogLevel.CRITICAL -> stringResource(R.string.log_level_critical)
+}
 
 /**
  * 筛选 chip 的级别色点语义：ERROR/CRITICAL -> error，其余级别（含 WARNING）

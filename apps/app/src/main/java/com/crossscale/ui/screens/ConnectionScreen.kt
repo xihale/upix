@@ -26,7 +26,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -58,7 +57,7 @@ import com.crossscale.viewmodel.DeviceUiState
 /**
  * 连接屏（严格 1:1 手机↔PC）：单一状态卡承载全部状态——状态徽标（唯一强调色点）+
  * 状态标题 + 等宽字体地址/指纹 + 主操作。未连接时主按钮给扫码（首选路径），
- * 手动输入为次级描边按钮；错误条独立于状态卡之上，安静可忽略。
+ * 手动输入为安静的全宽文字按钮；错误条独立于状态卡之上，安静可忽略。
  */
 @Composable
 fun ConnectionScreen(
@@ -274,7 +273,8 @@ private fun ConnectedStatusCard(
         if (endpoint != null) {
             EndpointDetails(endpoint)
         }
-        OutlinedButton(
+        // 断开是低风险可逆操作：§9.3 安静文字动作即可，不占用强调容器。
+        TextButton(
             onClick = onDisconnect,
             modifier = Modifier.padding(top = Spacing.xs)
         ) {
@@ -313,7 +313,7 @@ private fun DisconnectedActions(
             text = stringResource(R.string.connection_status_disconnected),
             style = MaterialTheme.typography.titleMedium
         )
-        // 首选路径（扫码）为实心主按钮，手动输入退居描边；纵向等宽更从容。
+        // 首选路径（扫码）为实心主按钮，手动输入退居全宽安静文字按钮（§9.3）；纵向等宽更从容。
         Button(
             onClick = onScanQr,
             modifier = Modifier
@@ -328,7 +328,7 @@ private fun DisconnectedActions(
             Spacer(modifier = Modifier.width(Spacing.xs))
             Text(stringResource(R.string.connection_scan_qr))
         }
-        OutlinedButton(onClick = onManual, modifier = Modifier.fillMaxWidth()) {
+        TextButton(onClick = onManual, modifier = Modifier.fillMaxWidth()) {
             Icon(
                 imageVector = Icons.Outlined.Edit,
                 contentDescription = null,

@@ -39,9 +39,7 @@
     <string name="home_restore_backup">恢复备份</string>
     <string name="home_restore_backup_result_success">成功恢复 %1$d 个备份</string>
     <string name="home_restore_backup_result_partial">已恢复 %1$d 个，失败 %2$d 个</string>
-    <string name="home_continue_queue">继续队列</string>
     <string name="home_start_upscaling">开始超分</string>
-    <string name="home_processing">处理中</string>
     <string name="home_stop_processing">停止</string>
     <string name="home_open_queue_cd">打开队列</string>
 
@@ -50,8 +48,6 @@
     <string name="hero_thumbnail_preview">预览</string>
     <string name="hero_image_corrupted">图片损坏</string>
     <string name="hero_no_preview">暂无预览</string>
-    <string name="hero_pick_image">选择图片</string>
-    <string name="hero_pick_folder">选择文件夹</string>
     <string name="hero_add_image_cd">添加图片</string>
     <string name="hero_add_folder_cd">添加文件夹</string>
     <string name="hero_clear_all_cd">清空已选</string>
@@ -62,7 +58,6 @@
     <string name="config_mode_connecting">连接中</string>
     <string name="config_mode_remote">远程</string>
     <string name="config_label_scale">放大倍率</string>
-    <string name="config_label_spec">模型规格</string>
     <string name="config_output_format">输出格式</string>
     <string name="config_output_format_follow">跟随原图</string>
     <string name="home_select_output_format_sheet_title">选择输出格式</string>
@@ -106,17 +101,12 @@
     <string name="checkpoint_discard">丢弃</string>
 
     <!-- Models screen and model import feedback -->
-    <string name="models_title">模型</string>
     <string name="models_discovered_summary">已发现 %1$d 个模型</string>
     <string name="models_refresh">刷新模型列表</string>
     <string name="models_import">导入模型</string>
     <string name="models_download">下载模型</string>
     <string name="models_import_rules">.param 与 .bin 需同名成对，支持 zip</string>
     <string name="models_empty_hint">未发现模型</string>
-    <string name="models_spec_size">%1$dMB</string>
-    <string name="models_selected">已选择</string>
-    <string name="models_badge_phone">手机</string>
-    <string name="models_badge_pc">电脑</string>
     <string name="models_action_upload">上传到电脑</string>
     <string name="models_action_download">从电脑下载</string>
     <string name="models_delete">删除</string>
@@ -212,6 +202,12 @@
     <string name="logs_result_count">共 %1$d 条</string>
     <string name="logs_search_label">搜索</string>
     <string name="logs_filter_all">全部</string>
+    <!-- 级别筛选 chip 显示名（枚举/过滤管线不动；日志正文保持原始枚举，见 §9.11 修订） -->
+    <string name="log_level_debug">调试</string>
+    <string name="log_level_info">信息</string>
+    <string name="log_level_warning">警告</string>
+    <string name="log_level_error">错误</string>
+    <string name="log_level_critical">严重</string>
     <string name="logs_clear">清空日志</string>
     <string name="logs_copy">复制</string>
     <string name="logs_empty">无日志</string>
@@ -249,7 +245,6 @@
     <string name="connection_port_invalid">端口无效</string>
     <string name="download_downloaded_bytes">已下载 %1$s</string>
     <string name="queue_item_canceled">已取消</string>
-    <string name="queue_item_incomplete">批次未完成</string>
     <string name="queue_item_failed">批次失败</string>
     <string name="queue_cannot_start_batch">无法启动该批次</string>
     <string name="queue_no_failed_to_retry">没有可重试的失败项</string>

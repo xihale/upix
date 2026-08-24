@@ -28,17 +28,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
@@ -133,7 +136,7 @@ fun QRScannerScreen(
         }
     }
 
-    // 无关闭按钮，返回手势即退出扫码。
+    // 返回手势与左上角关闭按钮均调用 onClose 退出扫码。
     BackHandler(onBack = onClose)
 
     DisposableEffect(cameraPermissionGranted, lifecycleOwner, previewView) {
@@ -286,7 +289,7 @@ fun QRScannerScreen(
                             Text(stringResource(R.string.scanner_grant_permission))
                         }
                         // 永久拒绝后系统弹窗不再出现：提供直达应用详情页的手动入口。
-                        OutlinedButton(
+                        TextButton(
                             onClick = {
                                 runCatching {
                                     context.startActivity(
@@ -304,6 +307,23 @@ fun QRScannerScreen(
                     }
                 }
             }
+        }
+
+        // 可见退出入口（§9.3 幽灵 IconButton）：沉浸模式隐藏了系统栏，返回手势之外
+        // 再给一个明确的关闭按钮；仅 UI 覆盖层，相机/分析管线不受影响。
+        IconButton(
+            onClick = onClose,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .statusBarsPadding()
+                .padding(Spacing.lg)
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.Close,
+                contentDescription = stringResource(R.string.scanner_close),
+                tint = Color.White.copy(alpha = 0.9f),
+                modifier = Modifier.size(20.dp)
+            )
         }
 
         Column(
