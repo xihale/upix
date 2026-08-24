@@ -14,12 +14,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.HorizontalFloatingToolbar
 import androidx.compose.material3.Icon
@@ -40,8 +41,10 @@ import androidx.compose.foundation.layout.Spacer
 
 /**
  * 底部悬浮操作区：MD3 Expressive 官方 HorizontalFloatingToolbar 模式——
- * 主 CTA（Button，[DockCtaHeight] = Expressive L 档）作 leadingContent，恢复/队列入口
- * 为 toolbar 内 IconButton（自带 48dp 触控目标与容器投影）。
+ * 主 CTA（Button，[DockCtaHeight] = Expressive L 档）作 leadingContent：
+ * 空闲为实底主色「开始超分」；处理中变为错误红「停止」（[onStop]），
+ * 不再禁用——用户无需进队列面板即可随时中止。恢复/队列入口为 toolbar 内
+ * IconButton（自带 48dp 触控目标与容器投影）。
  * Scaffold 的 bottomBar(NavigationBar) 已消费导航栏 insets，
  * 故这里只保留底部悬浮间距。
  */
@@ -57,6 +60,7 @@ internal fun BottomActionDock(
     hasBackupAvailable: Boolean = false,
     onShowQueue: () -> Unit,
     onStart: () -> Unit,
+    onStop: () -> Unit,
     onRestore: () -> Unit = {}
 ) {
     Box(
@@ -70,15 +74,24 @@ internal fun BottomActionDock(
             expanded = false,
             modifier = Modifier.padding(start = Spacing.lg, end = Spacing.lg, bottom = Spacing.lg),
             leadingContent = {
+                // 同一 CTA 承载开始/停止两个互斥状态：空闲主色可点，处理中
+                // 变错误红仍可点（点击即取消），避免「转圈不可控」的死端。
                 Button(
-                    onClick = onStart,
-                    enabled = !isProcessing,
+                    onClick = if (isProcessing) onStop else onStart,
+                    colors = if (isProcessing) {
+                        ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError
+                        )
+                    } else {
+                        ButtonDefaults.buttonColors()
+                    },
                     interactionSource = ctaInteractionSource,
                     modifier = Modifier
                         .height(DockCtaHeight)
                         .pressScale(ctaInteractionSource)
                 ) {
-                    // 空闲↔处理中内容切换走统一纯 fade，不跳变。
+                    // 空闲↔停止切换走统一纯 fade，不跳变。
                     AnimatedContent(
                         targetState = isProcessing,
                         transitionSpec = {
@@ -87,22 +100,15 @@ internal fun BottomActionDock(
                         label = "ctaStateFade"
                     ) { processing ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            if (processing) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(22.dp),
-                                    strokeWidth = 2.5.dp
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Filled.PlayArrow,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(22.dp)
-                                )
-                            }
+                            Icon(
+                                imageVector = if (processing) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                                contentDescription = null,
+                                modifier = Modifier.size(22.dp)
+                            )
                             Spacer(modifier = Modifier.width(Spacing.sm))
                             Text(
                                 text = stringResource(
-                                    if (processing) R.string.home_processing else R.string.home_start_upscaling
+                                    if (processing) R.string.home_stop_processing else R.string.home_start_upscaling
                                 ),
                                 style = MaterialTheme.typography.titleMedium
                             )

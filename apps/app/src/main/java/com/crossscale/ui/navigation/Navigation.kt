@@ -266,6 +266,7 @@ fun CrossScaleNavigation(
                             SettingsDetail.MODELS -> ModelsScreen(
                                 library = mainUiState.library,
                                 phoneModelNames = mainUiState.models.map { it.name }.toSet(),
+                                pcConnected = mainUiState.useRemote,
                                 onRefreshModels = mainViewModel::refreshModels,
                                 onImportModels = inputSelection::importModels,
                                 onDeleteModel = mainViewModel::deleteModel,
@@ -299,6 +300,7 @@ fun CrossScaleNavigation(
                 ModelsScreen(
                     library = mainUiState.library,
                     phoneModelNames = mainUiState.models.map { it.name }.toSet(),
+                    pcConnected = mainUiState.useRemote,
                     onRefreshModels = mainViewModel::refreshModels,
                     onImportModels = inputSelection::importModels,
                     onDeleteModel = mainViewModel::deleteModel,

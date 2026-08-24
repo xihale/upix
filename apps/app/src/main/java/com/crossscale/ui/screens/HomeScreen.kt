@@ -310,6 +310,7 @@ fun HomeScreen(
                     queueSheetVisible = true
                 },
                 onStart = onStartProcessing,
+                onStop = onCancelProcessing,
                 onRestore = onRestoreBackup
             )
 

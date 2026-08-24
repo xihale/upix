@@ -67,6 +67,8 @@ fun ModelsScreen(
     library: List<ModelLibraryEntry>,
     /** 手机本地模型（供云端下载去重与删除操作）。 */
     phoneModelNames: Set<String>,
+    /** 是否已连接 PC：离线时 PC 相关徽标与传输动作无意义，不展示。 */
+    pcConnected: Boolean,
     onRefreshModels: () -> Unit,
     onImportModels: () -> Unit,
     onDeleteModel: (ModelInfo) -> Unit,
@@ -130,6 +132,7 @@ fun ModelsScreen(
                         entry = entry,
                         uploading = entry.name in uploadingToPc,
                         downloading = entry.name in downloadingFromPc,
+                        pcConnected = pcConnected,
                         onUploadToPc = { onUploadToPc(entry) },
                         onDownloadFromPc = { onDownloadFromPc(entry) },
                         onDelete = if (entry.localModel != null) {

@@ -31,12 +31,16 @@ import com.crossscale.ui.theme.valueStyleFor
  * 模型库卡：名称 + 双端存在徽标（手机/电脑）+ 规格行走 §2.1 机值槽（`valueStyleFor` →
  * `ValueMono`，titleSmall 14/20 mono）+ 行尾操作。
  * 单端存在的模型显示上传/下载动作；双端都有则无动作，仅可删除本地副本。
+ * 未连接 PC（[pcConnected] = false）时双端徽标与传输动作均无意义，一并隐藏。
+ *
+ * @param pcConnected 当前是否已连接 PC（决定 PC 相关图标与动作是否展示）。
  */
 @Composable
 fun ModelCard(
     entry: ModelLibraryEntry,
     uploading: Boolean,
     downloading: Boolean,
+    pcConnected: Boolean,
     onUploadToPc: () -> Unit,
     onDownloadFromPc: () -> Unit,
     onDelete: (() -> Unit)?
@@ -64,7 +68,7 @@ fun ModelCard(
                 )
 
                 val busy = uploading || downloading
-                if (!entry.onPhone && entry.onPc) {
+                if (!entry.onPhone && entry.onPc && pcConnected) {
                     if (downloading) {
                         BusyIndicator()
                     } else {
@@ -76,7 +80,7 @@ fun ModelCard(
                             )
                         }
                     }
-                } else if (entry.onPhone && !entry.onPc) {
+                } else if (entry.onPhone && !entry.onPc && pcConnected) {
                     if (uploading) {
                         BusyIndicator()
                     } else {
@@ -102,9 +106,12 @@ fun ModelCard(
                 }
             }
 
-            // 规格行：x2 · 2MB 后跟双端存在图标（只画实际存在的端）。
+            // 规格行：x2 · 2MB 后跟双端存在图标（只画实际存在的端，且仅在已
+            // 连接 PC 时展示——离线时 PC 标记无信息量）。规格文本与徽标组之
+            // 间用 Spacing.sm 呼吸间隔，徽标组内部 xs，避免 14dp 图标贴字。
             // 等宽判定按原子值进行，分隔符「·」为装饰性中性字符不参与判定
             // （docs/DESIGN_LANGUAGE.md §2.2 修订）。
+            val showDeviceBadges = pcConnected && (entry.onPhone || entry.onPc)
             val scaleText = stringResource(R.string.config_scale_value, entry.scaleFactor)
             val sizeText = formatSizeBytes(entry.totalSize)
             Row(
@@ -117,21 +124,29 @@ fun ModelCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
                 )
-                if (entry.onPhone) {
-                    Icon(
-                        imageVector = Icons.Outlined.Smartphone,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                if (entry.onPc) {
-                    Icon(
-                        imageVector = Icons.Outlined.Computer,
-                        contentDescription = null,
-                        modifier = Modifier.size(14.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
+                if (showDeviceBadges) {
+                    Row(
+                        modifier = Modifier.padding(start = Spacing.sm),
+                        horizontalArrangement = Arrangement.spacedBy(Spacing.xs),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        if (entry.onPhone) {
+                            Icon(
+                                imageVector = Icons.Outlined.Smartphone,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        if (entry.onPc) {
+                            Icon(
+                                imageVector = Icons.Outlined.Computer,
+                                contentDescription = null,
+                                modifier = Modifier.size(14.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
                 }
             }
         }
