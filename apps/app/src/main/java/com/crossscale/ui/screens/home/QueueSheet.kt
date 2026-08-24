@@ -90,6 +90,7 @@ internal fun QueueBottomSheetContent(
     onCancelProcessing: () -> Unit,
     onRetryQueuedBatch: (String) -> Unit,
     onRetryQueuedBatchFailedOnly: (String) -> Unit,
+    onPreviewQueuedBatchOutput: (String) -> Unit,
     onOpenQueuedBatchOutput: (String) -> Unit,
     onRemoveQueuedBatch: (String) -> Unit,
     onClearBatchQueue: () -> Unit,
@@ -207,6 +208,7 @@ internal fun QueueBottomSheetContent(
                         onCancelProcessing = onCancelProcessing,
                         onRetryQueuedBatch = onRetryQueuedBatch,
                         onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
+                        onPreviewQueuedBatchOutput = onPreviewQueuedBatchOutput,
                         onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,
                         onRemoveQueuedBatch = onRemoveQueuedBatch
                     )
@@ -251,6 +253,7 @@ private fun DismissibleQueueItem(
     onCancelProcessing: () -> Unit,
     onRetryQueuedBatch: (String) -> Unit,
     onRetryQueuedBatchFailedOnly: (String) -> Unit,
+    onPreviewQueuedBatchOutput: (String) -> Unit,
     onOpenQueuedBatchOutput: (String) -> Unit,
     onRemoveQueuedBatch: (String) -> Unit
 ) {
@@ -297,6 +300,7 @@ private fun DismissibleQueueItem(
             onCancelProcessing = onCancelProcessing,
             onRetryQueuedBatch = onRetryQueuedBatch,
             onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
+            onPreviewQueuedBatchOutput = onPreviewQueuedBatchOutput,
             onOpenQueuedBatchOutput = onOpenQueuedBatchOutput
         )
     }
@@ -310,6 +314,7 @@ private fun QueueItemCard(
     onCancelProcessing: () -> Unit,
     onRetryQueuedBatch: (String) -> Unit,
     onRetryQueuedBatchFailedOnly: (String) -> Unit,
+    onPreviewQueuedBatchOutput: (String) -> Unit,
     onOpenQueuedBatchOutput: (String) -> Unit
 ) {
     val canOpenOutput = queueItem.status == PersistedQueueItemStatus.COMPLETED &&
@@ -331,7 +336,11 @@ private fun QueueItemCard(
     Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .pressable(enabled = canOpenOutput) { onOpenQueuedBatchOutput(queueItem.id) },
+            // clip 必须在 pressable 之前：pressable 的涟漪不受 Surface shape 裁剪，
+            // 不裁剪会在圆角卡上画出方形涟漪（视觉不和谐）。
+            .clip(MaterialTheme.shapes.medium)
+            // 点卡片本体 = 应用内预览输出图；外部分享/打开走行尾 FolderOpen 图标。
+            .pressable(enabled = canOpenOutput) { onPreviewQueuedBatchOutput(queueItem.id) },
         shape = MaterialTheme.shapes.medium,
         color = MaterialTheme.colorScheme.surfaceContainerLowest
     ) {

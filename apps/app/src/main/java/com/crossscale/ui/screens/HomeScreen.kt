@@ -1,5 +1,6 @@
 package com.crossscale.ui.screens
 
+import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
@@ -51,6 +52,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
@@ -127,7 +129,8 @@ fun HomeScreen(
     onDiscardCheckpoint: () -> Unit,
     hasBackupAvailable: Boolean = false,
     onRestoreBackup: () -> Unit = {},
-    onCancelDownload: (String) -> Unit = {}
+    onCancelDownload: (String) -> Unit = {},
+    onResolveQueuedBatchOutputUri: (String) -> String? = { null }
 ) {
     val notSelectedLabel = stringResource(R.string.common_not_selected)
     val snackbarConnectingMessage = stringResource(R.string.home_snackbar_connecting)
@@ -169,6 +172,8 @@ fun HomeScreen(
     var showRemoteModelsDialog by rememberSaveable { mutableStateOf(false) }
     var queueSheetVisible by rememberSaveable { mutableStateOf(false) }
     var previewSource by rememberSaveable { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
+    val openOutputFailedMessage = stringResource(R.string.queue_open_output_failed)
     val queueSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     val snackbarHostState = remember { SnackbarHostState() }
@@ -416,6 +421,15 @@ fun HomeScreen(
                 onCancelProcessing = onCancelProcessing,
                 onRetryQueuedBatch = onRetryQueuedBatch,
                 onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
+                // 点卡片本体 = 应用内预览输出图；仅 FolderOpen 图标才外部分享/打开。
+                onPreviewQueuedBatchOutput = { batchId ->
+                    val uri = onResolveQueuedBatchOutputUri(batchId)
+                    if (uri.isNullOrBlank()) {
+                        Toast.makeText(context, openOutputFailedMessage, Toast.LENGTH_SHORT).show()
+                    } else {
+                        previewSource = uri
+                    }
+                },
                 onOpenQueuedBatchOutput = onOpenQueuedBatchOutput,
                 onRemoveQueuedBatch = onRemoveQueuedBatch,
                 onClearBatchQueue = onClearBatchQueue,
@@ -425,6 +439,7 @@ fun HomeScreen(
     }
 
     previewSource?.let { source ->
+        // 输入图与已完成输出图共用同一预览 sheet；输出为单图 URI，非损坏态。
         PreviewBottomSheet(
             source = source,
             isCorrupted = source in corruptedSources,

@@ -1,5 +1,6 @@
 package com.crossscale.ui.screens.home
 
+import android.net.Uri
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -27,6 +28,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.offset
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -40,10 +43,15 @@ import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmap
@@ -51,16 +59,24 @@ import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Constraints
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.thumbnails.decodeQueueThumbnailWithLimit
 import com.crossscale.ui.theme.ExpandSizeSpec
 import com.crossscale.ui.theme.Spacing
+import com.crossscale.ui.theme.ValueMono
 import com.crossscale.ui.theme.pressable
 
 // 320dp 舞台 / 全屏预览 sheet 的解码目标：默认 192px 缩略图在放大 3-5 倍后
@@ -415,6 +431,11 @@ internal fun PreviewBottomSheet(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
+    // 全出血铺满屏宽：固定 960px 档会被拉伸发糊，解码目标至少取屏幕物理宽度。
+    val previewTargetPx = maxOf(
+        PREVIEW_THUMBNAIL_TARGET_SIZE_PX,
+        context.resources.displayMetrics.widthPixels
+    )
     val previewResult by produceState(
         initialValue = ThumbnailResult(bitmap = null, settled = false),
         source
@@ -424,7 +445,7 @@ internal fun PreviewBottomSheet(
                 decodeQueueThumbnailWithLimit(
                     context = context,
                     source = source,
-                    targetSizePx = PREVIEW_THUMBNAIL_TARGET_SIZE_PX
+                    targetSizePx = previewTargetPx
                 )
             }.getOrNull(),
             settled = true
@@ -437,29 +458,91 @@ internal fun PreviewBottomSheet(
         shape = MaterialTheme.shapes.extraLarge,
         containerColor = MaterialTheme.colorScheme.surface
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = Spacing.xl),
-            verticalArrangement = Arrangement.spacedBy(Spacing.md)
-        ) {
+        // 照片查看器：图片铺满 sheet 宽，视口高度封顶；双指缩放（1-6x）+
+        // 拖动平移 + 双击切换放大。长图（高 > 视口）在 1x 即可上下滑动查看。
+        val result = previewResult
+        val bitmap = result.bitmap
+        var scale by remember(source) { mutableFloatStateOf(1f) }
+        var offset by remember(source) { mutableStateOf(Offset.Zero) }
+        var viewport by remember(source) { mutableStateOf(IntSize.Zero) }
+        var contentSize by remember(source) { mutableStateOf(IntSize.Zero) }
+
+        // 平移夹取：内容缩放尺寸超出视口的范围内才允许偏移。
+        fun clampOffset(candidate: Offset): Offset {
+            if (bitmap == null || viewport.width == 0 || viewport.height == 0) {
+                return Offset.Zero
+            }
+            val maxX = (((contentSize.width * scale) - viewport.width) / 2f).coerceAtLeast(0f)
+            val maxY = (((contentSize.height * scale) - viewport.height) / 2f).coerceAtLeast(0f)
+            return Offset(
+                x = candidate.x.coerceIn(-maxX, maxX),
+                y = candidate.y.coerceIn(-maxY, maxY)
+            )
+        }
+
+        Column(modifier = Modifier.fillMaxWidth()) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .heightIn(min = 220.dp, max = 520.dp)
-                    .clip(MaterialTheme.shapes.large)
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                    .heightIn(min = 240.dp, max = 520.dp)
+                    .clipToBounds()
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                    .onSizeChanged { viewport = it }
+                    .pointerInput(source) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            scale = (scale * zoom).coerceIn(1f, 6f)
+                            offset = clampOffset(offset + pan)
+                        }
+                    }
+                    .pointerInput(source) {
+                        detectTapGestures(
+                            onDoubleTap = {
+                                if (scale > 1f) {
+                                    scale = 1f
+                                    offset = Offset.Zero
+                                } else {
+                                    scale = 2.5f
+                                    offset = clampOffset(Offset.Zero)
+                                }
+                            }
+                        )
+                    },
                 contentAlignment = Alignment.Center
             ) {
-                val result = previewResult
                 when {
                     // 解码中：只留背景，避免「暂无预览」闪现。
                     !result.settled -> Unit
-                    result.bitmap != null -> Image(
-                        bitmap = result.bitmap,
+                    bitmap != null -> Image(
+                        bitmap = bitmap,
                         contentDescription = null,
-                        modifier = Modifier.fillMaxSize(),
-                        contentScale = ContentScale.Fit
+                        modifier = Modifier
+                            // 无限高测子项：长图拿到完整固有高度布局，居中放入
+                            // 视口，溢出由外层 clipToBounds 裁掉。否则父级
+                            // heightIn(max) 会把布局压到 520dp，绘制区与平移夹取
+                            // 不一致，滑动尽头露出井底色。
+                            .layout { measurable, constraints ->
+                                val placeable = measurable.measure(
+                                    constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity)
+                                )
+                                val reported = minOf(placeable.height, constraints.maxHeight)
+                                layout(constraints.maxWidth, reported) {
+                                    // 居中放置：clampOffset 按「内容中心对称 ± 视口」
+                                    // 夹取，放置也必须围绕同一中心，否则平移窗口会
+                                    // 滑出位图边界（露灰）或永远看不到某端。
+                                    placeable.placeRelative(
+                                        (constraints.maxWidth - placeable.width) / 2,
+                                        (reported - placeable.height) / 2
+                                    )
+                                }
+                            }
+                            .onSizeChanged { contentSize = it }
+                            .graphicsLayer {
+                                scaleX = scale
+                                scaleY = scale
+                                translationX = offset.x
+                                translationY = offset.y
+                            },
+                        contentScale = ContentScale.FillWidth
                     )
                     else -> Text(
                         text = if (isCorrupted) {
@@ -476,7 +559,46 @@ internal fun PreviewBottomSheet(
                     )
                 }
             }
-            Spacer(modifier = Modifier.height(Spacing.lg))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = Spacing.xl, end = Spacing.sm, top = Spacing.sm, bottom = Spacing.md),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = previewDisplayName(source),
+                        style = ValueMono,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (bitmap != null) {
+                        Text(
+                            text = "${bitmap.width} \u00d7 ${bitmap.height}",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                IconButton(onClick = onDismiss) {
+                    Icon(
+                        imageVector = Icons.Outlined.Close,
+                        contentDescription = stringResource(R.string.queue_close_cd)
+                    )
+                }
+            }
         }
     }
+}
+
+/** 预览信息栏的显示名：URI 取最后段并 URL 解码，路径取文件名，失败回落「image」。 */
+private fun previewDisplayName(source: String): String {
+    val raw = runCatching { Uri.parse(source.trim()).lastPathSegment }
+        .getOrNull()
+        ?: source.trim().substringAfterLast('/')
+    return runCatching { java.net.URLDecoder.decode(raw, "UTF-8") }
+        .getOrDefault(raw)
+        .ifBlank { "image" }
 }

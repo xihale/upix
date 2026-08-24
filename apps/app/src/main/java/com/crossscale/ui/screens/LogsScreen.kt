@@ -1,9 +1,7 @@
 package com.crossscale.ui.screens
 
 import android.widget.Toast
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,7 +10,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ContentCopy
@@ -35,7 +32,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -47,6 +43,7 @@ import com.crossscale.data.model.LogLevel
 import com.crossscale.ui.components.LogViewer
 import com.crossscale.ui.theme.LocalScreenMargin
 import com.crossscale.ui.theme.Spacing
+import com.crossscale.ui.theme.ValueMono
 
 /**
  * 日志屏：单列三段式——搜索框、筛选/工具行、日志面板。
@@ -122,7 +119,7 @@ fun LogsScreen(
             }
         )
 
-        // 筛选 + 工具同一行：级别 chips 可横向滚动，右侧计数与复制/清空固定。
+        // 筛选 + 工具同一行：级别 chips 可横向滚动，右侧复制/清空固定。
         Row(
             modifier = Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
@@ -144,24 +141,11 @@ fun LogsScreen(
                     FilterChip(
                         selected = selectedLevel == level,
                         onClick = { selectedLevelOrdinal = level.ordinal },
-                        leadingIcon = {
-                            // 级别色点：E/C 红（error），其余级别中性（onSurfaceVariant）。
-                            Box(
-                                modifier = Modifier
-                                    .size(LevelDotSize)
-                                    .background(color = levelDotColor(level), shape = CircleShape)
-                            )
-                        },
-                        label = { Text(levelDisplayName(level)) }
+                        // 级别用原始英文枚举（开发工具美学），等宽字体与日志正文同族。
+                        label = { Text(text = level.name, style = ValueMono) }
                     )
                 }
             }
-
-            Text(
-                text = stringResource(R.string.logs_result_count, filteredLogs.size),
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                style = MaterialTheme.typography.labelMedium
-            )
 
             IconButton(onClick = {
                 val text = filteredLogs.joinToString(separator = "\n") { entry ->
@@ -173,7 +157,8 @@ fun LogsScreen(
                 Icon(
                     imageVector = Icons.Outlined.ContentCopy,
                     contentDescription = stringResource(R.string.logs_copy),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
                 )
             }
 
@@ -182,7 +167,8 @@ fun LogsScreen(
                 Icon(
                     imageVector = Icons.Outlined.DeleteSweep,
                     contentDescription = stringResource(R.string.logs_clear),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
                 )
             }
         }
@@ -223,29 +209,4 @@ fun LogsScreen(
     }
 }
 
-/** 级别色点直径：小到不喧宾夺主，大到颜色可辨。 */
-private val LevelDotSize = 8.dp
-
-/**
- * 筛选 chip 的级别显示名：走 strings.xml（log_level_*），枚举与过滤管线不动。
- * 日志正文与剪贴板里的 [LEVEL] 保持原始英文枚举——开发工具美学，见 §9.11 修订（2026-08-24）。
- */
-@Composable
-private fun levelDisplayName(level: LogLevel): String = when (level) {
-    LogLevel.DEBUG -> stringResource(R.string.log_level_debug)
-    LogLevel.INFO -> stringResource(R.string.log_level_info)
-    LogLevel.WARNING -> stringResource(R.string.log_level_warning)
-    LogLevel.ERROR -> stringResource(R.string.log_level_error)
-    LogLevel.CRITICAL -> stringResource(R.string.log_level_critical)
-}
-
-/**
- * 筛选 chip 的级别色点语义：ERROR/CRITICAL -> error，其余级别（含 WARNING）
- * 中性（onSurfaceVariant），与 LogViewer.levelColor 保持一致。
- * WARNING 不单独配色：琥珀色槽位为保留槽位（D3、§11 禁止 app 代码引用）。
- */
-@Composable
-private fun levelDotColor(level: LogLevel): Color = when (level) {
-    LogLevel.ERROR, LogLevel.CRITICAL -> MaterialTheme.colorScheme.error
-    else -> MaterialTheme.colorScheme.onSurfaceVariant
-}
+/** 级别色点已移除；chip 标签直接用枚举 name。 */

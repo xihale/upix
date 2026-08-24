@@ -92,10 +92,11 @@ fun LogViewer(logs: List<LogEntry>, modifier: Modifier = Modifier) {
                 // 文本不可选中（内层不用 SelectionContainer）：否则其长按手势
                 // 会吞掉 combinedClickable，长按复制永远不触发。
                 Text(
+                    // 标签行放不下时折两行，不省略（长 tag 不丢字）。
                     text = "[${formatter.format(logEntry.timestamp)}] [${logEntry.tag}]",
                     style = LogMonoStyle,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
+                    maxLines = 2,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(

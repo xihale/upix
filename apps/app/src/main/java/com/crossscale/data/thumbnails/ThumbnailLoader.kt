@@ -53,7 +53,8 @@ private fun decodeQueueThumbnail(
 
         val decodeOptions = BitmapFactory.Options().apply {
             inSampleSize = calculateInSampleSize(sourceWidth, sourceHeight, targetSizePx)
-            inPreferredConfig = Bitmap.Config.RGB_565
+            // ARGB_8888：RGB_565 会色带/色偏；预览大图必须真彩。
+            inPreferredConfig = Bitmap.Config.ARGB_8888
         }
 
         val thumbnail = openThumbnailInputStream(context = context, source = thumbnailSource)?.use { stream ->
@@ -198,16 +199,23 @@ private fun calculateInSampleSize(
     sourceHeight: Int,
     requestedSizePx: Int
 ): Int {
+    // 规则一：最大 2^n 使降采样后两维仍 >= requested——普通图保清晰，
+    // 不冲过头（旧循环 3024px 在 1080 目标下采到 756px，拉伸发糊）。
+    // 规则二：投影像素超预算继续翻倍——长图（如 1080x20000）不满足规则一，
+    // 会全分辨率解码爆内存；统一降到预算内。
     var sampleSize = 1
-    var currentWidth = sourceWidth
-    var currentHeight = sourceHeight
-    while (currentWidth > requestedSizePx || currentHeight > requestedSizePx) {
+    val totalPixels = sourceWidth.toLong() * sourceHeight.toLong()
+    while (((sourceWidth / (sampleSize * 2) >= requestedSizePx &&
+                sourceHeight / (sampleSize * 2) >= requestedSizePx) ||
+            totalPixels / (sampleSize.toLong() * 4) > MaxDecodedPixels)
+    ) {
         sampleSize *= 2
-        currentWidth /= 2
-        currentHeight /= 2
     }
-    return sampleSize.coerceAtLeast(1)
+    return sampleSize
 }
+
+/** 单张解码像素上限（约 10MP）：超出即继续降采样，防长图 OOM。 */
+private const val MaxDecodedPixels = 10_000_000L
 
 // Cache keys must encode the decode size: the same source is decoded at
 // different target sizes (queue rows vs. stage vs. preview) and must never

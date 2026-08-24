@@ -209,6 +209,7 @@ fun CrossScaleNavigation(
                     onRetryFailedItem = processingViewModel::retryFailedItem,
                     onDiscardCheckpoint = processingViewModel::discardCheckpoint,
                     hasBackupAvailable = hasBackupAvailable,
+                    onResolveQueuedBatchOutputUri = processingViewModel::outputUriForQueuedBatch,
                     onRestoreBackup = {
                         restoreBackup(
                             context = context,
