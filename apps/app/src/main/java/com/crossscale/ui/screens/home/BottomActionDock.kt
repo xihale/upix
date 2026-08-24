@@ -1,6 +1,12 @@
 package com.crossscale.ui.screens.home
 
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -21,21 +27,27 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.crossscale.R
+import com.crossscale.ui.theme.EnterMotionSpec
 import com.crossscale.ui.theme.Spacing
+import com.crossscale.ui.theme.pressScale
 import androidx.compose.foundation.layout.Spacer
 
 /**
  * 底部悬浮操作区：MD3 Expressive 官方 HorizontalFloatingToolbar 模式——
- * 主 CTA（Button，56dp = Expressive L 档）作 leadingContent，恢复/队列入口
+ * 主 CTA（Button，[DockCtaHeight] = Expressive L 档）作 leadingContent，恢复/队列入口
  * 为 toolbar 内 IconButton（自带 48dp 触控目标与容器投影）。
  * Scaffold 的 bottomBar(NavigationBar) 已消费导航栏 insets，
  * 故这里只保留底部悬浮间距。
  */
+
+/** 主 CTA 高度（56dp = MD3 Expressive L 档；spec Appendix A / §9.3）。 */
+internal val DockCtaHeight = 56.dp
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
 internal fun BottomActionDock(
@@ -51,9 +63,8 @@ internal fun BottomActionDock(
         modifier = modifier.fillMaxWidth(),
         contentAlignment = Alignment.BottomCenter
     ) {
-        val ctaLabel = stringResource(
-            if (isProcessing) R.string.home_processing else R.string.home_start_upscaling
-        )
+        // 按压缩放与按钮共用同一 interactionSource（Motion token：100ms 0.97）。
+        val ctaInteractionSource = remember { MutableInteractionSource() }
 
         HorizontalFloatingToolbar(
             expanded = false,
@@ -62,22 +73,41 @@ internal fun BottomActionDock(
                 Button(
                     onClick = onStart,
                     enabled = !isProcessing,
-                    modifier = Modifier.height(56.dp)
+                    interactionSource = ctaInteractionSource,
+                    modifier = Modifier
+                        .height(DockCtaHeight)
+                        .pressScale(ctaInteractionSource)
                 ) {
-                    if (isProcessing) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(22.dp),
-                            strokeWidth = 2.5.dp
-                        )
-                    } else {
-                        Icon(
-                            imageVector = Icons.Filled.PlayArrow,
-                            contentDescription = null,
-                            modifier = Modifier.size(22.dp)
-                        )
+                    // 空闲↔处理中内容切换走统一纯 fade，不跳变。
+                    AnimatedContent(
+                        targetState = isProcessing,
+                        transitionSpec = {
+                            fadeIn(EnterMotionSpec) togetherWith fadeOut(EnterMotionSpec)
+                        },
+                        label = "ctaStateFade"
+                    ) { processing ->
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (processing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(22.dp),
+                                    strokeWidth = 2.5.dp
+                                )
+                            } else {
+                                Icon(
+                                    imageVector = Icons.Filled.PlayArrow,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(22.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(Spacing.sm))
+                            Text(
+                                text = stringResource(
+                                    if (processing) R.string.home_processing else R.string.home_start_upscaling
+                                ),
+                                style = MaterialTheme.typography.titleMedium
+                            )
+                        }
                     }
-                    Spacer(modifier = Modifier.width(Spacing.sm))
-                    Text(text = ctaLabel, style = MaterialTheme.typography.titleMedium)
                 }
             },
             content = {
@@ -95,7 +125,11 @@ internal fun BottomActionDock(
                     BadgedBox(
                         badge = {
                             if (queueCount > 0) {
-                                Badge {
+                                // 计数是信息不是告警：primaryContainer 取代默认 error 红。
+                                Badge(
+                                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                                ) {
                                     Text(text = if (queueCount > 99) "99+" else queueCount.toString())
                                 }
                             }

@@ -1,6 +1,8 @@
 package com.crossscale.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -36,6 +38,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -47,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
@@ -68,6 +72,7 @@ import com.crossscale.ui.screens.home.PreviewBottomSheet
 import com.crossscale.ui.screens.home.QueueBottomSheetContent
 import com.crossscale.ui.theme.EnterMotionSpec
 import com.crossscale.ui.theme.EnterSizeSpec
+import com.crossscale.ui.theme.EnterTween
 import com.crossscale.ui.theme.LocalScreenMargin
 import com.crossscale.ui.theme.MaxContentWidth
 import com.crossscale.ui.theme.Spacing
@@ -78,7 +83,7 @@ import com.crossscale.viewmodel.ProcessingUiState
 
 /**
  * Home「聚焦工作台」：图片舞台是唯一视觉焦点，UI 退后。
- * 顶部标识条 → 图片舞台 → 参数卡 → 断点续传卡 → 底部悬浮 Dock。
+ * 顶部标识条 → 图片舞台 → 平铺参数区 → 断点续传通知条 → 底部悬浮 Dock。
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -198,10 +203,14 @@ fun HomeScreen(
         }
     }
 
+    // 滚动时顶栏随内容收放（enterAlways）：大图舞台向上滚动让位给参数区。
+    val scrollBehavior = TopAppBarDefaults.enterAlwaysScrollBehavior()
+
     Scaffold(
         topBar = {
             CrossScaleTopAppBar(
                 title = stringResource(R.string.app_name),
+                scrollBehavior = scrollBehavior,
                 actions = {
                     HomeConnectionStatus(
                         connectionState = connectionState,
@@ -218,6 +227,7 @@ fun HomeScreen(
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .nestedScroll(scrollBehavior.nestedScrollConnection)
                 .padding(innerPadding),
             // 宽屏正文列限宽居中；悬浮 Dock/Snackbar 仍按全宽对齐。
             contentAlignment = Alignment.TopCenter
@@ -229,6 +239,7 @@ fun HomeScreen(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = LocalScreenMargin.current)
                     .padding(top = Spacing.md, bottom = BottomDockClearance),
+                // 规范：滚动屏主区块间垂直节奏统一 lg。
                 verticalArrangement = Arrangement.spacedBy(Spacing.lg)
             ) {
             ImageStage(
@@ -272,7 +283,7 @@ fun HomeScreen(
                 onToggleProcessNestedFolders = onToggleProcessNestedFolders
             )
 
-            // 断点续传卡：存在/消失做 fade + 纵向展开/收起（200ms ease-out）。
+            // 断点续传通知条：存在/消失做 fade + 纵向展开/收起。
             AnimatedVisibility(
                 visible = !isProcessing && processingUiState.checkpointSummary != null,
                 enter = fadeIn(EnterMotionSpec) + expandVertically(EnterSizeSpec),
@@ -436,13 +447,14 @@ fun HomeScreen(
 }
 
 /**
- * 底部悬浮 Dock 占位推导：56dp CTA + 16dp 悬浮间距 + 24dp 滚动间隙，
- * 供滚动列底部预留与 Snackbar 避让共用，替代散落的魔法数。
+ * 底部悬浮 Dock 占位推导：[DockCtaHeight]（56dp）+ [Spacing.lg] 悬浮间距 +
+ * [Spacing.xxl] 滚动间隙，供滚动列底部预留与 Snackbar 避让共用。
+ * 全部由 token 组成（§3 纪律），无裸 dp 算术。
  */
-private val BottomDockClearance = 56.dp + 16.dp + 24.dp
+private val BottomDockClearance = DockCtaHeight + Spacing.lg + Spacing.xxl
 
-/** Snackbar 在 Dock 之上再留 12dp 间隙。 */
-private val SnackbarAboveDockPadding = 56.dp + 16.dp + 12.dp
+/** Snackbar 在 Dock 之上再留 [Spacing.md] 间隙。 */
+private val SnackbarAboveDockPadding = DockCtaHeight + Spacing.lg + Spacing.md
 
 /** Sheet 内单选项：M3 官方 ListItem + RadioButton 单选列表模式。 */
 @Composable
@@ -475,7 +487,7 @@ private fun SelectSheetItem(
     )
 }
 
-/** 舞台处理 scrim/覆盖层：出现/消失做 fade（200ms ease-out）。只接收 task，避免整包 UI state 参与 overlay 重组。 */
+/** 舞台处理 scrim/覆盖层：出现/消失做 fade。只接收 task，避免整包 UI state 参与 overlay 重组。 */
 @Composable
 private fun BoxScope.StageProcessingOverlay(
     visible: Boolean,
@@ -514,6 +526,13 @@ private fun HomeConnectionStatus(
         statusLabel
     }
 
+    // 状态点颜色切换做短 fade：状态变化可感知但不闪跳。
+    val dotColor by animateColorAsState(
+        targetValue = statusColor,
+        animationSpec = tween(EnterTween),
+        label = "connectionDotColor"
+    )
+
     Row(
         modifier = Modifier.padding(end = Spacing.md),
         verticalAlignment = Alignment.CenterVertically,
@@ -523,7 +542,7 @@ private fun HomeConnectionStatus(
             modifier = Modifier
                 .size(8.dp)
                 .clip(CircleShape)
-                .background(statusColor)
+                .background(dotColor)
         )
         Text(
             text = text,
