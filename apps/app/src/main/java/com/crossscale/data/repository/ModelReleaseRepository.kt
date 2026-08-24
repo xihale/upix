@@ -261,14 +261,17 @@ class ModelReleaseRepository(
                 socket.getOutputStream().write(request.toByteArray(Charsets.US_ASCII))
                 socket.getOutputStream().flush()
 
-                val reader = socket.getInputStream().bufferedReader(Charsets.ISO_8859_1)
-                val statusLine = reader.readLine()
+                // 头部与正文必须共用同一个输入流：若用 BufferedReader 解析头部，
+                // 其预读缓冲会吞掉正文首字节（小响应常整包进缓冲），再从裸
+                // socket.getInputStream() 读正文只会得到空流（sha256 必然失配）。
+                val input = socket.getInputStream().buffered()
+                val statusLine = readIsoLine(input)
                     ?: throw IOException("empty response from $host")
                 val status = statusLine.split(" ").getOrNull(1)?.toIntOrNull()
                     ?: throw IOException("malformed status line: $statusLine")
                 val headers = mutableMapOf<String, String>()
                 while (true) {
-                    val line = reader.readLine() ?: break
+                    val line = readIsoLine(input) ?: break
                     if (line.isEmpty()) break
                     val idx = line.indexOf(':')
                     if (idx > 0) {
@@ -285,9 +288,9 @@ class ModelReleaseRepository(
                 }
 
                 val body = if (headers["transfer-encoding"]?.equals("chunked", true) == true) {
-                    ChunkedInputStream(socket.getInputStream())
+                    ChunkedInputStream(input)
                 } else {
-                    socket.getInputStream()
+                    input
                 }
                 return Response(status, headers, body, socket)
             } catch (throwable: Throwable) {
@@ -344,8 +347,7 @@ class ModelReleaseRepository(
                 remaining = readChunkSize()
                 if (remaining == 0L) {
                     // 尾随头部直到空行。
-                    val reader = input.bufferedReader(Charsets.ISO_8859_1)
-                    while (reader.readLine()?.isNotEmpty() == true) { /* drain trailers */ }
+                    while (readIsoLine(input)?.isNotEmpty() == true) { /* drain trailers */ }
                     done = true
                     return -1
                 }
@@ -364,8 +366,7 @@ class ModelReleaseRepository(
         }
 
         private fun readChunkSize(): Long {
-            val sizeLine = input.bufferedReader(Charsets.ISO_8859_1).readLine()
-                ?: throw IOException("missing chunk size")
+            val sizeLine = readIsoLine(input) ?: throw IOException("missing chunk size")
             return sizeLine.substringBefore(';').trim().toLong(16)
         }
     }
@@ -414,6 +415,21 @@ private fun fixedIpFor(host: String): InetAddress? {
         val suffix = pattern.removePrefix("*")
         pattern.startsWith("*") && (host == suffix || host.endsWith(".$suffix"))
     }?.let { (_, ip) -> InetAddress.getByName(ip) }
+}
+
+/**
+ * 按字节读一行（ISO-8859-1 的 byte→char 恒等解码），LF 结束并剥掉尾部 CR；
+ * 边界 EOF 时返回 null。不做任何超前缓冲：调用方在头部解析结束后，
+ * 同一流原样作为响应正文继续读取。
+ */
+internal fun readIsoLine(input: InputStream): String? {
+    val sb = StringBuilder()
+    while (true) {
+        val b = input.read()
+        if (b == -1) return if (sb.isEmpty()) null else sb.toString()
+        if (b == '\n'.code) return sb.toString().removeSuffix("\r")
+        sb.append(b.toChar())
+    }
 }
 
 /** 解析 manifest.json 文本；版本不支持或字段缺失时抛 IOException。 */
