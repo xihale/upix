@@ -28,7 +28,8 @@ import com.crossscale.ui.theme.Spacing
 /**
  * MD3 adaptive 导航：compact 用 NavigationBar（见 [BottomNavigationBar]），
  * medium 用 NavigationRail，expanded+ 用 PermanentNavigationDrawer。
- * 选中态判定与底部导航共享（settings 子路由、help 层级归属 Settings）。
+ * 选中态判定、目的地切换、选中/未选中图标选择三处共享（settings 子路由、
+ * help 层级归属 Settings）。
  */
 
 /** 底部导航/rail/drawer 共享的选中态判定。 */
@@ -51,8 +52,11 @@ internal fun isScreenSelected(currentDestination: NavDestination?, screen: AppSc
     }
 }
 
-/** 目的地切换：与底部导航相同的 pop/save/restore 策略。 */
-private fun navigateTo(navController: NavController, screen: AppScreen) {
+/** 三种导航形态共用的图标选择：选中态用填充变体。 */
+internal fun AppScreen.iconFor(selected: Boolean) = if (selected) selectedIcon else icon
+
+/** 目的地切换：三种导航形态共享同一 pop/save/restore 策略。 */
+internal fun navigateToTab(navController: NavController, screen: AppScreen) {
     navController.navigate(screen.route) {
         navController.graph.startDestinationRoute?.let { route ->
             popUpTo(route) {
@@ -65,7 +69,7 @@ private fun navigateTo(navController: NavController, screen: AppScreen) {
 }
 
 @Composable
-private fun currentDestinationOf(navController: NavController): NavDestination? {
+internal fun currentDestinationOf(navController: NavController): NavDestination? {
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     return navBackStackEntry?.destination
 }
@@ -84,7 +88,7 @@ fun AdaptiveNavigationRail(navController: NavController) {
                 // label 已朗读，图标不带 contentDescription，避免 TalkBack 双报。
                 icon = {
                     Icon(
-                        imageVector = if (selected) screen.selectedIcon else screen.icon,
+                        imageVector = screen.iconFor(selected),
                         contentDescription = null
                     )
                 },
@@ -92,7 +96,7 @@ fun AdaptiveNavigationRail(navController: NavController) {
                 selected = selected,
                 onClick = {
                     if (!selected) {
-                        navigateTo(navController, screen)
+                        navigateToTab(navController, screen)
                     }
                 }
             )
@@ -132,13 +136,13 @@ fun AppNavigationDrawer(
                         NavigationDrawerItem(
                             icon = {
                                 Icon(
-                                    imageVector = if (selected) screen.selectedIcon else screen.icon,
+                                    imageVector = screen.iconFor(selected),
                                     contentDescription = null
                                 )
                             },
                             label = { Text(title) },
                             selected = selected,
-                            onClick = { navigateTo(navController, screen) },
+                            onClick = { navigateToTab(navController, screen) },
                             modifier = Modifier.padding(vertical = 2.dp)
                         )
                     }
