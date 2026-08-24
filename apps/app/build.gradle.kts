@@ -29,6 +29,15 @@ android {
     // Security fix: Define signing configs separately. Release build uses
     // environment variables for the signing key, not the debug keystore.
     signingConfigs {
+        // Pin the debug keystore explicitly: depending on the environment AGP
+        // resolves it to either ~/.android/debug.keystore or
+        // ~/.config/.android/debug.keystore, and machines having both end up
+        // with the app and its androidTest APK signed by DIFFERENT keys —
+        // breaking adb install updates and instrumentation with a confusing
+        // "signature matching" permission denial.
+        getByName("debug") {
+            storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
+        }
         create("release") {
             val keystorePath = System.getenv("CROSSSCALE_RELEASE_STORE_FILE")
             if (keystorePath != null) {
