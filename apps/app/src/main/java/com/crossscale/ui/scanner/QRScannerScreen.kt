@@ -15,16 +15,26 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.ErrorOutline
+import androidx.compose.material.icons.outlined.PhotoCamera
 import androidx.compose.material3.Button
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
@@ -38,9 +48,19 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -183,7 +203,7 @@ fun QRScannerScreen(
         }
     }
 
-    // 全屏相机体验：scrim 角色遮罩 + 顶部关闭按钮 + 中央取景框 + 底部提示。
+    // 全屏相机体验：scrim 角色遮罩 + 上部四角括号取景框 + 提示胶囊 + 底部错误提示。
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -194,6 +214,27 @@ fun QRScannerScreen(
                 factory = { previewView },
                 modifier = Modifier.fillMaxSize()
             )
+            // 取景框层（纯装饰）：约 35% 高度偏移处放置四角括号，其下挂提示胶囊。
+            Column(
+                modifier = Modifier.fillMaxSize(),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Spacer(modifier = Modifier.weight(0.34f))
+                QrReticle(modifier = Modifier.size(256.dp))
+                Spacer(modifier = Modifier.height(Spacing.xl))
+                Surface(
+                    shape = CircleShape,
+                    color = MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.72f),
+                    contentColor = MaterialTheme.colorScheme.inverseOnSurface
+                ) {
+                    Text(
+                        text = stringResource(R.string.scanner_hint),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.sm)
+                    )
+                }
+                Spacer(modifier = Modifier.weight(0.66f))
+            }
         } else {
             Column(
                 modifier = Modifier
@@ -208,13 +249,35 @@ fun QRScannerScreen(
                     color = MaterialTheme.colorScheme.surfaceContainer
                 ) {
                     Column(
-                        modifier = Modifier.padding(Spacing.lg),
+                        modifier = Modifier.padding(Spacing.xl),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.spacedBy(Spacing.md)
                     ) {
+                        // 64dp tonal 圆形 + 相机图标。
+                        Box(
+                            modifier = Modifier
+                                .size(64.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primaryContainer),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.PhotoCamera,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
                         Text(
                             text = stringResource(R.string.scanner_permission_required),
-                            style = MaterialTheme.typography.bodyMedium
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = stringResource(R.string.scanner_permission_description),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
                         )
                         Button(
                             onClick = { requestPermissionLauncher.launch(Manifest.permission.CAMERA) },
@@ -257,18 +320,28 @@ fun QRScannerScreen(
                     color = MaterialTheme.colorScheme.errorContainer,
                     contentColor = MaterialTheme.colorScheme.onErrorContainer
                 ) {
-                    Text(
-                        text = error,
-                        style = MaterialTheme.typography.bodySmall,
-                        modifier = Modifier.padding(horizontal = Spacing.md, vertical = Spacing.sm)
-                    )
+                    Row(
+                        modifier = Modifier.padding(
+                            start = Spacing.md,
+                            end = Spacing.lg,
+                            top = Spacing.sm,
+                            bottom = Spacing.sm
+                        ),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.ErrorOutline,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(Spacing.sm))
+                        Text(
+                            text = error,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                    }
                 }
             }
-            Text(
-                text = stringResource(R.string.scanner_hint),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.inverseOnSurface
-            )
         }
     }
 }
@@ -288,4 +361,59 @@ private fun decodeQrPayload(imageProxy: ImageProxy): String? {
         height = imageProxy.height,
         rotationDegrees = imageProxy.imageInfo.rotationDegrees
     )
+}
+
+/**
+ * 取景框（纯装饰）：极淡圆角描边（10% 白）+ 四角括号（白 90%、2dp 描边、
+ * 臂长 28dp，折弯处经 cornerPathEffect 圆润过渡）。无交互语义。
+ */
+@Composable
+private fun QrReticle(modifier: Modifier = Modifier) {
+    val bracketColor = Color.White.copy(alpha = 0.9f)
+    val faintBorderColor = Color.White.copy(alpha = 0.1f)
+    Canvas(modifier = modifier) {
+        val stroke = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
+        val bracketStroke = Stroke(
+            width = 2.dp.toPx(),
+            cap = StrokeCap.Round,
+            pathEffect = PathEffect.cornerPathEffect(8.dp.toPx())
+        )
+        val inset = stroke.width / 2f + 1.dp.toPx()
+        val cornerRadius = CornerRadius(18.dp.toPx(), 18.dp.toPx())
+
+        // 极淡的圆角边框，标出完整扫描区域。
+        drawRoundRect(
+            color = faintBorderColor,
+            topLeft = Offset(inset, inset),
+            size = Size(size.width - inset * 2f, size.height - inset * 2f),
+            cornerRadius = cornerRadius,
+            style = stroke
+        )
+
+        val arm = 28.dp.toPx()
+        val w = size.width
+        val h = size.height
+        val path = Path().apply {
+            moveTo(inset, inset + arm)
+            lineTo(inset, inset)
+            lineTo(inset + arm, inset)
+
+            moveTo(w - inset - arm, inset)
+            lineTo(w - inset, inset)
+            lineTo(w - inset, inset + arm)
+
+            moveTo(w - inset, h - inset - arm)
+            lineTo(w - inset, h - inset)
+            lineTo(w - inset - arm, h - inset)
+
+            moveTo(inset + arm, h - inset)
+            lineTo(inset, h - inset)
+            lineTo(inset, h - inset - arm)
+        }
+        drawPath(
+            path = path,
+            color = bracketColor,
+            style = bracketStroke
+        )
+    }
 }
