@@ -13,7 +13,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -25,6 +28,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import com.crossscale.R
 import com.crossscale.data.model.LogEntry
@@ -33,6 +37,9 @@ import com.crossscale.ui.theme.LogMonoStyle
 import com.crossscale.ui.theme.Spacing
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+
+/** 条目默认折叠行数：超过即省略，点击展开。 */
+private const val CollapsedMessageLines = 2
 
 @Composable
 fun LogViewer(logs: List<LogEntry>, modifier: Modifier = Modifier) {
@@ -65,6 +72,8 @@ fun LogViewer(logs: List<LogEntry>, modifier: Modifier = Modifier) {
     ) {
         items(items = logs, key = { it.id }) { logEntry ->
             val fullText = "[${formatter.format(logEntry.timestamp)}] [${logEntry.tag}] [${logEntry.level}] ${logEntry.message}"
+            // 长条目默认折为 2 行省略，点击展开全文；避免超长 URL 类消息把列表撑乱。
+            var expanded by remember(logEntry.id) { mutableStateOf(false) }
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -75,7 +84,7 @@ fun LogViewer(logs: List<LogEntry>, modifier: Modifier = Modifier) {
                             clipboard.setText(AnnotatedString(fullText))
                             Toast.makeText(context, copiedMessage, Toast.LENGTH_SHORT).show()
                         },
-                        onClick = {}
+                        onClick = { expanded = !expanded }
                     )
                     .padding(vertical = Spacing.xs),
                 verticalArrangement = Arrangement.spacedBy(Spacing.xs)
@@ -85,7 +94,9 @@ fun LogViewer(logs: List<LogEntry>, modifier: Modifier = Modifier) {
                 Text(
                     text = "[${formatter.format(logEntry.timestamp)}] [${logEntry.tag}]",
                     style = LogMonoStyle,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
                 Text(
                     text = buildAnnotatedString {
@@ -95,7 +106,9 @@ fun LogViewer(logs: List<LogEntry>, modifier: Modifier = Modifier) {
                         }
                         append(logEntry.message)
                     },
-                    style = LogMonoStyle
+                    style = LogMonoStyle,
+                    maxLines = if (expanded) Int.MAX_VALUE else CollapsedMessageLines,
+                    overflow = if (expanded) TextOverflow.Clip else TextOverflow.Ellipsis
                 )
             }
         }
