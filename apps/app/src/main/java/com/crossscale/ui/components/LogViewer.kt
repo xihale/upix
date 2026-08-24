@@ -3,6 +3,7 @@ package com.crossscale.ui.components
 import android.widget.Toast
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,6 +14,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -23,7 +25,6 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import com.crossscale.R
 import com.crossscale.data.model.LogEntry
@@ -35,6 +36,17 @@ import java.time.format.DateTimeFormatter
 
 @Composable
 fun LogViewer(logs: List<LogEntry>, modifier: Modifier = Modifier) {
+    if (logs.isEmpty()) {
+        // 空态：居中弱化提示，不渲染列表骨架。
+        Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                text = stringResource(R.string.logs_empty),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        return
+    }
     // Pattern parsing + zone lookup is non-trivial; hoist out of recomposition.
     val formatter = remember {
         DateTimeFormatter.ofPattern("HH:mm:ss").withZone(ZoneId.systemDefault())
@@ -44,10 +56,12 @@ fun LogViewer(logs: List<LogEntry>, modifier: Modifier = Modifier) {
     val context = LocalContext.current
     val haptic = LocalHapticFeedback.current
     val copiedMessage = stringResource(R.string.log_entry_copied)
+    // 头部行与正文同用 LogMonoStyle（§2.1 唯一认可的日志等宽槽位）：同族字形网格，
+    // 各条目头部彼此对齐、正文彼此对齐；层级差异只靠颜色弱化表达。
 
     LazyColumn(
         modifier = modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.spacedBy(Spacing.sm)
+        verticalArrangement = Arrangement.spacedBy(Spacing.xs)
     ) {
         items(items = logs, key = { it.id }) { logEntry ->
             val fullText = "[${formatter.format(logEntry.timestamp)}] [${logEntry.tag}] [${logEntry.level}] ${logEntry.message}"
@@ -70,8 +84,8 @@ fun LogViewer(logs: List<LogEntry>, modifier: Modifier = Modifier) {
                 // 会吞掉 combinedClickable，长按复制永远不触发。
                 Text(
                     text = "[${formatter.format(logEntry.timestamp)}] [${logEntry.tag}]",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.Medium
+                    style = LogMonoStyle,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
                     text = buildAnnotatedString {
@@ -92,10 +106,7 @@ fun LogViewer(logs: List<LogEntry>, modifier: Modifier = Modifier) {
 private fun levelColor(level: LogLevel): Color {
     val colorScheme = MaterialTheme.colorScheme
     return when (level) {
-        LogLevel.DEBUG -> colorScheme.onSurfaceVariant
-        LogLevel.INFO -> colorScheme.onSurfaceVariant
-        LogLevel.WARNING -> colorScheme.onSurfaceVariant
-        LogLevel.ERROR -> colorScheme.error
-        LogLevel.CRITICAL -> colorScheme.error
+        LogLevel.ERROR, LogLevel.CRITICAL -> colorScheme.error
+        else -> colorScheme.onSurfaceVariant
     }
 }

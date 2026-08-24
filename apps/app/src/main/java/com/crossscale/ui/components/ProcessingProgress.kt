@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -17,13 +18,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.model.ProcessingStatus
 import com.crossscale.data.model.ProcessingTask
 import com.crossscale.ui.theme.Spacing
-import com.crossscale.ui.theme.ValueMono
 import com.crossscale.ui.theme.smoothProgress
+import com.crossscale.ui.theme.valueStyleFor
 
 /**
  * 舞台遮罩进度：处理中覆盖在图片舞台之上。
@@ -70,18 +70,20 @@ fun StageProgressOverlay(
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
             task.currentItemName?.let { itemName ->
+                // 文件/模型名属机器值：ASCII 走 ValueMono，含 CJK 回退系统字阶（§2.1/§2.2）。
                 Text(
                     text = itemName,
-                    style = ValueMono.copy(fontSize = MaterialTheme.typography.labelSmall.fontSize),
+                    style = valueStyleFor(itemName),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
             task.lastErrorMessage?.let { errorMessage ->
+                // 错误文案可能含中文：必须经 valueStyleFor 做 CJK 回退（§2.2）。
                 Text(
                     text = errorMessage,
-                    style = ValueMono.copy(fontSize = MaterialTheme.typography.labelSmall.fontSize),
+                    style = valueStyleFor(errorMessage),
                     color = MaterialTheme.colorScheme.error,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
@@ -89,7 +91,7 @@ fun StageProgressOverlay(
             }
             TextButton(
                 onClick = onCancel,
-                colors = androidx.compose.material3.ButtonDefaults.textButtonColors(
+                colors = ButtonDefaults.textButtonColors(
                     contentColor = MaterialTheme.colorScheme.error
                 )
             ) {

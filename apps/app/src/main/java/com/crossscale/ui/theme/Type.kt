@@ -8,6 +8,9 @@ import androidx.compose.ui.unit.sp
 
 // 未显式定义的槽位此前会落到 material 默认值，与本项目字重/行高不一致；
 // 这里按 M3 基线补齐全部槽位，保证任何组件取任意样式都来自同一套规范。
+// 本文件是字阶的规范来源（docs/DESIGN_LANGUAGE.md §2）：仅 Regular/Medium 两档
+// 字重（D 系列纪律：强调 = Medium + 颜色，禁止 Bold/SemiBold），display/headline
+// 槽位保留基线值但 app 代码不得采用；等宽扩展只经 ValueMono/LogMono/valueStyleFor。
 val Typography = Typography(
     displayLarge = TextStyle(
         fontFamily = FontFamily.Default,
@@ -137,3 +140,11 @@ val SectionLabelStyle = Typography.labelLarge.copy(letterSpacing = 1.2.sp)
  */
 fun valueStyleFor(text: String, fallback: TextStyle = Typography.titleSmall): TextStyle =
     if (text.any { it.code > 0x7F }) fallback else ValueMono
+
+/**
+ * 多段机器值拼接（如「x2 · 2MB」）时的等宽判定：按各原子值分别检查是否含
+ * 非拉丁字符，装饰性分隔符（如「·」U+00B7）不参与判定；任一原子值含非拉丁
+ * 则整行回退系统字阶。见 docs/DESIGN_LANGUAGE.md §2.2 修订。
+ */
+fun valueStyleFor(vararg texts: String, fallback: TextStyle = Typography.titleSmall): TextStyle =
+    if (texts.any { text -> text.any { it.code > 0x7F } }) fallback else ValueMono

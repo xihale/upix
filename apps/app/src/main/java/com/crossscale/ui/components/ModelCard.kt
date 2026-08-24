@@ -25,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import com.crossscale.R
 import com.crossscale.data.model.ModelLibraryEntry
 import com.crossscale.ui.theme.Spacing
+import com.crossscale.ui.theme.valueStyleFor
 
 /**
  * 模型库卡：名称 + 双端存在徽标（手机/电脑）+ 规格行走 §2.1 机值槽（`valueStyleFor` →
@@ -102,16 +103,17 @@ fun ModelCard(
             }
 
             // 规格行：x2 · 2MB 后跟双端存在图标（只画实际存在的端）。
+            // 等宽判定按原子值进行，分隔符「·」为装饰性中性字符不参与判定
+            // （docs/DESIGN_LANGUAGE.md §2.2 修订）。
+            val scaleText = stringResource(R.string.config_scale_value, entry.scaleFactor)
+            val sizeText = formatSizeBytes(entry.totalSize)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
             ) {
                 Text(
-                    text = listOf(
-                        stringResource(R.string.config_scale_value, entry.scaleFactor),
-                        formatSizeBytes(entry.totalSize)
-                    ).joinToString(" · "),
-                    style = monoLabelStyle(),
+                    text = listOf(scaleText, sizeText).joinToString(" · "),
+                    style = valueStyleFor(scaleText, sizeText),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
                 )
