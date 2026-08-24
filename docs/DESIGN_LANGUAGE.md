@@ -19,9 +19,9 @@
 
 | ID | Decision |
 |----|----------|
-| D1 | **Dynamic color is removed.** Delete the `dynamicDark/LightColorScheme` branch in `Theme.kt`. Wallpaper-derived palettes produce multi-hue schemes that violate the single-accent rule; the shipped palette is authoritative on every device. |
+| D1 | **MD3 dynamic color from the system.** On Android 12+ `Theme.kt` derives the scheme via `dynamicDark/LightColorScheme(context)` so the app follows wallpaper-based Material You color (user ruling 2026-08-24, superseding the earlier "brand palette authoritative" decision). Below API 31 it falls back to the shipped Teal palette in `ui/theme/Color.kt`, which remains the canonical fallback. App code must still consume only `MaterialTheme.colorScheme` slots — never raw hex — so both sources stay interchangeable. The single-accent discipline (D3) governs *usage*, not the hue source. |
 | D2 | **Dark-first, light parity.** Dark is the canonical expression (photo workbench); light mode uses the derived family in §2 with identical roles. |
-| D3 | **Single accent discipline.** `primary` = teal, sparingly (§2.3). `secondary*` survives only as the nav-selection tint and the "queued" status chip. `tertiary*` is **reserved**: defined in the scheme (so components never fall back to library defaults) but forbidden in app code. |
+| D3 | **Single accent discipline.** `primary` is used sparingly (§2.3); its hue is Teal in the fallback palette and wallpaper-derived on Android 12+. `secondary*` survives only as the nav-selection tint and the "queued" status chip. `tertiary*` is **reserved**: defined in the scheme (so components never fall back to library defaults) but forbidden in app code. |
 | D4 | **No shadows.** Depth = `surfaceContainerLowest…Highest` ramp + scrims. The only permitted shadow is the one built into M3 `HorizontalFloatingToolbar`. |
 | D5 | **Radius unification.** Content cards are always `shapes.medium` = **16dp**. Only the hero stage is larger. See §5. |
 | D6 | **Icon system.** Material `Outlined` set everywhere; `Filled` variants only for selected bottom-nav state and the primary play CTA. |

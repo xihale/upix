@@ -1,6 +1,7 @@
 package com.crossscale.ui.theme
 
 import android.app.Activity
+import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
@@ -8,9 +9,12 @@ import androidx.compose.material3.MaterialExpressiveTheme
 import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
@@ -111,9 +115,16 @@ fun CrossScaleTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     content: @Composable () -> Unit
 ) {
-    // 品牌色板是所有设备上的唯一权威（spec D1）：壁纸动态取色会产生多色相方案，
-    // 违反单一强调色纪律，动态取色分支已移除。深色为主表达（D2），浅色为同族推导。
-    val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
+    // MD3 动态取色（spec D1）：Android 12+ 从系统壁纸派生 ColorScheme，
+    // 与系统外观保持一致；Android 11 及以下回退到品牌色板（Teal 锚点，
+    // 深色为主表达 D2）。组件只消费 MaterialTheme.colorScheme 槽位，
+    // 两种来源可无缝互换。
+    val context = LocalContext.current
+    val colorScheme = when {
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
+            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+        else -> if (darkTheme) DarkColorScheme else LightColorScheme
+    }
     val view = LocalView.current
     if (!view.isInEditMode) {
         SideEffect {

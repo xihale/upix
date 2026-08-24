@@ -3,8 +3,9 @@ package com.crossscale.ui.theme
 import androidx.compose.ui.graphics.Color
 
 /**
- * CrossScale 规范色板（normative，docs/DESIGN_LANGUAGE.md §1）。
- * 品牌锚点：Teal #4C9D9A + 深板岩 #0F172A（启动图标）。
+ * CrossScale 品牌色板（docs/DESIGN_LANGUAGE.md §1，D1 回退方案）。
+ * Android 12+ 由 Theme.kt 走系统动态取色；本色板用于 Android 11 及以下
+ * 回退。品牌锚点：Teal #4C9D9A + 深板岩 #0F172A（启动图标）。
  * 深色为主表达（D2：界面退后，图片为主角），浅色为同族推导。
  * 本文件是唯一允许出现 Color(0x…) 字面量的地方；hex 与 spec §1 逐字一致，禁止分叉。
  *
