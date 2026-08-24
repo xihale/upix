@@ -203,6 +203,18 @@ Source of truth: `ui/theme/Spacing.kt`. Base grid **4dp**.
 > fine-tune of item metrics. Both values are off the 4dp grid; deleting or re-tokenizing them
 > would silently change rendered pixels and needs its own §11 amendment.
 
+> **Amendment (2026-08-24): integration rulings — dock clearance derivation, queue progress
+> bar, overlay micro-offsets.**
+> (1) Home dock clearances (`BottomDockClearance`, `SnackbarAboveDockPadding`) are derived
+> pixel-exactly from `DockCtaHeight` (Appendix A 56dp, defined once in `BottomActionDock.kt`)
+> plus `Spacing.lg` and `Spacing.xxl` / `Spacing.md`; no raw-dp arithmetic remains.
+> (2) The queue row's indeterminate `LinearProgressIndicator` keeps a raw `2.dp` height as a
+> component-intrinsic size — same class as spinner strokes; entry added to Appendix A.
+> (3) Raw-dp `offset(...)` is allowed only to anchor an overlay affordance to its container's
+> corner geometry (the thumbnail delete circle's `offset(x = 3.dp, y = (-3).dp)` overhang).
+> Offsets are positioning, not rhythm: they may never be used to smuggle padding/gap values,
+> and any new instance needs a governance note here.
+
 ---
 
 ## 4. Shape
@@ -389,7 +401,7 @@ grep -rn "shadowElevation\|defaultElevation\|tonalElevation" apps/app/src/main/j
 
 ## Appendix A — Approved raw-dp component sizes
 
-180dp (empty stage) · 320dp (loaded stage) · 56dp (dock CTA height) · 72dp (thumbnail/action tile cells) · 220–520dp (preview media box bounds) · 22dp visual / 48dp hit target (thumbnail delete circle) · icon sizes 13/16/20/22/24/40 · spinner 20dp(stroke 2)/22dp(stroke 2.5) · 840dp (max content width) · **28dp** (drawer-sheet content gutter + header top inset, expanded-window nav drawer; §3 amendment 2026-08-24) · **2dp** (vertical spacing between `NavigationDrawerItem` rows; §3 amendment 2026-08-24). Anything else needs an appendix update.
+180dp (empty stage) · 320dp (loaded stage) · 56dp (dock CTA height) · 72dp (thumbnail/action tile cells) · 220–520dp (preview media box bounds) · 22dp visual / 48dp hit target (thumbnail delete circle) · icon sizes 13/16/20/22/24/40 · spinner 20dp(stroke 2)/22dp(stroke 2.5) · **2dp** (queue-row indeterminate `LinearProgressIndicator` height; §3 amendment 2026-08-24) · 840dp (max content width) · **28dp** (drawer-sheet content gutter + header top inset, expanded-window nav drawer; §3 amendment 2026-08-24) · **2dp** (vertical spacing between `NavigationDrawerItem` rows; §3 amendment 2026-08-24). Anything else needs an appendix update.
 
 ## Appendix B — Composable disposition
 
