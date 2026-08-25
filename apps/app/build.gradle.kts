@@ -14,8 +14,10 @@ android {
         applicationId = "com.crossscale"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
-        versionCode = 1
-        versionName = "0.1.0"
+        // Android release channel — independent of the CLI version (root
+        // xmake.lua). Release tags: android-v*.
+        versionCode = 2
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
