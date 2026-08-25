@@ -487,20 +487,25 @@ auto Image::load(const std::filesystem::path& path)
     }
 
     std::string ext = path.extension().string();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return load_from_memory(ext, file_data.value());
+}
 
+auto Image::load_from_memory(const std::string& format,
+                             const std::vector<uint8_t>& data)
+    -> expected<Image, ImageError> {
     try {
-        if (ext == ".png") {
-            return load_png(file_data.value());
-        } else if (ext == ".jpg" || ext == ".jpeg") {
-            return load_jpeg(file_data.value());
-        } else if (ext == ".webp") {
-            return load_webp(file_data.value());
-        } else if (ext == ".avif" || avif_codec::looks_like_avif(
-                                         file_data->data(), file_data->size())) {
-            return avif_codec::load(file_data.value());
+        const std::string fmt = normalize_image_format(format);
+        if (fmt == "png") {
+            return load_png(data);
+        } else if (fmt == "jpg" || fmt == "jpeg") {
+            return load_jpeg(data);
+        } else if (fmt == "webp") {
+            return load_webp(data);
+        } else if (fmt == "avif" || avif_codec::looks_like_avif(
+                                        data.data(), data.size())) {
+            return avif_codec::load(data);
         } else {
-            return std::unexpected(ImageError{8, "Unsupported image format: " + ext});
+            return std::unexpected(ImageError{8, "Unsupported image format: " + format});
         }
     } catch (const std::exception& e) {
         return std::unexpected(ImageError{9, "Exception during load: " + std::string(e.what())});

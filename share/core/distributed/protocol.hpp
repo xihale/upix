@@ -28,11 +28,19 @@ enum class MessageType : uint16_t {
     // firewalls cannot evict an idle connection, and lays the groundwork for the
     // phone to show real progress. The terminal result is still MSG_CLIENT_RESPONSE.
     MSG_TASK_PROGRESS = 0x0502,
+    // Compressed-input submit (phone→PC): the phone ships the original file
+    // bytes and the PC decodes, upscales, encodes, and streams the result
+    // back. Only sent by APKs that know this protocol, so legacy peers never
+    // see it. Progress for these tasks rides on MSG_TASK_PROGRESS_V2.
+    MSG_CLIENT_SUBMIT_V2 = 0x0503,
     // PC→phone: continuation result bytes after a MSG_CLIENT_RESPONSE whose
     // encoded result exceeds MAX_NETWORK_PAYLOAD. Results at or below the cap
     // stay in the single RESPONSE frame, so APKs predating this type still
     // interoperate for every payload they could already receive.
     MSG_CLIENT_DATA = 0x0504,
+    // Rich progress for MSG_CLIENT_SUBMIT_V2 tasks (TaskProgressV2 payload):
+    // completed/total tiles let the phone compute percent and its own ETA.
+    MSG_TASK_PROGRESS_V2 = 0x0505,
 
     // Pairing: phone→PC request immediately after the ECDH handshake; PC→phone
     // reply (gated on interactive approval the first time, auto-approved once
@@ -114,6 +122,27 @@ struct ClientTaskResponse {
 // drains these (and may surface them to the UI) until the terminal CLIENT_RESPONSE.
 struct TaskProgressMessage {
     uint32_t percent;  // 0..100 inclusive
+};
+
+// Rich progress (PC→phone) for SUBMIT_V2 tasks. stage 0 = inference tiles,
+// percent/eta_seconds valid; stage 1 = inference done, the PC is encoding
+// the result (percent/eta meaningless). The PC computes the ETA, so the
+// phone gets a real time estimate without needing tile internals.
+struct TaskProgressV2 {
+    uint32_t stage;           // 0 = tiles, 1 = encoding result
+    uint32_t percent;         // 0..100 (stage 0)
+    uint32_t eta_seconds;     // estimated seconds remaining (stage 0), else 0
+};
+
+// SUBMIT_V2 payload header; compressed input file bytes follow contiguously.
+struct ClientTaskSubmitV2 {
+    char model_name[64];      // empty = PC's first available model
+    char input_format[16];    // "jpg"/"png"/"webp"/"avif" (from source mime/name)
+    char output_format[16];   // empty -> PC defaults to jpg
+    uint32_t tile_size;       // 0 = auto
+    uint32_t tile_overlap;
+    uint32_t output_quality;  // 0 -> PC defaults to 90
+    uint32_t input_data_length;
 };
 
 // Pairing request: phone→PC immediately after the ECDH handshake succeeds.

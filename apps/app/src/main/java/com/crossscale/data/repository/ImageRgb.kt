@@ -220,3 +220,46 @@ internal fun applyExifRotation(bitmap: Bitmap, degrees: Int): Bitmap {
     bitmap.recycle()
     return rotated
 }
+
+/**
+ * Raw encoded image bytes read straight from [uri] — shipped as-is to the PC
+ * for distributed jobs, so the phone never decodes (or holds raw pixels) and
+ * the radio carries ~1/10 the data. Format comes from the display name's
+ * extension, falling back to the content provider's mime type. Returns null
+ * on any failure; [onError] receives a diagnostic message.
+ */
+internal fun readEncodedBytes(
+    resolver: ContentResolver,
+    uri: Uri,
+    displayName: String,
+    onError: (String) -> Unit
+): Pair<ByteArray, String>? {
+    val ext = displayName.substringAfterLast('.', "").lowercase()
+    val format = when (ext) {
+        "png", "jpg", "jpeg", "webp", "avif" -> if (ext == "jpeg") "jpg" else ext
+        else -> when (resolver.getType(uri)) {
+            "image/png" -> "png"
+            "image/jpeg" -> "jpg"
+            "image/webp" -> "webp"
+            "image/avif" -> "avif"
+            else -> "jpg"
+        }
+    }
+    return try {
+        resolver.openInputStream(uri)?.use { stream ->
+            val bytes = stream.readBytes()
+            if (bytes.isEmpty()) {
+                onError("Input is empty: $displayName")
+                null
+            } else {
+                bytes to format
+            }
+        } ?: run {
+            onError("Cannot open input stream: $displayName")
+            null
+        }
+    } catch (e: IOException) {
+        onError("Failed to read $displayName: ${e.message}")
+        null
+    }
+}

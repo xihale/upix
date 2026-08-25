@@ -32,6 +32,13 @@ public:
     static auto load(const std::filesystem::path& path)
         -> expected<Image, ImageError>;
 
+    // Decode an in-memory encoded file (same formats as load()). The phone
+    // path uses this to decode on the PC so the phone ships compressed bytes
+    // instead of raw pixels.
+    static auto load_from_memory(const std::string& format,
+                                 const std::vector<uint8_t>& data)
+        -> expected<Image, ImageError>;
+
     auto save(const std::filesystem::path& path, int quality = 90) const
         -> expected<void, ImageError>;
 

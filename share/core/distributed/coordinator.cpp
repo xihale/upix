@@ -584,50 +584,112 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                 frame_payload = std::move(role_frame->second);
             }
 
-            if (frame_hdr.type == MessageType::MSG_CLIENT_SUBMIT) {
-                if (frame_payload.size() < sizeof(ClientTaskSubmit)) {
-                    LOG_ERROR("Coordinator", "Authenticated client submit payload is invalid");
-                    return;
-                }
+            if (frame_hdr.type == MessageType::MSG_CLIENT_SUBMIT ||
+                frame_hdr.type == MessageType::MSG_CLIENT_SUBMIT_V2) {
+                const bool submit_v2 =
+                    frame_hdr.type == MessageType::MSG_CLIENT_SUBMIT_V2;
+                std::string model_name;
+                std::string output_format;
+                uint32_t tile_size = 0, tile_overlap = 0;
+                int output_quality = 90;
+                int img_width = 0, img_height = 0, channels = 0;
+                std::vector<uint8_t> image_data;
 
-                const ClientTaskSubmit* task =
-                    reinterpret_cast<const ClientTaskSubmit*>(frame_payload.data());
-                uint32_t img_width = task->image_width;
-                uint32_t img_height = task->image_height;
-                uint8_t channels = task->channels;
-                std::string model_name(task->model_name);
-                uint32_t tile_size = task->tile_size;
-                uint32_t tile_overlap = task->tile_overlap;
-                uint32_t image_data_len = task->image_data_length;
-                std::string output_format(task->output_format);
-                if (output_format.empty()) {
-                    output_format = "jpg";
-                }
-                int output_quality = task->output_quality == 0 ? 90 : task->output_quality;
+                if (submit_v2) {
+                    // Compressed-input submit: the phone ships original file
+                    // bytes; decode here so raw pixels never cross the radio.
+                    if (frame_payload.size() < sizeof(ClientTaskSubmitV2)) {
+                        LOG_ERROR("Coordinator", "Authenticated client submit payload is invalid");
+                        return;
+                    }
+                    const ClientTaskSubmitV2* task =
+                        reinterpret_cast<const ClientTaskSubmitV2*>(frame_payload.data());
+                    model_name = task->model_name;
+                    tile_size = task->tile_size;
+                    tile_overlap = task->tile_overlap;
+                    output_format = task->output_format;
+                    if (output_format.empty()) output_format = "jpg";
+                    output_quality = task->output_quality == 0 ? 90
+                        : static_cast<int>(task->output_quality);
+                    const uint32_t data_len = task->input_data_length;
+                    if (data_len > MAX_NETWORK_PAYLOAD ||
+                        sizeof(ClientTaskSubmitV2) + data_len > frame_payload.size()) {
+                        LOG_ERROR("Coordinator", "Compressed client image payload truncated");
+                        return;
+                    }
+                    std::vector<uint8_t> compressed(
+                        frame_payload.data() + sizeof(ClientTaskSubmitV2),
+                        frame_payload.data() + sizeof(ClientTaskSubmitV2) + data_len);
 
-                if (image_data_len > MAX_NETWORK_PAYLOAD) {
-                    LOG_ERROR("Coordinator", "Image data too large: " + format_bytes(image_data_len));
-                    return;
-                }
-                if (img_width == 0 || img_height == 0 || img_width > 65536 || img_height > 65536) {
-                    LOG_ERROR("Coordinator", "Invalid image dimensions: " + std::to_string(img_width) + "x" + std::to_string(img_height));
-                    return;
-                }
-                if (channels == 0 || channels > 4) {
-                    LOG_ERROR("Coordinator", "Invalid channel count: " + std::to_string(channels));
-                    return;
-                }
+                    auto decoded = Image::load_from_memory(task->input_format, compressed);
+                    compressed.clear();
+                    compressed.shrink_to_fit();
+                    if (!decoded) {
+                        LOG_ERROR("Coordinator", "Input decode failed: " + decoded.error().message);
+                        ClientTaskResponse response{};
+                        response.success = 0;
+                        std::strncpy(response.error_message,
+                                     ("input decode failed: " + decoded.error().message).c_str(),
+                                     sizeof(response.error_message) - 1);
+                        send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
+                                       &response, sizeof(response));
+                        return;
+                    }
+                    img_width = decoded->width();
+                    img_height = decoded->height();
+                    channels = decoded->channels();
+                    image_data.assign(decoded->data(),
+                                      decoded->data() + decoded->size());
+                } else {
+                    if (frame_payload.size() < sizeof(ClientTaskSubmit)) {
+                        LOG_ERROR("Coordinator", "Authenticated client submit payload is invalid");
+                        return;
+                    }
 
-                // The image payload follows the ClientTaskSubmit struct inside
-                // the same encrypted frame (worker packs them contiguously).
-                const size_t submit_hdr_size = sizeof(ClientTaskSubmit);
-                if (submit_hdr_size + image_data_len > frame_payload.size()) {
-                    LOG_ERROR("Coordinator", "Authenticated client image payload truncated");
-                    return;
+                    const ClientTaskSubmit* task =
+                        reinterpret_cast<const ClientTaskSubmit*>(frame_payload.data());
+                    img_width = static_cast<int>(task->image_width);
+                    img_height = static_cast<int>(task->image_height);
+                    channels = task->channels;
+                    model_name = task->model_name;
+                    tile_size = task->tile_size;
+                    tile_overlap = task->tile_overlap;
+                    output_format = task->output_format;
+                    if (output_format.empty()) {
+                        output_format = "jpg";
+                    }
+                    output_quality = task->output_quality == 0 ? 90 : task->output_quality;
+
+                    if (static_cast<uint32_t>(output_quality) > 100) {
+                        LOG_ERROR("Coordinator", "Invalid output quality: " + output_format);
+                        return;
+                    }
+
+                    if (static_cast<size_t>(img_width) * img_height * channels > MAX_NETWORK_PAYLOAD) {
+                        LOG_ERROR("Coordinator", "Image data too large: " + format_bytes(
+                            static_cast<size_t>(img_width) * img_height * channels));
+                        return;
+                    }
+                    if (img_width == 0 || img_height == 0 || img_width > 65536 || img_height > 65536) {
+                        LOG_ERROR("Coordinator", "Invalid image dimensions: " + std::to_string(img_width) + "x" + std::to_string(img_height));
+                        return;
+                    }
+                    if (channels == 0 || channels > 4) {
+                        LOG_ERROR("Coordinator", "Invalid channel count: " + std::to_string(channels));
+                        return;
+                    }
+
+                    // The image payload follows the ClientTaskSubmit struct inside
+                    // the same encrypted frame (worker packs them contiguously).
+                    const size_t submit_hdr_size = sizeof(ClientTaskSubmit);
+                    if (submit_hdr_size + task->image_data_length > frame_payload.size()) {
+                        LOG_ERROR("Coordinator", "Authenticated client image payload truncated");
+                        return;
+                    }
+                    image_data.assign(
+                        frame_payload.data() + submit_hdr_size,
+                        frame_payload.data() + submit_hdr_size + task->image_data_length);
                 }
-                std::vector<uint8_t> image_data(
-                    frame_payload.data() + submit_hdr_size,
-                    frame_payload.data() + submit_hdr_size + image_data_len);
 
                 LOG_INFO(
                     "Coordinator",
@@ -640,7 +702,7 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                 config.tile_size = static_cast<int>(tile_size);
                 config.tile_overlap = static_cast<int>(tile_overlap);
 
-                // Stream MSG_TASK_PROGRESS to the phone during the upscale. This
+                // Stream progress to the phone during the upscale. This
                 // keeps traffic flowing on the connection (so NAT/stateful
                 // firewalls cannot evict it as idle while the PC works for tens
                 // of seconds) and lets the phone show real progress. Throttled to
@@ -648,13 +710,32 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                 // progress callback runs on this same thread (process_locally is
                 // synchronous), so no locking on last_sent_pct is needed.
                 int last_sent_pct = -1;
-                auto progress_sink = [&conn, &last_sent_pct, this](float frac) {
+                const auto task_start = std::chrono::steady_clock::now();
+                auto progress_sink = [&conn, &last_sent_pct, &task_start,
+                                      submit_v2, this](float frac) {
                     const int pct = static_cast<int>(
                         std::clamp(frac, 0.0f, 1.0f) * 100.0f);
                     if (pct == last_sent_pct) {
                         return;
                     }
                     last_sent_pct = pct;
+                    if (submit_v2) {
+                        // V2 peers get a real time estimate: linear projection
+                        // from observed rate (same math the CLI's ETA uses).
+                        TaskProgressV2 msg{};
+                        msg.stage = 0;
+                        msg.percent = static_cast<uint32_t>(pct);
+                        if (pct > 0 && pct < 100) {
+                            const double elapsed =
+                                std::chrono::duration<double>(
+                                    std::chrono::steady_clock::now() - task_start).count();
+                            msg.eta_seconds = static_cast<uint32_t>(
+                                elapsed / pct * (100 - pct));
+                        }
+                        (void)send_encrypted(conn, MessageType::MSG_TASK_PROGRESS_V2,
+                                             &msg, sizeof(msg));
+                        return;
+                    }
                     TaskProgressMessage msg{};
                     msg.percent = static_cast<uint32_t>(pct);
                     // A failed progress send (peer gone) is non-fatal: processing
@@ -674,6 +755,15 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                     output_quality,
                     progress_sink
                 );
+
+                // V2 peers: label the encode phase so the phone's UI can show
+                // "encoding..." instead of a frozen 100%.
+                if (submit_v2 && process_result.has_value()) {
+                    TaskProgressV2 enc{};
+                    enc.stage = 1;
+                    (void)send_encrypted(conn, MessageType::MSG_TASK_PROGRESS_V2,
+                                         &enc, sizeof(enc));
+                }
 
                 ClientTaskResponse response{};
                 if (process_result.has_value()) {

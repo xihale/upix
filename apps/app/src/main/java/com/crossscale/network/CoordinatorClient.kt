@@ -6,9 +6,8 @@ import com.crossscale.data.model.PcModel
 import com.crossscale.data.repository.LogRepository
 import com.crossscale.data.repository.NativeProcessResult
 import com.crossscale.data.repository.ResolvedImageInput
-import com.crossscale.data.repository.RGB_CHANNELS
 import com.crossscale.data.repository.decodeEncodedImageBounds
-import com.crossscale.data.repository.decodeRgb
+import com.crossscale.data.repository.readEncodedBytes
 import com.crossscale.data.repository.outputFormatFor
 import com.crossscale.nativelib.NCNNEngine
 import com.crossscale.nativelib.NativeWorker
@@ -201,15 +200,24 @@ class CoordinatorClient(
         val endpoint = connectedEndpoint
             ?: return Result.failure(IllegalStateException("No connected coordinator endpoint"))
 
-        val decodedInput = decodeRgb(
+        // Ship the ORIGINAL encoded bytes; the PC decodes them. A 12 MP photo
+        // uploads as ~4 MB of JPEG instead of ~36 MB of raw RGB, and the
+        // phone never holds a full-size pixel buffer for distributed jobs.
+        val (inputBytes, inputFormat) = readEncodedBytes(
             resolver = appContext.contentResolver,
             uri = input.uri,
             displayName = input.displayName
         ) { message ->
             logRepository.error("CoordinatorClient", message)
         } ?: return Result.failure(
-            IllegalStateException("Failed to decode image input: ${input.displayName}")
+            IllegalStateException("Failed to read image input: ${input.displayName}")
         )
+
+        // Header-only bounds read: no full decode, keeps the phone thin.
+        val inputBounds = decodeEncodedImageBounds(inputBytes)
+            ?: return Result.failure(
+                IllegalStateException("Input is not a decodable image: ${input.displayName}")
+            )
 
         val outputFormat = outputFormatFor(outputFile)
         val startedAt = System.currentTimeMillis()
@@ -221,10 +229,8 @@ class CoordinatorClient(
             modelName = modelName,
             tileSize = tileSize.coerceAtLeast(MIN_TILE_SIZE),
             tileOverlap = tileOverlap.coerceAtLeast(0),
-            inputImage = decodedInput.rgbBytes,
-            width = decodedInput.width,
-            height = decodedInput.height,
-            channels = RGB_CHANNELS,
+            inputFormat = inputFormat,
+            inputImage = inputBytes,
             outputFormat = outputFormat,
             outputQuality = DEFAULT_OUTPUT_QUALITY
         )
@@ -269,8 +275,8 @@ class CoordinatorClient(
         return Result.success(
             NativeProcessResult(
                 outputFile = outputFile,
-                inputWidth = decodedInput.width,
-                inputHeight = decodedInput.height,
+                inputWidth = inputBounds.first,
+                inputHeight = inputBounds.second,
                 outputWidth = outputBounds.first,
                 outputHeight = outputBounds.second,
             )

@@ -25,10 +25,8 @@ object NCNNEngine {
         modelName: String,
         tileSize: Int,
         tileOverlap: Int,
+        inputFormat: String,
         inputImage: ByteArray,
-        width: Int,
-        height: Int,
-        channels: Int,
         outputFormat: String,
         outputQuality: Int
     ): ByteArray?

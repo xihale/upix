@@ -740,15 +740,14 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
     jstring model_name,
     jint tile_size,
     jint tile_overlap,
+    jstring input_format,
     jbyteArray input_image,
-    jint width,
-    jint height,
-    jint channels,
     jstring output_format,
     jint output_quality
 ) {
     (void)thiz;
-    if (host == nullptr || peer_pubkey_b64 == nullptr || model_name == nullptr || input_image == nullptr) {
+    if (host == nullptr || peer_pubkey_b64 == nullptr || model_name == nullptr || input_image == nullptr ||
+        input_format == nullptr) {
         set_jni_last_error("Distributed processing parameters are incomplete");
         return nullptr;
     }
@@ -756,17 +755,14 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
         set_jni_last_error("Distributed processing port is invalid");
         return nullptr;
     }
-    if (width <= 0 || height <= 0 || channels <= 0) {
-        set_jni_last_error("Distributed processing image shape is invalid");
-        return nullptr;
-    }
 
     const char* host_chars = env->GetStringUTFChars(host, nullptr);
     const char* peer_pk_chars = env->GetStringUTFChars(peer_pubkey_b64, nullptr);
     const char* model_chars = env->GetStringUTFChars(model_name, nullptr);
+    const char* in_format_chars = env->GetStringUTFChars(input_format, nullptr);
     const char* format_chars = output_format == nullptr ? nullptr : env->GetStringUTFChars(output_format, nullptr);
 
-    if (host_chars == nullptr || peer_pk_chars == nullptr || model_chars == nullptr) {
+    if (host_chars == nullptr || peer_pk_chars == nullptr || model_chars == nullptr || in_format_chars == nullptr) {
         if (host_chars != nullptr) {
             env->ReleaseStringUTFChars(host, host_chars);
         }
@@ -775,6 +771,9 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
         }
         if (model_chars != nullptr) {
             env->ReleaseStringUTFChars(model_name, model_chars);
+        }
+        if (in_format_chars != nullptr) {
+            env->ReleaseStringUTFChars(input_format, in_format_chars);
         }
         if (format_chars != nullptr) {
             env->ReleaseStringUTFChars(output_format, format_chars);
@@ -786,6 +785,7 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
     const std::string host_str(host_chars);
     const std::string peer_pubkey_b64_str(peer_pk_chars);
     const std::string model_str(model_chars);
+    const std::string input_format_str(in_format_chars);
     std::string output_format_str = "jpg";
     if (format_chars != nullptr) {
         output_format_str = normalize_output_format(format_chars);
@@ -803,14 +803,8 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
     }
 
     const jsize input_size = env->GetArrayLength(input_image);
-    const int64_t expected_input_size =
-        static_cast<int64_t>(width) * static_cast<int64_t>(height) * static_cast<int64_t>(channels);
-    if (expected_input_size <= 0 || expected_input_size > std::numeric_limits<jsize>::max()) {
-        set_jni_last_error("Distributed processing input size overflow");
-        return nullptr;
-    }
-    if (input_size != static_cast<jsize>(expected_input_size)) {
-        set_jni_last_error("Distributed processing input size mismatch");
+    if (input_size <= 0 || static_cast<int64_t>(input_size) > MAX_PAYLOAD_LENGTH) {
+        set_jni_last_error("Distributed processing input size is invalid");
         return nullptr;
     }
 
@@ -861,27 +855,28 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
         return nullptr;
     }
 
-    // Pack ClientTaskSubmit struct + image bytes contiguously into one
-    // plaintext payload, then seal into a single encrypted frame. The
-    // coordinator unpacks the same layout (see coordinator.cpp ~line 392).
-    crossscale::ClientTaskSubmit submit_request{};
-    submit_request.image_width = static_cast<uint32_t>(width);
-    submit_request.image_height = static_cast<uint32_t>(height);
-    submit_request.channels = static_cast<uint8_t>(channels);
+    // Pack ClientTaskSubmitV2 struct + compressed input bytes contiguously
+    // into one plaintext payload, then seal into a single encrypted frame.
+    // The phone ships the ORIGINAL file bytes; the PC decodes them, so raw
+    // pixels never cross the radio (a 12 MP photo uploads as ~4 MB of JPEG,
+    // not ~36 MB of RGB).
+    crossscale::ClientTaskSubmitV2 submit_request{};
     std::strncpy(submit_request.model_name, model_str.c_str(), sizeof(submit_request.model_name) - 1);
-    submit_request.tile_size = static_cast<uint32_t>(std::max(tile_size, 16));
-    submit_request.tile_overlap = static_cast<uint32_t>(std::max(tile_overlap, 0));
-    submit_request.image_data_length = static_cast<uint32_t>(input_bytes.size());
+    std::strncpy(submit_request.input_format, input_format_str.c_str(),
+                 sizeof(submit_request.input_format) - 1);
     std::strncpy(submit_request.output_format, output_format_str.c_str(),
                  sizeof(submit_request.output_format) - 1);
-    submit_request.output_quality = static_cast<uint8_t>(normalized_quality);
+    submit_request.tile_size = static_cast<uint32_t>(std::max(tile_size, 16));
+    submit_request.tile_overlap = static_cast<uint32_t>(std::max(tile_overlap, 0));
+    submit_request.output_quality = static_cast<uint32_t>(normalized_quality);
+    submit_request.input_data_length = static_cast<uint32_t>(input_bytes.size());
 
     std::vector<uint8_t> plaintext(sizeof(submit_request) + input_bytes.size());
     std::memcpy(plaintext.data(), &submit_request, sizeof(submit_request));
     std::memcpy(plaintext.data() + sizeof(submit_request), input_bytes.data(), input_bytes.size());
 
     crossscale::MessageHeader submit_header{};
-    submit_header.type = crossscale::MessageType::MSG_CLIENT_SUBMIT;
+    submit_header.type = crossscale::MessageType::MSG_CLIENT_SUBMIT_V2;
     submit_header.payload_length = static_cast<uint32_t>(plaintext.size());
     auto submit_wire = session->seal(submit_header, plaintext.data());
     if (!socket.send_all(submit_wire.data(), submit_wire.size()).has_value()) {
@@ -904,8 +899,21 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
             set_jni_last_error("Distributed " + frame_error);
             return nullptr;
         }
-        if (frame->first.type == crossscale::MessageType::MSG_TASK_PROGRESS) {
+        if (frame->first.type == crossscale::MessageType::MSG_TASK_PROGRESS_V2 &&
+            frame->second.size() >= sizeof(crossscale::TaskProgressV2)) {
+            crossscale::TaskProgressV2 prog{};
+            std::memcpy(&prog, frame->second.data(), sizeof(prog));
+            if (prog.stage == 0) {
+                // Surfaced via logcat for now; the UI can subscribe later.
+                LOGI("PC progress: %u%%, ETA %us",
+                     prog.percent, prog.eta_seconds);
+            } else {
+                LOGI("PC inference done, encoding result");
+            }
             continue;  // progress update; drain and wait for the result
+        }
+        if (frame->first.type == crossscale::MessageType::MSG_TASK_PROGRESS) {
+            continue;  // legacy progress frame; drain and wait for the result
         }
         if (frame->first.type == crossscale::MessageType::MSG_CLIENT_DATA) {
             if (!have_response) {
