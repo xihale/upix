@@ -3,6 +3,7 @@
 #include "utils/logger.hpp"
 #include <cmath>
 #include <algorithm>
+#include <format>
 #include <future>
 #include <optional>
 #include <cstring>
@@ -122,8 +123,8 @@ auto run_tiled_cpu_pipeline(
             if (host_need > avail_mb * 1024 * 1024) {
                 return std::unexpected(TileProcessorError{
                     kErrOutOfMemory,
-                    "out of host memory: need ~" + std::to_string(host_need / (1024 * 1024)) +
-                        "MB, available " + std::to_string(avail_mb) + "MB"});
+                    std::format("out of host memory: need ~{}MB, available {}MB",
+                                host_need / (1024 * 1024), avail_mb)});
             }
         }
     }

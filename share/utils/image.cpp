@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <print>
 #include <ranges>
 #include <span>
 #include <thread>
@@ -199,12 +200,12 @@ namespace {
         libdeflate_free_compressor(compressor);
         const auto compress_done = std::chrono::steady_clock::now();
         if (std::getenv("CROSSSCALE_PIPELINE_TIMER") != nullptr) {
-            std::fprintf(stderr, "[PERF] png save %dx%d: filter=%zums compress=%zums\n",
-                         width, height,
-                         static_cast<size_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                             filter_done - filter_start).count()),
-                         static_cast<size_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                             compress_done - filter_done).count()));
+            std::print(stderr, "[PERF] png save {}x{}: filter={}ms compress={}ms\n",
+                       width, height,
+                       static_cast<size_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                           filter_done - filter_start).count()),
+                       static_cast<size_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                           compress_done - filter_done).count()));
         }
         if (compressed_size == 0) {
             return false;

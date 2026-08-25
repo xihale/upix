@@ -1,6 +1,7 @@
 #include "engine_pool.hpp"
 #include "utils/logger.hpp"
 #include <algorithm>
+#include <format>
 #include <fstream>
 #include <set>
 #include <stdexcept>
@@ -75,7 +76,7 @@ EnginePool::EnginePool(size_t pool_size, const std::string& param_path, const st
             LOG_WARNING("EnginePool", "Failed to initialize engine {} with specified device, falling back to CPU", i);
             init_res = engine->initialize(DeviceType::CPU);
             if (!init_res.has_value()) {
-                throw EngineError{1, "Failed to initialize engine " + std::to_string(i)};
+                throw EngineError{1, std::format("Failed to initialize engine {}", i)};
             }
         }
 
@@ -86,7 +87,7 @@ EnginePool::EnginePool(size_t pool_size, const std::string& param_path, const st
         // Load model
         auto load_res = engine->load_model(param_path, bin_path);
         if (!load_res.has_value()) {
-            throw EngineError{2, "Failed to load model in engine " + std::to_string(i) + ": " + load_res.error().message};
+            throw EngineError{2, std::format("Failed to load model in engine {}: {}", i, load_res.error().message)};
         }
 
         engines_.push_back(std::move(engine));

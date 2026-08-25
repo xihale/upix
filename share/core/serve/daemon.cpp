@@ -122,16 +122,14 @@ auto ServeDaemon::start(const std::string& socket_path,
     server_ = std::make_unique<UnixServer>();
     auto listen_res = server_->listen(socket_path_);
     if (!listen_res) {
-        LOG_ERROR("Daemon", "socket listen failed at " + socket_path_ +
-                           ": " + listen_res.error().message);
+        LOG_ERROR("Daemon", "socket listen failed at {}: {}", socket_path_,
+                  listen_res.error().message);
         return 7;
     }
 
-    LOG_INFO("Daemon", "daemon ready: socket=" + socket_path_ +
-                      " model=" + loaded_model_name_ +
-                      " scale=" + std::to_string(engine_->get_scale_factor()) +
-                      " device=" + (device == ServeDevice::GPU ? "GPU" : "CPU") +
-                      " pid=" + std::to_string(::getpid()));
+    LOG_INFO("Daemon", "daemon ready: socket={} model={} scale={} device={} pid={}",
+             socket_path_, loaded_model_name_, engine_->get_scale_factor(),
+             device == ServeDevice::GPU ? "GPU" : "CPU", ::getpid());
     LOG_INFO("Daemon", "`crossscale process` will now reuse this warm engine");
     return 0;
 }
@@ -289,9 +287,8 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
         send_serve_error(*sock, ("save failed: " + save_res.error().message).c_str());
         return;
     }
-    LOG_INFO("Daemon", "served " + std::to_string(image.width()) + "x" +
-             std::to_string(image.height()) + " -> " + std::to_string(out_w) + "x" +
-             std::to_string(out_h) + " => " + final_path.string());
+    LOG_INFO("Daemon", "served {}x{} -> {}x{} => {}",
+             image.width(), image.height(), out_w, out_h, final_path.string());
 
     // ── 5. Response: [ServeResponse][output path]. No image bytes follow —
     // the daemon already wrote the file.
@@ -324,15 +321,14 @@ auto ServeDaemon::run() -> void {
                 if (idle_timeout_s_ > 0 && active_conns_.load() == 0) {
                     auto idle_ms = steady_now_ms() - last_active_ms_.load();
                     if (idle_ms / 1000 >= idle_timeout_s_) {
-                        LOG_INFO("Daemon", "idle for " +
-                                  std::to_string(idle_ms / 1000) + "s, exiting");
+                        LOG_INFO("Daemon", "idle for {}s, exiting", idle_ms / 1000);
                         break;
                     }
                 }
                 continue;
             }
             if (!stop_requested_.load()) {
-                LOG_WARNING("Daemon", "accept error: " + client.error().message);
+                LOG_WARNING("Daemon", "accept error: {}", client.error().message);
             }
             continue;
         }

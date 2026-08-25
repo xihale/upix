@@ -25,12 +25,11 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
-#include <cstdio>
+#include <format>
 #include <cstdlib>
 #include <limits>
 #include <mutex>
 #include <optional>
-#include <sstream>
 #include <string_view>
 #include <thread>
 
@@ -68,10 +67,9 @@ auto check_gpu_memory_budget(const NCNNEngineImpl& engine, size_t need_bytes,
     const size_t budget_mb = engine.get_device_memory_budget_mb();
     if (budget_mb == 0) return std::nullopt;  // unknown budget → let the device decide
     if (need_bytes <= budget_mb * 1024 * 1024) return std::nullopt;
-    std::ostringstream oss;
-    oss << "out of GPU memory for " << what << ": need ~" << need_bytes / (1024 * 1024)
-        << "MB, heap budget " << budget_mb << "MB";
-    return EngineError{kErrOutOfMemory, oss.str()};
+    return EngineError{kErrOutOfMemory,
+        std::format("out of GPU memory for {}: need ~{}MB, heap budget {}MB",
+                    what, need_bytes / (1024 * 1024), budget_mb)};
 }
 
 // VkMat::create fails silently (empty mat) when the allocator refuses — turn
@@ -343,7 +341,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 ret = ex.input("data", in_gpu_chw);
             }
             if (ret != 0) {
-                return std::unexpected(EngineError{207, "Failed to set Vulkan input (error " + std::to_string(ret) + ")"});
+                return std::unexpected(EngineError{207, std::format("Failed to set Vulkan input (error {})", ret)});
             }
 
             ncnn::VkMat out_gpu;
@@ -354,7 +352,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 if (ret != 0) {
                     ret = ex.extract("out", out_gpu, cmd);
                     if (ret != 0) {
-                        return std::unexpected(EngineError{208, "Failed to extract Vulkan output (error " + std::to_string(ret) + ")"});
+                        return std::unexpected(EngineError{208, std::format("Failed to extract Vulkan output (error {})", ret)});
                     }
                 }
             }
@@ -369,7 +367,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 if (auto oom = empty_gpu_output_error(out_gpu.w, out_gpu.h, out_gpu.c)) {
                     return std::unexpected(*oom);
                 }
-                return std::unexpected(EngineError{209, "Vulkan output shape mismatch (got " + std::to_string(out_gpu.w) + "x" + std::to_string(out_gpu.h) + "x" + std::to_string(out_gpu.c) + ", want " + std::to_string(tile_out_full_w) + "x" + std::to_string(tile_out_full_h) + "x" + std::to_string(channels) + ")"});
+                return std::unexpected(EngineError{209, std::format("Vulkan output shape mismatch (got {}x{}x{}, want {}x{}x{})", out_gpu.w, out_gpu.h, out_gpu.c, tile_out_full_w, tile_out_full_h, channels)});
             }
 
             blend_bindings[0] = out_gpu;
@@ -569,13 +567,12 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             }
             if (submit_ret != 0) {
                 if (all_tiles_scheduled) {
-                    return std::unexpected(EngineError{214, "Vulkan queue normalize+quantize/download failed (error " +
-                                            std::to_string(submit_ret) + ")"});
+                    return std::unexpected(EngineError{214, std::format("Vulkan queue normalize+quantize/download failed (error {})", submit_ret)});
                 }
                 if (has_init_work) {
-                    return std::unexpected(EngineError{206, "Vulkan queue init failed (error " + std::to_string(submit_ret) + ")"});
+                    return std::unexpected(EngineError{206, std::format("Vulkan queue init failed (error {})", submit_ret)});
                 }
-                return std::unexpected(EngineError{210, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"});
+                return std::unexpected(EngineError{210, std::format("Vulkan submit failed (error {})", submit_ret)});
             }
             recycle_tile_inputs(inflight_tile_inputs);
             need_init_submit = false;
@@ -627,8 +624,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
 
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
-                return std::unexpected(EngineError{214, "Vulkan queue normalize+quantize/download failed (error " +
-                                        std::to_string(submit_ret) + ")"});
+                return std::unexpected(EngineError{214, std::format("Vulkan queue normalize+quantize/download failed (error {})", submit_ret)});
             }
         }
 
@@ -636,14 +632,12 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         if (cs_perf) {
             double perf_total_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - perf_t0).count();
-            char pbuf[512];
-            int pn = std::snprintf(pbuf, sizeof(pbuf),
-                "[PERF] u8_queue pipeline: tiles=%ld submits=%ld total=%.1fms record=%.1fms submit=%.1fms "
-                "(submit=%.0f%% of total, %.3fms/submit)",
+            LOG_INFO("Engine",
+                "[PERF] u8_queue pipeline: tiles={} submits={} total={:.1f}ms record={:.1f}ms submit={:.1f}ms "
+                "(submit={:.0f}% of total, {:.3f}ms/submit)",
                 perf_tiles_total, perf_submits, perf_total_ms, perf_record_ms, perf_submit_ms,
                 perf_total_ms > 0 ? 100.0 * perf_submit_ms / perf_total_ms : 0.0,
                 perf_submits > 0 ? perf_submit_ms / perf_submits : 0.0);
-            LOG_INFO("Engine", std::string(pbuf, pn));
         }
         // ---- END TEMP ----
 
@@ -735,7 +729,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             cmd.record_pipeline(clear_output_pipeline_.get(), weight_bindings, constants, dispatcher);
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
-                return std::unexpected(EngineError{204, "Vulkan clear failed (error " + std::to_string(submit_ret) + ")"});
+                return std::unexpected(EngineError{204, std::format("Vulkan clear failed (error {})", submit_ret)});
             }
         }
 
@@ -825,7 +819,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             cmd.record_clone(in_cpu_full, in_gpu_full, opt);
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
-                return std::unexpected(EngineError{210, "Vulkan input upload failed (error " + std::to_string(submit_ret) + ")"});
+                return std::unexpected(EngineError{210, std::format("Vulkan input upload failed (error {})", submit_ret)});
             }
         }
 
@@ -869,7 +863,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 ret = ex.input("data", in_gpu_chw);
             }
             if (ret != 0) {
-                return std::unexpected(EngineError{207, "Failed to set Vulkan input (error " + std::to_string(ret) + ")"});
+                return std::unexpected(EngineError{207, std::format("Failed to set Vulkan input (error {})", ret)});
             }
 
             ncnn::VkMat out_gpu;
@@ -880,7 +874,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 if (ret != 0) {
                     ret = ex.extract("out", out_gpu, cmd);
                     if (ret != 0) {
-                        return std::unexpected(EngineError{208, "Failed to extract Vulkan output (error " + std::to_string(ret) + ")"});
+                        return std::unexpected(EngineError{208, std::format("Failed to extract Vulkan output (error {})", ret)});
                     }
                 }
             }
@@ -895,7 +889,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 if (auto oom = empty_gpu_output_error(out_gpu.w, out_gpu.h, out_gpu.c)) {
                     return std::unexpected(*oom);
                 }
-                return std::unexpected(EngineError{209, "Vulkan output shape mismatch (got " + std::to_string(out_gpu.w) + "x" + std::to_string(out_gpu.h) + "x" + std::to_string(out_gpu.c) + ", want " + std::to_string(tile_out_full_w) + "x" + std::to_string(tile_out_full_h) + "x" + std::to_string(channels) + ")"});
+                return std::unexpected(EngineError{209, std::format("Vulkan output shape mismatch (got {}x{}x{}, want {}x{}x{})", out_gpu.w, out_gpu.h, out_gpu.c, tile_out_full_w, tile_out_full_h, channels)});
             }
 
             std::vector<ncnn::VkMat> blend_bindings(3);
@@ -1015,7 +1009,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
 
                     int submit_ret = cmd.submit_and_wait();
                     if (submit_ret != 0) {
-                        return std::unexpected(EngineError{210, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"});
+                        return std::unexpected(EngineError{210, std::format("Vulkan submit failed (error {})", submit_ret)});
                     }
 
                     for (size_t i = pass_cursor; i < chunk_end; ++i) {
@@ -1148,7 +1142,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
 
                 int submit_ret = cmd.submit_and_wait();
                 if (submit_ret != 0) {
-                    return std::unexpected(EngineError{210, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"});
+                    return std::unexpected(EngineError{210, std::format("Vulkan submit failed (error {})", submit_ret)});
                 }
 
                 for (size_t i = current_batch->begin; i < current_batch->end; ++i) {
@@ -1190,7 +1184,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             cmd.record_clone(out_gpu_hwc, out_cpu, opt);
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
-                return std::unexpected(EngineError{214, "Vulkan normalize/download failed (error " + std::to_string(submit_ret) + ")"});
+                return std::unexpected(EngineError{214, std::format("Vulkan normalize/download failed (error {})", submit_ret)});
             }
         }
 
@@ -1292,7 +1286,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
 
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
-                return std::unexpected(EngineError{204, "Vulkan clear failed (error " + std::to_string(submit_ret) + ")"});
+                return std::unexpected(EngineError{204, std::format("Vulkan clear failed (error {})", submit_ret)});
             }
         }
 
@@ -1379,7 +1373,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             cmd.record_clone(in_cpu_full, in_gpu_full, opt);
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
-                return std::unexpected(EngineError{212, "Vulkan u8 input upload failed (error " + std::to_string(submit_ret) + ")"});
+                return std::unexpected(EngineError{212, std::format("Vulkan u8 input upload failed (error {})", submit_ret)});
             }
         }
 
@@ -1423,7 +1417,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 ret = ex.input("data", in_gpu_chw);
             }
             if (ret != 0) {
-                return std::unexpected(EngineError{207, "Failed to set Vulkan input (error " + std::to_string(ret) + ")"});
+                return std::unexpected(EngineError{207, std::format("Failed to set Vulkan input (error {})", ret)});
             }
 
             ncnn::VkMat out_gpu;
@@ -1434,7 +1428,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 if (ret != 0) {
                     ret = ex.extract("out", out_gpu, cmd);
                     if (ret != 0) {
-                        return std::unexpected(EngineError{208, "Failed to extract Vulkan output (error " + std::to_string(ret) + ")"});
+                        return std::unexpected(EngineError{208, std::format("Failed to extract Vulkan output (error {})", ret)});
                     }
                 }
             }
@@ -1449,7 +1443,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 if (auto oom = empty_gpu_output_error(out_gpu.w, out_gpu.h, out_gpu.c)) {
                     return std::unexpected(*oom);
                 }
-                return std::unexpected(EngineError{209, "Vulkan output shape mismatch (got " + std::to_string(out_gpu.w) + "x" + std::to_string(out_gpu.h) + "x" + std::to_string(out_gpu.c) + ", want " + std::to_string(tile_out_full_w) + "x" + std::to_string(tile_out_full_h) + "x" + std::to_string(channels) + ")"});
+                return std::unexpected(EngineError{209, std::format("Vulkan output shape mismatch (got {}x{}x{}, want {}x{}x{})", out_gpu.w, out_gpu.h, out_gpu.c, tile_out_full_w, tile_out_full_h, channels)});
             }
 
             std::vector<ncnn::VkMat> blend_bindings(3);
@@ -1618,10 +1612,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                     if (cs_perf2) { p2_submit_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p2_sub_start).count(); p2_submits++; }
                     if (submit_ret != 0) {
                         if (is_last_batch) {
-                            return std::unexpected(EngineError{214, "Vulkan normalize+quantize/download failed (error " +
-                                                    std::to_string(submit_ret) + ")"});
+                            return std::unexpected(EngineError{214, std::format("Vulkan normalize+quantize/download failed (error {})", submit_ret)});
                         }
-                        return std::unexpected(EngineError{210, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"});
+                        return std::unexpected(EngineError{210, std::format("Vulkan submit failed (error {})", submit_ret)});
                     }
                     if (is_last_batch) {
                         output_downloaded = true;
@@ -1769,10 +1762,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 int submit_ret = cmd.submit_and_wait();
                 if (submit_ret != 0) {
                     if (is_last_batch) {
-                        return std::unexpected(EngineError{214, "Vulkan normalize+quantize/download failed (error " +
-                                                std::to_string(submit_ret) + ")"});
+                        return std::unexpected(EngineError{214, std::format("Vulkan normalize+quantize/download failed (error {})", submit_ret)});
                     }
-                    return std::unexpected(EngineError{210, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"});
+                    return std::unexpected(EngineError{210, std::format("Vulkan submit failed (error {})", submit_ret)});
                 }
                 if (is_last_batch) {
                     output_downloaded = true;
@@ -1806,7 +1798,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             record_normalize_quantize_download(cmd, out_gpu_u8);
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
-                return std::unexpected(EngineError{214, "Vulkan normalize+quantize/download failed (error " + std::to_string(submit_ret) + ")"});
+                return std::unexpected(EngineError{214, std::format("Vulkan normalize+quantize/download failed (error {})", submit_ret)});
             }
         }
 
@@ -1814,15 +1806,13 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         if (cs_perf2) {
             double p2_total_ms = std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - p2_t0).count();
-            char p2buf[640];
-            int p2n = std::snprintf(p2buf, sizeof(p2buf),
-                "[PERF] u8 crop pipeline: tiles=%ld submits=%ld total=%.1fms record=%.1fms submit=%.1fms "
-                "(submit=%.0f%% of total, %.3fms/submit, record=%.0f%%)",
+            LOG_INFO("Engine",
+                "[PERF] u8 crop pipeline: tiles={} submits={} total={:.1f}ms record={:.1f}ms submit={:.1f}ms "
+                "(submit={:.0f}% of total, {:.3f}ms/submit, record={:.0f}%)",
                 p2_tiles, p2_submits, p2_total_ms, p2_record_ms, p2_submit_ms,
                 p2_total_ms > 0 ? 100.0 * p2_submit_ms / p2_total_ms : 0.0,
                 p2_submits > 0 ? p2_submit_ms / p2_submits : 0.0,
                 p2_total_ms > 0 ? 100.0 * p2_record_ms / p2_total_ms : 0.0);
-            LOG_INFO("Engine", std::string(p2buf, p2n));
         }
         // ---- END TEMP ----
 
@@ -1851,48 +1841,45 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         size_t submit_memory_budget_mb,
         double avg_tile_pixels
     ) const -> std::string {
-        std::ostringstream stream;
-        stream << "stage=" << stage
-               << ", initialized=" << (initialized_ ? 1 : 0)
-               << ", model_loaded=" << (model_loaded_ ? 1 : 0)
-               << ", gpu_layout_ready=" << (gpu_layout_pipeline_ready_ ? 1 : 0)
-               << ", gpu_u8_ready=" << (gpu_layout_u8_pipeline_ready_ ? 1 : 0)
-               << ", gpu_crop_ready=" << (gpu_crop_pipeline_ready_ ? 1 : 0)
-               << ", gpu_crop_u8_ready=" << (gpu_crop_u8_pipeline_ready_ ? 1 : 0)
-               << ", gpu_tile_ready=" << (gpu_tile_pipeline_ready_ ? 1 : 0)
-               << ", pre_u8=" << (preproc_hwc_u8_to_chw_ != nullptr ? 1 : 0)
-               << ", post_u8=" << (postproc_chw_to_hwc_u8_ != nullptr ? 1 : 0)
-               << ", quant_u8=" << (quantize_hwc_to_u8_ != nullptr ? 1 : 0)
-               << ", fp16_packed=" << (net_->opt.use_fp16_packed ? 1 : 0)
-               << ", fp16_storage=" << (net_->opt.use_fp16_storage ? 1 : 0)
-               << ", fp16_arith=" << (net_->opt.use_fp16_arithmetic ? 1 : 0)
-               << ", int8_storage=" << (net_->opt.use_int8_storage ? 1 : 0);
+        std::string stream = std::format(
+            "stage={}, initialized={}, model_loaded={}, gpu_layout_ready={}, gpu_u8_ready={},"
+            " gpu_crop_ready={}, gpu_crop_u8_ready={}, gpu_tile_ready={}, pre_u8={}, post_u8={},"
+            " quant_u8={}, fp16_packed={}, fp16_storage={}, fp16_arith={}, int8_storage={}",
+            stage, initialized_ ? 1 : 0, model_loaded_ ? 1 : 0,
+            gpu_layout_pipeline_ready_ ? 1 : 0, gpu_layout_u8_pipeline_ready_ ? 1 : 0,
+            gpu_crop_pipeline_ready_ ? 1 : 0, gpu_crop_u8_pipeline_ready_ ? 1 : 0,
+            gpu_tile_pipeline_ready_ ? 1 : 0,
+            preproc_hwc_u8_to_chw_ != nullptr ? 1 : 0,
+            postproc_chw_to_hwc_u8_ != nullptr ? 1 : 0,
+            quantize_hwc_to_u8_ != nullptr ? 1 : 0,
+            net_->opt.use_fp16_packed ? 1 : 0, net_->opt.use_fp16_storage ? 1 : 0,
+            net_->opt.use_fp16_arithmetic ? 1 : 0, net_->opt.use_int8_storage ? 1 : 0);
 
         if (vkdev_ != nullptr) {
-            stream << ", heap_budget_mb=" << vkdev_->get_heap_budget();
+            stream += std::format(", heap_budget_mb={}", vkdev_->get_heap_budget());
         } else {
-            stream << ", heap_budget_mb=-1";
+            stream += ", heap_budget_mb=-1";
         }
 
         if (width > 0 && height > 0 && channels > 0) {
-            stream << ", input=" << width << "x" << height << "x" << channels
-                   << ", scale=" << scale_factor_
-                   << ", output=" << (width * scale_factor_) << "x" << (height * scale_factor_);
+            stream += std::format(", input={}x{}x{}, scale={}, output={}x{}",
+                                  width, height, channels, scale_factor_,
+                                  width * scale_factor_, height * scale_factor_);
         }
         if (submit_budget > 0) {
-            stream << ", submit_budget=" << submit_budget;
+            stream += std::format(", submit_budget={}", submit_budget);
         }
         if (submit_budget_cap > 0) {
-            stream << ", submit_budget_cap=" << submit_budget_cap;
+            stream += std::format(", submit_budget_cap={}", submit_budget_cap);
         }
         if (submit_memory_budget_mb > 0) {
-            stream << ", submit_mem_budget_mb=" << submit_memory_budget_mb;
+            stream += std::format(", submit_mem_budget_mb={}", submit_memory_budget_mb);
         }
         if (avg_tile_pixels >= 0.0) {
-            stream << ", avg_tile_pixels=" << avg_tile_pixels;
+            stream += std::format(", avg_tile_pixels={:.6g}", avg_tile_pixels);
         }
 
-        return stream.str();
+        return stream;
     }
 
     bool NCNNEngineImpl::init_gpu_layout_pipelines() {
@@ -2216,11 +2203,10 @@ auto NCNNEngineImpl::process_vulkan_with_gpu_layout(
                 static_cast<size_t>(width) * height * 64 * 2 * 4 +
                 (in_total + out_total) * 2;
             if (device_need > budget_mb * 1024 * 1024) {
-                std::ostringstream oss;
-                oss << "out of GPU memory for whole-image Vulkan path: need ~"
-                    << device_need / (1024 * 1024) << "MB, budget " << budget_mb
-                    << "MB" << (clamped ? " (clamped to host availability)" : "");
-                return std::unexpected(EngineError{kErrOutOfMemory, oss.str()});
+                return std::unexpected(EngineError{kErrOutOfMemory,
+                    std::format("out of GPU memory for whole-image Vulkan path: need ~{}MB, budget {}MB{}",
+                                device_need / (1024 * 1024), budget_mb,
+                                clamped ? " (clamped to host availability)" : "")});
             }
         }
     }
@@ -2332,7 +2318,7 @@ auto NCNNEngineImpl::process_vulkan_with_gpu_layout_run(
             ret = ex.input("data", in_gpu_chw);
         }
         if (ret != 0) {
-            return std::unexpected(EngineError{14, "Failed to set Vulkan input (error " + std::to_string(ret) + ")"});
+            return std::unexpected(EngineError{14, std::format("Failed to set Vulkan input (error {})", ret)});
         }
 
         if (cancel_flag) {
@@ -2347,7 +2333,7 @@ auto NCNNEngineImpl::process_vulkan_with_gpu_layout_run(
             if (ret != 0) {
                 ret = ex.extract("out", out_gpu, cmd);
                 if (ret != 0) {
-                    return std::unexpected(EngineError{15, "Failed to extract Vulkan output (error " + std::to_string(ret) + ")"});
+                    return std::unexpected(EngineError{15, std::format("Failed to extract Vulkan output (error {})", ret)});
                 }
             }
         }
@@ -2366,7 +2352,7 @@ auto NCNNEngineImpl::process_vulkan_with_gpu_layout_run(
             if (auto oom = empty_gpu_output_error(out_gpu.w, out_gpu.h, out_gpu.c)) {
                 return std::unexpected(*oom);
             }
-            return std::unexpected(EngineError{16, "Vulkan output shape mismatch (got " + std::to_string(out_gpu.w) + "x" + std::to_string(out_gpu.h) + "x" + std::to_string(out_gpu.c) + ", want " + std::to_string(out_width) + "x" + std::to_string(out_height) + "x" + std::to_string(channels) + ")"});
+            return std::unexpected(EngineError{16, std::format("Vulkan output shape mismatch (got {}x{}x{}, want {}x{}x{})", out_gpu.w, out_gpu.h, out_gpu.c, out_width, out_height, channels)});
         }
 
         ncnn::VkMat out_gpu_hwc;
@@ -2397,7 +2383,7 @@ auto NCNNEngineImpl::process_vulkan_with_gpu_layout_run(
 
         ret = cmd.submit_and_wait();
         if (ret != 0) {
-            return std::unexpected(EngineError{17, "Vulkan submit failed (error " + std::to_string(ret) + ")"});
+            return std::unexpected(EngineError{17, std::format("Vulkan submit failed (error {})", ret)});
         }
 
         return {};

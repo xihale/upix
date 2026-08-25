@@ -1,6 +1,7 @@
 #include "model_manager.hpp"
 #include "utils/logger.hpp"
 #include <cctype>
+#include <format>
 #include <fstream>
 #include <sstream>
 #include <algorithm>
@@ -138,7 +139,7 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
     std::unordered_set<std::string> input_dependent_blobs;
 
     auto read_param_int = [](const std::vector<std::string>& param_tokens, int key) -> std::optional<int> {
-        const std::string prefix = std::to_string(key) + "=";
+        const std::string prefix = std::format("{}=", key);
         for (const auto& token : param_tokens) {
             if (token.rfind(prefix, 0) != 0) {
                 continue;

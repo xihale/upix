@@ -13,6 +13,7 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
+#include <format>
 #include <fstream>
 #include <optional>
 
@@ -28,28 +29,25 @@ static std::string format_bytes(uint64_t bytes) {
     constexpr uint64_t KB = 1024;
     constexpr uint64_t MB = 1024 * KB;
     constexpr uint64_t GB = 1024 * MB;
-    char buf[32];
+    const double b = static_cast<double>(bytes);
     if (bytes >= GB) {
-        std::snprintf(buf, sizeof(buf), "%.2f GB", static_cast<double>(bytes) / static_cast<double>(GB));
-    } else if (bytes >= MB) {
-        std::snprintf(buf, sizeof(buf), "%.2f MB", static_cast<double>(bytes) / static_cast<double>(MB));
-    } else if (bytes >= KB) {
-        std::snprintf(buf, sizeof(buf), "%.1f KB", static_cast<double>(bytes) / static_cast<double>(KB));
-    } else {
-        std::snprintf(buf, sizeof(buf), "%llu bytes", static_cast<unsigned long long>(bytes));
+        return std::format("{:.2f} GB", b / static_cast<double>(GB));
     }
-    return buf;
+    if (bytes >= MB) {
+        return std::format("{:.2f} MB", b / static_cast<double>(MB));
+    }
+    if (bytes >= KB) {
+        return std::format("{:.1f} KB", b / static_cast<double>(KB));
+    }
+    return std::format("{} bytes", bytes);
 }
 
 // Human-readable duration for logs: "340 ms" or "3.21 s".
 static std::string format_seconds(double s) {
-    char buf[32];
     if (s < 1.0) {
-        std::snprintf(buf, sizeof(buf), "%.0f ms", s * 1000.0);
-    } else {
-        std::snprintf(buf, sizeof(buf), "%.2f s", s);
+        return std::format("{:.0f} ms", s * 1000.0);
     }
-    return buf;
+    return std::format("{:.2f} s", s);
 }
 
 Coordinator::Coordinator() = default;
@@ -100,16 +98,15 @@ auto Coordinator::start(uint16_t port, IdentityKey& identity)
     // store, which simply means every connecting worker is flagged first-time.
     if (!trust_store_path_.empty()) {
         trust_store_ = TrustStore::load(trust_store_path_);
-        LOG_INFO("Coordinator", "TrustStore loaded (" +
-                 std::to_string(trust_store_->size()) + " known peers) from " +
-                 trust_store_path_.string());
+        LOG_INFO("Coordinator", "TrustStore loaded ({} known peers) from {}",
+                 trust_store_->size(), trust_store_path_.string());
     }
 
     server_ = std::make_unique<TCPServer>();
 
     auto result = server_->listen(port);
     if (!result.has_value()) {
-        return std::unexpected(CoordinatorError{1, "Failed to start server: " + result.error().message});
+        return std::unexpected(CoordinatorError{1, std::format("Failed to start server: {}", result.error().message)});
     }
 
     port_ = port;
@@ -119,7 +116,7 @@ auto Coordinator::start(uint16_t port, IdentityKey& identity)
     }
     accept_thread_ = std::thread(&Coordinator::accept_loop, this);
 
-    LOG_INFO("Coordinator", "Server started on port " + std::to_string(port_));
+    LOG_INFO("Coordinator", "Server started on port {}", port_);
     return {};
 }
 
@@ -211,9 +208,8 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
         return std::unexpected(CoordinatorError{3, "Invalid output dimensions"});
     }
 
-    LOG_INFO("Coordinator", "Processing locally: " + std::to_string(width) + "x" +
-             std::to_string(height) + " model=" + (model_name.empty() ? loaded_model_name_ : model_name) +
-             " tile=" + std::to_string(config.tile_size));
+    LOG_INFO("Coordinator", "Processing locally: {}x{} model={} tile={}", width, height,
+             model_name.empty() ? loaded_model_name_ : model_name, config.tile_size);
 
     std::vector<uint8_t> out_bytes(out_bytes_n);
 
@@ -267,23 +263,22 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     auto encoded = out_image.save_to_memory(output_format, transport_quality);
     const auto t_enc_end = std::chrono::steady_clock::now();
     if (!encoded) {
-        return std::unexpected(CoordinatorError{5, "output encode failed: " + encoded.error().message});
+        return std::unexpected(CoordinatorError{5, std::format("output encode failed: {}", encoded.error().message)});
     }
     // The result streams back in MSG_CLIENT_DATA chunks, so the only hard
     // ceiling is what fits a uint32 total length. (Historically anything over
     // 100 MB was rejected with "use jpg or webp"; chunking removed that.)
     if (encoded->size() > 0xFFFFFFFFull) {
         return std::unexpected(CoordinatorError{
-            6, "Encoded output too large for transport (" +
-               format_bytes(encoded->size()) + ")"});
+            6, std::format("Encoded output too large for transport ({})",
+                           format_bytes(encoded->size()))});
     }
 
     const double inf_s = std::chrono::duration<double>(t_inf_end - t_inf_start).count();
     const double enc_s = std::chrono::duration<double>(t_enc_end - t_enc_start).count();
-    LOG_INFO("Coordinator", "Local upscale done: inference " + format_seconds(inf_s) +
-             " + encode " + format_seconds(enc_s) + " (" + std::to_string(out_w) + "x" +
-             std::to_string(out_h) + " " + output_format + " -> " +
-             format_bytes(encoded->size()) + ")");
+    LOG_INFO("Coordinator", "Local upscale done: inference {} + encode {} ({}x{} {} -> {})",
+             format_seconds(inf_s), format_seconds(enc_s), out_w, out_h,
+             output_format, format_bytes(encoded->size()));
 
     return *encoded;
 }
@@ -296,7 +291,7 @@ void Coordinator::accept_loop() {
             // and re-check running_. Only log genuinely unexpected errors.
             const int code = client.error().code;
             if (running_ && code != EAGAIN && code != ETIMEDOUT) {
-                LOG_ERROR("Coordinator", "Accept failed: " + client.error().message);
+                LOG_ERROR("Coordinator", "Accept failed: {}", client.error().message);
             }
             continue;
         }
@@ -628,9 +623,8 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
 
                 LOG_INFO(
                     "Coordinator",
-                    "Received authenticated client task: " +
-                        std::to_string(img_width) + "x" + std::to_string(img_height) +
-                        " model=" + model_name
+                    "Received authenticated client task: {}x{} model={}",
+                    img_width, img_height, model_name
                 );
 
                 ProcessingConfig config;
@@ -814,8 +808,8 @@ void Coordinator::handle_model_list(WorkerConnection& conn) {
         LOG_ERROR("Coordinator", "Failed to send model list response");
         return;
     }
-    LOG_INFO("Coordinator", "Sent model library list (" +
-             std::to_string(models.size()) + " models) to phone");
+    LOG_INFO("Coordinator", "Sent model library list ({} models) to phone",
+             models.size());
 }
 
 void Coordinator::handle_model_upload(WorkerConnection& conn,

@@ -17,9 +17,9 @@
 #endif
 #include <algorithm>
 #include <cmath>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <format>
 #include <thread>
 #include <chrono>
 #include <filesystem>
@@ -27,7 +27,6 @@
 #include <limits>
 #include <mutex>
 #include <optional>
-#include <sstream>
 #include <unordered_map>
 
 // Platform-specific memory detection
@@ -93,7 +92,7 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
         for (int i = 0; i < gpu_count; ++i) {
             DeviceCapability gpu;
             gpu.type = DeviceType::GPU_VULKAN;
-            gpu.name = "Vulkan GPU-" + std::to_string(i);
+            gpu.name = std::format("Vulkan GPU-{}", i);
             gpu.compute_units = 1;
             gpu.memory_mb = 0;
             gpu.benchmark_score = 10.0f;
@@ -225,18 +224,14 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
         // Load param file
         int ret = net_->load_param(param_path.c_str());
         if (ret != 0) {
-            return std::unexpected(EngineError{3, "Failed to load param file: " + param_path + " (error " + std::to_string(ret) + ")"});
+            return std::unexpected(EngineError{3, std::format("Failed to load param file: {} (error {})", param_path, ret)});
         }
 #if NCNN_VULKAN
         if (expect_frozen_key && option_key(net_->opt) != frozen_key) {
-            char before[16];
-            char after[16];
-            std::snprintf(before, sizeof(before), "%x", frozen_key);
-            std::snprintf(after, sizeof(after), "%x", option_key(net_->opt));
             return std::unexpected(EngineError{
                 3,
-                std::string("GPU Option sanitized away from frozen SPIR-V pack (0x") + before +
-                    " -> 0x" + after + ")"
+                std::format("GPU Option sanitized away from frozen SPIR-V pack (0x{:x} -> 0x{:x})",
+                            frozen_key, option_key(net_->opt))
             });
         }
 #endif
@@ -249,11 +244,11 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
                 LOG_ERROR("Engine", "Vulkan device lost during net_->load_model: {}", detail);
                 return std::unexpected(EngineError{
                     4,
-                    "Failed to load model weights (VK_ERROR_DEVICE_LOST): " + bin_path +
-                        " (error " + std::to_string(ret) + "); " + detail
+                    std::format("Failed to load model weights (VK_ERROR_DEVICE_LOST): {} (error {}); {}",
+                                bin_path, ret, detail)
                 });
             }
-            return std::unexpected(EngineError{4, "Failed to load model weights: " + bin_path + " (error " + std::to_string(ret) + ")"});
+            return std::unexpected(EngineError{4, std::format("Failed to load model weights: {} (error {})", bin_path, ret)});
         }
 
 #if NCNN_VULKAN
@@ -426,7 +421,7 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             ret = ex.input("data", feed);
         }
         if (ret != 0) {
-            return std::unexpected(EngineError{6, "Failed to set input (error " + std::to_string(ret) + ")"});
+            return std::unexpected(EngineError{6, std::format("Failed to set input (error {})", ret)});
         }
         
         if (cancel_flag) {
@@ -443,7 +438,7 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             if (ret != 0) {
                 ret = ex.extract("out", out);
                 if (ret != 0) {
-                    return std::unexpected(EngineError{7, "Failed to extract output (error " + std::to_string(ret) + ")"});
+                    return std::unexpected(EngineError{7, std::format("Failed to extract output (error {})", ret)});
                 }
             }
         }
@@ -457,10 +452,9 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
         if (out.c != channels || out.w < expected_out_width || out.h < expected_out_height) {
             return std::unexpected(EngineError{
                 16,
-                "Output shape mismatch: expected=" +
-                    std::to_string(expected_out_width) + "x" + std::to_string(expected_out_height) + "x" +
-                    std::to_string(channels) + ", actual=" +
-                    std::to_string(out.w) + "x" + std::to_string(out.h) + "x" + std::to_string(out.c)
+                std::format("Output shape mismatch: expected={}x{}x{}, actual={}x{}x{}",
+                            expected_out_width, expected_out_height, channels,
+                            out.w, out.h, out.c)
             });
         }
 
@@ -548,10 +542,9 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
     -> std::optional<EngineError> {
     if (mem_info.second == 0) return std::nullopt;  // unknown → let it throw/succeed
     if (need_bytes <= mem_info.second * 1024 * 1024) return std::nullopt;
-    std::ostringstream oss;
-    oss << "out of host memory: need ~" << need_bytes / (1024 * 1024)
-        << "MB, available " << mem_info.second << "MB";
-    return EngineError{kErrOutOfMemory, oss.str()};
+    return EngineError{kErrOutOfMemory,
+        std::format("out of host memory: need ~{}MB, available {}MB",
+                    need_bytes / (1024 * 1024), mem_info.second)};
 }
 
 } // namespace
@@ -639,9 +632,8 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                     }
                     if (all_zero && out_bytes > 0 && output[out_bytes - 1] == 0) {
                         LOG_WARNING("Engine",
-                            "U8 queue pipeline produced all-zero output (bytes=" +
-                            std::to_string(out_bytes) +
-                            "), falling back to float tile pipeline");
+                            "U8 queue pipeline produced all-zero output (bytes={}), falling back to float tile pipeline",
+                            out_bytes);
                     } else {
                         return u8_result;
                     }
@@ -931,7 +923,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                     ret = ex.input("data", in_gpu_chw);
                 }
                 if (ret != 0) {
-                    return std::unexpected(EngineError{14, "Failed to set Vulkan input (error " + std::to_string(ret) + ")"});
+                    return std::unexpected(EngineError{14, std::format("Failed to set Vulkan input (error {})", ret)});
                 }
 
                 ncnn::VkMat out_gpu;
@@ -942,7 +934,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                     if (ret != 0) {
                         ret = ex.extract("out", out_gpu, cmd);
                         if (ret != 0) {
-                            return std::unexpected(EngineError{15, "Failed to extract Vulkan output (error " + std::to_string(ret) + ")"});
+                            return std::unexpected(EngineError{15, std::format("Failed to extract Vulkan output (error {})", ret)});
                         }
                     }
                 }
@@ -957,7 +949,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                     if (auto oom = empty_gpu_output_error(out_gpu.w, out_gpu.h, out_gpu.c)) {
                         return std::unexpected(*oom);
                     }
-                    return std::unexpected(EngineError{16, "Vulkan output shape mismatch (got " + std::to_string(out_gpu.w) + "x" + std::to_string(out_gpu.h) + "x" + std::to_string(out_gpu.c) + ", want " + std::to_string(out_width) + "x" + std::to_string(out_height) + "x" + std::to_string(channels) + ")"});
+                    return std::unexpected(EngineError{16, std::format("Vulkan output shape mismatch (got {}x{}x{}, want {}x{}x{})", out_gpu.w, out_gpu.h, out_gpu.c, out_width, out_height, channels)});
                 }
 
                 ncnn::VkMat out_gpu_hwc;
@@ -985,7 +977,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
 
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
-                return std::unexpected(EngineError{17, "Vulkan submit failed (error " + std::to_string(submit_ret) + ")"});
+                return std::unexpected(EngineError{17, std::format("Vulkan submit failed (error {})", submit_ret)});
             }
 
             return {};
