@@ -86,11 +86,8 @@ std::mutex g_vulkan_init_mutex;
                         if (info.support_fp16_storage()) score += 50;
                         if (info.support_fp16_packed()) score += 50;
 
-                        LOG_INFO("Engine", "Vulkan candidate #" + std::to_string(i) +
-                                " name=" + gpu_name +
-                                " type=" + std::to_string(info.type()) +
-                                " compute_queues=" + std::to_string(info.compute_queue_count()) +
-                                " score=" + std::to_string(score));
+                        LOG_INFO("Engine", "Vulkan candidate #{} name={} type={} compute_queues={} score={}",
+                                 i, gpu_name, info.type(), info.compute_queue_count(), score);
 
                         if (score > best_score) {
                             best_score = score;
@@ -102,7 +99,7 @@ std::mutex g_vulkan_init_mutex;
                         vkdev_ = ncnn::get_gpu_device(best_gpu_idx);
                         if (vkdev_ != nullptr) {
                             spirv_pack::register_ncnn_lookup();
-                            LOG_INFO("Engine", "Selected Vulkan GPU index " + std::to_string(best_gpu_idx));
+                            LOG_INFO("Engine", "Selected Vulkan GPU index {}", best_gpu_idx);
                             attempt_ok = true;
                         }
                     }
@@ -115,8 +112,8 @@ std::mutex g_vulkan_init_mutex;
             }
 
             if (attempt < max_attempts) {
-                LOG_WARNING("Engine", "Vulkan init attempt " + std::to_string(attempt) +
-                                      " failed, retrying in " + std::to_string(retry_delay_ms) + "ms");
+                LOG_WARNING("Engine", "Vulkan init attempt {} failed, retrying in {}ms",
+                            attempt, retry_delay_ms);
                 std::this_thread::sleep_for(std::chrono::milliseconds(retry_delay_ms));
                 retry_delay_ms = std::min(retry_delay_ms * 2, 1500);
             }
@@ -240,11 +237,11 @@ std::mutex g_vulkan_init_mutex;
                 default: model_prepadding_ = 0; break;
             }
             LOG_WARNING("Engine",
-                "Model uses internal border crops; applying prepadding=" +
-                std::to_string(model_prepadding_) +
-                (model_prepadding_ > 0
+                "Model uses internal border crops; applying prepadding={}{}",
+                model_prepadding_,
+                model_prepadding_ > 0
                      ? "; GPU tile pipelines tile with replicate-border context"
-                     : " (unsupported scale; GPU tile pipelines disabled)"));
+                     : " (unsupported scale; GPU tile pipelines disabled)");
         }
 
         // If we couldn't detect, try inferring from model metadata or use default
@@ -252,9 +249,8 @@ std::mutex g_vulkan_init_mutex;
             input_channels_ = input_channels;
         }
 
-        LOG_INFO("Engine", "Detected input: " + std::to_string(input_width) + "x" +
-                 std::to_string(input_height) + "x" + std::to_string(input_channels_) +
-                 ", scale: " + std::to_string(scale_factor_));
+        LOG_INFO("Engine", "Detected input: {}x{}x{}, scale: {}",
+                 input_width, input_height, input_channels_, scale_factor_);
     }
 
 } // namespace crossscale

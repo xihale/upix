@@ -10,7 +10,7 @@ namespace crossscale::perf {
 auto run_test(const std::string& test_name, const TestConfig& cfg, const std::string& out_path) -> int {
     Reporter rep(out_path);
     if (!rep.open()) {
-        LOG_ERROR("Perf", "failed to open output: " + out_path);
+        LOG_ERROR("Perf", "failed to open output: {}", out_path);
         return 1;
     }
 
@@ -22,13 +22,13 @@ auto run_test(const std::string& test_name, const TestConfig& cfg, const std::st
     } else if (test_name == "gpu-reuse") {
         test = std::make_unique<GpuReuseTest>();
     } else {
-        LOG_ERROR("Perf", "unknown test: " + test_name);
+        LOG_ERROR("Perf", "unknown test: {}", test_name);
         LOG_INFO("Perf", "available: gpu-efficiency, gpu-concurrency, gpu-reuse");
         return 1;
     }
 
-    LOG_INFO("Perf", "running test: " + test_name +
-             (out_path.empty() ? "" : (" → " + out_path)));
+    LOG_INFO("Perf", "running test: {}{}",
+             test_name, out_path.empty() ? "" : std::format(" → {}", out_path));
     return test->run(cfg, rep);
 }
 

@@ -259,14 +259,13 @@ auto load_api() -> const AvifApi& {
         if (!version_is_1x(api)) {
             LOG_WARNING(
                 "Image",
-                std::string("libavif version is not 1.x (got ") +
-                    (api.version ? api.version() : "unknown") + "), refusing to use it"
-            );
+                "libavif version is not 1.x (got {}), refusing to use it",
+                api.version ? api.version() : "unknown");
             close_lib(handle);
             api = AvifApi{};
             return;
         }
-        LOG_INFO("Image", std::string("Using system libavif ") + api.version());
+        LOG_INFO("Image", "Using system libavif {}", api.version());
     });
     return api;
 }

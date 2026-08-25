@@ -398,7 +398,7 @@ auto mode_a_worker(Engine& engine, const TestConfig& cfg, Workload& wl,
                                   cfg.tile_width, cfg.tile_height, cfg.channels, cancel);
         double ms = tile_timer.toc();
         if (!res) {
-            LOG_ERROR("Perf", "gpu-reuse mode A process failed: " + res.error().message);
+            LOG_ERROR("Perf", "gpu-reuse mode A process failed: {}", res.error().message);
             stats.failed = true;
             return;
         }
@@ -606,15 +606,15 @@ auto GpuReuseTest::run(const TestConfig& cfg, Reporter& rep) -> int {
         auto e = create_ncnn_engine();
         auto init_res = e->initialize(DeviceType::GPU_VULKAN);
         if (!init_res) {
-            LOG_ERROR("Perf", "GPU init failed (engine " + std::to_string(i) +
-                              "): " + init_res.error().message);
+            LOG_ERROR("Perf", "GPU init failed (engine {}): {}", i,
+                      init_res.error().message);
             nvml.stop();
             return 2;
         }
         auto load_res = e->load_model(cfg.model_param, cfg.model_bin);
         if (!load_res) {
-            LOG_ERROR("Perf", "model load failed (engine " + std::to_string(i) +
-                              "): " + load_res.error().message);
+            LOG_ERROR("Perf", "model load failed (engine {}): {}", i,
+                      load_res.error().message);
             nvml.stop();
             return 3;
         }
@@ -682,7 +682,7 @@ auto GpuReuseTest::run(const TestConfig& cfg, Reporter& rep) -> int {
         auto res_a = engines[0]->process(tp.input.get(), out_a.data(),
                                          cfg.tile_width, cfg.tile_height, cfg.channels, cancel);
         if (!res_a) {
-            LOG_ERROR("Perf", "correctness: Mode A process failed: " + res_a.error().message);
+            LOG_ERROR("Perf", "correctness: Mode A process failed: {}", res_a.error().message);
             nvml.stop();
             return 5;
         }
@@ -750,7 +750,7 @@ auto GpuReuseTest::run(const TestConfig& cfg, Reporter& rep) -> int {
             auto res_a = engines[0]->process(tp.input.get(), tp.output.get(),
                                              cfg.tile_width, cfg.tile_height, cfg.channels, cancel);
             if (!res_a) {
-                LOG_WARNING("Perf", "gpu-reuse warmup A failed: " + res_a.error().message);
+                LOG_WARNING("Perf", "gpu-reuse warmup A failed: {}", res_a.error().message);
             }
             int ret_b = reuse_forward(*contexts[0], tp.input.get(), tp.output.get(),
                                       cfg.tile_width, cfg.tile_height, cfg.channels, cfg.scale);

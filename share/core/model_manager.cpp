@@ -34,7 +34,7 @@ auto ModelManager::scan_models() -> expected<std::vector<ModelInfo>, ModelManage
     models_.clear();
     
     if (!std::filesystem::exists(models_dir_)) {
-        LOG_WARNING("ModelManager", "Models directory does not exist: " + models_dir_.string());
+        LOG_WARNING("ModelManager", "Models directory does not exist: {}", models_dir_.string());
         return models_;
     }
     

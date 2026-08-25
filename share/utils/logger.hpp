@@ -1,13 +1,12 @@
 #pragma once
 
+#include <format>
 #include <string>
 #include <string_view>
 #include <cstdlib>
 #include <mutex>
 #include <chrono>
 #include <iostream>
-#include <iomanip>
-#include <sstream>
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -40,6 +39,7 @@ public:
         return logger;
     }
 
+    // Pre-formatted sink (also used by the templated overloads below).
     void log(LogLevel level, std::string_view tag, std::string_view message) {
         if (level < min_level_) {
             return;
@@ -47,26 +47,24 @@ public:
 
         std::lock_guard<std::mutex> lock(mutex_);
 
-        auto now = std::chrono::system_clock::now();
-        auto time = std::chrono::system_clock::to_time_t(now);
-        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now.time_since_epoch()) % 1000;
-
         // Format: [2024-01-15 10:30:45.123] [Tag] [LEVEL] Message
-        struct tm tm_buf{};
+        const auto now = std::chrono::time_point_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now());
+        const auto time = std::chrono::system_clock::to_time_t(now);
+        struct tm tm_buf {};
         localtime_r(&time, &tm_buf);
-        std::ostringstream ts_stream;
-        ts_stream << std::put_time(&tm_buf, "%Y-%m-%d %H:%M:%S");
-        std::string timestamp = ts_stream.str() + "." +
-            (ms.count() < 100 ? "0" : "") + (ms.count() < 10 ? "0" : "") + std::to_string(ms.count());
+        const int ms = static_cast<int>(now.time_since_epoch().count() % 1000);
 
-        std::string level_str = level_to_string(level);
-        const char* color = level_to_color(level);
+        const auto timestamp = std::format(
+            "{:04}-{:02}-{:02} {:02}:{:02}:{:02}.{:03}",
+            tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
+            tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, ms);
 
-        std::cout << "[" << timestamp << "] "
-                  << "[" << console_colors::CYAN << tag << console_colors::RESET << "] "
-                  << "[" << color << level_str << console_colors::RESET << "] "
-                  << message << std::endl;
+        std::cout << std::format("[{}] [{}{}] [{}{}] {}\n",
+                                 timestamp,
+                                 console_colors::CYAN, tag,
+                                 level_to_color(level), level_to_string(level),
+                                 message) << std::flush;
 
 #ifdef __ANDROID__
         // Mirror to Android logcat so native engine logs are visible alongside
@@ -84,20 +82,30 @@ public:
 #endif
     }
 
-    void debug(std::string_view tag, std::string_view message) {
-        log(LogLevel::DEBUG, tag, message);
-    }
+    // Pre-formatted messages: passed through verbatim, never re-formatted
+    // (braces/% in dynamic strings stay literal).
+    void debug(std::string_view tag, std::string_view message) { log(LogLevel::DEBUG, tag, message); }
+    void info(std::string_view tag, std::string_view message) { log(LogLevel::INFO, tag, message); }
+    void warning(std::string_view tag, std::string_view message) { log(LogLevel::WARNING, tag, message); }
+    void error(std::string_view tag, std::string_view message) { log(LogLevel::ERROR, tag, message); }
 
-    void info(std::string_view tag, std::string_view message) {
-        log(LogLevel::INFO, tag, message);
+    // Formatted overloads: info(tag, "loaded {} tiles", n), compile-time
+    // checked via std::format_string.
+    template <typename... Args>
+    void debug(std::string_view tag, std::format_string<Args...> fmt, Args&&... args) {
+        debug(tag, std::vformat(fmt.get(), std::make_format_args(args...)));
     }
-
-    void warning(std::string_view tag, std::string_view message) {
-        log(LogLevel::WARNING, tag, message);
+    template <typename... Args>
+    void info(std::string_view tag, std::format_string<Args...> fmt, Args&&... args) {
+        info(tag, std::vformat(fmt.get(), std::make_format_args(args...)));
     }
-
-    void error(std::string_view tag, std::string_view message) {
-        log(LogLevel::ERROR, tag, message);
+    template <typename... Args>
+    void warning(std::string_view tag, std::format_string<Args...> fmt, Args&&... args) {
+        warning(tag, std::vformat(fmt.get(), std::make_format_args(args...)));
+    }
+    template <typename... Args>
+    void error(std::string_view tag, std::format_string<Args...> fmt, Args&&... args) {
+        error(tag, std::vformat(fmt.get(), std::make_format_args(args...)));
     }
 
 private:
@@ -106,14 +114,14 @@ private:
     Logger(const Logger&) = delete;
     Logger& operator=(const Logger&) = delete;
 
-    static std::string level_to_string(LogLevel level) {
+    static constexpr std::string_view level_to_string(LogLevel level) {
         switch (level) {
             case LogLevel::DEBUG: return "DEBUG";
             case LogLevel::INFO: return "INFO";
             case LogLevel::WARNING: return "WARN";
             case LogLevel::ERROR: return "ERROR";
-            default: return "UNKNOWN";
         }
+        return "UNKNOWN";
     }
 
     static const char* level_to_color(LogLevel level) {
@@ -122,8 +130,8 @@ private:
             case LogLevel::INFO: return console_colors::GREEN;
             case LogLevel::WARNING: return console_colors::YELLOW;
             case LogLevel::ERROR: return console_colors::RED;
-            default: return console_colors::WHITE;
         }
+        return console_colors::WHITE;
     }
 
     LogLevel min_level_ = [] {
@@ -136,10 +144,13 @@ private:
     std::mutex mutex_;
 };
 
-// Convenience macros
-#define LOG_DEBUG(tag, msg) crossscale::Logger::instance().debug(tag, msg)
-#define LOG_INFO(tag, msg) crossscale::Logger::instance().info(tag, msg)
-#define LOG_WARNING(tag, msg) crossscale::Logger::instance().warning(tag, msg)
-#define LOG_ERROR(tag, msg) crossscale::Logger::instance().error(tag, msg)
-
 } // namespace crossscale
+
+// Convenience macros. Single-string calls work unchanged; extra args are
+// treated as std::format arguments:
+//   LOG_INFO(tag, msg)                    -> literal/dynamic message
+//   LOG_INFO(tag, "loaded {} tiles", n)   -> formatted at the call site
+#define LOG_DEBUG(tag, ...) crossscale::Logger::instance().debug(tag __VA_OPT__(,) __VA_ARGS__)
+#define LOG_INFO(tag, ...) crossscale::Logger::instance().info(tag __VA_OPT__(,) __VA_ARGS__)
+#define LOG_WARNING(tag, ...) crossscale::Logger::instance().warning(tag __VA_OPT__(,) __VA_ARGS__)
+#define LOG_ERROR(tag, ...) crossscale::Logger::instance().error(tag __VA_OPT__(,) __VA_ARGS__)

@@ -111,7 +111,7 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             return std::unexpected(EngineError{1, "Engine not initialized"});
         }
         
-        LOG_INFO("Engine", "Loading model: " + param_path);
+        LOG_INFO("Engine", "Loading model: {}", param_path);
         
         model_loaded_ = false;
         
@@ -149,7 +149,7 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             }();
 
             auto fallback_cpu = [&](const char* why) {
-                LOG_WARNING("Engine", std::string(why) + ", falling back to CPU");
+                LOG_WARNING("Engine", "{}, falling back to CPU", why);
                 net_->opt.use_vulkan_compute = false;
                 net_->opt.use_fp16_packed = false;
                 net_->opt.use_fp16_storage = false;
@@ -180,19 +180,17 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
                         tuned_threads = std::clamp(static_cast<int>(hw_threads / 4), 1, 4);
                     }
                     net_->opt.num_threads = tuned_threads;
-                    char key_hex[16];
-                    std::snprintf(key_hex, sizeof(key_hex), "%x", option_key(net_->opt));
                     LOG_INFO(
                         "Engine",
-                        std::string("Vulkan precision profile=") + profile_name(*profile) +
-                            " key=0x" + key_hex +
-                            " fp16_packed=" + std::to_string(net_->opt.use_fp16_packed ? 1 : 0) +
-                            " fp16_storage=" + std::to_string(net_->opt.use_fp16_storage ? 1 : 0) +
-                            " fp16_arithmetic=" + std::to_string(net_->opt.use_fp16_arithmetic ? 1 : 0) +
-                            " int8_storage=" + std::to_string(net_->opt.use_int8_storage ? 1 : 0) +
-                            " local_memory=" +
-                            std::to_string(net_->opt.use_shader_local_memory ? 1 : 0)
-                    );
+                        "Vulkan precision profile={} key=0x{:x} fp16_packed={:d} "
+                        "fp16_storage={:d} fp16_arithmetic={:d} int8_storage={:d} "
+                        "local_memory={:d}",
+                        profile_name(*profile), option_key(net_->opt),
+                        net_->opt.use_fp16_packed,
+                        net_->opt.use_fp16_storage,
+                        net_->opt.use_fp16_arithmetic,
+                        net_->opt.use_int8_storage,
+                        net_->opt.use_shader_local_memory);
                 }
             }
         } else {
@@ -248,7 +246,7 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
         if (ret != 0) {
             if (current_device_ == DeviceType::GPU_VULKAN && ret == -4) {
                 const std::string detail = format_vulkan_runtime_snapshot("load_model_device_lost");
-                LOG_ERROR("Engine", "Vulkan device lost during net_->load_model: " + detail);
+                LOG_ERROR("Engine", "Vulkan device lost during net_->load_model: {}", detail);
                 return std::unexpected(EngineError{
                     4,
                     "Failed to load model weights (VK_ERROR_DEVICE_LOST): " + bin_path +
@@ -274,7 +272,8 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
                 } else {
                     LOG_INFO("Engine", "GPU u8 pre/post layout pipeline disabled (int8_storage off; unset CROSSSCALE_GPU_DISABLE_INT8 to enable the zero-copy u8 queue)");
                 }
-                LOG_WARNING("Engine", "GPU u8 pipeline readiness details: " + format_vulkan_runtime_snapshot("load_model_gpu_u8_not_ready"));
+                LOG_WARNING("Engine", "GPU u8 pipeline readiness details: {}",
+                            format_vulkan_runtime_snapshot("load_model_gpu_u8_not_ready"));
             }
             gpu_crop_pipeline_ready_ = init_gpu_crop_pipeline();
             if (!gpu_crop_pipeline_ready_) {
@@ -293,7 +292,8 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             if (!gpu_tile_pipeline_ready_) {
                 LOG_WARNING("Engine", "GPU tile blend pipeline disabled, fallback to CPU tile blending");
             }
-            LOG_INFO("Engine", "GPU pipeline readiness snapshot: " + format_vulkan_runtime_snapshot("load_model_after_pipeline_init"));
+            LOG_INFO("Engine", "GPU pipeline readiness snapshot: {}",
+                     format_vulkan_runtime_snapshot("load_model_after_pipeline_init"));
         } else {
             gpu_layout_pipeline_ready_ = false;
             gpu_layout_u8_pipeline_ready_ = false;
@@ -309,7 +309,7 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
         model_name_ = std::filesystem::path(param_path).stem().string();
         model_loaded_ = true;
         
-        LOG_INFO("Engine", "Model loaded successfully (scale: " + std::to_string(scale_factor_) + ")");
+        LOG_INFO("Engine", "Model loaded successfully (scale: {})", scale_factor_);
         return {};
     }
     
@@ -1178,9 +1178,8 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
             tilesize /= 2;
         }
 
-        LOG_INFO("Engine", "Auto tile size: " + std::to_string(tilesize) +
-                 " (VRAM " + std::to_string(heap_budget_mb) + "MB" +
-                 (is_mobile_gpu ? ", mobile GPU" : "") + ")");
+        LOG_INFO("Engine", "Auto tile size: {} (VRAM {}MB{})",
+                 tilesize, heap_budget_mb, is_mobile_gpu ? ", mobile GPU" : "");
         return tilesize;
 #else
         return 128;

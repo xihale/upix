@@ -74,7 +74,7 @@ auto worker(Engine& engine, const TestConfig& cfg, Workload& wl,
                                   cfg.tile_width, cfg.tile_height, cfg.channels, cancel);
         double ms = tile_timer.toc();
         if (!res) {
-            LOG_ERROR("Perf", "concurrent process failed: " + res.error().message);
+            LOG_ERROR("Perf", "concurrent process failed: {}", res.error().message);
             stats.failed = true;
             return;
         }
@@ -233,15 +233,15 @@ auto GpuConcurrencyTest::run(const TestConfig& cfg, Reporter& rep) -> int {
         auto e = create_ncnn_engine();
         auto init_res = e->initialize(DeviceType::GPU_VULKAN);
         if (!init_res) {
-            LOG_ERROR("Perf", "GPU init failed (engine " + std::to_string(i) +
-                              "): " + init_res.error().message);
+            LOG_ERROR("Perf", "GPU init failed (engine {}): {}", i,
+                      init_res.error().message);
             nvml.stop();
             return 2;
         }
         auto load_res = e->load_model(cfg.model_param, cfg.model_bin);
         if (!load_res) {
-            LOG_ERROR("Perf", "model load failed (engine " + std::to_string(i) +
-                              "): " + load_res.error().message);
+            LOG_ERROR("Perf", "model load failed (engine {}): {}", i,
+                      load_res.error().message);
             nvml.stop();
             return 3;
         }

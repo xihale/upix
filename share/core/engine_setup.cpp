@@ -24,7 +24,7 @@ auto initialize_engine(SetupDevice device)
             break;
         case SetupDevice::GPU_THEN_CPU: {
             if (auto gpu = engine->initialize(DeviceType::GPU_VULKAN); !gpu) {
-                LOG_WARNING("Engine", "GPU not available, falling back to CPU: " + gpu.error().message);
+                LOG_WARNING("Engine", "GPU not available, falling back to CPU: {}", gpu.error().message);
                 if (auto cpu = engine->initialize(DeviceType::CPU); !cpu) {
                     return std::unexpected("engine initialize failed on both GPU and CPU: " + cpu.error().message);
                 }
@@ -56,16 +56,16 @@ auto switch_model(
     }
     auto info = models.get_model(model_name);
     if (!info) {
-        LOG_ERROR(log_tag, "unknown model requested: " + model_name);
+        LOG_ERROR(log_tag, "unknown model requested: {}", model_name);
         return false;
     }
     auto load_res = engine.load_model(info->param_path.string(), info->bin_path.string());
     if (!load_res) {
-        LOG_ERROR(log_tag, "model load failed: " + load_res.error().message);
+        LOG_ERROR(log_tag, "model load failed: {}", load_res.error().message);
         return false;
     }
     loaded_model_name = model_name;
-    LOG_INFO(log_tag, "switched model to " + model_name);
+    LOG_INFO(log_tag, "switched model to {}", model_name);
     return true;
 }
 

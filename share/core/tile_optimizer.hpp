@@ -72,8 +72,8 @@ inline auto TileSizeOptimizer::benchmark_tile_size(
         result.memory_usage_mb = calculate_tile_memory(tile_size, 3, scale, dummy_model);
 
     } catch (const std::exception& e) {
-        LOG_WARNING("TileOptimizer", "Benchmark failed for tile_size=" +
-                   std::to_string(tile_size) + ": " + e.what());
+        LOG_WARNING("TileOptimizer", "Benchmark failed for tile_size={}: {}",
+                    tile_size, e.what());
         result.success = false;
     }
 
@@ -157,16 +157,13 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
         std::lock_guard<std::mutex> lock(detail::tile_probe_cache_mutex());
         auto& cache = detail::tile_probe_cache();
         if (auto it = cache.find(key); it != cache.end()) {
-            LOG_DEBUG("TileOptimizer", "Auto-tile cache HIT: model=" + key.model_name +
-                      " bucket=" + std::to_string(key.width_bucket) + "x" +
-                      std::to_string(key.height_bucket) +
-                      " -> tile_size=" + std::to_string(it->second));
+            LOG_DEBUG("TileOptimizer", "Auto-tile cache HIT: model={} bucket={}x{} -> tile_size={}",
+                      key.model_name, key.width_bucket, key.height_bucket, it->second);
             return it->second;
         }
     }
-    LOG_DEBUG("TileOptimizer", "Auto-tile cache MISS: model=" + key.model_name +
-              " bucket=" + std::to_string(key.width_bucket) + "x" +
-              std::to_string(key.height_bucket) + " -> running probe");
+    LOG_DEBUG("TileOptimizer", "Auto-tile cache MISS: model={} bucket={}x{} -> running probe",
+              key.model_name, key.width_bucket, key.height_bucket);
 
     LOG_INFO("TileOptimizer", "Finding optimal tile size...");
 
@@ -215,20 +212,19 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
     std::vector<Candidate> candidates;
 
     for (int size : test_sizes) {
-        LOG_INFO("TileOptimizer", "Benchmarking tile_size=" + std::to_string(size));
+        LOG_INFO("TileOptimizer", "Benchmarking tile_size={}", size);
 
         auto bench = benchmark_tile_size(engine, size);
 
         if (!bench.success) {
-            LOG_WARNING("TileOptimizer", "Tile size " + std::to_string(size) + " failed");
+            LOG_WARNING("TileOptimizer", "Tile size {} failed", size);
             continue;
         }
 
         // 内存约束检查：必须不超过可用内存的 80%
         if (bench.memory_usage_mb > usable_memory_mb) {
-            LOG_WARNING("TileOptimizer", "  Skipping: memory usage " +
-                       std::to_string(bench.memory_usage_mb) + "MB exceeds usable " +
-                       std::to_string(usable_memory_mb) + "MB");
+            LOG_WARNING("TileOptimizer", "  Skipping: memory usage {}MB exceeds usable {}MB",
+                        bench.memory_usage_mb, usable_memory_mb);
             continue;
         }
 
@@ -246,10 +242,9 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
         // 估算总处理时间（秒）
         float estimated_time_sec = total_tiles / bench.tiles_per_second;
 
-        LOG_INFO("TileOptimizer", "  tiles/sec=" + std::to_string(bench.tiles_per_second) +
-                " memory=" + std::to_string(bench.memory_usage_mb) + "MB" +
-                " total_tiles=" + std::to_string(total_tiles) +
-                " est_time=" + std::to_string(estimated_time_sec) + "s");
+        LOG_INFO("TileOptimizer", "  tiles/sec={} memory={}MB total_tiles={} est_time={}s",
+                 bench.tiles_per_second, bench.memory_usage_mb, total_tiles,
+                 estimated_time_sec);
 
         candidates.push_back({size, estimated_time_sec, bench.tiles_per_second, bench.memory_usage_mb});
     }
@@ -282,9 +277,8 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
             break;
         }
     }
-    LOG_INFO("TileOptimizer", "Optimal tile size: " + std::to_string(best_tile) +
-            " (min_time=" + std::to_string(min_time) + "s, penalty=" +
-            std::to_string(actual_penalty) + "%)");
+    LOG_INFO("TileOptimizer", "Optimal tile size: {} (min_time={}s, penalty={}%)",
+             best_tile, min_time, actual_penalty);
 
     {
         std::lock_guard<std::mutex> lock(detail::tile_probe_cache_mutex());

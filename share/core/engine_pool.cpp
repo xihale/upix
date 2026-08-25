@@ -62,9 +62,8 @@ EnginePool::EnginePool(size_t pool_size, const std::string& param_path, const st
         if (const char* env_t = std::getenv("CROSSSCALE_CPU_THREADS_PER_ENGINE")) {
             try { threads_per_engine = std::clamp(std::stoi(env_t), 1, 16); } catch (...) {}
         }
-        LOG_INFO("EnginePool", "CPU thread budget: " + std::to_string(physical_cores) +
-                 " physical cores / " + std::to_string(pool_size) + " engines = " +
-                 std::to_string(threads_per_engine) + " inference threads per engine");
+        LOG_INFO("EnginePool", "CPU thread budget: {} physical cores / {} engines = {} inference threads per engine",
+                 physical_cores, pool_size, threads_per_engine);
     }
 
     engines_.reserve(pool_size);
@@ -73,7 +72,7 @@ EnginePool::EnginePool(size_t pool_size, const std::string& param_path, const st
 
         auto init_res = engine->initialize(device_type);
         if (!init_res.has_value()) {
-            LOG_WARNING("EnginePool", "Failed to initialize engine " + std::to_string(i) + " with specified device, falling back to CPU");
+            LOG_WARNING("EnginePool", "Failed to initialize engine {} with specified device, falling back to CPU", i);
             init_res = engine->initialize(DeviceType::CPU);
             if (!init_res.has_value()) {
                 throw EngineError{1, "Failed to initialize engine " + std::to_string(i)};
@@ -94,8 +93,8 @@ EnginePool::EnginePool(size_t pool_size, const std::string& param_path, const st
         available_.push(engines_.back().get());
     }
 
-    LOG_INFO("EnginePool", "Created pool with " + std::to_string(pool_size) + " engines on " +
-             std::string(device_type == DeviceType::GPU_VULKAN ? "GPU" : "CPU"));
+    LOG_INFO("EnginePool", "Created pool with {} engines on {}",
+             pool_size, device_type == DeviceType::GPU_VULKAN ? "GPU" : "CPU");
 }
 
 EnginePool::~EnginePool() = default;

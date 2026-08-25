@@ -416,7 +416,7 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
             gpu_config.tile_size = std::max(64, gpu_config.tile_size / 2);
             gpu_config.overlap = std::min(gpu_config.overlap, gpu_config.tile_size / 4);
             LOG_WARNING("TileProcessor",
-                "GPU out of memory, retrying with tile_size=" + std::to_string(gpu_config.tile_size));
+                "GPU out of memory, retrying with tile_size={}", gpu_config.tile_size);
             regions = compute_tile_layout(input_width, input_height, gpu_config);
         }
     }
@@ -503,7 +503,7 @@ auto TileProcessor::process_image_u8(
             gpu_config.tile_size = std::max(64, gpu_config.tile_size / 2);
             gpu_config.overlap = std::min(gpu_config.overlap, gpu_config.tile_size / 4);
             LOG_WARNING("TileProcessor",
-                "GPU out of memory, retrying with tile_size=" + std::to_string(gpu_config.tile_size));
+                "GPU out of memory, retrying with tile_size={}", gpu_config.tile_size);
             regions = compute_tile_layout(input_width, input_height, gpu_config);
         }
     }

@@ -129,7 +129,7 @@ bool load_embedded() {
         LOG_WARNING("Engine", "SPIR-V pack is empty or corrupt");
         return false;
     }
-    LOG_INFO("Engine", "Loaded SPIR-V pack with " + std::to_string(g_index.size()) + " shaders");
+    LOG_INFO("Engine", "Loaded SPIR-V pack with {} shaders", g_index.size());
     return true;
 }
 
@@ -156,12 +156,6 @@ namespace {
 // Misses are engine bugs (dump/run key skew) and used to fail silently with
 // only ncnn's downstream "binding_count not match" + SIGSEGV as symptoms —
 // log the key so the culprit is identifiable in the field.
-std::string key_hex(uint32_t key) {
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "0x%x", key);
-    return buf;
-}
-
 } // namespace
 
 bool load_or_compile_custom(detail::CustomShader id, const char* src, const ncnn::Option& opt,
@@ -170,8 +164,8 @@ bool load_or_compile_custom(detail::CustomShader id, const char* src, const ncnn
     if (copy_custom(id, key, out)) {
         return true;
     }
-    LOG_WARNING("Engine", "SPIR-V pack miss: custom=" +
-        std::to_string(static_cast<uint32_t>(id)) + " key=" + key_hex(key));
+    LOG_WARNING("Engine", "SPIR-V pack miss: custom={} key=0x{:x}",
+                static_cast<uint32_t>(id), key);
     if (ncnn::compile_spirv_module(src, opt, out) != 0) {
         return false;
     }
@@ -183,8 +177,8 @@ int lookup_layer(int shader_type_index, const ncnn::Option& opt, std::vector<uin
     if (copy(kKindLayer, static_cast<uint32_t>(shader_type_index), key, spirv)) {
         return 0;
     }
-    LOG_WARNING("Engine", "SPIR-V pack miss: layer=" +
-        std::to_string(shader_type_index) + " key=" + key_hex(key));
+    LOG_WARNING("Engine", "SPIR-V pack miss: layer={} key=0x{:x}",
+                shader_type_index, key);
     return -1;
 }
 

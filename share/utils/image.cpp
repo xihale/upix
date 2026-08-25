@@ -3,12 +3,15 @@
 #include "logger.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
+#include <ranges>
+#include <span>
 #include <thread>
 #include <fstream>
 #include <string_view>
@@ -33,16 +36,15 @@ namespace {
         return 1;
     }
 
-    auto normalize_image_format(std::string format) -> std::string {
-        std::string normalized;
-        normalized.reserve(format.size());
-        for (char ch : format) {
-            if (ch == '.' || std::isspace(static_cast<unsigned char>(ch))) {
-                continue;
-            }
-            normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-        }
-        return normalized;
+    auto normalize_image_format(std::string_view format) -> std::string {
+        auto normalized = format
+            | std::views::filter([](unsigned char ch) {
+                  return ch != '.' && !std::isspace(ch);
+              })
+            | std::views::transform([](unsigned char ch) {
+                  return static_cast<char>(std::tolower(ch));
+              });
+        return {normalized.begin(), normalized.end()};
     }
 
     auto read_file(const std::filesystem::path& path) -> expected<std::vector<uint8_t>, ImageError> {
@@ -59,12 +61,13 @@ namespace {
         return buffer;
     }
 
-    auto write_file(const std::filesystem::path& path, const uint8_t* data, size_t size) -> expected<void, ImageError> {
+    auto write_file(const std::filesystem::path& path, std::span<const uint8_t> data) -> expected<void, ImageError> {
         std::ofstream file(path, std::ios::binary);
         if (!file.is_open()) {
             return std::unexpected(ImageError{3, "Cannot open file for writing: " + path.string()});
         }
-        if (!file.write(reinterpret_cast<const char*>(data), size)) {
+        if (!file.write(reinterpret_cast<const char*>(data.data()),
+                        static_cast<std::streamsize>(data.size()))) {
             return std::unexpected(ImageError{4, "Failed to write file: " + path.string()});
         }
         return {};
@@ -102,21 +105,27 @@ namespace {
     }
 
     auto append_png_u32(std::vector<uint8_t>& out, uint32_t value) -> void {
-        out.push_back(static_cast<uint8_t>(value >> 24));
-        out.push_back(static_cast<uint8_t>(value >> 16));
-        out.push_back(static_cast<uint8_t>(value >> 8));
-        out.push_back(static_cast<uint8_t>(value));
+        for (const int shift : {24, 16, 8, 0}) {
+            out.push_back(static_cast<uint8_t>(value >> shift));
+        }
+    }
+
+    // Big-endian u32 into a fixed byte buffer (PNG IHDR fields).
+    constexpr auto put_be_u32(std::array<uint8_t, 13>& out, size_t offset,
+                              uint32_t value) -> void {
+        for (const int i : std::views::iota(0, 4)) {
+            out[offset + i] = static_cast<uint8_t>(value >> (24 - 8 * i));
+        }
     }
 
     auto write_png_chunk(std::vector<uint8_t>& out, std::string_view type,
-                         const uint8_t* data, size_t length) -> void {
-        append_png_u32(out, static_cast<uint32_t>(length));
+                         std::span<const uint8_t> data) -> void {
+        append_png_u32(out, static_cast<uint32_t>(data.size()));
         const size_t crc_start = out.size();
         out.insert(out.end(), type.begin(), type.end());
-        if (length > 0) {
-            out.insert(out.end(), data, data + length);
-        }
-        append_png_u32(out, libdeflate_crc32(0, out.data() + crc_start, 4 + length));
+        out.insert(out.end(), data.begin(), data.end());
+        append_png_u32(out, libdeflate_crc32(0, out.data() + crc_start,
+                                             4 + data.size()));
     }
 
     // Hand-rolled PNG writer for the images this codebase produces: 8-bit,
@@ -206,25 +215,17 @@ namespace {
         static constexpr uint8_t signature[8] = {137, 'P', 'N', 'G', 13, 10, 26, 10};
         out.insert(out.end(), signature, signature + 8);
 
-        uint8_t ihdr[13];
-        const uint32_t be_width = static_cast<uint32_t>(width);
-        const uint32_t be_height = static_cast<uint32_t>(height);
-        ihdr[0] = static_cast<uint8_t>(be_width >> 24);
-        ihdr[1] = static_cast<uint8_t>(be_width >> 16);
-        ihdr[2] = static_cast<uint8_t>(be_width >> 8);
-        ihdr[3] = static_cast<uint8_t>(be_width);
-        ihdr[4] = static_cast<uint8_t>(be_height >> 24);
-        ihdr[5] = static_cast<uint8_t>(be_height >> 16);
-        ihdr[6] = static_cast<uint8_t>(be_height >> 8);
-        ihdr[7] = static_cast<uint8_t>(be_height);
+        std::array<uint8_t, 13> ihdr{};
+        put_be_u32(ihdr, 0, static_cast<uint32_t>(width));
+        put_be_u32(ihdr, 4, static_cast<uint32_t>(height));
         ihdr[8] = 8;  // bit depth
         ihdr[9] = kPngColorTypeByChannels[channels];
         ihdr[10] = 0;  // compression: deflate
         ihdr[11] = 0;  // filter: adaptive (per-row bytes carry the actual type)
         ihdr[12] = 0;  // interlace: none
-        write_png_chunk(out, "IHDR", ihdr, sizeof(ihdr));
-        write_png_chunk(out, "IDAT", compressed.get(), compressed_size);
-        write_png_chunk(out, "IEND", nullptr, 0);
+        write_png_chunk(out, "IHDR", ihdr);
+        write_png_chunk(out, "IDAT", {compressed.get(), compressed_size});
+        write_png_chunk(out, "IEND", {});
         return true;
     }
 
@@ -283,9 +284,11 @@ namespace {
 
             std::vector<png_bytep> rows(static_cast<size_t>(image.height()));
             const size_t stride = static_cast<size_t>(image.width()) * channels;
-            for (int y = 0; y < image.height(); ++y) {
-                rows[y] = const_cast<png_bytep>(image.data() + static_cast<size_t>(y) * stride);
-            }
+            std::ranges::transform(std::views::iota(0, image.height()), rows.begin(),
+                [&](int y) {
+                    return const_cast<png_bytep>(image.data() +
+                                                 static_cast<size_t>(y) * stride);
+                });
             png_write_image(png, rows.data());
             png_write_end(png, info);
             png_destroy_write_struct(&png, &info);
@@ -366,9 +369,9 @@ namespace {
 
         Image img(width, height, channels);
         std::vector<png_bytep> row_pointers(height);
-        for (int y = 0; y < height; ++y) {
-            row_pointers[y] = img.data() + y * width * channels;
-        }
+        const size_t stride = static_cast<size_t>(width) * channels;
+        std::ranges::transform(std::views::iota(0, height), row_pointers.begin(),
+            [&](int y) { return img.data() + static_cast<size_t>(y) * stride; });
         
         png_read_image(png, row_pointers.data());
         png_read_end(png, nullptr);
@@ -399,13 +402,14 @@ namespace {
         int channels = cinfo.output_components;
         
         Image img(width, height, channels);
-        
+
         while (cinfo.output_scanline < cinfo.output_height) {
             // jpeg_read_scanlines increments output_scanline, so capture the
             // row index before the call and decode straight into the image
             // buffer — no per-row temporary.
             const int row_index = cinfo.output_scanline;
-            JSAMPROW row = img.data() + row_index * width * channels;
+            JSAMPROW row = img.data() +
+                           static_cast<size_t>(row_index) * width * channels;
             JSAMPARRAY scanlines = &row;
             jpeg_read_scanlines(&cinfo, scanlines, 1);
         }
@@ -497,16 +501,18 @@ auto Image::load_from_memory(const std::string& format,
         const std::string fmt = normalize_image_format(format);
         if (fmt == "png") {
             return load_png(data);
-        } else if (fmt == "jpg" || fmt == "jpeg") {
+        }
+        if (fmt == "jpg" || fmt == "jpeg") {
             return load_jpeg(data);
-        } else if (fmt == "webp") {
+        }
+        if (fmt == "webp") {
             return load_webp(data);
-        } else if (fmt == "avif" || avif_codec::looks_like_avif(
+        }
+        if (fmt == "avif" || avif_codec::looks_like_avif(
                                         data.data(), data.size())) {
             return avif_codec::load(data);
-        } else {
-            return std::unexpected(ImageError{8, "Unsupported image format: " + format});
         }
+        return std::unexpected(ImageError{8, "Unsupported image format: " + format});
     } catch (const std::exception& e) {
         return std::unexpected(ImageError{9, "Exception during load: " + std::string(e.what())});
     }
@@ -527,7 +533,7 @@ auto Image::save(const std::filesystem::path& path, int quality) const
     if (!encoded.has_value()) {
         return std::unexpected(encoded.error());
     }
-    return write_file(path, encoded->data(), encoded->size());
+    return write_file(path, *encoded);
 }
 
 auto Image::save_to_memory(const std::string& format, int quality) const
@@ -576,7 +582,7 @@ auto Image::save_to_memory(const std::string& format, int quality) const
 
             std::vector<JSAMPROW> row_pointers(height_);
             const size_t row_stride = static_cast<size_t>(width_) * channels_;
-            for (int y = 0; y < height_; ++y) {
+            for (const int y : std::views::iota(0, height_)) {
                 row_pointers[y] = const_cast<JSAMPROW>(&data_[static_cast<size_t>(y) * row_stride]);
             }
             while (cinfo.next_scanline < cinfo.image_height) {

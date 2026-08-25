@@ -75,7 +75,7 @@ auto run_phase(Engine& engine, const TestConfig& cfg, DeviceType dev,
         auto res = engine.process(tp.input.get(), tp.output.get(),
                                   cfg.tile_width, cfg.tile_height, cfg.channels, cancel);
         if (!res) {
-            LOG_ERROR("Perf", "warmup process failed: " + res.error().message);
+            LOG_ERROR("Perf", "warmup process failed: {}", res.error().message);
             break;
         }
     }
@@ -91,7 +91,7 @@ auto run_phase(Engine& engine, const TestConfig& cfg, DeviceType dev,
                                   cfg.tile_width, cfg.tile_height, cfg.channels, cancel);
         double ms = tile_timer.toc();
         if (!res) {
-            LOG_ERROR("Perf", "process failed: " + res.error().message);
+            LOG_ERROR("Perf", "process failed: {}", res.error().message);
             break;
         }
         r.tile_ms.push_back(ms);
@@ -216,13 +216,13 @@ auto GpuEfficiencyTest::run(const TestConfig& cfg, Reporter& rep) -> int {
     auto engine = create_ncnn_engine();
     auto init_res = engine->initialize(DeviceType::GPU_VULKAN);
     if (!init_res) {
-        LOG_ERROR("Perf", "GPU init failed: " + init_res.error().message);
+        LOG_ERROR("Perf", "GPU init failed: {}", init_res.error().message);
         nvml.stop();
         return 2;
     }
     auto load_res = engine->load_model(cfg.model_param, cfg.model_bin);
     if (!load_res) {
-        LOG_ERROR("Perf", "model load failed: " + load_res.error().message);
+        LOG_ERROR("Perf", "model load failed: {}", load_res.error().message);
         nvml.stop();
         return 3;
     }
@@ -273,11 +273,11 @@ auto GpuEfficiencyTest::run(const TestConfig& cfg, Reporter& rep) -> int {
         auto cpu_engine = create_ncnn_engine();
         auto ci = cpu_engine->initialize(DeviceType::CPU);
         if (!ci) {
-            LOG_WARNING("Perf", "CPU init failed, skipping baseline: " + ci.error().message);
+            LOG_WARNING("Perf", "CPU init failed, skipping baseline: {}", ci.error().message);
         } else {
             auto cl = cpu_engine->load_model(cfg.model_param, cfg.model_bin);
             if (!cl) {
-                LOG_WARNING("Perf", "CPU model load failed, skipping baseline: " + cl.error().message);
+                LOG_WARNING("Perf", "CPU model load failed, skipping baseline: {}", cl.error().message);
             } else {
                 cpu_engine->set_scale_factor(cfg.scale);
                 auto r = run_phase(*cpu_engine, cfg, DeviceType::CPU, nvml, wl, rep, "cpu");
