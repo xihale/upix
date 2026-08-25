@@ -129,9 +129,9 @@ internal fun CheckpointSection(
                 Box(modifier = Modifier.weight(1f))
                 if (checkpointSummary.pendingItemDetails.isNotEmpty()) {
                     // 展开热区收进 IconButton，不再裸图标（触控目标更稳）。
+                    // 不覆盖尺寸：默认触控盒 ≥48dp（MD3 无障碍要求），与行内其余图标按钮一致。
                     IconButton(
-                        onClick = { detailsExpanded = !detailsExpanded },
-                        modifier = Modifier.size(32.dp)
+                        onClick = { detailsExpanded = !detailsExpanded }
                     ) {
                         Icon(
                             imageVector = Icons.Outlined.ExpandMore,
@@ -162,27 +162,23 @@ internal fun CheckpointSection(
                                 overflow = TextOverflow.Ellipsis,
                                 modifier = Modifier.weight(1f)
                             )
-                            IconButton(
-                                onClick = { onResumePendingItem(item.uri) },
-                                modifier = Modifier.size(28.dp)
-                            ) {
+                            // 不覆盖尺寸：默认 48dp 触控盒（MD3 无障碍要求），与 QueueSheet.QueueItemAction 同规。
+                            IconButton(onClick = { onResumePendingItem(item.uri) }) {
                                 Icon(
                                     imageVector = Icons.Outlined.PlayArrow,
                                     contentDescription = stringResource(R.string.checkpoint_resume),
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    modifier = Modifier.size(16.dp)
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
                             if (item.isFailed) {
-                                IconButton(
-                                    onClick = { onRetryFailedItem(item.uri) },
-                                    modifier = Modifier.size(28.dp)
-                                ) {
+                                // 不覆盖尺寸：同上，保留 48dp 命中区。
+                                IconButton(onClick = { onRetryFailedItem(item.uri) }) {
                                     Icon(
                                         imageVector = Icons.Outlined.Refresh,
                                         contentDescription = stringResource(R.string.common_retry),
                                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        modifier = Modifier.size(16.dp)
+                                        modifier = Modifier.size(20.dp)
                                     )
                                 }
                             }

@@ -59,7 +59,7 @@ Use `--output-quality <1-100>` to trade file size for fidelity and `--output-for
 
 Optional parameters:
 
-- `--tile-size N` – Tile size (default: 256)
+- `--tile-size N` – Tile size (default: engine-recommended for your GPU — the daemon and inline paths apply the same rule)
 - `--tile-overlap N` – Overlap between tiles (default: 16)
 - `--batch-size N` – Batch size for tile inference (default: 1). Larger values can improve GPU occupancy by processing multiple tiles in a single GPU dispatch. For CPU, benefits are less pronounced.
 - `--auto-tile` – Enable automatic tile size optimization
@@ -157,9 +157,31 @@ time and remembered afterwards.
 ./crossscale-cli perf gpu-reuse             # fresh vs reused VkCompute
 ```
 
+### Shell Completions
+
+Completion scripts for bash, zsh, and fish (sub-commands, per-subcommand flags,
+and `-m/--model` model names from the installed models). `--install` writes
+them into the shell's user completion directory automatically:
+
+```bash
+./crossscale-cli completions bash --install   # ~/.local/share/bash-completion/completions/
+./crossscale-cli completions zsh --install    # ~/.zfunc/_crossscale (or oh-my-zsh's dir)
+./crossscale-cli completions fish --install   # ~/.config/fish/completions/
+```
+
+For zsh the command prints the `fpath=(...)` line to add to `~/.zshrc` when
+`~/.zfunc` is not on fpath yet. bash and fish files are written for both
+invocation names (`crossscale` and `crossscale-cli`); the scripts resolve the
+binary from the command line being completed, so either name works. Without
+`--install` the script is printed to stdout for custom locations:
+
+```bash
+./crossscale-cli completions bash > /etc/bash_completion.d/crossscale
+```
+
 ## Performance Notes
 
-- **Tile size**: The optimal tile size depends on GPU memory and image resolution. Default 256 works for most GPUs with ≥4GB VRAM. Larger tiles (384, 512) reduce seam artifacts and overhead for high-resolution images (>4K). Smaller tiles (128) are better for memory-constrained devices.
+- **Tile size**: The optimal tile size depends on GPU memory and image resolution. When `--tile-size` is not given, both the warm-engine daemon and the inline path use the engine's VRAM-aware recommendation (identical output either way). 256 works for most GPUs with ≥4GB VRAM. Larger tiles (384, 512) reduce seam artifacts and overhead for high-resolution images (>4K). Smaller tiles (128) are better for memory-constrained devices.
 - **Overlap**: 10-15% of tile size is recommended (e.g., 16 for 256).
 - **CPU vs GPU**: Single-image and directory modes both support GPU via `--gpu`. For directory mode, GPU forces sequential image processing to avoid Vulkan context corruption; CPU mode uses `--jobs` for parallel image processing.
 - **Batch size**: The `--batch-size` flag controls how many tiles are batched together in a single inference call. Tiles are only batched if they have identical dimensions (same width and height), so edge tiles may be processed separately. Increasing batch size can improve GPU occupancy and throughput per image; the CPU also benefits but to a lesser extent. The default is 1 (no batching).
