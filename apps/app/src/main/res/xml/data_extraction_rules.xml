@@ -1,9 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Backup/transfer rules (android:dataExtractionRules, Android 12+). -->
 <data-extraction-rules>
     <cloud-backup>
         <include domain="file" path="." />
+        <!-- Ed25519 identity private key (filesDir/identity): must not be
+             uploaded to Google cloud backup. -->
+        <exclude domain="file" path="identity" />
+        <!-- Large re-downloadable model files. -->
+        <exclude domain="file" path="models" />
     </cloud-backup>
     <device-transfer>
         <include domain="file" path="." />
+        <!-- Device-to-device migration is a direct local transfer, so the
+             identity private key is kept to preserve the user's long-term
+             pairing identity across phones; only the bulky models are
+             excluded. -->
+        <exclude domain="file" path="models" />
     </device-transfer>
 </data-extraction-rules>

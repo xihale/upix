@@ -1,4 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
+<!-- Auto Backup rules (android:fullBackupContent, Android 5.0–11). -->
 <full-backup-content>
     <include domain="file" path="." />
+    <!-- Long-term Ed25519 identity private key (filesDir/identity, a 64-byte
+         file created by NativeWorker.nativeLoadIdentity). It must never leave
+         the device via cloud backup; a restored/renamed key silently breaks
+         trust with every paired PC. Small recovery-relevant files (processing
+         queue/checkpoint JSON) stay backed up. -->
+    <exclude domain="file" path="identity" />
+    <!-- Downloaded/imported NCNN models (filesDir/models fallback dir) are
+         large re-downloadable binaries that do not belong in cloud backup. -->
+    <exclude domain="file" path="models" />
 </full-backup-content>

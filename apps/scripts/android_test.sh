@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# android_test.sh — one-shot automated Android verification for CrossScale.
+# android_test.sh — one-shot automated Android verification for Upix.
 #
 # Phases:
 #   1. Unit tests       : ./gradlew testDebugUnitTest   (blocking)
@@ -23,7 +23,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APK="${APPS_DIR}/app/build/outputs/apk/debug/app-debug.apk"
-PACKAGE="com.crossscale"
+PACKAGE="com.upix"
 ACTIVITY="${PACKAGE}/.MainActivity"
 SMOKE_SECONDS="${SMOKE_SECONDS:-20}"
 RUN_LINT="${RUN_LINT:-0}"
@@ -96,7 +96,7 @@ ok "adb device ready (${DCOUNT})${ANDROID_SERIAL:+ using $ANDROID_SERIAL}"
 # Install. Auto-recover from a signature mismatch (e.g. an older build signed
 # by a different keystore is already present) by uninstalling then reinstalling.
 phase "Install APK"
-INSTALL_LOG="$(mktemp -t crossscale_install_XXXXXX.log)"
+INSTALL_LOG="$(mktemp -t upix_install_XXXXXX.log)"
 if ! adb install -r -t "$APK" 2>&1 | tee "$INSTALL_LOG"; then
   if grep -q 'UPDATE_INCOMPATIBLE\|signatures do not match' "$INSTALL_LOG"; then
     warn "existing install has a different signature — uninstalling $PACKAGE and retrying"
@@ -130,7 +130,7 @@ for i in $(seq 1 "$SMOKE_SECONDS"); do
 done
 
 # Dump the logcat buffer and scan for trouble markers.
-SMOKE_LOG="$(mktemp -t crossscale_smoke_XXXXXX.log)"
+SMOKE_LOG="$(mktemp -t upix_smoke_XXXXXX.log)"
 adb logcat -d > "$SMOKE_LOG" 2>/dev/null
 MARKERS='FATAL EXCEPTION|E AndroidRuntime|ANR in '"$PACKAGE"'|tombstoned|Fatal signal|signal [0-9]+ \(SIG(SEGV|ABRT|BUS)\)|Abort message'
 HITS="$(grep -nE "$MARKERS" "$SMOKE_LOG" || true)"

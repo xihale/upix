@@ -1,21 +1,21 @@
-# CrossScale ProGuard Rules
+# Upix ProGuard Rules
 # These rules prevent obfuscation of classes and methods that are accessed
 # via JNI or reflection, ensuring native code and serialization work correctly
 # in release builds.
 
-# Keep all JNI native methods - required for native C++ bridge
+# Keep the names of every class containing JNI native methods. This covers
+# NativeWorker and NCNNEngine: the Java_com_upix_nativelib_* exports in
+# jni_bridge.cpp resolve classes and methods by name. Their non-native
+# members are only referenced from Kotlin, which R8 traces statically
+# (jni_bridge.cpp reflects into nothing but java/lang/String).
 -keepclasseswithmembernames class * {
     native <methods>;
 }
 
-# Keep NativeWorker and NCNNEngine classes that are called from JNI
--keep class com.crossscale.nativelib.NativeWorker { *; }
--keep class com.crossscale.nativelib.NCNNEngine { *; }
-
-# Keep data model classes used in serialization
--keep class com.crossscale.data.model.** { *; }
-
-# Keep kotlinx.serialization classes
+# kotlinx.serialization (official template, com.upix substituted). The
+# @Serializable DTOs live in com.upix.data.repository (queue/checkpoint);
+# kotlinx-serialization also ships these as R8 consumer rules — kept here
+# as a belt-and-suspenders safety net.
 -keepattributes *Annotation*, InnerClasses
 -dontnote kotlinx.serialization.AnnotationsKt
 
@@ -26,19 +26,18 @@
     kotlinx.serialization.KSerializer serializer(...);
 }
 
--keep,includedescriptorclasses class com.crossscale.**$$serializer { *; }
--keepclassmembers class com.crossscale.** {
+-keep,includedescriptorclasses class com.upix.**$$serializer { *; }
+-keepclassmembers class com.upix.** {
     *** Companion;
 }
--keepclasseswithmembers class com.crossscale.** {
+-keepclasseswithmembers class com.upix.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
 
-# Keep EncryptedSharedPreferences and security-crypto internals
--keep class androidx.security.crypto.** { *; }
-
-# Tink (via security-crypto) references these annotations; they are compile-only
-# and used to arrive transitively via ML Kit. Compile-only: ignore at R8 time.
+# Tink (via androidx.security:security-crypto -> tink-android) references
+# these compile-only annotations, which are absent from the runtime classpath;
+# Tink bundles no -dontwarn rules of its own (only protobuf.pro), so silence
+# them here.
 -dontwarn com.google.errorprone.annotations.CanIgnoreReturnValue
 -dontwarn com.google.errorprone.annotations.CheckReturnValue
 -dontwarn com.google.errorprone.annotations.Immutable

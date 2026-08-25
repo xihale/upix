@@ -3,9 +3,9 @@ if not is_plat("android") then
     return
 end
 
-target("crossscale-native")
+target("upix-native")
     set_kind("shared")
-    add_deps("crossscale-core")
+    add_deps("upix-core")
     add_packages("ncnn~runtime", "libwebp", "libpng", "libjpeg", "glaze", "libsodium", "libdeflate", "libomp")
     add_files("app/src/main/cpp/jni_bridge.cpp")
     add_includedirs("$(projectdir)/share/core/distributed")
@@ -44,6 +44,25 @@ target("crossscale-native")
         }
         local triple = triples[abi]
         local ndk = get_config("ndk")
+        if not ndk and triple then
+            -- get_config("ndk") is only set when the project was configured
+            -- with --ndk=...; fall back to xmake's own NDK detection (global
+            -- config, $ANDROID_NDK_HOME / $ANDROID_NDK_ROOT, sdk/ndk-bundle)
+            -- plus a bare $NDK env var so packaging still works.
+            import("detect.sdks.find_ndk")
+            local ndkinfo = find_ndk(nil, {arch = abi, force = true})
+            if type(ndkinfo) == "table" and ndkinfo.sdkdir then
+                ndk = ndkinfo.sdkdir
+            else
+                local env_ndk = os.getenv("NDK")
+                if env_ndk and os.isdir(env_ndk) then
+                    ndk = env_ndk
+                end
+            end
+            if not ndk then
+                wprint("libc++_shared.so not copied: NDK not found (configure with --ndk=... or set ANDROID_NDK_HOME/$NDK)")
+            end
+        end
         if ndk and triple then
             local found = os.files(path.join(ndk, "toolchains/llvm/prebuilt/*/sysroot/usr/lib", triple, "libc++_shared.so"))
             if #found > 0 then

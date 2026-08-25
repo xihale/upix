@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-    namespace = "com.crossscale"
+    namespace = "com.upix"
     compileSdk = libs.versions.compileSdk.get().toInt()
 
     defaultConfig {
-        applicationId = "com.crossscale"
+        applicationId = "com.upix"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
         // Android release channel — independent of the CLI version (root
@@ -30,6 +30,19 @@ android {
 
     // Security fix: Define signing configs separately. Release build uses
     // environment variables for the signing key, not the debug keystore.
+    // A release build without credentials must never silently fall back to
+    // the debug key: warn always, and fail hard when a release APK is
+    // actually requested (see buildTypes.release below).
+    val releaseKeystorePath = System.getenv("UPIX_RELEASE_STORE_FILE")
+    // Explicit opt-out for local testing: -Pupix.allowDebugSignedRelease.
+    val allowDebugSignedRelease =
+        findProperty("upix.allowDebugSignedRelease")?.let { it != "false" } ?: false
+    // True when this invocation assembles a release APK, matching plain and
+    // qualified task names ("assembleRelease", ":apps:app:assembleRelease").
+    val requestsReleaseAssembly = gradle.startParameter.taskNames.any { taskName ->
+        taskName.substringAfterLast(':').equals("assembleRelease", ignoreCase = true)
+    }
+
     signingConfigs {
         // Pin the debug keystore explicitly: depending on the environment AGP
         // resolves it to either ~/.android/debug.keystore or
@@ -41,12 +54,11 @@ android {
             storeFile = file("${System.getProperty("user.home")}/.android/debug.keystore")
         }
         create("release") {
-            val keystorePath = System.getenv("CROSSSCALE_RELEASE_STORE_FILE")
-            if (keystorePath != null) {
-                storeFile = file(keystorePath)
-                storePassword = System.getenv("CROSSSCALE_RELEASE_STORE_PASSWORD") ?: ""
-                keyAlias = System.getenv("CROSSSCALE_RELEASE_KEY_ALIAS") ?: ""
-                keyPassword = System.getenv("CROSSSCALE_RELEASE_KEY_PASSWORD") ?: ""
+            if (releaseKeystorePath != null) {
+                storeFile = file(releaseKeystorePath)
+                storePassword = System.getenv("UPIX_RELEASE_STORE_PASSWORD") ?: ""
+                keyAlias = System.getenv("UPIX_RELEASE_KEY_ALIAS") ?: ""
+                keyPassword = System.getenv("UPIX_RELEASE_KEY_PASSWORD") ?: ""
             }
         }
     }
@@ -59,11 +71,26 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Security fix: Use dedicated release signing config instead of debug keystore.
-            // Falls back to debug only when release credentials are not configured.
+            // Security fix: dedicated release signing config. Without
+            // credentials the build used to silently sign with the debug key;
+            // now it warns, and refuses to assemble a release APK unless the
+            // caller opts out explicitly via -Pupix.allowDebugSignedRelease.
             signingConfig = if (signingConfigs.getByName("release").storeFile != null) {
                 signingConfigs.getByName("release")
             } else {
+                logger.warn(
+                    "UPIX: UPIX_RELEASE_STORE_FILE is not set; the build falls back to the " +
+                        "DEBUG keystore. Fine for debug variants, NOT publishable."
+                )
+                if (requestsReleaseAssembly && !allowDebugSignedRelease) {
+                    throw GradleException(
+                        "Refusing to assemble a release APK signed with the debug key. " +
+                            "Configure release signing by exporting UPIX_RELEASE_STORE_FILE, " +
+                            "UPIX_RELEASE_STORE_PASSWORD, UPIX_RELEASE_KEY_ALIAS and " +
+                            "UPIX_RELEASE_KEY_PASSWORD, or opt out explicitly for local " +
+                            "testing with -Pupix.allowDebugSignedRelease."
+                    )
+                }
                 signingConfigs.getByName("debug")
             }
         }
@@ -93,7 +120,7 @@ android {
             // page alignment is preserved; sideload size is what shrinks.
             useLegacyPackaging = true
             // LLVM OpenMP TSan helper, copied from the libomp xrepo package
-            // and unused at runtime (libcrossscale-native does not NEEDED it).
+            // and unused at runtime (libupix-native does not NEEDED it).
             excludes += "**/libarcher.so"
         }
     }
@@ -108,7 +135,7 @@ val buildNativeScript = rootProject.projectDir.resolve("scripts/build_native.sh"
 // flags. Debug APKs still load this .so; JNI debugging is not the debug build.
 tasks.register<Exec>("xmakeNative") {
     group = "build"
-    description = "Build libcrossscale-native.so with xmake"
+    description = "Build libupix-native.so with xmake"
     workingDir = repoRoot
     commandLine(buildNativeScript.absolutePath, "release", "arm64-v8a")
 }

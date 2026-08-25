@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Cross-compile libcrossscale-native.so with xmake and drop it in jniLibs/.
+# Cross-compile libupix-native.so with xmake and drop it in jniLibs/.
 # Usage: build_native.sh [debug|release] [abi]
 set -euo pipefail
 
@@ -9,7 +9,15 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ROOT="$(cd "${APPS_DIR}/.." && pwd)"
 
-NDK_VERSION="29.0.14206865"
+# Single source of truth for the NDK version is apps/app/build.gradle.kts
+# (android.ndkVersion, matched by AGP's auto-installer). Extract it from
+# there instead of keeping a second hardcoded copy in sync.
+NDK_VERSION="$(sed -n 's/^[[:space:]]*ndkVersion[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+    "${APPS_DIR}/app/build.gradle.kts" | head -n1)"
+if [[ -z "${NDK_VERSION}" ]]; then
+    echo "Failed to extract ndkVersion from ${APPS_DIR}/app/build.gradle.kts" >&2
+    exit 1
+fi
 NDK_API_LEVEL="${ANDROID_NATIVE_API_LEVEL:-26}"
 
 SDK_PATH="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
@@ -32,4 +40,4 @@ echo "==> xmake android ${MODE} ${ABI}"
 xmake config -p android -a "${ABI}" -m "${MODE}" \
     --ndk="${NDK_PATH}" --android_sdk="${SDK_PATH}" --ndk_sdkver="${NDK_API_LEVEL}" \
     --runtimes=c++_shared -y
-xmake build crossscale-native
+xmake build upix-native
