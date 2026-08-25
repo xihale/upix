@@ -147,4 +147,19 @@ auto ProcessingConfig::validate() const -> std::vector<std::string> {
     return errors;
 }
 
+auto sanitize_model_for_filename(const std::string& model) -> std::string {
+    std::string out;
+    out.reserve(model.size());
+    for (char c : model) {
+        switch (c) {
+            case '/': case '\\': case ' ': case '\t':
+                out += '_';
+                break;
+            default:
+                out += c;
+        }
+    }
+    return out.empty() ? "model" : out;
+}
+
 } // namespace crossscale

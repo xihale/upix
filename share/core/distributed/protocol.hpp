@@ -187,21 +187,22 @@ struct ModelDownloadResponse {
 };
 
 // ── Local serve daemon messages ─────────────────────────────────────────────
-// The daemon holds a warm engine; clients send an image, receive the upscaled
-// result. The result streams back in bounded frames: MSG_SERVE_RESPONSE
-// carries [ServeResponse][leading image bytes], then MSG_SERVE_DATA frames
-// continue the raw bytes until img_length is reached. No single frame ever
-// has to hold the whole image, so result size has no practical ceiling.
+// The daemon is the whole pipeline: read file → decode → upscale → encode →
+// write file. The client sends PATHS plus parameters (both sides run on the
+// same host/user — that is what the local unix socket guarantees), and gets
+// progress frames + the output path back. No image bytes cross the socket at
+// all, so the client's own footprint stays near zero.
 struct ServeRequest {
     char model_name[64];     // empty = use daemon's current model; non-empty & different -> lazy reload
+    char output_format[16];  // encoder for the result; empty = derive from paths
     int32_t tile_size;       // 0 = auto: daemon substitutes its engine's recommended size
                              // (the same rule the inline CLI path applies), so both paths
                              // produce identical pixels; >0 = use exactly this size
     int32_t tile_overlap;
-    int32_t width;
-    int32_t height;
-    int32_t channels;
-    uint32_t img_length;
+    int32_t output_quality;  // encoder quality (ProcessingConfig::output_quality)
+    uint32_t input_path_length;   // bytes of input path following this struct
+    uint32_t output_path_length;  // bytes of output path following this struct; 0 = daemon derives
+    // payload: [input_path bytes][output_path bytes] — no NUL terminators.
 };
 
 struct ServeResponse {
@@ -209,18 +210,21 @@ struct ServeResponse {
     int32_t width;
     int32_t height;
     int32_t channels;
-    uint32_t img_length;
+    uint32_t out_path_length;  // bytes of output path following this struct
     char error[128];
     char model_name[64];     // model actually used (daemon's choice when request
-                             // named none) — lets the client derive default
-                             // output names like `img_<model>.png`
+                             // named none) — reflected in the derived output name
+    // payload on success: [output path bytes]
 };
 
-// MSG_SERVE_PROGRESS payload. Mirrors ProcessingProgress's two counters so
-// the client can rebuild its usual "42% [7/169 tiles, ETA 12s]" line.
+// MSG_SERVE_PROGRESS payload. stage 0: tile progress (the counters mirror
+// ProcessingProgress so the client can rebuild its usual "42% (7/169, ETA)"
+// line). stage 1: inference done, the daemon is encoding — lets the client
+// label the post-100% wait instead of going silent.
 struct ServeProgress {
     uint32_t completed_tiles;
     uint32_t total_tiles;
+    uint32_t stage;          // 0 = tiles, 1 = encoding
 };
 
 class Protocol {

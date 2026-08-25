@@ -14,6 +14,7 @@
 
 #include "utils/logger.hpp"
 #include "utils/network.hpp"
+#include "core/config.hpp"
 #include "core/distributed/identity.hpp"
 #include "core/tile_processor.hpp"  // ProcessingProgress
 #include "core/serve/daemon.hpp"    // ServeDaemon (forward-declared in header)
@@ -173,23 +174,6 @@ static auto convert_image_channels(const crossscale::Image& source, int target_c
     return converted;
 }
 
-// Model names are directory names in the models dir; they can carry characters
-// that don't belong in a filename (spaces, path separators). Flatten them.
-static auto sanitize_model_for_filename(const std::string& model) -> std::string {
-    std::string out;
-    out.reserve(model.size());
-    for (char c : model) {
-        switch (c) {
-            case '/': case '\\': case ' ': case '\t':
-                out += '_';
-                break;
-            default:
-                out += c;
-        }
-    }
-    return out.empty() ? "model" : out;
-}
-
 // Default output location when the user gave none (`crossscale img.png`):
 // sibling of the input, tagged with the model that produced it so results from
 // different models coexist — `img.png` → `img_<model>.png` (input extension
@@ -200,7 +184,7 @@ auto derive_default_output(const std::string& input_path,
                            bool input_is_dir) -> std::string {
     namespace fs = std::filesystem;
     fs::path in(input_path);
-    const std::string tag = "_" + sanitize_model_for_filename(model_name);
+    const std::string tag = "_" + crossscale::sanitize_model_for_filename(model_name);
 
     if (input_is_dir) {
         // filename() of "shots/" is "shots"; of "/" is "" (rejected upstream).

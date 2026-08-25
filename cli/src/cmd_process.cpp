@@ -178,11 +178,31 @@ int cmd_process(const args::Process& a) {
     // engine directly, which ServeRequest cannot carry.
     if (!is_dir && !no_daemon && !auto_tile) {
         auto delegate = [&]() -> std::optional<int> {
-            // 0. Load image; on failure let the inline path report the error.
-            auto img_res = crossscale::Image::load(input_path);
-            if (!img_res) return std::nullopt;
-            auto& image = img_res.value();
-            if (image.size() == 0) return std::nullopt;
+            namespace fs = std::filesystem;
+
+            // Resolve output format/quality up front: they ride in the request
+            // because the daemon does the encoding too.
+            crossscale::ProcessingConfig config;
+            if (!config_file.empty()) {
+                auto cfg = crossscale::ProcessingConfig::load(config_file);
+                if (cfg) config = cfg.value();
+            }
+            if (cli_output_quality >= 0) config.output_quality = cli_output_quality;
+            if (!cli_output_format.empty()) config.output_format = cli_output_format;
+            // Empty → daemon derives: keeps the input's extension when it maps
+            // to a known encoder, else .png (same rule as derive_default_output).
+            const std::string out_fmt = !config.output_format.empty()
+                ? config.output_format
+                : (!output_path.empty() ? infer_format_from_extension(output_path)
+                                        : std::string());
+
+            // The daemon runs on this host but may have a different cwd, so
+            // hand it absolute paths only.
+            const fs::path in_abs = fs::absolute(input_path).lexically_normal();
+            if (!fs::exists(in_abs)) return std::nullopt;  // inline reports the error
+            const std::string out_abs = output_path.empty()
+                ? std::string()
+                : fs::absolute(output_path).lexically_normal().string();
 
             // 1. Probe: no daemon accepting → try to start one (30 s cap);
             //    give up silently on failure and let the inline path run.
@@ -199,24 +219,29 @@ int cmd_process(const args::Process& a) {
             const auto delegate_start_time = std::chrono::steady_clock::now();
             LOG_INFO("Engine", "delegating to warm engine daemon...");
 
-            // 2. Build contiguous payload = [ServeRequest][image], one frame.
+            // 2. Request = struct + [input path][output path]. No image bytes
+            //    ever cross the socket — the daemon reads and writes the files.
             crossscale::ServeRequest req{};
-            std::memset(req.model_name, 0, sizeof(req.model_name));
             model_name.copy(req.model_name, sizeof(req.model_name) - 1);
-            // 0 = "auto": the daemon substitutes its engine's recommended
-            // tile size — the same rule the inline path applies below — so
-            // both paths produce identical pixels when --tile-size is not
-            // pinned. An explicit --tile-size is forwarded as-is.
+            out_fmt.copy(req.output_format, sizeof(req.output_format) - 1);
+            // 0 = "auto": the daemon substitutes its engine's recommended tile
+            // size — the same rule the inline path applies — so both paths
+            // produce identical pixels when --tile-size is not pinned.
             req.tile_size = tile_size_explicit ? tile_size : 0;
             req.tile_overlap = tile_overlap;
-            req.width = image.width();
-            req.height = image.height();
-            req.channels = image.channels();
-            req.img_length = static_cast<uint32_t>(image.size());
+            req.output_quality = static_cast<int32_t>(config.output_quality);
+            req.input_path_length = static_cast<uint32_t>(in_abs.string().size());
+            req.output_path_length = static_cast<uint32_t>(out_abs.size());
 
-            std::vector<uint8_t> payload(sizeof(req) + image.size());
+            std::vector<uint8_t> payload(sizeof(req) + req.input_path_length +
+                                         req.output_path_length);
             std::memcpy(payload.data(), &req, sizeof(req));
-            std::memcpy(payload.data() + sizeof(req), image.data(), image.size());
+            std::memcpy(payload.data() + sizeof(req), in_abs.string().data(),
+                        req.input_path_length);
+            if (!out_abs.empty()) {
+                std::memcpy(payload.data() + sizeof(req) + req.input_path_length,
+                            out_abs.data(), req.output_path_length);
+            }
 
             crossscale::MessageHeader h{};
             h.magic = crossscale::Protocol::MAGIC;
@@ -227,12 +252,9 @@ int cmd_process(const args::Process& a) {
             auto frame = crossscale::Protocol::serialize(h, payload.data());
             if (!sock.send_all(frame.data(), frame.size())) return std::nullopt;
 
-            // 3. Read frames until the result header: MSG_SERVE_PROGRESS
-            //    carries tile progress (render the same live line the inline
-            //    path shows), then MSG_SERVE_RESPONSE carries [ServeResponse]
-            //    + the leading bytes. MSG_SERVE_DATA frames continue until
-            //    img_length is reached. Chunks land straight in the final
-            //    buffer — peak memory stays at one copy of the image.
+            // 3. Drain frames until the response: MSG_SERVE_PROGRESS stage 0
+            //    renders the same live line as the inline path; stage 1 marks
+            //    the encode phase; MSG_SERVE_RESPONSE carries the output path.
             std::vector<uint8_t> rhdr(crossscale::Protocol::HEADER_SIZE);
             std::optional<crossscale::MessageHeader> rparsed;
             while (true) {
@@ -254,10 +276,15 @@ int cmd_process(const args::Process& a) {
                     }
                     crossscale::ServeProgress sp{};
                     std::memcpy(&sp, pbuf.data(), sizeof(sp));
-                    crossscale::ProcessingProgress prog;
-                    prog.total_tiles = static_cast<int>(sp.total_tiles);
-                    prog.completed_tiles = static_cast<int>(sp.completed_tiles);
-                    print_progress_stderr(prog, delegate_start_time);
+                    if (sp.stage == 0) {
+                        crossscale::ProcessingProgress prog;
+                        prog.total_tiles = static_cast<int>(sp.total_tiles);
+                        prog.completed_tiles = static_cast<int>(sp.completed_tiles);
+                        print_progress_stderr(prog, delegate_start_time);
+                    } else {
+                        std::cerr << "\n" << std::flush;
+                        LOG_INFO("Engine", "Inference done, encoding output...");
+                    }
                     continue;
                 }
                 if (rparsed->type != crossscale::MessageType::MSG_SERVE_RESPONSE ||
@@ -278,63 +305,13 @@ int cmd_process(const args::Process& a) {
                 LOG_ERROR("Engine", "daemon error: " + std::string(resp.error));
                 return 1;
             }
+            const size_t path_len =
+                std::min<size_t>(resp.out_path_length,
+                                 rhead.size() - sizeof(resp));
+            const std::string saved_path(
+                reinterpret_cast<const char*>(rhead.data()) + sizeof(resp), path_len);
 
-            // 4. Assemble the image while it streams in (saved below, same
-            //    path as inline single-file).
-            crossscale::Image out_image(resp.width, resp.height, resp.channels);
-            const size_t expected = resp.img_length;
-            size_t got = rparsed->payload_length - sizeof(resp);
-            if (got > expected || expected != out_image.size()) {
-                LOG_ERROR("Engine", "daemon response length mismatch");
-                return 1;
-            }
-            std::memcpy(out_image.data(), rhead.data() + sizeof(resp), got);
-            rhead.clear();
-            rhead.shrink_to_fit();
-            while (got < expected) {
-                if (!sock.receive_all(rhdr.data(), rhdr.size())) {
-                    LOG_ERROR("Engine", "daemon connection lost mid-transfer");
-                    return 1;
-                }
-                auto chunk = crossscale::Protocol::parse_header(rhdr.data(), rhdr.size());
-                if (!chunk || chunk->type != crossscale::MessageType::MSG_SERVE_DATA ||
-                    chunk->payload_length == 0 ||
-                    chunk->payload_length > expected - got) {
-                    LOG_ERROR("Engine", "malformed daemon data chunk");
-                    return 1;
-                }
-                if (!sock.receive_all(out_image.data() + got, chunk->payload_length)) {
-                    LOG_ERROR("Engine", "truncated daemon data chunk");
-                    return 1;
-                }
-                got += chunk->payload_length;
-            }
-            LOG_INFO("Engine", "Inference done, encoding and saving output...");
-
-            crossscale::ProcessingConfig config;
-            if (!config_file.empty()) {
-                auto cfg = crossscale::ProcessingConfig::load(config_file);
-                if (cfg) config = cfg.value();
-            }
-            if (cli_output_quality >= 0) config.output_quality = cli_output_quality;
-            if (!cli_output_format.empty()) config.output_format = cli_output_format;
-
-            // No explicit output → derive `img_<model>.png` from the model the
-            // daemon actually used (it may differ from -m: empty means its own).
-            const std::string effective_out =
-                output_path.empty()
-                    ? derive_default_output(input_path, resp.model_name, false)
-                    : output_path;
-            auto final_path = crossscale::resolve_output_path(effective_out, config);
-            if (!final_path.parent_path().empty()) {
-                std::filesystem::create_directories(final_path.parent_path());
-            }
-            auto save_res = out_image.save(final_path, config.output_quality);
-            if (!save_res) {
-                LOG_ERROR("Engine", "Failed to save: " + save_res.error().message);
-                return 1;
-            }
-            LOG_INFO("Engine", "Output saved (via warm daemon): " + final_path.string());
+            LOG_INFO("Engine", "Output saved (via warm daemon): " + saved_path);
             LOG_INFO("Engine", "Processing complete: " + std::to_string(resp.width) +
                                "x" + std::to_string(resp.height));
             return 0;

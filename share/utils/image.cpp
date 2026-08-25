@@ -480,15 +480,15 @@ auto Image::load(const std::filesystem::path& path)
     if (!std::filesystem::exists(path)) {
         return std::unexpected(ImageError{1, "File not found: " + path.string()});
     }
-    
+
     auto file_data = read_file(path);
     if (!file_data.has_value()) {
         return std::unexpected(file_data.error());
     }
-    
+
     std::string ext = path.extension().string();
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    
+
     try {
         if (ext == ".png") {
             return load_png(file_data.value());

@@ -42,6 +42,11 @@ struct ProcessingConfig {
 // Output format helpers shared by CLI / Android.
 auto normalize_output_format(std::string format) -> std::string;
 auto is_supported_output_format(const std::string& format) -> bool;
+
+// Filesystem-safe tag from a model name ("Real-ESRGANv3-anime" stays as-is,
+// separators/spaces become '_'). Used to derive default output filenames.
+auto sanitize_model_for_filename(const std::string& model) -> std::string;
+
 auto resolve_output_path(
     const std::filesystem::path& requested_path,
     const ProcessingConfig& config

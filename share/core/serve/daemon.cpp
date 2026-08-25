@@ -1,6 +1,7 @@
 #include "core/serve/daemon.hpp"
 
 #include "core/engine.hpp"
+#include "core/config.hpp"
 #include "core/engine_setup.hpp"
 #include "core/model_manager.hpp"
 #include "core/tile_processor.hpp"
@@ -22,10 +23,8 @@ namespace crossscale {
 
 namespace {
 
-// Max image bytes accepted over the socket. Guards against a malicious or
-// buggy client streaming an unbounded payload. 256 MB is generous for any
-// plausible single-image SR input.
-constexpr uint32_t MAX_SERVE_IMAGE_BYTES = 256u * 1024u * 1024u;
+// Path length cap for the path-driven request (client sends absolute paths).
+constexpr uint32_t MAX_SERVE_PATH_BYTES = 4096u;
 
 // Write a framed message (header + payload) over a UnixSocket.
 auto send_via(UnixSocket& sock, MessageType type, const void* payload, size_t len)
@@ -159,36 +158,55 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
         return;
     }
 
-    // ── 2. Read payload = [ServeRequest][image] contiguous ──────────────────
+    // ── 2. Read payload = [ServeRequest][input path][output path] ───────────
     std::vector<uint8_t> req_buf(parsed->payload_length);
     if (!sock->receive_all(req_buf.data(), req_buf.size())) return;
     ServeRequest req{};
     std::memcpy(&req, req_buf.data(), sizeof(ServeRequest));
 
-    // Validate image size
-    const size_t expected_size = sizeof(ServeRequest) + req.img_length;
-    if (req.img_length > MAX_SERVE_IMAGE_BYTES || req_buf.size() < expected_size) {
-        send_serve_error(*sock, "image too large");
+    const size_t paths_bytes = static_cast<size_t>(req.input_path_length) +
+                               req.output_path_length;
+    if (paths_bytes != req_buf.size() - sizeof(ServeRequest) ||
+        req.input_path_length == 0 ||
+        req.input_path_length > MAX_SERVE_PATH_BYTES ||
+        req.output_path_length > MAX_SERVE_PATH_BYTES) {
+        send_serve_error(*sock, "malformed request paths");
         return;
     }
-    const uint8_t* img_in = req_buf.data() + sizeof(ServeRequest);
+    const char* base = reinterpret_cast<const char*>(req_buf.data() + sizeof(ServeRequest));
+    const std::string input_path(base, req.input_path_length);
+    const std::string output_path(base + req.input_path_length, req.output_path_length);
+    req_buf.clear();
+    req_buf.shrink_to_fit();
 
-    // ── 3. Inference under engine lock (Vulkan serial constraint) ───────────
-    std::vector<uint8_t> out_bytes;
-    int out_w = 0, out_h = 0, out_c = req.channels;
-    std::string err_msg;
-    std::string used_model;  // captured under the lock; read below without it
+    // ── 3. Full hot-path pipeline: read → decode → upscale → encode → write.
+    // The client never touches image bytes; its own footprint stays near zero.
+    auto img_res = Image::load(input_path);
+    if (!img_res) {
+        send_serve_error(*sock, ("load failed: " + img_res.error().message).c_str());
+        return;
+    }
+    Image& image = img_res.value();
+    if (image.size() == 0) {
+        send_serve_error(*sock, "decoded image is empty");
+        return;
+    }
+
+    int out_w = 0, out_h = 0;
+    Image out_image;
     {
         std::lock_guard<std::mutex> lk(engine_mutex_);
         if (ensure_model_loaded(req.model_name) != 0) {
             send_serve_error(*sock, "model load failed");
             return;
         }
-        used_model = loaded_model_name_;
-        int scale = engine_->get_scale_factor();
-        out_w = req.width * scale;
-        out_h = req.height * scale;
-        out_bytes.resize(static_cast<size_t>(out_w) * out_h * out_c);
+
+        // Scale comes from the model that was just ensured under this lock.
+        const int scale = engine_->get_scale_factor();
+        out_w = image.width() * scale;
+        out_h = image.height() * scale;
+        out_image = Image(out_w, out_h, image.channels());
+
         TileConfig tc;
         // tile_size 0 = "auto": the client didn't pin a size, so apply the
         // same engine recommendation the inline path uses (cmd_process's
@@ -214,56 +232,83 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
             ServeProgress msg{};
             msg.completed_tiles = static_cast<uint32_t>(prog.completed_tiles);
             msg.total_tiles = static_cast<uint32_t>(prog.total_tiles);
+            msg.stage = 0;
             (void)send_via(*sock, MessageType::MSG_SERVE_PROGRESS, &msg, sizeof(msg));
         };
         auto res = processor_->process_image_u8(
-            img_in, out_bytes.data(),
-            req.width, req.height, req.channels,
+            image.data(), out_image.data(),
+            image.width(), image.height(), image.channels(),
             *engine_, tc, progress_sink, cancel, /*enable_alpha_bicubic=*/true);
         if (!res) {
-            err_msg = res.error().message;
-            out_bytes.clear();
+            send_serve_error(*sock, ("inference failed: " + res.error().message).c_str());
+            return;
         }
     }
 
-    // ── 4. Send response: [ServeResponse][image] streamed in bounded frames.
-    // MSG_SERVE_RESPONSE carries the struct + the leading slice; MSG_SERVE_DATA
-    // frames continue the raw bytes. Slicing straight out of out_bytes keeps
-    // peak RAM at one image copy instead of three (payload + frame + image),
-    // and no frame ever has to hold the whole result.
-    ServeResponse resp{};
-    if (!err_msg.empty()) {
-        resp.ok = 0;
-        std::strncpy(resp.error, err_msg.c_str(), sizeof(resp.error) - 1);
-        send_via(*sock, MessageType::MSG_SERVE_RESPONSE, &resp, sizeof(resp));
+    // Tell the client inference is over and the encode (which can take a
+    // couple of seconds for avif) is starting, so it can label the wait.
+    ServeProgress enc_msg{};
+    enc_msg.completed_tiles = 0;
+    enc_msg.total_tiles = 0;
+    enc_msg.stage = 1;
+    (void)send_via(*sock, MessageType::MSG_SERVE_PROGRESS, &enc_msg, sizeof(enc_msg));
+
+    // Model actually used (ensure_model_loaded may have reloaded); read under
+    // the lock — it feeds both the derived output name and the response.
+    std::string used_model;
+    {
+        std::lock_guard<std::mutex> lk(engine_mutex_);
+        used_model = loaded_model_name_;
+    }
+
+    // ── 4. Encode + write. The output format comes from the request (which
+    // resolved --format / config file client-side); with none given, keep the
+    // input extension when it maps to a known encoder (same rule as the CLI's
+    // derive_default_output).
+    ProcessingConfig out_cfg;
+    out_cfg.output_format = req.output_format;
+    const std::filesystem::path eff_out = [&]() -> std::filesystem::path {
+        if (!output_path.empty()) return output_path;
+        std::filesystem::path in(input_path);
+        std::string ext = in.extension().string();
+        if (!is_supported_output_format(normalize_output_format(
+                ext.empty() ? "" : ext.substr(1)))) {
+            ext = ".png";
+        }
+        return in.parent_path() /
+               (in.stem().string() + "_" +
+                sanitize_model_for_filename(used_model) + ext);
+    }();
+    auto final_path = resolve_output_path(eff_out, out_cfg);
+    if (!final_path.parent_path().empty()) {
+        std::error_code ec;
+        std::filesystem::create_directories(final_path.parent_path(), ec);
+    }
+    auto save_res = out_image.save(final_path,
+                                   static_cast<int>(req.output_quality));
+    if (!save_res) {
+        send_serve_error(*sock, ("save failed: " + save_res.error().message).c_str());
         return;
     }
+    LOG_INFO("Daemon", "served " + std::to_string(image.width()) + "x" +
+             std::to_string(image.height()) + " -> " + std::to_string(out_w) + "x" +
+             std::to_string(out_h) + " => " + final_path.string());
+
+    // ── 5. Response: [ServeResponse][output path]. No image bytes follow —
+    // the daemon already wrote the file.
+    ServeResponse resp{};
     resp.ok = 1;
     resp.width = out_w;
     resp.height = out_h;
-    resp.channels = out_c;
-    resp.img_length = static_cast<uint32_t>(out_bytes.size());
-    // Report the model actually used — ensure_model_loaded may have reloaded
-    // (request named none, or a different one).
+    resp.channels = image.channels();
+    const std::string out_str = final_path.string();
+    resp.out_path_length = static_cast<uint32_t>(out_str.size());
+    // Report the model actually used — see used_model above.
     std::strncpy(resp.model_name, used_model.c_str(), sizeof(resp.model_name) - 1);
-
-    constexpr size_t SERVE_CHUNK_BYTES = 8u * 1024u * 1024u;
-    size_t offset = 0;
-    bool first_frame = true;
-    while (first_frame || offset < out_bytes.size()) {
-        const size_t n = std::min(SERVE_CHUNK_BYTES, out_bytes.size() - offset);
-        if (first_frame) {
-            std::vector<uint8_t> head(sizeof(resp) + n);
-            std::memcpy(head.data(), &resp, sizeof(resp));
-            std::memcpy(head.data() + sizeof(resp), out_bytes.data(), n);
-            send_via(*sock, MessageType::MSG_SERVE_RESPONSE, head.data(), head.size());
-            first_frame = false;
-        } else {
-            send_via(*sock, MessageType::MSG_SERVE_DATA,
-                     out_bytes.data() + offset, n);
-        }
-        offset += n;
-    }
+    std::vector<uint8_t> head(sizeof(resp) + out_str.size());
+    std::memcpy(head.data(), &resp, sizeof(resp));
+    std::memcpy(head.data() + sizeof(resp), out_str.data(), out_str.size());
+    send_via(*sock, MessageType::MSG_SERVE_RESPONSE, head.data(), head.size());
 }
 
 auto ServeDaemon::run() -> void {
