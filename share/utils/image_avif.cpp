@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstring>
 #include <mutex>
+#include <span>
 #include <string>
 #include <thread>
 
@@ -17,7 +18,7 @@
 #include <dlfcn.h>
 #endif
 
-namespace crossscale::avif_codec {
+namespace upix::avif_codec {
 namespace {
 
 using avifResult = int;
@@ -279,17 +280,17 @@ auto box_type_eq(const uint8_t* type, const char* want) -> bool {
     return std::memcmp(type, want, 4) == 0;
 }
 
-auto find_brand(const uint8_t* data, size_t size, const char* brand) -> bool {
-    if (size < 12 || !box_type_eq(data + 4, "ftyp")) {
+auto find_brand(std::span<const uint8_t> data, const char* brand) -> bool {
+    if (data.size() < 12 || !box_type_eq(&data[4], "ftyp")) {
         return false;
     }
-    const uint32_t box_size = be32(data);
+    const uint32_t box_size = be32(data.data());
     if (box_size < 16) {
         return false;
     }
-    const size_t limit = std::min(size, static_cast<size_t>(box_size));
+    const size_t limit = std::min(data.size(), static_cast<size_t>(box_size));
     for (size_t offset = 8; offset + 4 <= limit; offset += 4) {
-        if (box_type_eq(data + offset, brand)) {
+        if (box_type_eq(&data[offset], brand)) {
             return true;
         }
     }
@@ -301,22 +302,24 @@ struct IspeWalk {
     uint32_t height = 0;
 };
 
-auto walk_boxes(const uint8_t* data, size_t begin, size_t end, IspeWalk& out, int depth) -> void {
-    if (depth > 12 || begin >= end) {
+auto walk_boxes(std::span<const uint8_t> data, size_t begin, size_t end,
+                IspeWalk& out, int depth) -> void {
+    if (depth > 12 || begin >= end || end > data.size()) {
         return;
     }
+    const uint8_t* base = data.data();
     size_t offset = begin;
     while (offset + 8 <= end) {
-        const uint32_t size32 = be32(data + offset);
-        const uint8_t* type = data + offset + 4;
+        const uint32_t size32 = be32(base + offset);
+        const uint8_t* type = base + offset + 4;
         size_t header = 8;
         uint64_t box_size = size32;
         if (size32 == 1) {
             if (offset + 16 > end) {
                 return;
             }
-            box_size = (static_cast<uint64_t>(be32(data + offset + 8)) << 32) |
-                       be32(data + offset + 12);
+            box_size = (static_cast<uint64_t>(be32(base + offset + 8)) << 32) |
+                       be32(base + offset + 12);
             header = 16;
         } else if (size32 == 0) {
             box_size = end - offset;
@@ -327,8 +330,8 @@ auto walk_boxes(const uint8_t* data, size_t begin, size_t end, IspeWalk& out, in
         const size_t payload_begin = offset + header;
         const size_t payload_end = offset + static_cast<size_t>(box_size);
         if (box_type_eq(type, "ispe") && payload_end - payload_begin >= 12) {
-            out.width = be32(data + payload_begin + 4);
-            out.height = be32(data + payload_begin + 8);
+            out.width = be32(base + payload_begin + 4);
+            out.height = be32(base + payload_begin + 8);
             return;
         }
         if (box_type_eq(type, "meta") && payload_end >= payload_begin + 4) {
@@ -355,7 +358,8 @@ auto looks_like_avif(const uint8_t* data, size_t size) -> bool {
     if (data == nullptr || size < 16) {
         return false;
     }
-    return find_brand(data, size, "avif") || find_brand(data, size, "avis");
+    const std::span<const uint8_t> bytes{data, size};
+    return find_brand(bytes, "avif") || find_brand(bytes, "avis");
 }
 
 auto sniff_dimensions(const uint8_t* data, size_t size) -> std::pair<uint32_t, uint32_t> {
@@ -363,7 +367,7 @@ auto sniff_dimensions(const uint8_t* data, size_t size) -> std::pair<uint32_t, u
         return {0, 0};
     }
     IspeWalk found;
-    walk_boxes(data, 0, size, found, 0);
+    walk_boxes(std::span<const uint8_t>{data, size}, 0, size, found, 0);
     return {found.width, found.height};
 }
 
@@ -541,4 +545,4 @@ auto probe_api_quietly() -> const AvifApi& {
 auto avif_decode_available() -> bool { return probe_api_quietly().decode_ready(); }
 auto avif_encode_available() -> bool { return probe_api_quietly().encode_ready(); }
 
-}  // namespace crossscale::avif_codec
+}  // namespace upix::avif_codec

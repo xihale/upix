@@ -1,25 +1,45 @@
 #pragma once
 
 #include <string>
+#include <array>
 #include <cstdint>
 #include <filesystem>
+#include <string_view>
 #include <vector>
 #include "utils/expected.hpp"
 #include "engine.hpp"
 
-namespace crossscale {
+namespace upix {
+
+// Compile-time defaults and validation bounds shared by ProcessingConfig,
+// the JSON loader shape, and validate(). Single source of truth.
+inline constexpr int kDefaultTileSize = 256;
+inline constexpr int kDefaultTileOverlap = 16;
+inline constexpr int kDefaultBatchSize = 1;
+inline constexpr int kDefaultMinTileSize = 64;
+inline constexpr int kDefaultMaxTileSize = 512;
+inline constexpr int kDefaultOutputQuality = 90;
+
+inline constexpr int kTileSizeMin = 16;
+inline constexpr int kTileSizeMax = 2048;
+inline constexpr int kBatchSizeMin = 1;
+inline constexpr int kBatchSizeMax = 64;
+
+// Supported normalized output formats.
+inline constexpr std::array<std::string_view, 5> kSupportedOutputFormats{
+    "png", "jpg", "jpeg", "webp", "avif"};
 
 // 处理配置
 struct ProcessingConfig {
     // 瓦片设置
-    int tile_size = 256;
-    int tile_overlap = 16;
+    int tile_size = kDefaultTileSize;
+    int tile_overlap = kDefaultTileOverlap;
     bool auto_tile_size = false;
-    int min_tile_size = 64;
-    int max_tile_size = 512;
+    int min_tile_size = kDefaultMinTileSize;
+    int max_tile_size = kDefaultMaxTileSize;
 
     // 批处理设置
-    int batch_size = 1;
+    int batch_size = kDefaultBatchSize;
 
     // 性能设置
     bool use_gpu = true;
@@ -28,7 +48,7 @@ struct ProcessingConfig {
     std::string model_name;
 
     // 输出设置
-    int output_quality = 90;
+    int output_quality = kDefaultOutputQuality;
     std::string output_format;
 
     // 从 JSON 文件加载
@@ -40,12 +60,19 @@ struct ProcessingConfig {
 };
 
 // Output format helpers shared by CLI / Android.
-auto normalize_output_format(std::string format) -> std::string;
-auto is_supported_output_format(const std::string& format) -> bool;
+auto normalize_output_format(std::string_view format) -> std::string;
+constexpr auto is_supported_output_format(std::string_view format) -> bool {
+    for (std::string_view candidate : kSupportedOutputFormats) {
+        if (format == candidate) {
+            return true;
+        }
+    }
+    return false;
+}
 
 // Filesystem-safe tag from a model name ("Real-ESRGANv3-anime" stays as-is,
 // separators/spaces become '_'). Used to derive default output filenames.
-auto sanitize_model_for_filename(const std::string& model) -> std::string;
+auto sanitize_model_for_filename(std::string_view model) -> std::string;
 
 auto resolve_output_path(
     const std::filesystem::path& requested_path,
@@ -102,4 +129,4 @@ public:
         ) -> DevicePerformanceProfile::TileBenchmark;
 };
 
-} // namespace crossscale
+} // namespace upix

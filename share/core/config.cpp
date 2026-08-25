@@ -2,19 +2,28 @@
 #include "utils/logger.hpp"
 #include <fstream>
 #include <sstream>
-#include <algorithm>
 #include <cctype>
 #include "glaze/glaze.hpp"
 
-namespace crossscale {
+namespace upix {
 
 namespace {
 
-auto normalize_output_extension(const std::string& format) -> std::string {
+// Locale-independent ASCII helpers matching C-locale isspace()/tolower()
+// exactly (0x09-0x0D + 0x20, A-Z), so the normalization helpers stay constexpr.
+constexpr auto ascii_tolower(unsigned char ch) -> char {
+    return (ch >= 'A' && ch <= 'Z') ? static_cast<char>(ch - 'A' + 'a')
+                                    : static_cast<char>(ch);
+}
+constexpr auto ascii_isspace(unsigned char ch) -> bool {
+    return ch == ' ' || (ch >= '\t' && ch <= '\r');
+}
+
+constexpr auto normalize_output_extension(std::string_view format) -> std::string {
     if (format == "jpeg") {
         return "jpg";
     }
-    return format;
+    return std::string(format);
 }
 
 } // namespace
@@ -25,45 +34,30 @@ auto normalize_output_extension(const std::string& format) -> std::string {
 // type to have external linkage, which anonymous-namespace types lack.
 namespace detail {
 struct ConfigJson {
-    int tile_size = 256;
-    int tile_overlap = 16;
-    int batch_size = 1;
+    int tile_size = kDefaultTileSize;
+    int tile_overlap = kDefaultTileOverlap;
+    int batch_size = kDefaultBatchSize;
     bool auto_tile_size = false;
-    int min_tile_size = 64;
-    int max_tile_size = 512;
+    int min_tile_size = kDefaultMinTileSize;
+    int max_tile_size = kDefaultMaxTileSize;
     bool use_gpu = true;
     std::string model_name;
     std::string output_format;
-    int output_quality = 90;
+    int output_quality = kDefaultOutputQuality;
 };
 } // namespace detail
 
-auto normalize_output_format(std::string format) -> std::string {
+auto normalize_output_format(std::string_view format) -> std::string {
     std::string normalized;
     normalized.reserve(format.size());
-    for (char ch : format) {
-        if (ch == '.' || std::isspace(static_cast<unsigned char>(ch))) {
+    for (char raw : format) {
+        const unsigned char ch = static_cast<unsigned char>(raw);
+        if (raw == '.' || ascii_isspace(ch)) {
             continue;
         }
-        normalized += static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+        normalized += ascii_tolower(ch);
     }
     return normalized;
-}
-
-bool is_supported_output_format(const std::string& format) {
-    static constexpr const char* kSupportedFormats[] = {
-        "png",
-        "jpg",
-        "jpeg",
-        "webp",
-        "avif"
-    };
-    for (const char* candidate : kSupportedFormats) {
-        if (format == candidate) {
-            return true;
-        }
-    }
-    return false;
 }
 
 auto resolve_output_path(
@@ -116,7 +110,7 @@ auto ProcessingConfig::load(const std::filesystem::path& path)
 auto ProcessingConfig::validate() const -> std::vector<std::string> {
     std::vector<std::string> errors;
 
-    if (tile_size < 16 || tile_size > 2048) {
+    if (tile_size < kTileSizeMin || tile_size > kTileSizeMax) {
         errors.push_back("tile_size must be between 16 and 2048");
     }
 
@@ -124,7 +118,7 @@ auto ProcessingConfig::validate() const -> std::vector<std::string> {
         errors.push_back("tile_overlap must be between 0 and tile_size/2");
     }
 
-    if (batch_size < 1 || batch_size > 64) {
+    if (batch_size < kBatchSizeMin || batch_size > kBatchSizeMax) {
         errors.push_back("batch_size must be between 1 and 64");
     }
 
@@ -147,7 +141,7 @@ auto ProcessingConfig::validate() const -> std::vector<std::string> {
     return errors;
 }
 
-auto sanitize_model_for_filename(const std::string& model) -> std::string {
+auto sanitize_model_for_filename(std::string_view model) -> std::string {
     std::string out;
     out.reserve(model.size());
     for (char c : model) {
@@ -162,4 +156,4 @@ auto sanitize_model_for_filename(const std::string& model) -> std::string {
     return out.empty() ? "model" : out;
 }
 
-} // namespace crossscale
+} // namespace upix

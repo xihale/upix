@@ -28,12 +28,14 @@
 #include <format>
 #include <cstdlib>
 #include <limits>
+#include <mdspan>
 #include <mutex>
 #include <optional>
+#include <ranges>
 #include <string_view>
 #include <thread>
 
-namespace crossscale {
+namespace upix {
 
 #if NCNN_VULKAN
 namespace {
@@ -413,7 +415,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         std::vector<ncnn::VkMat> clear_bindings(1);
         std::vector<ncnn::vk_constant_type> clear_constants(1);
         // ---- TEMP PERF INSTRUMENTATION (remove after measuring) ----
-        const bool cs_perf = std::getenv("CROSSSCALE_PIPELINE_TIMER") != nullptr;
+        const bool cs_perf = std::getenv("UPIX_PIPELINE_TIMER") != nullptr;
         double perf_record_ms = 0.0, perf_submit_ms = 0.0;
         long perf_submits = 0;
         long perf_tiles_total = static_cast<long>(total_tiles);
@@ -930,7 +932,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             const int tile_step = std::max(1, config.tile_size - config.overlap);
             std::array<std::vector<size_t>, 4> pass_indices;
             if (config.overlap > 0) {
-                for (size_t i = 0; i < regions.size(); ++i) {
+                // views::enumerate is unavailable on NDK29 libc++; index+range
+                // pattern keeps the same pairing portably.
+                for (auto i : std::views::iota(size_t{0}, regions.size())) {
                     const auto& reg = regions[i];
                     int gx = static_cast<int>(reg.x) / tile_step;
                     int gy = static_cast<int>(reg.y) / tile_step;
@@ -939,7 +943,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 }
             } else {
                 pass_indices[0].reserve(regions.size());
-                for (size_t i = 0; i < regions.size(); ++i) {
+                for (auto i : std::views::iota(size_t{0}, regions.size())) {
                     pass_indices[0].push_back(i);
                 }
             }
@@ -1505,7 +1509,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         }
 
         // ---- TEMP PERF INSTRUMENTATION (crop-u8 hot path) ----
-        const bool cs_perf2 = std::getenv("CROSSSCALE_PIPELINE_TIMER") != nullptr;
+        const bool cs_perf2 = std::getenv("UPIX_PIPELINE_TIMER") != nullptr;
         double p2_record_ms = 0.0, p2_submit_ms = 0.0;
         long p2_submits = 0, p2_tiles = static_cast<long>(regions.size());
         auto p2_t0 = std::chrono::steady_clock::now();
@@ -1517,7 +1521,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             const int tile_step = std::max(1, config.tile_size - config.overlap);
             std::array<std::vector<size_t>, 4> pass_indices;
             if (config.overlap > 0) {
-                for (size_t i = 0; i < regions.size(); ++i) {
+                // views::enumerate is unavailable on NDK29 libc++; index+range
+                // pattern keeps the same pairing portably.
+                for (auto i : std::views::iota(size_t{0}, regions.size())) {
                     const auto& reg = regions[i];
                     int gx = static_cast<int>(reg.x) / tile_step;
                     int gy = static_cast<int>(reg.y) / tile_step;
@@ -1526,7 +1532,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 }
             } else {
                 pass_indices[0].reserve(regions.size());
-                for (size_t i = 0; i < regions.size(); ++i) {
+                for (auto i : std::views::iota(size_t{0}, regions.size())) {
                     pass_indices[0].push_back(i);
                 }
             }
@@ -2145,13 +2151,17 @@ void replicate_pad_hwc(const float* src, int w, int h, int c, int pad,
     const int ow = w + 2 * pad;
     const int oh = h + 2 * pad;
     dst.resize(static_cast<size_t>(ow) * oh * c);
+    // Gather view over the source in HWC order; the per-pixel channel run
+    // stays a memcpy on raw bytes (hot path).
+    const auto& src_px = std::mdspan(src, static_cast<size_t>(h),
+                                     static_cast<size_t>(w), static_cast<size_t>(c));
     for (int y = 0; y < oh; ++y) {
         const int sy = std::clamp(y - pad, 0, h - 1);
         for (int x = 0; x < ow; ++x) {
             const int sx = std::clamp(x - pad, 0, w - 1);
-            const float* px = src + (static_cast<size_t>(sy) * w + sx) * c;
             std::memcpy(dst.data() + (static_cast<size_t>(y) * ow + x) * c,
-                        px, static_cast<size_t>(c) * sizeof(float));
+                        &src_px[static_cast<size_t>(sy), static_cast<size_t>(sx), 0],
+                        static_cast<size_t>(c) * sizeof(float));
         }
     }
 }
@@ -2389,4 +2399,4 @@ auto NCNNEngineImpl::process_vulkan_with_gpu_layout_run(
         return {};
     }
 
-} // namespace crossscale
+} // namespace upix
