@@ -5,7 +5,7 @@
 #include <cctype>
 #include "glaze/glaze.hpp"
 
-namespace upix {
+namespace crossscale {
 
 namespace {
 
@@ -156,4 +156,4 @@ auto sanitize_model_for_filename(std::string_view model) -> std::string {
     return out.empty() ? "model" : out;
 }
 
-} // namespace upix
+} // namespace crossscale

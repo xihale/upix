@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-namespace upix::avif_codec {
+namespace crossscale::avif_codec {
 
 // True when the buffer is an ISOBMFF file whose ftyp brands include avif/avis.
 auto looks_like_avif(const uint8_t* data, size_t size) -> bool;
@@ -25,4 +25,4 @@ auto save(const Image& image, int quality) -> expected<std::vector<uint8_t>, Ima
 auto avif_decode_available() -> bool;
 auto avif_encode_available() -> bool;
 
-}  // namespace upix::avif_codec
+}  // namespace crossscale::avif_codec

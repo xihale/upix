@@ -18,7 +18,7 @@
 #include <dlfcn.h>
 #endif
 
-namespace upix::avif_codec {
+namespace crossscale::avif_codec {
 namespace {
 
 using avifResult = int;
@@ -545,4 +545,4 @@ auto probe_api_quietly() -> const AvifApi& {
 auto avif_decode_available() -> bool { return probe_api_quietly().decode_ready(); }
 auto avif_encode_available() -> bool { return probe_api_quietly().encode_ready(); }
 
-}  // namespace upix::avif_codec
+}  // namespace crossscale::avif_codec

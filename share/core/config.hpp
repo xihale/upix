@@ -9,7 +9,7 @@
 #include "utils/expected.hpp"
 #include "engine.hpp"
 
-namespace upix {
+namespace crossscale {
 
 // Compile-time defaults and validation bounds shared by ProcessingConfig,
 // the JSON loader shape, and validate(). Single source of truth.
@@ -129,4 +129,4 @@ public:
         ) -> DevicePerformanceProfile::TileBenchmark;
 };
 
-} // namespace upix
+} // namespace crossscale
