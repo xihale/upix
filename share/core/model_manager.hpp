@@ -6,7 +6,7 @@
 #include <optional>
 #include "utils/expected.hpp"
 
-namespace crossscale {
+namespace upix {
 
 struct ModelInfo {
     std::string name;
@@ -50,4 +50,4 @@ private:
     std::vector<ModelInfo> models_;
 };
 
-} // namespace crossscale
+} // namespace upix

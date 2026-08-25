@@ -6,7 +6,7 @@
 
 #include <string>
 
-namespace crossscale::perf {
+namespace upix::perf {
 
 class Reporter;
 
@@ -66,4 +66,4 @@ public:
     auto run(const TestConfig& cfg, Reporter& rep) -> int override;
 };
 
-} // namespace crossscale::perf
+} // namespace upix::perf

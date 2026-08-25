@@ -8,7 +8,7 @@
 #include "core/tile_types.hpp"
 #include "utils/expected.hpp"
 
-namespace crossscale {
+namespace upix {
 
 struct TileProcessorError {
     int code;
@@ -87,4 +87,4 @@ public:
 private:
 };
 
-} // namespace crossscale
+} // namespace upix

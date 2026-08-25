@@ -11,7 +11,7 @@
 
 #if NCNN_VULKAN
 
-namespace crossscale::spirv_pack {
+namespace upix::spirv_pack {
 
 constexpr uint32_t kKindLayer = 0;
 constexpr uint32_t kKindCustom = 1;
@@ -34,6 +34,6 @@ bool load_or_compile_custom(detail::CustomShader id, const char* src, const ncnn
 
 void register_ncnn_lookup();
 
-} // namespace crossscale::spirv_pack
+} // namespace upix::spirv_pack
 
 #endif // NCNN_VULKAN

@@ -35,7 +35,7 @@
 #include <string_view>
 #include <thread>
 
-namespace crossscale {
+namespace upix {
 
 #if NCNN_VULKAN
 namespace {
@@ -2399,4 +2399,4 @@ auto NCNNEngineImpl::process_vulkan_with_gpu_layout_run(
         return {};
     }
 
-} // namespace crossscale
+} // namespace upix

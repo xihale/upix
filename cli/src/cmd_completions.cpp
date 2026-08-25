@@ -1,4 +1,4 @@
-// `crossscale completions <bash|zsh|fish>` — emit a completion script.
+// `upix completions <bash|zsh|fish>` — emit a completion script.
 //
 // The scripts are thin adapters over the binary's own completion engine
 // (cmd_complete.cpp, cobra/clap-style): on every TAB they replay the words
@@ -11,7 +11,7 @@
 // `completions <shell> -i/--install` writes them into the shell's user
 // completion directory (see README.md § Shell Completions). All three resolve
 // the binary from the command line being completed ($1 / words[1] / the fish
-// command line), so `crossscale` and `crossscale-cli` both work.
+// command line), so `upix` and `upix-cli` both work.
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -27,10 +27,10 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* BASH = R"BASH(# bash completion for crossscale — thin client over `__complete`.
-# Install: crossscale completions bash --install
+constexpr const char* BASH = R"BASH(# bash completion for upix — thin client over `__complete`.
+# Install: upix completions bash --install
 
-_crossscale() {
+_upix() {
     local -a lines
     mapfile -t lines < <("$1" __complete "${COMP_WORDS[@]:1}" 2>/dev/null)
     COMPREPLY=()
@@ -42,14 +42,14 @@ _crossscale() {
 # -o filenames: proper quoting/suffix for our file candidates;
 # -o default: fall back to readline's filename completion when the engine
 # returns nothing (free-form values like ports or tile sizes).
-complete -o filenames -o default -F _crossscale crossscale crossscale-cli
+complete -o filenames -o default -F _upix upix upix-cli
 )BASH";
 
-constexpr const char* ZSH = R"ZSH(#compdef crossscale crossscale-cli
-# zsh completion for crossscale — thin client over `__complete`.
-# Install: crossscale completions zsh --install
+constexpr const char* ZSH = R"ZSH(#compdef upix upix-cli
+# zsh completion for upix — thin client over `__complete`.
+# Install: upix completions zsh --install
 
-_crossscale() {
+_upix() {
     local -a lines vals disps
     lines=("${(f)$($words[1] __complete "${(@)words[2,-1]}" 2>/dev/null)}")
     local line
@@ -63,11 +63,11 @@ _crossscale() {
         _files   # engine had nothing: free-form value, default to filenames
     fi
 }
-_crossscale "$@"
+_upix "$@"
 )ZSH";
 
-constexpr const char* FISH = R"FISH(# fish completion for crossscale — thin client over `__complete`.
-# Install: crossscale completions fish --install
+constexpr const char* FISH = R"FISH(# fish completion for upix — thin client over `__complete`.
+# Install: upix completions fish --install
 
 function __cs_complete
     set -l tokens (commandline -opc) (commandline -ct)
@@ -76,8 +76,8 @@ end
 
 # One rule each; the engine owns all context. -f keeps fish's own file
 # completion out of the way (the engine emits file candidates itself).
-complete -c crossscale     -f -a '(__cs_complete)'
-complete -c crossscale-cli -f -a '(__cs_complete)'
+complete -c upix     -f -a '(__cs_complete)'
+complete -c upix-cli -f -a '(__cs_complete)'
 )FISH";
 
 }  // namespace
@@ -148,13 +148,13 @@ auto install_completions(const std::string& shell) -> int {
     if (shell == "bash") {
         const fs::path dir = user_dir("XDG_DATA_HOME", "bash-completion/completions",
                                       ".local/share/bash-completion/completions");
-        for (const char* name : {"crossscale", "crossscale-cli"}) {
+        for (const char* name : {"upix", "upix-cli"}) {
             if (!report_write(dir / name, BASH)) return 1;
         }
         std::println("Restart your shell to pick it up.");
     } else if (shell == "zsh") {
         const auto [dir, needs_fpath] = zsh_completion_dir();
-        if (!report_write(dir / "_crossscale", ZSH)) return 1;
+        if (!report_write(dir / "_upix", ZSH)) return 1;
         if (needs_fpath) {
             std::println("Add this to ~/.zshrc (before compinit), then restart zsh:\n"
                          "  fpath=({} $fpath)", dir.string());
@@ -164,7 +164,7 @@ auto install_completions(const std::string& shell) -> int {
     } else {
         const fs::path dir = user_dir("XDG_CONFIG_HOME", "fish/completions",
                                       ".config/fish/completions");
-        for (const char* name : {"crossscale", "crossscale-cli"}) {
+        for (const char* name : {"upix", "upix-cli"}) {
             if (!report_write(dir / (std::string(name) + ".fish"), FISH)) return 1;
         }
         std::println("New fish sessions pick it up automatically.");

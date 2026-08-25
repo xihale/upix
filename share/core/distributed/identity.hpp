@@ -9,7 +9,7 @@
 #include <string>
 #include <vector>
 
-namespace crossscale {
+namespace upix {
 
 // 持久 Ed25519 身份。加载或新建并落盘。
 class IdentityKey {
@@ -59,11 +59,11 @@ auto base64_decode(std::string_view s) -> std::optional<std::vector<uint8_t>>;
 // Used by the CLI; Android stores these via its own app-private paths.
 inline auto default_identity_path() -> std::filesystem::path {
     const char* home = std::getenv("HOME");
-    return std::filesystem::path(home ? home : ".") / ".crossscale" / "identity";
+    return std::filesystem::path(home ? home : ".") / ".upix" / "identity";
 }
 inline auto default_trust_path() -> std::filesystem::path {
     const char* home = std::getenv("HOME");
-    return std::filesystem::path(home ? home : ".") / ".crossscale" / "trusted_clients";
+    return std::filesystem::path(home ? home : ".") / ".upix" / "trusted_clients";
 }
 
-} // namespace crossscale
+} // namespace upix

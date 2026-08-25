@@ -2,7 +2,7 @@
 
 #include <cstdint>
 
-namespace crossscale {
+namespace upix {
 
 struct TileRegion {
     uint32_t x;
@@ -30,4 +30,4 @@ struct ProcessingProgress {
     }
 };
 
-} // namespace crossscale
+} // namespace upix

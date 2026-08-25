@@ -1,4 +1,4 @@
-// `crossscale __complete WORDS...` — the dynamic shell-completion engine.
+// `upix __complete WORDS...` — the dynamic shell-completion engine.
 //
 // Cobra/clap-style protocol: the bash/zsh/fish scripts emitted by
 // cmd_completions.cpp are thin adapters that replay the command line being
@@ -9,7 +9,7 @@
 //   - sub-commands and flags come straight from build_app()'s CLI11 tree —
 //     an option added in cli_app.cpp completes everywhere automatically;
 //   - model names come from ModelManager against the models dir in effect
-//     (--models/--models-dir seen on the line wins over $CROSSSCALE_MODELS_DIR);
+//     (--models/--models-dir seen on the line wins over $UPIX_MODELS_DIR);
 //   - input-file candidates are filtered to the decoders this binary actually
 //     ships: png/jpg/jpeg/webp always, avif only when system libavif loads
 //     (avif_decode_available()).
@@ -62,7 +62,7 @@ auto lower(std::string s) -> std::string {
 auto image_exts() -> const std::set<std::string>& {
     static const std::set<std::string> exts = [] {
         std::set<std::string> s{"png", "jpg", "jpeg", "webp"};
-        if (crossscale::avif_codec::avif_decode_available()) s.insert("avif");
+        if (upix::avif_codec::avif_decode_available()) s.insert("avif");
         return s;
     }();
     return exts;
@@ -73,7 +73,7 @@ void complete_output_formats() {
     emit("jpg", "quality 1-100");
     emit("jpeg", "quality 1-100");
     emit("webp", "quality 1-100");
-    if (crossscale::avif_codec::avif_encode_available()) {
+    if (upix::avif_codec::avif_encode_available()) {
         emit("avif", "needs system libavif");
     }
 }
@@ -147,7 +147,7 @@ void complete_models(const std::string& models_dir_override) {
                              : fs::path(models_dir_override);
     std::error_code ec;
     if (!fs::is_directory(dir, ec)) return;
-    crossscale::ModelManager manager(dir);
+    upix::ModelManager manager(dir);
     auto models = manager.scan_models();
     if (!models.has_value()) return;
     for (const auto& m : *models) {
@@ -293,7 +293,7 @@ int cmd_complete_impl(int argc, char* argv[]) {
         complete_option_names(node, cur);
     } else if (node == root) {
         if (positionals == 0) {
-            // Root, first word: sub-command or input image (`crossscale img.png`
+            // Root, first word: sub-command or input image (`upix img.png`
             // upscales directly).
             complete_subcommands(root, cur);
             complete_files(cur, &image_exts());

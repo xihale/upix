@@ -1,8 +1,8 @@
 local spirv_pack = path.join(os.scriptdir(), "core", "spirv_pack.bin")
 
-target("crossscale-core")
+target("upix-core")
     set_kind("static")
-    add_rules("crossscale.host_isa", "crossscale.upx")
+    add_rules("upix.host_isa", "upix.upx")
 
     add_packages("ncnn~runtime", "libwebp", "libpng", "libjpeg", "glaze", "libsodium")
     add_packages("libdeflate")

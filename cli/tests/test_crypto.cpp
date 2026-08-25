@@ -10,8 +10,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-using namespace crossscale;  // NOLINT
-using namespace crossscale::sodium;
+using namespace upix;  // NOLINT
+using namespace upix::sodium;
 
 // 断言宏:即使 NDEBUG 仍生效,保证检查执行并打印失败位置。
 // 选用 abort() 而非异常,因这是独立测试 main,失败应直接终止。
@@ -36,7 +36,7 @@ int main() {
 
     // 2. Ed25519 sign/verify
     auto id = ed25519_keygen();
-    const char msg[] = "hello crossscale";
+    const char msg[] = "hello upix";
     auto sig = ed25519_sign(id.private_key,
                             (const uint8_t*)msg, sizeof(msg) - 1);
     CHECK(ed25519_verify(id.public_key, sig,

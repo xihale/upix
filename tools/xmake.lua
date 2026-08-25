@@ -6,7 +6,7 @@ local spirv_pack = path.join(os.projectdir(), "share/core/spirv_pack.bin")
 target("dump-spirv")
     set_kind("binary")
     set_default(false)
-    add_rules("crossscale.host_isa", "crossscale.upx")
+    add_rules("upix.host_isa", "upix.upx")
     add_packages("ncnn~glslang", "libdeflate")
     add_includedirs("$(projectdir)/share")
     add_files("dump_spirv.cpp")
@@ -14,7 +14,7 @@ target("dump-spirv")
         add_syslinks("dl")
     end
 
-target("crossscale-core")
+target("upix-core")
     on_load(function (target)
         if not os.isfile(spirv_pack) then
             target:add("deps", "dump-spirv")

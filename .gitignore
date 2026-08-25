@@ -51,7 +51,7 @@ apps/app/src/main/cpp/third_party/
 cli/models/
 !models/README.md
 models/manifest.json
-# Machine-local model store symlink (e.g. -> ~/.config/CrossScale/models)
+# Machine-local model store symlink (e.g. -> ~/.config/Upix/models)
 models/models
 
 # Logs

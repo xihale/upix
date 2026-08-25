@@ -4,7 +4,7 @@
 #include "utils/logger.hpp"
 #include <cstring>
 
-namespace crossscale {
+namespace upix {
 
 auto Protocol::serialize(const MessageHeader& header, const void* payload)
     -> std::vector<uint8_t> {
@@ -61,4 +61,4 @@ auto Protocol::compute_checksum(const void* data, size_t size) -> uint32_t {
     return network_utils::crc32(data, size);
 }
 
-} // namespace crossscale
+} // namespace upix

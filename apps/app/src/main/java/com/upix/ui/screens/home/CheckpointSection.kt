@@ -1,0 +1,241 @@
+package com.upix.ui.screens.home
+
+import androidx.compose.animation.animateContentSize
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.ExpandMore
+import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.PlayArrow
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.upix.R
+import com.upix.ui.theme.ExpandSizeSpec
+import com.upix.ui.theme.Spacing
+import com.upix.ui.theme.ValueMono
+import com.upix.ui.theme.valueStyleFor
+import com.upix.viewmodel.ProcessingCheckpointSummary
+import com.upix.viewmodel.ProcessingUiState
+
+/**
+ * 断点续传小卡：仅当存在 checkpoint 时渲染。
+ * 主行动 = 恢复上次任务；次要（重试失败 / 丢弃）收进图标按钮，
+ * 明细列表按需展开，行内保留逐项继续 / 重试回调。
+ */
+@Composable
+internal fun CheckpointSection(
+    processingUiState: ProcessingUiState,
+    onResumeProcessing: () -> Unit,
+    onRetryFailedItems: () -> Unit,
+    onResumePendingItem: (String) -> Unit,
+    onRetryFailedItem: (String) -> Unit,
+    onDiscardCheckpoint: () -> Unit
+) {
+    val checkpointSummary = processingUiState.checkpointSummary ?: return
+    var detailsExpanded by remember { mutableStateOf(false) }
+    // 丢弃断点不可恢复：先弹确认框再执行。
+    var showDiscardConfirm by remember { mutableStateOf(false) }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            // 明细折叠区展开（180ms ease-out，与参数卡折叠一致）。
+            .animateContentSize(ExpandSizeSpec),
+        shape = MaterialTheme.shapes.medium,
+        color = MaterialTheme.colorScheme.surfaceContainer
+    ) {
+        Column(
+            modifier = Modifier.padding(Spacing.lg),
+            verticalArrangement = Arrangement.spacedBy(Spacing.md)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(Spacing.md),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.History,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(20.dp)
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = stringResource(R.string.checkpoint_title),
+                        style = MaterialTheme.typography.titleSmall
+                    )
+                    Text(
+                        text = stringResource(
+                            R.string.checkpoint_summary,
+                            checkpointStatusLabel(checkpointSummary),
+                            checkpointSummary.pendingItems,
+                            checkpointSummary.failedItems
+                        ),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                FilledTonalButton(onClick = onResumeProcessing) {
+                    Text(stringResource(R.string.config_resume_last_task))
+                }
+                IconButton(
+                    onClick = onRetryFailedItems,
+                    enabled = processingUiState.canRetryFailedOnly
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Refresh,
+                        contentDescription = stringResource(R.string.checkpoint_retry_failed),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                IconButton(onClick = { showDiscardConfirm = true }) {
+                    Icon(
+                        imageVector = Icons.Outlined.DeleteSweep,
+                        contentDescription = stringResource(R.string.checkpoint_discard),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Box(modifier = Modifier.weight(1f))
+                if (checkpointSummary.pendingItemDetails.isNotEmpty()) {
+                    // 展开热区收进 IconButton，不再裸图标（触控目标更稳）。
+                    // 不覆盖尺寸：默认触控盒 ≥48dp（MD3 无障碍要求），与行内其余图标按钮一致。
+                    IconButton(
+                        onClick = { detailsExpanded = !detailsExpanded }
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.ExpandMore,
+                            contentDescription = stringResource(
+                                if (detailsExpanded) R.string.common_collapse else R.string.common_details
+                            ),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+            }
+
+            if (detailsExpanded) {
+                val pendingItemDetails = checkpointSummary.pendingItemDetails
+                Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                    pendingItemDetails.take(10).forEach { item ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = item.displayName,
+                                style = valueStyleFor(item.displayName),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            // 不覆盖尺寸：默认 48dp 触控盒（MD3 无障碍要求），与 QueueSheet.QueueItemAction 同规。
+                            IconButton(onClick = { onResumePendingItem(item.uri) }) {
+                                Icon(
+                                    imageVector = Icons.Outlined.PlayArrow,
+                                    contentDescription = stringResource(R.string.checkpoint_resume),
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                            if (item.isFailed) {
+                                // 不覆盖尺寸：同上，保留 48dp 命中区。
+                                IconButton(onClick = { onRetryFailedItem(item.uri) }) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Refresh,
+                                        contentDescription = stringResource(R.string.common_retry),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    // 明细最多展示 10 条，超出部分用计数行提示。
+                    if (pendingItemDetails.size > 10) {
+                        Text(
+                            text = stringResource(
+                                R.string.checkpoint_more_items,
+                                pendingItemDetails.size - 10
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    if (showDiscardConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDiscardConfirm = false },
+            title = { Text(stringResource(R.string.checkpoint_discard_confirm_title)) },
+            text = { Text(stringResource(R.string.checkpoint_discard_confirm_body)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showDiscardConfirm = false
+                        onDiscardCheckpoint()
+                    }
+                ) {
+                    Text(stringResource(R.string.common_confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDiscardConfirm = false }) {
+                    Text(stringResource(R.string.common_cancel))
+                }
+            }
+        )
+    }
+}
+
+/**
+ * Resolves the checkpoint status text from the summary counts at the
+ * consumption point. Mirrors the statusLabel derivation in
+ * ProcessingMappers.toUiSummary (which resolves the same resources via
+ * StringProvider on the viewmodel side).
+ */
+@Composable
+private fun checkpointStatusLabel(summary: ProcessingCheckpointSummary): String {
+    val statusRes = when {
+        summary.pendingItems <= 0 && summary.failedItems <= 0 -> R.string.common_status_completed
+        summary.failedItems > 0 -> R.string.checkpoint_status_resumable_with_failures
+        else -> R.string.checkpoint_status_resumable
+    }
+    return stringResource(statusRes)
+}

@@ -2,7 +2,7 @@
 #
 # test_remote_e2e.sh — end-to-end test of the phone↔PC distributed path.
 #
-# Brings up a PC coordinator (crossscale host --auto-approve), then runs
+# Brings up a PC coordinator (upix host --auto-approve), then runs
 # the RemoteDistributedTest instrumented test on a connected device, which pairs
 # with the coordinator and upscales a synthetic image through it over the
 # encrypted protocol. Verifies the real remote logic: ECDH handshake, CONNECT
@@ -22,11 +22,11 @@ CLI_DIR="$ROOT/cli"
 APPS_DIR="$ROOT/apps"
 # xmake outputs to the project-root build dir ($(projectdir)/build/...), not
 # cli/build. Prefer the fresh root build; fall back to a legacy cli/build copy.
-CLI_BIN="$ROOT/build/linux/x86_64/release/crossscale-cli"
-[ -x "$CLI_BIN" ] || CLI_BIN="$CLI_DIR/build/linux/x86_64/release/crossscale-cli"
+CLI_BIN="$ROOT/build/linux/x86_64/release/upix-cli"
+[ -x "$CLI_BIN" ] || CLI_BIN="$CLI_DIR/build/linux/x86_64/release/upix-cli"
 APP_APK="$APPS_DIR/app/build/outputs/apk/debug/app-debug.apk"
 TEST_APK="$APPS_DIR/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
-PACKAGE="com.crossscale"
+PACKAGE="com.upix"
 TEST_RUNNER="$PACKAGE.test/androidx.test.runner.AndroidJUnitRunner"
 PORT="${PORT:-9530}"
 MODEL="${CS_MODEL:-Real-ESRGANv3-anime-x2}"
@@ -129,7 +129,7 @@ ok "coordinator ready"
 phase "Run RemoteDistributedTest on device (host=$HOST port=$PORT model=$MODEL)"
 OUT="$(adb shell am instrument -w \
   -e host "$HOST" -e port "$PORT" -e model "$MODEL" \
-  -e class com.crossscale.RemoteDistributedTest \
+  -e class com.upix.RemoteDistributedTest \
   "$TEST_RUNNER" 2>&1)"
 echo "$OUT" | sed 's/^/    /'
 

@@ -1,20 +1,20 @@
 #!/bin/bash
 
-# Performance benchmark script for CrossScale
+# Performance benchmark script for Upix
 # Tests different tile sizes and measures GPU/CPU usage
 
 set -e
 
-PROJECT_ROOT="/home/xihale/Desktop/learning/android/crossscale"
+PROJECT_ROOT="/home/xihale/Desktop/learning/android/upix"
 BUILD_DIR="$PROJECT_ROOT/build/linux/x86_64/release"
-CLI="$BUILD_DIR/crossscale-cli"
-TEST_IMAGE="/home/xihale/Desktop/learning/android/upscaler/CrossScale/cli/tests/imgs/0.webp"
+CLI="$BUILD_DIR/upix-cli"
+TEST_IMAGE="/home/xihale/Desktop/learning/android/upscaler/Upix/cli/tests/imgs/0.webp"
 MODEL="Real-ESRGANv3-anime-x2"
 OUTPUT_DIR="/tmp/benchmark_results"
 
 mkdir -p "$OUTPUT_DIR"
 
-echo "=== CrossScale Tile Size Performance Benchmark ==="
+echo "=== Upix Tile Size Performance Benchmark ==="
 echo "Test image: $TEST_IMAGE"
 echo "Model: $MODEL"
 echo ""

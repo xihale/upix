@@ -15,7 +15,7 @@
 #include <string_view>
 #include <vector>
 
-namespace crossscale::cli {
+namespace upix::cli {
 
 struct RemoteModel {
     std::string name;
@@ -38,7 +38,7 @@ struct ModelDownloadResult {
 };
 
 // Default release endpoint: the "models" tag of the upstream repo.
-inline constexpr std::string_view kDefaultModelRepo = "xihale/crossscale";
+inline constexpr std::string_view kDefaultModelRepo = "xihale/upix";
 
 // Fetch and parse the release manifest. Returns nullopt + error message in
 // `error` on failure.
@@ -56,4 +56,4 @@ auto download_model(const RemoteModel& model,
 // Build the manifest URL for a repo ("owner/name" or "" for the default).
 auto manifest_url(const std::string& repo) -> std::string;
 
-}  // namespace crossscale::cli
+}  // namespace upix::cli

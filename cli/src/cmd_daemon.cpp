@@ -1,8 +1,8 @@
-// `crossscale daemon {start, stop, status}` — manage the local warm-engine daemon.
+// `upix daemon {start, stop, status}` — manage the local warm-engine daemon.
 //
 // start:  fork into background (unless --fg), open the Unix socket, load a warm
 //         ncnn engine, and serve single-image upscale requests so that
-//         `crossscale process` skips the ~490ms init+load fixed cost. Exits by
+//         `upix process` skips the ~490ms init+load fixed cost. Exits by
 //         itself after --idle-timeout seconds without a request (0 = never).
 // stop:   read the daemon's pid file and SIGTERM it.
 // status: read-only report — pid file, liveness, socket reachability.
@@ -27,7 +27,7 @@ namespace fs = std::filesystem;
 int cmd_daemon(const args::Daemon& a) {
     std::string socket_path = a.socket_path;
     if (socket_path.empty()) {
-        socket_path = crossscale::default_serve_socket_path();
+        socket_path = upix::default_serve_socket_path();
     }
     if (socket_path.empty()) {
         std::println(stderr, "daemon: no default socket path available "
@@ -124,11 +124,11 @@ int cmd_daemon(const args::Daemon& a) {
         ::close(STDERR_FILENO);
     }
 
-    crossscale::ServeDaemon daemon;
+    upix::ServeDaemon daemon;
     daemon.set_idle_timeout(a.idle_timeout_s);
     int rc = daemon.start(socket_path, a.models_dir, a.model_name,
-                          a.force_cpu ? crossscale::ServeDevice::CPU
-                                      : crossscale::ServeDevice::GPU);
+                          a.force_cpu ? upix::ServeDevice::CPU
+                                      : upix::ServeDevice::GPU);
     if (rc != 0) {
         std::filesystem::remove(pid_path);
         return rc;

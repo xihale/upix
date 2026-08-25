@@ -10,7 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
-using namespace crossscale;  // NOLINT
+using namespace upix;  // NOLINT
 
 // Same abort-on-fail style as test_crypto.cpp so a regression stops the run.
 #define CHECK(cond)                                                            \

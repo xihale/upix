@@ -28,7 +28,7 @@
 #include <gpu.h>
 #endif
 
-namespace crossscale {
+namespace upix {
 
 enum class GpuPrecisionProfile {
     Integrated = 0,
@@ -144,4 +144,4 @@ inline ncnn::Option packing_option(bool use_fp16, bool use_int8) {
     return opt;
 }
 
-} // namespace crossscale
+} // namespace upix

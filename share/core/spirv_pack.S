@@ -3,8 +3,8 @@
 #else
 .section .rodata
 #endif
-.global crossscale_spirv_pack_blob
-.global crossscale_spirv_pack_blob_end
-crossscale_spirv_pack_blob:
+.global upix_spirv_pack_blob
+.global upix_spirv_pack_blob_end
+upix_spirv_pack_blob:
 .incbin "spirv_pack.bin"
-crossscale_spirv_pack_blob_end:
+upix_spirv_pack_blob_end:

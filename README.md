@@ -1,6 +1,6 @@
-# CrossScale - Distributed Image Super-Resolution
+# Upix - Distributed Image Super-Resolution
 
-CrossScale is a distributed image super-resolution system that supports both standalone CLI and distributed computing across multiple devices. It uses modern C++ (C++23), ncnn for inference, and supports popular image formats via libpng, libjpeg, and libwebp.
+Upix is a distributed image super-resolution system that supports both standalone CLI and distributed computing across multiple devices. It uses modern C++ (C++23), ncnn for inference, and supports popular image formats via libpng, libjpeg, and libwebp.
 
 ## Features
 
@@ -26,7 +26,7 @@ cd cli
 xmake
 ```
 
-The binary will be located at `build/linux/x86_64/release/crossscale-cli` (path may vary by platform).
+The binary will be located at `build/linux/x86_64/release/upix-cli` (path may vary by platform).
 
 ### Build Android App
 
@@ -35,16 +35,16 @@ cd apps
 ./gradlew assembleDebug   # or open in Android Studio
 ```
 
-The native engine (`libcrossscale-native.so`) is built with xmake by a Gradle task (`xmakeNative` in `apps/app/build.gradle.kts`) that runs before each APK build; see `apps/xmake.lua`.
+The native engine (`libupix-native.so`) is built with xmake by a Gradle task (`xmakeNative` in `apps/app/build.gradle.kts`) that runs before each APK build; see `apps/xmake.lua`.
 
 ## Usage
 
 ### Single Image
 
 ```bash
-./crossscale-cli input.png                                # → input_Real-ESRGANv3-anime-x2.png
-./crossscale-cli input.png output.png                     # explicit output
-./crossscale-cli input.png -m Real-CUGAN-conservative-x2  # pick a model
+./upix-cli input.png                                # → input_Real-ESRGANv3-anime-x2.png
+./upix-cli input.png output.png                     # explicit output
+./upix-cli input.png -m Real-CUGAN-conservative-x2  # pick a model
 ```
 
 The first form is the common one: no verb, no flags — the output name derives
@@ -52,7 +52,7 @@ from the input and the model that produced it (`<stem>_<model>.<ext>`, next to
 the input). The flag form is equivalent when a script prefers it:
 
 ```bash
-./crossscale-cli -i input.png -o output.png -m Real-ESRGANv3-anime-x2
+./upix-cli -i input.png -o output.png -m Real-ESRGANv3-anime-x2
 ```
 
 Use `--output-quality <1-100>` to trade file size for fidelity and `--output-format <png|jpg|jpeg|webp|avif>` to override the saved container.
@@ -76,9 +76,9 @@ it exits by itself after 600 idle seconds (`--idle-timeout` to change, `0` to
 keep it forever). Manual control when wanted:
 
 ```bash
-./crossscale-cli daemon status                 # is it running?
-./crossscale-cli daemon stop                   # stop it now
-./crossscale-cli daemon start --cpu --fg       # explicit start (foreground, CPU)
+./upix-cli daemon status                 # is it running?
+./upix-cli daemon stop                   # stop it now
+./upix-cli daemon start --cpu --fg       # explicit start (foreground, CPU)
 ```
 
 ### Directory Processing
@@ -86,11 +86,11 @@ keep it forever). Manual control when wanted:
 Process all images in a directory (recursively), preserving directory structure:
 
 ```bash
-./crossscale-cli input_dir                     # → input_dir_<model>/ next to it
+./upix-cli input_dir                     # → input_dir_<model>/ next to it
 
 # Flag form, when preferred
-./crossscale-cli -i input_dir -o output_dir -m Real-ESRGANv3-anime-x2 --jobs 4   # CPU parallel
-./crossscale-cli -i input_dir -o output_dir --gpu                                # GPU sequential
+./upix-cli -i input_dir -o output_dir -m Real-ESRGANv3-anime-x2 --jobs 4   # CPU parallel
+./upix-cli -i input_dir -o output_dir --gpu                                # GPU sequential
 ```
 
 **Important GPU behavior**:
@@ -101,18 +101,18 @@ Process all images in a directory (recursively), preserving directory structure:
 ### Model Management
 
 Models are **not bundled** with the CLI or the Android app. They are
-distributed via the [models GitHub release](https://github.com/xihale/crossscale/releases/tag/models)
+distributed via the [models GitHub release](https://github.com/xihale/upix/releases/tag/models)
 and downloaded on demand (see `models/README.md`):
 
 ```bash
-./crossscale-cli model list-remote                          # list models in the release
-./crossscale-cli model download Real-ESRGANv3-anime-x2      # download into ./models
-./crossscale-cli model list                                 # list installed models
-./crossscale-cli model import ~/foo.param ~/foo.bin         # import local custom models
+./upix-cli model list-remote                          # list models in the release
+./upix-cli model download Real-ESRGANv3-anime-x2      # download into ./models
+./upix-cli model list                                 # list installed models
+./upix-cli model import ~/foo.param ~/foo.bin         # import local custom models
 ```
 
 Models are discovered from the `models` directory (default `./models`, override
-with `--models-dir` on any subcommand, or set `CROSSSCALE_MODELS_DIR` to work
+with `--models-dir` on any subcommand, or set `UPIX_MODELS_DIR` to work
 from any directory). Each model is a `.param` + `.bin` pair; both layouts work:
 
 ```
@@ -132,14 +132,14 @@ of your own `.param`/`.bin`/`.zip` files.
 Start the coordinator for phones (`host`; bare form defaults to `start`):
 
 ```bash
-./crossscale-cli host                    # listen on 9527, print the QR card
-./crossscale-cli host -p 9527 --auto-approve   # auto-approve pairing (CI)
+./upix-cli host                    # listen on 9527, print the QR card
+./upix-cli host -p 9527 --auto-approve   # auto-approve pairing (CI)
 ```
 
 Show the connection card without starting anything:
 
 ```bash
-./crossscale-cli host info
+./upix-cli host info
 ```
 
 Distributed offloading is driven from the Android app, not the CLI. With `host`
@@ -151,10 +151,10 @@ time and remembered afterwards.
 ### Performance Probes
 
 ```bash
-./crossscale-cli perf list-probes           # list available probes
-./crossscale-cli perf gpu-efficiency        # GPU vs CPU tile throughput
-./crossscale-cli perf gpu-concurrency       # scaling across N engines
-./crossscale-cli perf gpu-reuse             # fresh vs reused VkCompute
+./upix-cli perf list-probes           # list available probes
+./upix-cli perf gpu-efficiency        # GPU vs CPU tile throughput
+./upix-cli perf gpu-concurrency       # scaling across N engines
+./upix-cli perf gpu-reuse             # fresh vs reused VkCompute
 ```
 
 ### Shell Completions
@@ -166,21 +166,21 @@ Everything therefore stays in sync automatically — sub-commands and flags come
 from the CLI11 definitions, model names from the configured models dir, and
 input-file suggestions are filtered to the formats this binary can actually
 decode (png/jpg/jpeg/webp always, avif only where system libavif loads).
-Directories stay navigable, and `crossscale <TAB>` offers sub-commands and
+Directories stay navigable, and `upix <TAB>` offers sub-commands and
 images side by side for the implicit upscale.
 
 `--install` writes them into the shell's user completion directory
 automatically:
 
 ```bash
-./crossscale-cli completions bash --install   # ~/.local/share/bash-completion/completions/
-./crossscale-cli completions zsh --install    # ~/.zfunc/_crossscale (or oh-my-zsh's dir)
-./crossscale-cli completions fish --install   # ~/.config/fish/completions/
+./upix-cli completions bash --install   # ~/.local/share/bash-completion/completions/
+./upix-cli completions zsh --install    # ~/.zfunc/_upix (or oh-my-zsh's dir)
+./upix-cli completions fish --install   # ~/.config/fish/completions/
 ```
 
 For zsh the command prints the `fpath=(...)` line to add to `~/.zshrc` when
 `~/.zfunc` is not on fpath yet. bash and fish files are written for both
-invocation names (`crossscale` and `crossscale-cli`); the scripts resolve the
+invocation names (`upix` and `upix-cli`); the scripts resolve the
 binary from the command line being completed, so either name works. Note that
 all three shells only fire completions for commands resolvable through
 `PATH`, so install the binary somewhere on it (e.g. symlink into
@@ -188,7 +188,7 @@ all three shells only fire completions for commands resolvable through
 `--install` the script is printed to stdout for custom locations:
 
 ```bash
-./crossscale-cli completions bash > /etc/bash_completion.d/crossscale
+./upix-cli completions bash > /etc/bash_completion.d/upix
 ```
 
 ## Performance Notes
@@ -224,7 +224,7 @@ Load with `--config FILE`. CLI flags override the loaded configuration.
 
 ## Troubleshooting
 
-- **No models found**: Run `./crossscale-cli model list-remote && ./crossscale-cli model download <name>`, or use `--models-dir` to point at an existing directory (or export `CROSSSCALE_MODELS_DIR`). On Android, use 模型 → 下载模型.
+- **No models found**: Run `./upix-cli model list-remote && ./upix-cli model download <name>`, or use `--models-dir` to point at an existing directory (or export `UPIX_MODELS_DIR`). On Android, use 模型 → 下载模型.
 - **Out of memory**: Reduce tile size or reduce `--jobs`. For GPU mode, close other applications to free VRAM. If GPU memory is insufficient, try smaller tile sizes (128 or 192).
 - **Slow GPU performance**: Increase `--batch-size` to improve GPU occupancy. Ensure you are not using `--jobs` with `--gpu` (they are incompatible). For large directories, consider using CPU mode with `--jobs` for parallel image processing, or process images individually with `--gpu`.
 - **Crashes with GPU in directory mode**: This should no longer occur as GPU directory mode now uses a single shared engine sequentially. If you experience crashes, ensure you are using the latest version.
@@ -236,7 +236,7 @@ See [docs/README.md](docs/README.md) for documentation navigation.
 
 ## License
 
-CrossScale is licensed under the [MIT License](LICENSE).
+Upix is licensed under the [MIT License](LICENSE).
 
 ### Third-party components
 

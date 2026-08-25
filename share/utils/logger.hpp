@@ -12,7 +12,7 @@
 #include <android/log.h>
 #endif
 
-namespace crossscale {
+namespace upix {
 
 enum class LogLevel {
     DEBUG = 0,
@@ -135,8 +135,8 @@ private:
     }
 
     LogLevel min_level_ = [] {
-        // CROSSSCALE_LOG_LEVEL=debug enables DEBUG output (default INFO).
-        if (const char* lvl = std::getenv("CROSSSCALE_LOG_LEVEL")) {
+        // UPIX_LOG_LEVEL=debug enables DEBUG output (default INFO).
+        if (const char* lvl = std::getenv("UPIX_LOG_LEVEL")) {
             if (std::string_view(lvl) == "debug") return LogLevel::DEBUG;
         }
         return LogLevel::INFO;
@@ -144,13 +144,13 @@ private:
     std::mutex mutex_;
 };
 
-} // namespace crossscale
+} // namespace upix
 
 // Convenience macros. Single-string calls work unchanged; extra args are
 // treated as std::format arguments:
 //   LOG_INFO(tag, msg)                    -> literal/dynamic message
 //   LOG_INFO(tag, "loaded {} tiles", n)   -> formatted at the call site
-#define LOG_DEBUG(tag, ...) crossscale::Logger::instance().debug(tag __VA_OPT__(,) __VA_ARGS__)
-#define LOG_INFO(tag, ...) crossscale::Logger::instance().info(tag __VA_OPT__(,) __VA_ARGS__)
-#define LOG_WARNING(tag, ...) crossscale::Logger::instance().warning(tag __VA_OPT__(,) __VA_ARGS__)
-#define LOG_ERROR(tag, ...) crossscale::Logger::instance().error(tag __VA_OPT__(,) __VA_ARGS__)
+#define LOG_DEBUG(tag, ...) upix::Logger::instance().debug(tag __VA_OPT__(,) __VA_ARGS__)
+#define LOG_INFO(tag, ...) upix::Logger::instance().info(tag __VA_OPT__(,) __VA_ARGS__)
+#define LOG_WARNING(tag, ...) upix::Logger::instance().warning(tag __VA_OPT__(,) __VA_ARGS__)
+#define LOG_ERROR(tag, ...) upix::Logger::instance().error(tag __VA_OPT__(,) __VA_ARGS__)

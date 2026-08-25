@@ -13,7 +13,7 @@
 #include "model_downloader.hpp"
 
 namespace fs = std::filesystem;
-using crossscale::cli::RemoteModel;
+using upix::cli::RemoteModel;
 
 static void write_file(const fs::path& p, const std::string& data) {
     fs::create_directories(p.parent_path());
@@ -40,7 +40,7 @@ static std::string sha256_hex(const fs::path& p) {
 }
 
 int main() {
-    fs::path tmp = fs::temp_directory_path() / "crossscale-dl-test";
+    fs::path tmp = fs::temp_directory_path() / "upix-dl-test";
     fs::remove_all(tmp);
     fs::path models_dir = tmp / "models";
     fs::create_directories(tmp);
@@ -62,7 +62,7 @@ int main() {
                       "file://" + zip_path.string()};
 
     // 2. Happy path.
-    auto res = crossscale::cli::download_model(model, models_dir.string(), {});
+    auto res = upix::cli::download_model(model, models_dir.string(), {});
     if (!res.ok || read_file(models_dir / "foo.param") != "param-bytes" ||
         read_file(models_dir / "foo.bin") != "bin-bytes" ||
         fs::exists(models_dir / "foo.zip.part")) {
@@ -72,7 +72,7 @@ int main() {
     // 3. Bad sha256 → rejected, nothing installed.
     RemoteModel bad = model;
     bad.sha256 = "deadbeef";
-    auto res2 = crossscale::cli::download_model(bad, models_dir.string(), {});
+    auto res2 = upix::cli::download_model(bad, models_dir.string(), {});
     if (res2.ok || res2.message.find("sha256 mismatch") == std::string::npos ||
         fs::exists(models_dir / "foo.zip.part")) {
         return std::puts("bad-sha path failed"), 1;

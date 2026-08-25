@@ -2,7 +2,7 @@
 #include <numeric>
 #include <vector>
 
-namespace crossscale {
+namespace upix {
 
 BenchmarkResult benchmark(const std::string& name,
                           std::function<void()> func,
@@ -32,4 +32,4 @@ BenchmarkResult benchmark(const std::string& name,
     return result;
 }
 
-} // namespace crossscale
+} // namespace upix

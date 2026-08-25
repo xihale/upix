@@ -7,7 +7,7 @@
 #include <algorithm>
 #include <unordered_set>
 
-namespace crossscale {
+namespace upix {
 
 namespace {
 // Model names arrive from two independent sources — the Android app's asset
@@ -300,4 +300,4 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
     return info;
 }
 
-} // namespace crossscale
+} // namespace upix

@@ -5,14 +5,14 @@
 
 set -e
 
-CLI="./build/linux/x86_64/release/crossscale-cli"
+CLI="./build/linux/x86_64/release/upix-cli"
 MODEL="Real-ESRGANv3-anime-x2"
 OUTPUT_DIR="test_output"
 LOG_FILE="large_image_test.log"
 
 mkdir -p "$OUTPUT_DIR"
 
-echo "=== CrossScale Large Image Performance Test ===" | tee "$LOG_FILE"
+echo "=== Upix Large Image Performance Test ===" | tee "$LOG_FILE"
 echo "Date: $(date)" | tee -a "$LOG_FILE"
 echo "" | tee -a "$LOG_FILE"
 

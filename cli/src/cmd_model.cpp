@@ -1,4 +1,4 @@
-// `crossscale model` — local catalog + GitHub release model management.
+// `upix model` — local catalog + GitHub release model management.
 //
 //   model list                     scan the models dir, print name/scale/size
 //   model list-remote [--repo R]   fetch the release manifest, print catalog
@@ -25,8 +25,8 @@ namespace {
 
 // Case/dash-insensitive name match against the manifest (same normalization
 // idea as ModelManager::get_model).
-auto find_remote(const std::vector<crossscale::cli::RemoteModel>& models,
-                 const std::string& name) -> const crossscale::cli::RemoteModel* {
+auto find_remote(const std::vector<upix::cli::RemoteModel>& models,
+                 const std::string& name) -> const upix::cli::RemoteModel* {
     auto norm = [](std::string s) {
         for (char& c : s) {
             c = (c == '_' || c == ' ') ? '-' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -45,7 +45,7 @@ auto mb(double bytes) -> std::string {
 }
 
 int cmd_model_list(const args::Model& a) {
-    crossscale::ModelManager manager(a.models_dir.empty()
+    upix::ModelManager manager(a.models_dir.empty()
                                          ? fs::path(default_models_dir())
                                          : fs::path(a.models_dir));
 
@@ -71,7 +71,7 @@ int cmd_model_list(const args::Model& a) {
 
     std::println("Installed models ({}):", manager.models_directory().string());
     if (models.value().empty()) {
-        std::println("  (none — try `crossscale model download <name>` or `model list-remote`)");
+        std::println("  (none — try `upix model download <name>` or `model list-remote`)");
         return 0;
     }
     for (const auto& m : models.value()) {
@@ -83,21 +83,21 @@ int cmd_model_list(const args::Model& a) {
 
 int cmd_model_list_remote(const args::Model& a) {
     std::string error;
-    auto remote = crossscale::cli::fetch_remote_models(a.repo, error);
+    auto remote = upix::cli::fetch_remote_models(a.repo, error);
     if (!remote) {
         LOG_ERROR("Model", "Failed to fetch remote models: {}", error);
         return 1;
     }
 
     std::println("Models available in the release ({}):",
-                 crossscale::cli::manifest_url(a.repo));
+                 upix::cli::manifest_url(a.repo));
     if (remote->empty()) {
         std::println("  (manifest is empty)");
     }
     for (const auto& m : *remote) {
         std::println("  {} ({}x, {})", m.name, m.scale, mb(m.size_bytes));
     }
-    std::println("\nDownload with: crossscale model download <name>");
+    std::println("\nDownload with: upix model download <name>");
     return 0;
 }
 
@@ -108,7 +108,7 @@ int cmd_model_download(const args::Model& a) {
     }
 
     std::string error;
-    auto remote = crossscale::cli::fetch_remote_models(a.repo, error);
+    auto remote = upix::cli::fetch_remote_models(a.repo, error);
     if (!remote) {
         LOG_ERROR("Model", "Failed to fetch remote models: {}", error);
         return 1;
@@ -128,8 +128,8 @@ int cmd_model_download(const args::Model& a) {
                    mb(m->size_bytes));
         std::fflush(stdout);
         auto last_pct = -1;
-        auto result = crossscale::cli::download_model(*m, dir.string(),
-            [&](const crossscale::cli::DownloadProgress& p) {
+        auto result = upix::cli::download_model(*m, dir.string(),
+            [&](const upix::cli::DownloadProgress& p) {
                 if (p.total > 0) {
                     int pct = static_cast<int>(p.downloaded * 100 / p.total);
                     if (pct != last_pct && pct % 10 == 0) {

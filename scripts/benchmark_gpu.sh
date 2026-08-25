@@ -1,7 +1,7 @@
 #!/bin/bash
 # Benchmark GPU utilization and efficiency
 
-CLI="./build/linux/x86_64/release/crossscale-cli"
+CLI="./build/linux/x86_64/release/upix-cli"
 INPUT="test_input.png"
 MODEL="Real-ESRGANv3-anime-x2"
 

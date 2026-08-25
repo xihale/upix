@@ -4,7 +4,7 @@
 
 #include <string>
 
-namespace crossscale {
+namespace upix {
 
 auto initialize_engine(SetupDevice device)
     -> expected<std::unique_ptr<Engine>, std::string> {
@@ -120,4 +120,4 @@ auto setup_engine(
     return result;
 }
 
-} // namespace crossscale
+} // namespace upix

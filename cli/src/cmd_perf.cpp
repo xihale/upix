@@ -1,4 +1,4 @@
-// `crossscale perf {list-probes, gpu-efficiency, gpu-concurrency, gpu-reuse}`.
+// `upix perf {list-probes, gpu-efficiency, gpu-concurrency, gpu-reuse}`.
 //
 // Three probe subcommands share the same model-resolution + TestConfig-shape
 // logic; only defaults and the cpu_baseline/concurrency fields differ. The
@@ -24,8 +24,8 @@ auto parse_seconds(const std::string& s) -> double {
 
 // Resolve a model by name (or fall back to the first available). Returns a
 // non-owning pointer into `models` or nullptr on failure (after logging).
-auto resolve_model(std::vector<crossscale::ModelInfo>& models, const std::string& name)
-    -> const crossscale::ModelInfo* {
+auto resolve_model(std::vector<upix::ModelInfo>& models, const std::string& name)
+    -> const upix::ModelInfo* {
     if (models.empty()) return nullptr;
     if (name.empty()) return &models[0];
     auto it = std::find_if(models.begin(), models.end(),
@@ -41,7 +41,7 @@ auto resolve_model(std::vector<crossscale::ModelInfo>& models, const std::string
 // Shared body for gpu-efficiency / gpu-concurrency / gpu-reuse: resolve model,
 // build a TestConfig from the parsed args, run the named probe.
 auto run_probe(const args::Perf& a) -> int {
-    crossscale::ModelManager mgr;
+    upix::ModelManager mgr;
     mgr.set_models_directory(a.models_dir);
     auto scan_res = mgr.scan_models();
     if (!scan_res) {
@@ -56,7 +56,7 @@ auto run_probe(const args::Perf& a) -> int {
     const auto* sel = resolve_model(models, a.model_name);
     if (!sel) return 1;
 
-    crossscale::perf::TestConfig cfg;
+    upix::perf::TestConfig cfg;
     cfg.model_param = sel->param_path.string();
     cfg.model_bin = sel->bin_path.string();
     cfg.model_name = sel->name;
@@ -76,14 +76,14 @@ auto run_probe(const args::Perf& a) -> int {
         cfg.concurrency = a.concurrency;
     }
 
-    return crossscale::perf::run_test(a.subcommand, cfg, a.out_path);
+    return upix::perf::run_test(a.subcommand, cfg, a.out_path);
 }
 
 }  // namespace
 
 int cmd_perf(const args::Perf& a) {
     if (a.subcommand == "list-probes") {
-        crossscale::perf::list_available();
+        upix::perf::list_available();
         return 0;
     }
     if (a.subcommand == "gpu-efficiency"

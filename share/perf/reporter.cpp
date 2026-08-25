@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <string>
 
-namespace crossscale::perf {
+namespace upix::perf {
 
 Reporter::Reporter(std::string path) : path_(std::move(path)) {}
 
@@ -80,4 +80,4 @@ void Reporter::emit_comparison(double gpu_tps, double cpu_tps) {
     write(std::string_view(buf, n));
 }
 
-} // namespace crossscale::perf
+} // namespace upix::perf

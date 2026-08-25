@@ -20,5 +20,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "CrossScale"
+rootProject.name = "Upix"
 include(":app")

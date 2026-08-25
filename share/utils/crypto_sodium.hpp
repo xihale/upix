@@ -5,7 +5,7 @@
 #include <optional>
 #include <vector>
 
-namespace crossscale {
+namespace upix {
 namespace sodium {
 
 // 进程级初始化,幂等。失败抛 std::runtime_error。
@@ -46,4 +46,4 @@ auto secretbox_open(const uint8_t key[32],
     -> std::optional<std::vector<uint8_t>>;
 
 } // namespace sodium
-} // namespace crossscale
+} // namespace upix

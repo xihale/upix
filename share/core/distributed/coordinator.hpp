@@ -22,7 +22,7 @@
 #include <filesystem>
 #include <unordered_map>
 
-namespace crossscale {
+namespace upix {
 
 class TCPServer;
 class TCPSocket;

@@ -1,4 +1,4 @@
-// CrossScale CLI — thin entry point.
+// Upix CLI — thin entry point.
 //
 // The command tree (subcommands, options, validators, help text) is built in
 // cli_app.cpp via CLI11. main() just parses argv and dispatches to the
@@ -41,7 +41,7 @@ auto main(int argc, char* argv[]) -> int {
         return g_exit_code.value();
     }
 
-    // No subcommand ran (e.g. bare `crossscale`). Show top-level help.
+    // No subcommand ran (e.g. bare `upix`). Show top-level help.
     std::print("{}", app->help());
     return 0;
 }

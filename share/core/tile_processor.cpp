@@ -14,7 +14,7 @@
 #include <stop_token>
 #include <mdspan>
 
-namespace crossscale {
+namespace upix {
 
 auto TileProcessor::compute_tile_layout(int image_width, int image_height,
                                          const TileConfig& config) -> std::vector<TileRegion> {
@@ -775,4 +775,4 @@ void TileProcessor::bicubic_scale_u8(
     }
 }
 
-} // namespace crossscale
+} // namespace upix

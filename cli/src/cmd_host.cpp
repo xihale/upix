@@ -1,4 +1,4 @@
-// `crossscale host {start, info}` — the coordinator phones pair with.
+// `upix host {start, info}` — the coordinator phones pair with.
 //
 // start: launch a Coordinator on `port`, print the connection card (IP/QR/key),
 //        and poll until Ctrl+C. Each submitted image is upscaled on the PC's own
@@ -23,24 +23,24 @@
 
 int cmd_host(const args::Host& a) {
     if (a.subcommand == "info") {
-        auto identity = crossscale::IdentityKey::load_or_create(
-            crossscale::default_identity_path());
+        auto identity = upix::IdentityKey::load_or_create(
+            upix::default_identity_path());
         print_connection_card(a.port, identity.public_key());
         return 0;
     }
 
     // ── start ───────────────────────────────────────────────────────────────
-    auto identity = crossscale::IdentityKey::load_or_create(
-        crossscale::default_identity_path());
+    auto identity = upix::IdentityKey::load_or_create(
+        upix::default_identity_path());
     LOG_INFO("Host", "PC identity fingerprint: {}",
-             crossscale::fingerprint(identity.public_key()));
+             upix::fingerprint(identity.public_key()));
 
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    auto coordinator = std::make_unique<crossscale::Coordinator>();
+    auto coordinator = std::make_unique<upix::Coordinator>();
     coordinator->set_models_directory(a.models_dir);
-    coordinator->set_trust_store_path(crossscale::default_trust_path());
+    coordinator->set_trust_store_path(upix::default_trust_path());
     coordinator->on_task_progress() = [](float progress) {
         static std::atomic<int> last_pct{-1};
         const auto pct = static_cast<int>(std::clamp(progress, 0.0f, 1.0f) * 100.0f);

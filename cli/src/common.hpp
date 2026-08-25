@@ -15,13 +15,13 @@
 #include "utils/image.hpp"
 #include "utils/network.hpp"  // MAX_NETWORK_PAYLOAD
 
-namespace crossscale {
+namespace upix {
 class ServeDaemon;
 struct ProcessingProgress;
-}  // namespace crossscale
+}  // namespace upix
 
 // Maximum payload size for network messages (100 MB).
-using crossscale::MAX_NETWORK_PAYLOAD;
+using upix::MAX_NETWORK_PAYLOAD;
 
 // ── Global run-state ────────────────────────────────────────────────────────
 // Set false by signal handlers; long-running loops (process, host, daemon)
@@ -33,14 +33,14 @@ extern std::atomic<bool> g_cancel_requested;
 // actually wake the daemon's accept() loop. signal_handler only sets g_running,
 // which ServeDaemon::run() does not observe. Set to the running daemon by the
 // daemon start path; null otherwise.
-extern crossscale::ServeDaemon* g_daemon;
+extern upix::ServeDaemon* g_daemon;
 
 // ── Signal handlers ─────────────────────────────────────────────────────────
 void signal_handler(int);
 void daemon_signal_handler(int);
 
 // ── Defaults ────────────────────────────────────────────────────────────────
-// $CROSSSCALE_MODELS_DIR > $XDG_DATA_HOME/crossscale/models (per-user store,
+// $UPIX_MODELS_DIR > $XDG_DATA_HOME/upix/models (per-user store,
 // never cwd-relative; the --models-dir flag wins by being bound directly to
 // each subcommand's models_dir field).
 auto default_models_dir() -> std::string;
@@ -57,12 +57,12 @@ auto derive_default_output(const std::string& input_path,
                            bool input_is_dir) -> std::string;
 
 // Render a progress line to stderr:  45.2% [12/27 tiles, ETA 3.2s]
-void print_progress_stderr(const crossscale::ProcessingProgress& prog,
+void print_progress_stderr(const upix::ProcessingProgress& prog,
                            std::chrono::steady_clock::time_point start_time);
 
 // Convert `image` in place to `expected_channels`; logs + returns false on
 // failure. No-op when channels already match.
-auto normalize_channels_for_model(crossscale::Image& image,
+auto normalize_channels_for_model(upix::Image& image,
                                   int expected_channels,
                                   const std::string& image_path) -> bool;
 

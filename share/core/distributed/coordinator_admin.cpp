@@ -1,6 +1,6 @@
 #include "coordinator.hpp"
 
-namespace crossscale {
+namespace upix {
 
 // The coordinator uses the models directory to resolve model files for its OWN
 // local engine (process_locally). In the 1:1 model the phone submits images and
@@ -10,4 +10,4 @@ void Coordinator::set_models_directory(const std::filesystem::path& dir) {
     (void)model_manager_.scan_models();
 }
 
-} // namespace crossscale
+} // namespace upix

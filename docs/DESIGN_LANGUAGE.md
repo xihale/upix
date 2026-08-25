@@ -1,6 +1,6 @@
-# CrossScale Design Language
+# Upix Design Language
 
-**Status:** Normative spec for the Compose UI (`apps/app/src/main/java/com/crossscale/ui/**`).
+**Status:** Normative spec for the Compose UI (`apps/app/src/main/java/com/upix/ui/**`).
 **Aesthetic:** 简洁 · natural · 大方 · elegant — Apple-style restraint on a Material 3 expressive-lite base. Generous whitespace, fewer borders, one accent, zero decorative noise.
 **Constraints:** Pure Compose Material3 (`material3:1.5.0-alpha17`) + `material-icons-extended`. No new dependencies. Every number below is copy-paste ready.
 
@@ -308,7 +308,7 @@ Base: `MaterialExpressiveTheme` + `MotionScheme.expressive()` (component springs
 Recipes reference existing composables — implementers extend these, they don't fork them.
 
 ### 9.1 Screens
-- Primary tab screens: `Scaffold(containerColor = background)` + `CrossScaleTopAppBar` (small, `titleLarge`, no custom background) + scrolling `Column(widthIn(max = 840.dp), spacedBy(Spacing.lg), padding(horizontal = LocalScreenMargin))`.
+- Primary tab screens: `Scaffold(containerColor = background)` + `UpixTopAppBar` (small, `titleLarge`, no custom background) + scrolling `Column(widthIn(max = 840.dp), spacedBy(Spacing.lg), padding(horizontal = LocalScreenMargin))`.
 - Secondary screens: `SecondaryScreenScaffold(titleRes, onBack)` exclusively — owns back arrow (`Icons.AutoMirrored.Filled.ArrowBack`) and inset handling. Sub-screens render no second title.
 
 ### 9.2 Cards
@@ -364,7 +364,7 @@ Count badge caps display at "99+". Recolor from error-red default to `Badge(colo
 
 Ordered, each independently compilable:
 
-1. ✅ **Done — `theme/Theme.kt`** — delete the `Build.VERSION.SDK_INT >= S` dynamic-color branch (D1); add the `Shapes(...)` block from §4 to `MaterialExpressiveTheme(shapes = ...)`. (Executed: branch deleted; shipped as `CrossScaleShapes` Shapes block, `ui/theme/Theme.kt:100-105`.)
+1. ✅ **Done — `theme/Theme.kt`** — delete the `Build.VERSION.SDK_INT >= S` dynamic-color branch (D1); add the `Shapes(...)` block from §4 to `MaterialExpressiveTheme(shapes = ...)`. (Executed: branch deleted; shipped as `UpixShapes` Shapes block, `ui/theme/Theme.kt:100-105`.)
 2. ✅ **Done — Radius moves** — switch `shapes.large` → `shapes.medium` on the four card Surfaces: `home/ParameterCard.kt` (:105), `screens/SettingsScreen.kt` (:288, `SettingsGroupCard`), `screens/ConnectionScreen.kt` (:196, `StatusCard`), `screens/ModelsScreen.kt` (:269, empty-state Surface). Hero `ImageStage` and preview media frame stay `large`. (Executed: all four plus the connection error banner at `ConnectionScreen.kt:159` are `shapes.medium`.)
 3. ✅ **Done — Hairline softening** — `home/HeroArea.kt` thumbnail delete circle: border color `outline` → `outlineVariant`. (Executed: `HeroArea.kt:372`.)
 4. ✅ **Done — Badge recolor** — `ui/screens/home/BottomActionDock.kt` queue `Badge` → `primaryContainer`/`onPrimaryContainer` (§9.11). (Executed: `BottomActionDock.kt:134-140`, including the "99+" display cap; reverified against HEAD e556d7a — cap `Text` sits at :139.)
@@ -396,9 +396,9 @@ Ordered, each independently compilable:
 
 Quick CI-able greps (all must return empty):
 ```bash
-grep -rn "Color(0x" apps/app/src/main/java/com/crossscale/ui --include="*.kt" | grep -v "/theme/"
-grep -rn "RoundedCornerShape(" apps/app/src/main/java/com/crossscale/ui --include="*.kt"
-grep -rn "shadowElevation\|defaultElevation\|tonalElevation" apps/app/src/main/java/com/crossscale/ui --include="*.kt"
+grep -rn "Color(0x" apps/app/src/main/java/com/upix/ui --include="*.kt" | grep -v "/theme/"
+grep -rn "RoundedCornerShape(" apps/app/src/main/java/com/upix/ui --include="*.kt"
+grep -rn "shadowElevation\|defaultElevation\|tonalElevation" apps/app/src/main/java/com/upix/ui --include="*.kt"
 ```
 
 ---
@@ -411,7 +411,7 @@ grep -rn "shadowElevation\|defaultElevation\|tonalElevation" apps/app/src/main/j
 
 | Disposition | Composables |
 |---|---|
-| Keep as-is | `CrossScaleTopAppBar`, `SecondaryScreenScaffold`, `SectionHeader`, `BottomNavigationBar`+`AdaptiveNavigation*`, `ImageStage`/`EmptyStage`/`PreviewBottomSheet`, `ParameterCard`, `CheckpointSection`, `ModelCard`, `StageProgressOverlay`, `LogViewer`, `RemoteModelsDialog`, `ConnectionDialog`, `FingerprintConfirmDialog`, `QueueSheet`, `pressable`/`pressScale`/`smoothProgress` |
+| Keep as-is | `UpixTopAppBar`, `SecondaryScreenScaffold`, `SectionHeader`, `BottomNavigationBar`+`AdaptiveNavigation*`, `ImageStage`/`EmptyStage`/`PreviewBottomSheet`, `ParameterCard`, `CheckpointSection`, `ModelCard`, `StageProgressOverlay`, `LogViewer`, `RemoteModelsDialog`, `ConnectionDialog`, `FingerprintConfirmDialog`, `QueueSheet`, `pressable`/`pressScale`/`smoothProgress` |
 | Edit (§10) | ✅ Done: `Theme.kt` shapes block (`Theme.kt:100-105`) · ✅ Done: `ParameterCard` medium (`ParameterCard.kt:105`) · ✅ Done: `SettingsGroupCard` medium (`SettingsScreen.kt:288`) · ✅ Done: `StatusCard` medium (`ConnectionScreen.kt:196`) + connection error banner medium (`ConnectionScreen.kt:159`) · ✅ Done: Models empty-state medium (`ModelsScreen.kt:269`) · ✅ Done: `HeroArea` delete-circle outlineVariant (`HeroArea.kt:372`) · ✅ Done: dock `Badge` primaryContainer/onPrimaryContainer with "99+" cap (`BottomActionDock.kt:134-140`) · ✅ Done: `BottomNavigationBar` dedupe via shared `navigateToTab` (`BottomNavigationBar.kt:38`) |
 | Rename | ✅ Done: `ui/screens/home/BottomActionBar.kt` → `ui/screens/home/BottomActionDock.kt` |
 | Merge candidate | ✅ Done: `HostPortFields` state holder (`ui/components/HostPortFields.kt`, consumed by `ConnectionDialog`) · shared `ThumbnailCell`: ✅ done, now `home/ThumbnailCell.kt` (used by `HeroArea` and `QueueSheet`) |

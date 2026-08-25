@@ -4,7 +4,7 @@
 #include "expected.hpp"
 #include "network_error.hpp"  // NetworkError (used in expected return types)
 
-namespace crossscale {
+namespace upix {
 
 // Shared implementation for stream sockets backed by a plain fd (TCP and
 // AF_UNIX): owns the fd plus the I/O lock that keeps concurrent users from
@@ -57,4 +57,4 @@ protected:
     mutable std::recursive_mutex io_mutex_;
 };
 
-} // namespace crossscale
+} // namespace upix

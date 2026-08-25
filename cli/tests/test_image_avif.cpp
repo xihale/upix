@@ -9,7 +9,7 @@
 #include <cstring>
 #include <vector>
 
-using namespace crossscale;
+using namespace upix;
 
 #define CHECK(cond)                                                            \
     do {                                                                       \

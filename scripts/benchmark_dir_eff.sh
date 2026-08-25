@@ -8,12 +8,12 @@ set -euo pipefail
 
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLI=""
-if [[ -n "${CROSSSCALE_CLI_BIN:-}" ]]; then
-    CLI="${CROSSSCALE_CLI_BIN}"
+if [[ -n "${UPIX_CLI_BIN:-}" ]]; then
+    CLI="${UPIX_CLI_BIN}"
 else
     for candidate in \
-        "${BASE_DIR}/cli/build/linux/x86_64/release/crossscale-cli" \
-        "${BASE_DIR}/build/linux/x86_64/release/crossscale-cli"; do
+        "${BASE_DIR}/cli/build/linux/x86_64/release/upix-cli" \
+        "${BASE_DIR}/build/linux/x86_64/release/upix-cli"; do
         if [[ -x "${candidate}" ]]; then
             CLI="${candidate}"
             break

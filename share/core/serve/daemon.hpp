@@ -1,5 +1,5 @@
 // Local serve daemon: holds a warm ncnn engine across many client invocations
-// so that `crossscale process` single-image calls skip the ~490 ms Vulkan-init
+// so that `upix process` single-image calls skip the ~490 ms Vulkan-init
 // + model-load fixed cost (see docs/PERF_REPORT_REAL_IMAGES.md §4).
 //
 // Architecture: the daemon owns one Engine (initialized + model-loaded once).
@@ -24,7 +24,7 @@
 #include <thread>
 #include <vector>
 
-namespace crossscale {
+namespace upix {
 
 class Engine;
 class ModelManager;
@@ -107,8 +107,8 @@ private:
     ServeDevice device_ = ServeDevice::GPU;
 };
 
-// Default socket path: $XDG_CACHE_HOME/crossscale/serve.sock or
-// $HOME/.cache/crossscale/serve.sock. Empty if neither env nor HOME is set.
+// Default socket path: $XDG_CACHE_HOME/upix/serve.sock or
+// $HOME/.cache/upix/serve.sock. Empty if neither env nor HOME is set.
 auto default_serve_socket_path() -> std::string;
 
-} // namespace crossscale
+} // namespace upix

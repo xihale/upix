@@ -8,7 +8,7 @@
 #include <queue>
 #include "core/engine.hpp"
 
-namespace crossscale {
+namespace upix {
 
 class EnginePool {
 public:
@@ -31,4 +31,4 @@ public:
     std::condition_variable available_cv_;
 };
 
-} // namespace crossscale
+} // namespace upix

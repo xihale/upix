@@ -18,7 +18,7 @@
 
 namespace fs = std::filesystem;
 
-namespace crossscale::cli {
+namespace upix::cli {
 namespace {
 
 // ── libcurl helpers ─────────────────────────────────────────────────────────
@@ -57,7 +57,7 @@ auto http_get(const std::string& url, std::string& body, std::string& error,
     curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &body);
     curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, timeout_s);
     curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT, 10L);
-    curl_easy_setopt(curl.get(), CURLOPT_USERAGENT, "crossscale-cli/0.1");
+    curl_easy_setopt(curl.get(), CURLOPT_USERAGENT, "upix-cli/0.1");
 
     CURLcode rc = curl_easy_perform(curl.get());
     if (rc != CURLE_OK) {
@@ -116,7 +116,7 @@ auto http_download_to_file(const std::string& url, const fs::path& dest,
     curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl.get(), CURLOPT_LOW_SPEED_LIMIT, 1L);  // stall guard:
     curl_easy_setopt(curl.get(), CURLOPT_LOW_SPEED_TIME, 60L);  // <1B/s for 60s → abort
-    curl_easy_setopt(curl.get(), CURLOPT_USERAGENT, "crossscale-cli/0.1");
+    curl_easy_setopt(curl.get(), CURLOPT_USERAGENT, "upix-cli/0.1");
 
     CURLcode rc = curl_easy_perform(curl.get());
     out.close();
@@ -329,4 +329,4 @@ auto download_model(const RemoteModel& model,
     return res;
 }
 
-}  // namespace crossscale::cli
+}  // namespace upix::cli

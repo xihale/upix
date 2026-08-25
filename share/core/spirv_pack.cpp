@@ -9,7 +9,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace crossscale::spirv_pack {
+namespace upix::spirv_pack {
 namespace {
 
 constexpr char kMagic[4] = {'C', 'S', 'p', 'v'};
@@ -48,8 +48,8 @@ struct KeyHash {
 };
 
 extern "C" {
-extern const unsigned char crossscale_spirv_pack_blob[];
-extern const unsigned char crossscale_spirv_pack_blob_end[];
+extern const unsigned char upix_spirv_pack_blob[];
+extern const unsigned char upix_spirv_pack_blob_end[];
 }
 
 std::vector<unsigned char> g_raw;
@@ -121,9 +121,9 @@ bool load_embedded() {
         return !g_index.empty();
     }
     g_loaded = true;
-    const auto* blob = crossscale_spirv_pack_blob;
+    const auto* blob = upix_spirv_pack_blob;
     const size_t blob_size =
-        static_cast<size_t>(crossscale_spirv_pack_blob_end - crossscale_spirv_pack_blob);
+        static_cast<size_t>(upix_spirv_pack_blob_end - upix_spirv_pack_blob);
     if (!inflate_if_needed(blob, blob_size) ||
         !parse_pack(g_raw.data(), g_raw.size())) {
         LOG_WARNING("Engine", "SPIR-V pack is empty or corrupt");
@@ -193,6 +193,6 @@ void register_ncnn_lookup() {
     ncnn::set_compile_spirv_module_lookup(lookup_layer, lookup_source);
 }
 
-} // namespace crossscale::spirv_pack
+} // namespace upix::spirv_pack
 
 #endif // NCNN_VULKAN

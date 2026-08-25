@@ -22,7 +22,7 @@ class Pipeline;
 class VkAllocator;
 }
 
-namespace crossscale {
+namespace upix {
 
 #if NCNN_VULKAN
 namespace detail {
@@ -140,4 +140,4 @@ private:
     int inference_threads_ = 0;
 };
 
-} // namespace crossscale
+} // namespace upix

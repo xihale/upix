@@ -5,7 +5,7 @@
 
 #include <print>
 
-namespace crossscale::perf {
+namespace upix::perf {
 
 auto run_test(const std::string& test_name, const TestConfig& cfg, const std::string& out_path) -> int {
     Reporter rep(out_path);
@@ -46,4 +46,4 @@ auto list_available() -> void {
     std::print("  distributed      multi-device weight/throughput efficiency\n");
 }
 
-} // namespace crossscale::perf
+} // namespace upix::perf

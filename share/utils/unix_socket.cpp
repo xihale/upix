@@ -10,7 +10,7 @@
 #include <cstring>
 #include <cerrno>
 
-namespace crossscale {
+namespace upix {
 
 UnixSocket::UnixSocket() = default;
 
@@ -178,4 +178,4 @@ void UnixServer::stop() {
     path_.clear();
 }
 
-} // namespace crossscale
+} // namespace upix

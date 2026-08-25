@@ -2,7 +2,7 @@
 #include <sodium.h>
 #include <stdexcept>
 
-namespace crossscale {
+namespace upix {
 namespace sodium {
 
 void init() {
@@ -28,7 +28,7 @@ auto x25519_shared(const std::array<uint8_t, 32>& my_private,
     // raw X25519 共享点不可直接用作对称密钥 (libsodium guidance),
     // 经 BLAKE2b (带 domain separator 的 personalization) 硬化为 32 字节密钥。
     std::array<uint8_t, 32> hardened;
-    static const char ctx[] = "crossscale-ecdh-v1";
+    static const char ctx[] = "upix-ecdh-v1";
     crypto_generichash_blake2b(
         hardened.data(), 32,
         raw.data(), 32,
@@ -87,4 +87,4 @@ auto secretbox_open(const uint8_t key[32],
 }
 
 } // namespace sodium
-} // namespace crossscale
+} // namespace upix

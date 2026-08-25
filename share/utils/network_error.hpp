@@ -3,11 +3,11 @@
 #include <string>
 #include <cstdint>
 
-namespace crossscale {
+namespace upix {
 
 struct NetworkError {
     int code;
     std::string message;
 };
 
-} // namespace crossscale
+} // namespace upix

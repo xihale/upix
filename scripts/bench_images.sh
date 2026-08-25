@@ -36,8 +36,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 mkdir -p "$OUT_DIR"
-CLI="$(dirname "$0")/../build/linux/x86_64/release/crossscale-cli"
-[[ -x "$CLI" ]] || CLI="xmake run crossscale-cli"
+CLI="$(dirname "$0")/../build/linux/x86_64/release/upix-cli"
+[[ -x "$CLI" ]] || CLI="xmake run upix-cli"
 SAMPLE_MS=50
 RESULTS="$OUT_DIR/results.jsonl"
 : > "$RESULTS"

@@ -18,7 +18,7 @@
 #include <gpu.h>
 #endif
 
-namespace crossscale::detail {
+namespace upix::detail {
 
 #if NCNN_VULKAN
 
@@ -594,4 +594,4 @@ inline constexpr CustomShaderSrc kCustomShaders[] = {
 
 #endif // NCNN_VULKAN
 
-} // namespace crossscale::detail
+} // namespace upix::detail

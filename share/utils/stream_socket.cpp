@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <cerrno>
 
-namespace crossscale {
+namespace upix {
 
 auto StreamSocket::send(const void* data, size_t size)
     -> expected<size_t, NetworkError> {
@@ -77,4 +77,4 @@ void StreamSocket::close_fd() {
     }
 }
 
-} // namespace crossscale
+} // namespace upix

@@ -3,7 +3,7 @@
 #include <string>
 #include <cstdint>
 
-namespace crossscale {
+namespace upix {
 
 // Cryptographic utilities used across the system.
 namespace crypto {
@@ -16,4 +16,4 @@ auto generate_uuid() -> std::string;
 
 } // namespace crypto
 
-} // namespace crossscale
+} // namespace upix

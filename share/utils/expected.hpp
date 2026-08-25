@@ -3,11 +3,11 @@
 #include <expected>
 #include <string>
 
-namespace crossscale {
+namespace upix {
 
 // Project alias for std::expected. Kept as a thin header so existing call
-// sites read `crossscale::expected<T, E>`; the type is exactly std::expected.
+// sites read `upix::expected<T, E>`; the type is exactly std::expected.
 template <typename T, typename E>
 using expected = std::expected<T, E>;
 
-} // namespace crossscale
+} // namespace upix

@@ -11,7 +11,7 @@
 #include "core/tile_types.hpp"
 #include "utils/expected.hpp"
 
-namespace crossscale {
+namespace upix {
 
 enum class DeviceType {
     CPU,
@@ -174,7 +174,7 @@ public:
 
     // Device memory available for allocations, in MB (0 = unknown). Used by
     // the OOM preflight to size the full-output buffers and by callers to
-    // pick a default worker count. Honors CROSSSCALE_GPU_FORCE_BUDGET_MB
+    // pick a default worker count. Honors UPIX_GPU_FORCE_BUDGET_MB
     // (testing: simulate a weaker device).
     virtual size_t get_device_memory_budget_mb() const { return 0; }
 
@@ -262,4 +262,4 @@ public:
 
 std::unique_ptr<Engine> create_ncnn_engine();
 
-} // namespace crossscale
+} // namespace upix

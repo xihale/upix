@@ -4,16 +4,18 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <ifaddrs.h>
 #include <poll.h>
+#include <cerrno>
 #include <cstring>
 #include <chrono>
 #include <mutex>
 #include <zlib.h>
 
-namespace crossscale {
+namespace upix {
 
 namespace {
 // Enable TCP keepalive with aggressive intervals so long-lived request/response
@@ -106,6 +108,110 @@ auto TCPSocket::connect(const std::string& host, uint16_t port)
     peer_address_ = host;
     peer_port_ = port;
     return {};
+}
+
+bool TCPSocket::connect_with_timeout(const std::string& host, uint16_t port, int timeout_ms) {
+    close();
+
+    // AF_UNSPEC + AI_ADDRCONFIG: resolve to every family configured on this
+    // host, so IPv6 literals and DNS names work, unlike the inet_pton(AF_INET)
+    // path in connect(). Numeric literals are unaffected by AI_ADDRCONFIG.
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+#ifdef AI_ADDRCONFIG
+    hints.ai_flags = AI_ADDRCONFIG;
+#endif
+
+    addrinfo* candidates = nullptr;
+    if (::getaddrinfo(host.c_str(), nullptr, &hints, &candidates) != 0 || candidates == nullptr) {
+        return false;
+    }
+
+    // One deadline shared by all candidate addresses so a host with many
+    // A/AAAA records cannot multiply the timeout.
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::milliseconds(timeout_ms);
+
+    for (addrinfo* ai = candidates; ai != nullptr; ai = ai->ai_next) {
+        const auto remaining_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            deadline - std::chrono::steady_clock::now()).count();
+        if (remaining_ms <= 0) {
+            break;
+        }
+
+        sockaddr_storage addr{};
+        if (ai->ai_addrlen > sizeof(addr)) {
+            continue;
+        }
+        std::memcpy(&addr, ai->ai_addr, ai->ai_addrlen);
+        if (ai->ai_family == AF_INET) {
+            reinterpret_cast<sockaddr_in*>(&addr)->sin_port = htons(port);
+        } else if (ai->ai_family == AF_INET6) {
+            reinterpret_cast<sockaddr_in6*>(&addr)->sin6_port = htons(port);
+        } else {
+            continue;
+        }
+
+        const int fd = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+        if (fd < 0) {
+            continue;
+        }
+
+        // Non-blocking for the connect phase only, so poll() can bound it.
+        const int saved_flags = ::fcntl(fd, F_GETFL, 0);
+        if (saved_flags >= 0) {
+            ::fcntl(fd, F_SETFL, saved_flags | O_NONBLOCK);
+        }
+
+        const int rc = ::connect(fd, reinterpret_cast<const sockaddr*>(&addr), ai->ai_addrlen);
+        bool connected = false;
+        if (rc == 0) {
+            connected = true;
+        } else if (errno == EINPROGRESS) {
+            pollfd pfd{};
+            pfd.fd = fd;
+            pfd.events = POLLOUT;
+            for (;;) {
+                const int pr = ::poll(&pfd, 1, static_cast<int>(remaining_ms));
+                if (pr < 0) {
+                    if (errno == EINTR) continue;
+                    break;
+                }
+                if (pr == 0) {
+                    break;  // timed out
+                }
+                int so_error = 0;
+                socklen_t optlen = sizeof(so_error);
+                connected = ::getsockopt(fd, SOL_SOCKET, SO_ERROR,
+                                         &so_error, &optlen) == 0 && so_error == 0;
+                break;
+            }
+        }
+
+        if (connected) {
+            if (saved_flags >= 0) {
+                ::fcntl(fd, F_SETFL, saved_flags);  // restore blocking mode
+            }
+            ::freeaddrinfo(candidates);
+
+            socket_ = fd;
+            int flag = 1;
+            setsockopt(socket_, IPPROTO_TCP, TCP_NODELAY, &flag, sizeof(flag));
+            int buf_size = 1 * 1024 * 1024;
+            setsockopt(socket_, SOL_SOCKET, SO_SNDBUF, &buf_size, sizeof(buf_size));
+            setsockopt(socket_, SOL_SOCKET, SO_RCVBUF, &buf_size, sizeof(buf_size));
+            apply_tcp_keepalive(socket_);
+            peer_address_ = host;
+            peer_port_ = port;
+            return true;
+        }
+        ::close(fd);
+    }
+
+    ::freeaddrinfo(candidates);
+    return false;
 }
 
 void TCPSocket::set_timeout(int timeout_ms) {
@@ -259,4 +365,4 @@ uint32_t crc32(const void* data, size_t size) {
 
 } // namespace network_utils
 
-} // namespace crossscale
+} // namespace upix

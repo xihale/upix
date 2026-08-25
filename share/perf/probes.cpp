@@ -2,7 +2,7 @@
 
 #include <dlfcn.h>
 
-namespace crossscale::perf {
+namespace upix::perf {
 
 // ---- TimerProbe ----
 
@@ -199,4 +199,4 @@ auto NvmlProbe::device_name() const -> std::string {
     return {};
 }
 
-} // namespace crossscale::perf
+} // namespace upix::perf

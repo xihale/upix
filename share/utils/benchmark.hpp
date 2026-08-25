@@ -4,7 +4,7 @@
 #include <chrono>
 #include <functional>
 
-namespace crossscale {
+namespace upix {
 
 // Simple timing utility
 class Timer {
@@ -42,4 +42,4 @@ BenchmarkResult benchmark(const std::string& name,
                           int iterations = 10,
                           int warmup = 2);
 
-} // namespace crossscale
+} // namespace upix

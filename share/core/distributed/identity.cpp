@@ -8,7 +8,7 @@
 #include <sodium.h>
 #include <stdexcept>
 
-namespace crossscale {
+namespace upix {
 
 namespace {
 constexpr size_t ED_PUBKEY_LEN = 32;
@@ -43,7 +43,7 @@ auto IdentityKey::load_or_create(const std::filesystem::path& file)
         return IdentityKey(kp);
     }
 
-    // 新建。父目录(如 ~/.crossscale/)可能不存在,先创建,权限 0700。
+    // 新建。父目录(如 ~/.upix/)可能不存在,先创建,权限 0700。
     if (file.has_parent_path()) {
         std::error_code ec;
         std::filesystem::create_directories(file.parent_path(), ec);
@@ -158,4 +158,4 @@ auto base64_decode(std::string_view s) -> std::optional<std::vector<uint8_t>> {
     return out;
 }
 
-} // namespace crossscale
+} // namespace upix

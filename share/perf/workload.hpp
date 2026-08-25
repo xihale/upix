@@ -7,7 +7,7 @@
 #include <cstdint>
 #include <memory>
 
-namespace crossscale::perf {
+namespace upix::perf {
 
 // A pair of input/output buffers for one tile. Output is pre-allocated by the
 // engine contract (caller provides the output buffer).
@@ -28,4 +28,4 @@ public:
     auto make_tile(int width, int height, int channels, int scale) -> TensorPair;
 };
 
-} // namespace crossscale::perf
+} // namespace upix::perf

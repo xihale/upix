@@ -2,7 +2,7 @@
 
 #include <cmath>
 
-namespace crossscale::perf {
+namespace upix::perf {
 
 // Generate a deterministic gradient + sinusoid pattern. Reproducible across runs
 // (no RNG) so different configs/tests are directly comparable. The pattern has
@@ -36,4 +36,4 @@ auto Workload::make_tile(int width, int height, int channels, int scale) -> Tens
     return tp;
 }
 
-} // namespace crossscale::perf
+} // namespace upix::perf

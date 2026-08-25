@@ -6,7 +6,7 @@
 #include <optional>
 #include <vector>
 
-namespace crossscale {
+namespace upix {
 
 // 包装/解包 secretbox 加密帧。握手前调 seal/open 会断言失败。
 // 激活后,所有明文 Protocol::serialize 输出经 seal() 变成 wire bytes,
@@ -38,4 +38,4 @@ private:
     SessionKey key_{};
 };
 
-} // namespace crossscale
+} // namespace upix

@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- CrossScale launcher foreground: "layered upscale" mark.
+<!-- Upix launcher foreground: "layered upscale" mark.
      A small outlined square (the source frame) tucked behind a larger solid
      square (the upscaled result), offset along the diagonal.
      Colors follow ui/theme/Color.kt: Teal300 #AEDFD9 outline, Teal600 #4C9D9A fill.

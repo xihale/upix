@@ -8,7 +8,7 @@
 #include <thread>
 #include <utility>
 
-namespace crossscale {
+namespace upix {
 
 namespace {
 
@@ -60,7 +60,7 @@ EnginePool::EnginePool(size_t pool_size, const std::string& param_path, const st
         const int physical_cores = detect_physical_core_count();
         const int engines = static_cast<int>(pool_size);
         threads_per_engine = std::clamp((physical_cores + engines - 1) / engines, 1, 8);
-        if (const char* env_t = std::getenv("CROSSSCALE_CPU_THREADS_PER_ENGINE")) {
+        if (const char* env_t = std::getenv("UPIX_CPU_THREADS_PER_ENGINE")) {
             try { threads_per_engine = std::clamp(std::stoi(env_t), 1, 16); } catch (...) {}
         }
         LOG_INFO("EnginePool", "CPU thread budget: {} physical cores / {} engines = {} inference threads per engine",
@@ -118,4 +118,4 @@ void EnginePool::release(Engine* engine) {
     available_cv_.notify_one();
 }
 
-} // namespace crossscale
+} // namespace upix

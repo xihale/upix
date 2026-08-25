@@ -102,18 +102,18 @@ int main(int argc, char** argv) {
     {
         ncnn::Option igpu;
         igpu.use_vulkan_compute = true;
-        crossscale::apply_profile(igpu, crossscale::GpuPrecisionProfile::Integrated);
+        upix::apply_profile(igpu, upix::GpuPrecisionProfile::Integrated);
         opts.push_back({"integrated", igpu});
 
         ncnn::Option dgpu;
         dgpu.use_vulkan_compute = true;
-        crossscale::apply_profile(dgpu, crossscale::GpuPrecisionProfile::Discrete);
+        upix::apply_profile(dgpu, upix::GpuPrecisionProfile::Discrete);
         opts.push_back({"discrete", dgpu});
 
-        opts.push_back({"pack_fp32", crossscale::packing_option(false, false)});
-        opts.push_back({"pack_fp16", crossscale::packing_option(true, false)});
-        opts.push_back({"pack_int8", crossscale::packing_option(false, true)});
-        opts.push_back({"pack_fp16_int8", crossscale::packing_option(true, true)});
+        opts.push_back({"pack_fp32", upix::packing_option(false, false)});
+        opts.push_back({"pack_fp16", upix::packing_option(true, false)});
+        opts.push_back({"pack_int8", upix::packing_option(false, true)});
+        opts.push_back({"pack_fp16_int8", upix::packing_option(true, true)});
     }
 
     std::vector<Entry> entries;
@@ -141,7 +141,7 @@ int main(int argc, char** argv) {
     };
 
     for (const auto& named : opts) {
-        const uint32_t key = crossscale::option_key(named.opt);
+        const uint32_t key = upix::option_key(named.opt);
         std::fprintf(stderr, "profile %s key=0x%x\n", named.name, key);
 
         std::vector<int> holes;
@@ -166,7 +166,7 @@ int main(int argc, char** argv) {
             failed += static_cast<int>(holes.size());
         }
 
-        for (const auto& shader : crossscale::detail::kCustomShaders) {
+        for (const auto& shader : upix::detail::kCustomShaders) {
             std::vector<uint32_t> spv;
             if (ncnn::compile_spirv_module(shader.source, named.opt, spv) != 0 || spv.empty()) {
                 std::fprintf(stderr, "  custom %s failed\n", shader.name);

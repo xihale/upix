@@ -24,7 +24,7 @@
 #include <string>
 #include <thread>
 
-namespace crossscale {
+namespace upix {
 
 #if NCNN_VULKAN
 namespace detail {
@@ -39,7 +39,7 @@ std::mutex g_vulkan_init_mutex;
     bool NCNNEngineImpl::try_init_vulkan() {
 #if NCNN_VULKAN
         int max_attempts = 6;
-        if (const char* retries_env = std::getenv("CROSSSCALE_GPU_INIT_RETRIES")) {
+        if (const char* retries_env = std::getenv("UPIX_GPU_INIT_RETRIES")) {
             try {
                 max_attempts = std::stoi(retries_env);
             } catch (...) {
@@ -49,7 +49,7 @@ std::mutex g_vulkan_init_mutex;
         max_attempts = std::clamp(max_attempts, 1, 12);
 
         int retry_delay_ms = 200;
-        if (const char* delay_env = std::getenv("CROSSSCALE_GPU_INIT_DELAY_MS")) {
+        if (const char* delay_env = std::getenv("UPIX_GPU_INIT_DELAY_MS")) {
             try {
                 retry_delay_ms = std::stoi(delay_env);
             } catch (...) {
@@ -253,4 +253,4 @@ std::mutex g_vulkan_init_mutex;
                  input_width, input_height, input_channels_, scale_factor_);
     }
 
-} // namespace crossscale
+} // namespace upix

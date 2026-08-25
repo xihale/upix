@@ -8,7 +8,7 @@
 #include <optional>
 #include <string>
 
-namespace crossscale::perf {
+namespace upix::perf {
 
 // A single point-in-time observation. Only fields the probe actually populates
 // are set; the rest are std::nullopt and serialized as null.
@@ -79,4 +79,4 @@ private:
     bool initialized_ = false;
 };
 
-} // namespace crossscale::perf
+} // namespace upix::perf

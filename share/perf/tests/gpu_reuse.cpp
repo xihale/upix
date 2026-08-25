@@ -50,7 +50,7 @@
 #include <thread>
 #include <vector>
 
-namespace crossscale::perf {
+namespace upix::perf {
 
 namespace {
 
@@ -823,4 +823,4 @@ auto GpuReuseTest::run(const TestConfig& cfg, Reporter& rep) -> int {
     return 0;
 }
 
-} // namespace crossscale::perf
+} // namespace upix::perf

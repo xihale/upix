@@ -1,8 +1,8 @@
-# CrossScale Models
+# Upix Models
 
-CrossScale uses ncnn-format super-resolution models. Model files are **not
+Upix uses ncnn-format super-resolution models. Model files are **not
 bundled** with the CLI or the Android app — they are distributed via the
-[models GitHub release](https://github.com/xihale/crossscale/releases/tag/models)
+[models GitHub release](https://github.com/xihale/upix/releases/tag/models)
 and downloaded on demand.
 
 ## Model Format
@@ -18,16 +18,16 @@ Both files must share the same stem (e.g. `foo.param` + `foo.bin`).
 ### CLI
 
 ```bash
-crossscale model list-remote          # list models in the GitHub release
-crossscale model download realesrganv3-anime-x2
-crossscale model list                 # list models installed locally
-crossscale model import ~/my-model.param ~/my-model.bin   # local custom models
+upix model list-remote          # list models in the GitHub release
+upix model download realesrganv3-anime-x2
+upix model list                 # list models installed locally
+upix model import ~/my-model.param ~/my-model.bin   # local custom models
 ```
 
-Models live in the per-user store `$XDG_DATA_HOME/crossscale/models`
-(`~/.local/share/crossscale/models` by default) — independent of the working
+Models live in the per-user store `$XDG_DATA_HOME/upix/models`
+(`~/.local/share/upix/models` by default) — independent of the working
 directory, so running from anywhere finds the same models. Override per
-invocation with `--models-dir` or globally with `$CROSSSCALE_MODELS_DIR`.
+invocation with `--models-dir` or globally with `$UPIX_MODELS_DIR`.
 The directory is created on demand by `model download` / `model import`.
 
 ### Android
@@ -81,7 +81,7 @@ pruned unless `--no-prune`.
       "scale": 2,
       "size_bytes": 17825792,
       "sha256": "…",
-      "url": "https://github.com/xihale/crossscale/releases/download/models/realesrganv3-anime-x2.zip"
+      "url": "https://github.com/xihale/upix/releases/download/models/realesrganv3-anime-x2.zip"
     }
   ]
 }
@@ -89,7 +89,7 @@ pruned unless `--no-prune`.
 
 ## Model Metadata
 
-CrossScale automatically infers:
+Upix automatically infers:
 - Scale factor (2x, 4x, etc., from the `x2`/`x4` filename suffix)
 - Input channels (RGB or Grayscale, from the param file)
 
@@ -98,4 +98,4 @@ CrossScale automatically infers:
 Bundled models are converted from [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)
 (© Xintao Wang and contributors, BSD 3-Clause License) to ncnn format. The Real-ESRGAN
 license applies to the model weights; see the root [LICENSE](../LICENSE) for the
-CrossScale code license.
+Upix code license.

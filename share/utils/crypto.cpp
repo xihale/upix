@@ -4,7 +4,7 @@
 #include <random>
 #include <sodium.h>
 
-namespace crossscale {
+namespace upix {
 namespace crypto {
 
 static std::random_device& get_rng() {
@@ -48,4 +48,4 @@ auto generate_uuid() -> std::string {
 }
 
 } // namespace crypto
-} // namespace crossscale
+} // namespace upix

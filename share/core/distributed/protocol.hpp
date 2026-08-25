@@ -6,7 +6,7 @@
 #include <string>
 #include <vector>
 
-namespace crossscale {
+namespace upix {
 
 // Wire protocol for the 1:1 phone↔PC model. The phone is a submitter (not a
 // compute worker): it handshakes, pairs, then sends CLIENT_SUBMIT frames

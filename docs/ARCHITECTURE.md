@@ -1,4 +1,4 @@
-# CrossScale 架构
+# Upix 架构
 
 > 跨平台分布式图像超分辨率系统。核心推理与分布式协议用 C++ 共享于 `share/`，
 > 对外暴露两条入口——PC 端 CLI（`cli/`）与 Android 应用（`apps/`），通过局域网
@@ -33,12 +33,12 @@
 | 目录 | 角色 | 构建 | 标准 |
 |------|------|------|------|
 | `share/` | 共享 C++ 核心：推理引擎、tile 处理、分布式协议、serve 守护进程（daemon 命令）、网络/工具、perf 框架 | xmake 静态库（PC）/ CMake 直接编译（Android） | C++23 (PC), C++17 (JNI) |
-| `cli/` | PC 命令行入口，已模块化（`main.cpp` 仅 39 行薄入口 + `cli_app.cpp` 命令树 + 9 个 `cmd_*.cpp`） | xmake → `crossscale-cli` | C++23 |
+| `cli/` | PC 命令行入口，已模块化（`main.cpp` 仅 39 行薄入口 + `cli_app.cpp` 命令树 + 9 个 `cmd_*.cpp`） | xmake → `upix-cli` | C++23 |
 | `apps/` | Android 应用（Jetpack Compose + MVVM） | Gradle + CMake/NDK | Kotlin + C++17 JNI |
 | `models/` | ncnn 模型仓库（`.param` + `.bin`） | 运行时扫描 | — |
 | `docs/`、`scripts/` | 文档与运维脚本 | — | — |
 
-**核心设计原则：源码级共享。** `share/` 不是预编译库给 Android 用，而是其 `.cpp` 文件被 Android 的 CMake **glob 自动收集**编译进 `libcrossscale-native.so`，与 PC 端代码完全一致，保证两端协议、调度、引擎逻辑强一致。唯一平台差异是 ncnn 引擎可插拔（见 §2.7）。
+**核心设计原则：源码级共享。** `share/` 不是预编译库给 Android 用，而是其 `.cpp` 文件被 Android 的 CMake **glob 自动收集**编译进 `libupix-native.so`，与 PC 端代码完全一致，保证两端协议、调度、引擎逻辑强一致。唯一平台差异是 ncnn 引擎可插拔（见 §2.7）。
 
 **构建已统一**：`share/xmake.lua`（PC）与 `apps/app/src/main/cpp/CMakeLists.txt`（Android）均用 glob 自动收集 share 源文件，新增 `.cpp` 无需手动同步两处列表。
 
@@ -77,7 +77,7 @@
 **关键实现细节**：
 - GPU 优先初始化，Vulkan 失败回退 CPU；GPU 实例创建时枚举所有 GPU 打分选最优
 - HWC↔CHW 转换全部在 GPU 上用自写 Vulkan compute shader 完成，避免 CPU↔GPU 往返
-- fp16 默认开启；驱动 bug（Adreno/Mali NaN、全零输出）时用 `CROSSSCALE_GPU_DISABLE_FP16=1` 关闭保精度
+- fp16 默认开启；驱动 bug（Adreno/Mali NaN、全零输出）时用 `UPIX_GPU_DISABLE_FP16=1` 关闭保精度
 - 全局互斥锁串行化 Vulkan 实例/模型加载（ncnn 的 Vulkan 状态是进程级单例）
 - GPU tile 流水线最高档 `process_tiles_gpu_u8_queue`：整图 u8 上传一次，在 GPU 上 crop + 推理 + 量化 + 拼回
 
@@ -105,7 +105,7 @@
 
 ### 2.7 Android 可插拔引擎 —— `ncnn_engine_stub_android.cpp`
 
-Android 端通过 CMake 开关 `CROSSSCALE_USE_NCNN` 决定：ON 编译真实 `share/core/ncnn_engine.cpp`（需 jniLibs 有 `libncnn.a`）；OFF 编译 stub（只做最近邻上采样，让代码能编通走链路）。
+Android 端通过 CMake 开关 `UPIX_USE_NCNN` 决定：ON 编译真实 `share/core/ncnn_engine.cpp`（需 jniLibs 有 `libncnn.a`）；OFF 编译 stub（只做最近邻上采样，让代码能编通走链路）。
 
 ### 2.8 配置 —— `config.{hpp,cpp}`
 
@@ -152,7 +152,7 @@ auto_tile_size=true 时：
 
 **Worker**（`worker.{hpp,cpp}`，工作端）：连到 coordinator，认证，**握手时本地 benchmark 测速并上报**，接收 tile 任务、用 Engine 推理、回传结果，周期心跳（5s）。
 
-**Client**：无独立 CLI 子命令。分布式提交由 Android app 通过 JNI 发起（`nativeProcessImageDistributed` 用 `crossscale::TCPSocket` + `Protocol`）。原 CLI `client` 子命令（一次性 raw TCP 提交）已删除。
+**Client**：无独立 CLI 子命令。分布式提交由 Android app 通过 JNI 发起（`nativeProcessImageDistributed` 用 `upix::TCPSocket` + `Protocol`）。原 CLI `client` 子命令（一次性 raw TCP 提交）已删除。
 
 ### 3.3 权重调度 —— `scheduler.{hpp,cpp}`
 
@@ -167,7 +167,7 @@ auto_tile_size=true 时：
 | 模块 | 职责 |
 |------|------|
 | `network.{hpp,cpp}` | POSIX socket 薄封装（`TCPSocket`/`TCPServer`）+ `crc32` + 本地 IP/auth-key 生成 |
-| `mdns.{hpp,cpp}` | 局域网服务发现。`MDNSBroadcaster` 用 avahi-publish-service 发 `_crossscale._tcp`（PC 服务端广播） |
+| `mdns.{hpp,cpp}` | 局域网服务发现。`MDNSBroadcaster` 用 avahi-publish-service 发 `_upix._tcp`（PC 服务端广播） |
 | `crypto.{hpp,cpp}` | `sha256_hex` / `generate_uuid`，用于 task_id/device_id 生成与 mDNS key hash |
 | `unix_socket.{hpp,cpp}` | Unix Domain Socket（daemon 用，Linux/macOS） |
 
@@ -199,9 +199,9 @@ auto_tile_size=true 时：
 
 ## 4. daemon 守护进程（`share/core/serve/`）
 
-`crossscale daemon` 是**本地常驻守护进程**，持有一份已初始化+已加载模型的 ncnn 引擎（"热引擎"），通过 Unix domain socket 接受 `crossscale process` 单图请求并回传超分结果。目的是**把单图调用的 ~490ms 固定开销（Vulkan init + model load）摊薄到零**，单图从 ~0.85s 降到 ~0.12s（~4×，小图最高 ~15×）。
+`upix daemon` 是**本地常驻守护进程**，持有一份已初始化+已加载模型的 ncnn 引擎（"热引擎"），通过 Unix domain socket 接受 `upix process` 单图请求并回传超分结果。目的是**把单图调用的 ~490ms 固定开销（Vulkan init + model load）摊薄到零**，单图从 ~0.85s 降到 ~0.12s（~4×，小图最高 ~15×）。
 
-daemon 生命周期全自动：`crossscale process` 单图路径发现无 daemon 时自动在后台拉起一个（`--idle-timeout` 默认 600s），空闲超时自动退出，无需手动 `daemon start`。`--no-daemon` 跳过委托与拉起；拉起失败静默回退内联路径（行为与无 daemon 一致）。
+daemon 生命周期全自动：`upix process` 单图路径发现无 daemon 时自动在后台拉起一个（`--idle-timeout` 默认 600s），空闲超时自动退出，无需手动 `daemon start`。`--no-daemon` 跳过委托与拉起；拉起失败静默回退内联路径（行为与无 daemon 一致）。
 
 **为什么与 coordinator 独立**：两者职责正交。daemon 解决"单图固定开销"（无状态，1连接=1请求，持引擎，UnixSocket 本地）；coordinator 解决"多设备任务分配"（有状态，worker 注册/心跳/任务循环，不持引擎，TCP 局域网）。合并会让一个类同时管本地无状态 RPC + 分布式有状态调度，职责膨胀。两者真正共享的是协议帧格式（已复用 `Protocol::serialize`）和 `TileProcessor`（都用 `process_image_u8`）。
 
@@ -237,10 +237,10 @@ main → cmd_process → ModelManager.scan_models() 选模型
 **架构：Jetpack Compose + MVVM + 单 Activity + 手写 DI**。
 
 ```
-com/crossscale/
-├── CrossScaleApplication.kt   持有 AppContainer
+com/upix/
+├── UpixApplication.kt   持有 AppContainer
 ├── MainActivity.kt            唯一 Activity
-├── CrossScaleApp.kt           顶层 Composable + NavHost 宿主
+├── UpixApp.kt           顶层 Composable + NavHost 宿主
 ├── AppContainer.kt            手工 DI（实例化所有 repository）
 ├── ui/        (screens, components, navigation, theme) ← Compose + Material 3
 ├── viewmodel/ (Main / Device / Processing)             ← StateFlow + combine
@@ -251,7 +251,7 @@ com/crossscale/
 
 **ViewModel 层**（3 个，全部 `StateFlow` + `WhileSubscribed`）：`MainViewModel`（模型/输入/输出/开关）、`DeviceViewModel`（mDNS 发现/QR 连接/自动重连）、`ProcessingViewModel`（批处理引擎，含队列去重、checkpoint 断点续传、failed-only 重试、备份恢复）。已从 ProcessingViewModel 抽出 `ProcessingMappers` / `ProcessingUiModels` 及 `ProcessingRunEngine` / `ProcessingQueueController` / `ProcessingRunPlanner`。
 
-**关键事实**：**Android 端的真正网络通信在 C++ JNI 层完成**（`jni_bridge.cpp` 的 `nativeProcessImageDistributed` 用 `crossscale::TCPSocket` + `Protocol`）。Kotlin `network/` 包只做发现（`MDNSDiscovery` 用 Android NsdManager）和封装（`CoordinatorClient` 调 JNI）。
+**关键事实**：**Android 端的真正网络通信在 C++ JNI 层完成**（`jni_bridge.cpp` 的 `nativeProcessImageDistributed` 用 `upix::TCPSocket` + `Protocol`）。Kotlin `network/` 包只做发现（`MDNSDiscovery` 用 Android NsdManager）和封装（`CoordinatorClient` 调 JNI）。
 
 **JNI 桥**（`apps/app/src/main/cpp/jni_bridge.cpp`）暴露两类 native 方法：`NCNNEngine`（单例 object，本地推理 + 分布式）、`NativeWorker`（实例类，长驻 worker 会话）。
 

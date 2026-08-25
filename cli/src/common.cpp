@@ -22,7 +22,7 @@
 // ── Global run-state ────────────────────────────────────────────────────────
 std::atomic<bool> g_running{true};
 std::atomic<bool> g_cancel_requested{false};
-crossscale::ServeDaemon* g_daemon = nullptr;
+upix::ServeDaemon* g_daemon = nullptr;
 
 // ── Signal handlers ─────────────────────────────────────────────────────────
 void signal_handler(int) {
@@ -38,20 +38,20 @@ void daemon_signal_handler(int) {
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 // Models directory resolution: `--models-dir` flag (bound by cli_app.cpp) >
-// $CROSSSCALE_MODELS_DIR > the per-user store $XDG_DATA_HOME/crossscale/models
-// (~/.local/share/crossscale/models by default). A fixed user-level location,
+// $UPIX_MODELS_DIR > the per-user store $XDG_DATA_HOME/upix/models
+// (~/.local/share/upix/models by default). A fixed user-level location,
 // so the CLI finds its models from any cwd and never scatters a ./models
 // directory into whatever folder it was launched from.
 auto default_models_dir() -> std::string {
-    if (const char* env = std::getenv("CROSSSCALE_MODELS_DIR");
+    if (const char* env = std::getenv("UPIX_MODELS_DIR");
         env && *env) {
         return env;
     }
     if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg) {
-        return std::format("{}/crossscale/models", xdg);
+        return std::format("{}/upix/models", xdg);
     }
     if (const char* home = std::getenv("HOME"); home && *home) {
-        return std::format("{}/.local/share/crossscale/models", home);
+        return std::format("{}/.local/share/upix/models", home);
     }
     return "./models";  // no HOME/XDG at all (degenerate): keep something usable
 }
@@ -69,7 +69,7 @@ auto infer_format_from_extension(const std::string& path) -> std::string {
     return "";
 }
 
-void print_progress_stderr(const crossscale::ProcessingProgress& prog,
+void print_progress_stderr(const upix::ProcessingProgress& prog,
                            std::chrono::steady_clock::time_point start_time) {
     if (prog.total_tiles <= 0) return;
 
@@ -97,14 +97,14 @@ void print_progress_stderr(const crossscale::ProcessingProgress& prog,
 }
 
 // Internal helper: convert an image's channel count (1/2/3/4) to a target count.
-static auto convert_image_channels(const crossscale::Image& source, int target_channels)
-    -> std::optional<crossscale::Image> {
+static auto convert_image_channels(const upix::Image& source, int target_channels)
+    -> std::optional<upix::Image> {
     const int src_channels = source.channels();
     if (src_channels < 1 || src_channels > 4 || target_channels < 1 || target_channels > 4) {
         return std::nullopt;
     }
 
-    crossscale::Image converted(source.width(), source.height(), target_channels);
+    upix::Image converted(source.width(), source.height(), target_channels);
     const size_t pixel_count = static_cast<size_t>(source.width()) * source.height();
     const uint8_t* src = source.data();
     uint8_t* dst = converted.data();
@@ -174,7 +174,7 @@ static auto convert_image_channels(const crossscale::Image& source, int target_c
     return converted;
 }
 
-// Default output location when the user gave none (`crossscale img.png`):
+// Default output location when the user gave none (`upix img.png`):
 // sibling of the input, tagged with the model that produced it so results from
 // different models coexist — `img.png` → `img_<model>.png` (input extension
 // kept when it maps to a known output format, else .png), and a directory
@@ -184,7 +184,7 @@ auto derive_default_output(const std::string& input_path,
                            bool input_is_dir) -> std::string {
     namespace fs = std::filesystem;
     fs::path in(input_path);
-    const std::string tag = "_" + crossscale::sanitize_model_for_filename(model_name);
+    const std::string tag = "_" + upix::sanitize_model_for_filename(model_name);
 
     if (input_is_dir) {
         // filename() of "shots/" is "shots"; of "/" is "" (rejected upstream).
@@ -199,7 +199,7 @@ auto derive_default_output(const std::string& input_path,
     return out.string();
 }
 
-auto normalize_channels_for_model(crossscale::Image& image,
+auto normalize_channels_for_model(upix::Image& image,
                                   int expected_channels,
                                   const std::string& image_path) -> bool {
     if (expected_channels <= 0 || image.channels() == expected_channels) {
@@ -260,13 +260,13 @@ auto generate_qr_ascii(const std::string& text) -> std::string {
 }
 
 void print_connection_card(uint16_t port, const std::array<uint8_t, 32>& identity_pubkey) {
-    auto addresses = crossscale::network_utils::get_local_addresses();
+    auto addresses = upix::network_utils::get_local_addresses();
     if (addresses.empty()) {
         addresses.push_back("127.0.0.1");
     }
 
-    const std::string fp = crossscale::fingerprint(identity_pubkey);
-    const std::string pk_b64 = crossscale::base64_encode(identity_pubkey.data(), 32);
+    const std::string fp = upix::fingerprint(identity_pubkey);
+    const std::string pk_b64 = upix::base64_encode(identity_pubkey.data(), 32);
 
     std::println("\nConnection Information:");
     for (size_t i = 0; i < addresses.size(); ++i) {
@@ -281,7 +281,7 @@ void print_connection_card(uint16_t port, const std::array<uint8_t, 32>& identit
     // v2 JSON: carries fingerprint + identity pubkey. Android rejects v1.
     const std::string json = std::format(
         "{{\"v\":2,\"ip\":\"{}\",\"port\":{},\"fp\":\"{}\""
-        ",\"pk\":\"{}\",\"name\":\"CrossScale-Server\"}}",
+        ",\"pk\":\"{}\",\"name\":\"Upix-Server\"}}",
         addresses[0], port, fp, pk_b64);
     std::println("{}", generate_qr_ascii(json));
 }

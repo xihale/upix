@@ -39,12 +39,12 @@
 #include <mach/mach.h>
 #endif
 
-namespace crossscale {
+namespace upix {
 
 #if NCNN_VULKAN
 namespace {
 
-// g_vulkan_init_mutex moved to crossscale::detail (defined in
+// g_vulkan_init_mutex moved to upix::detail (defined in
 // ncnn_gpu_init.cpp); declared extern in ncnn_engine_impl.hpp.
 std::mutex g_vulkan_model_load_mutex;
 
@@ -117,9 +117,9 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
         // Set Vulkan device if using GPU
 #if NCNN_VULKAN
         // fp16 is a ~2x throughput win on most mobile/integrated GPUs and the
-        // quality impact is negligible for SR. Opt-out via CROSSSCALE_GPU_DISABLE_FP16=1.
+        // quality impact is negligible for SR. Opt-out via UPIX_GPU_DISABLE_FP16=1.
         static const bool disable_gpu_fp16 = []() {
-            const char* env_value = std::getenv("CROSSSCALE_GPU_DISABLE_FP16");
+            const char* env_value = std::getenv("UPIX_GPU_DISABLE_FP16");
             return env_value != nullptr && std::string(env_value) == "1";
         }();
         // int8 storage enables the zero-copy u8 tile queue pipeline (no CPU float
@@ -130,7 +130,7 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
         // quantization rounding (measured PSNR ~49 dB, mean abs diff 0.55/255 —
         // visually lossless, but not bit-identical).
         static const bool disable_gpu_int8 = []() {
-            const char* env_value = std::getenv("CROSSSCALE_GPU_DISABLE_INT8");
+            const char* env_value = std::getenv("UPIX_GPU_DISABLE_INT8");
             return env_value != nullptr && std::string(env_value) == "1";
         }();
         std::unique_lock<std::mutex> gpu_model_load_lock;
@@ -143,7 +143,7 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             const auto& gpu_info = vkdev_->info;
 
             static const bool force_fp16_arithmetic = []() {
-                const char* v = std::getenv("CROSSSCALE_GPU_ENABLE_FP16_ARITH");
+                const char* v = std::getenv("UPIX_GPU_ENABLE_FP16_ARITH");
                 return v != nullptr && std::string(v) == "1";
             }();
 
@@ -161,11 +161,11 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             };
 
             if (disable_gpu_fp16) {
-                fallback_cpu("CROSSSCALE_GPU_DISABLE_FP16=1: frozen SPIR-V pack requires fp16 storage");
+                fallback_cpu("UPIX_GPU_DISABLE_FP16=1: frozen SPIR-V pack requires fp16 storage");
             } else {
                 if (disable_gpu_int8) {
                     LOG_WARNING("Engine",
-                                "CROSSSCALE_GPU_DISABLE_INT8=1 ignored: frozen SPIR-V pack includes int8 storage");
+                                "UPIX_GPU_DISABLE_INT8=1 ignored: frozen SPIR-V pack includes int8 storage");
                 }
                 const auto caps = gpu_feature_caps(gpu_info);
                 const auto profile = select_profile(caps, force_fp16_arithmetic);
@@ -265,7 +265,7 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
                 if (net_->opt.use_int8_storage) {
                     LOG_WARNING("Engine", "GPU u8 pre/post layout pipeline disabled, fallback to CPU u8 conversion");
                 } else {
-                    LOG_INFO("Engine", "GPU u8 pre/post layout pipeline disabled (int8_storage off; unset CROSSSCALE_GPU_DISABLE_INT8 to enable the zero-copy u8 queue)");
+                    LOG_INFO("Engine", "GPU u8 pre/post layout pipeline disabled (int8_storage off; unset UPIX_GPU_DISABLE_INT8 to enable the zero-copy u8 queue)");
                 }
                 LOG_WARNING("Engine", "GPU u8 pipeline readiness details: {}",
                             format_vulkan_runtime_snapshot("load_model_gpu_u8_not_ready"));
@@ -477,7 +477,7 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
 
 namespace {
 
-// TileConfig defaults + CROSSSCALE_*_TILE_* env overrides, shared by the u8
+// TileConfig defaults + UPIX_*_TILE_* env overrides, shared by the u8
 // GPU queue pipeline, the float Vulkan fallback, and the CPU path. The three
 // call sites differ in defaults, clamp bounds, and which env vars they honor
 // (the CPU path reads only the tile size), so those are passed in. A null
@@ -577,7 +577,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
 
                 TileConfig tile_config = tile_config_from_env(
                     get_recommended_tile_size(), 16, 4,
-                    "CROSSSCALE_GPU_TILE_SIZE", "CROSSSCALE_GPU_TILE_OVERLAP", "CROSSSCALE_GPU_TILE_BATCH",
+                    "UPIX_GPU_TILE_SIZE", "UPIX_GPU_TILE_OVERLAP", "UPIX_GPU_TILE_BATCH",
                     64, 2048, 32);
 
                 std::vector<TileRegion> regions;
@@ -662,7 +662,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
 
                 TileConfig tile_config = tile_config_from_env(
                     256, 16, 2,
-                    "CROSSSCALE_GPU_TILE_SIZE", "CROSSSCALE_GPU_TILE_OVERLAP", "CROSSSCALE_GPU_TILE_BATCH",
+                    "UPIX_GPU_TILE_SIZE", "UPIX_GPU_TILE_OVERLAP", "UPIX_GPU_TILE_BATCH",
                     64, 1024, 8);
 
                 std::vector<TileRegion> regions;
@@ -787,7 +787,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
 
         TileConfig tile_config = tile_config_from_env(
             get_recommended_tile_size(), 16, 1,
-            "CROSSSCALE_CPU_TILE_SIZE", nullptr, nullptr,
+            "UPIX_CPU_TILE_SIZE", nullptr, nullptr,
             32, 1024, 1);
 
         TileProcessor tp;
@@ -1032,7 +1032,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
         std::vector<float> input(static_cast<size_t>(test_tile_size) * test_tile_size * 3, 0.5f);
         std::vector<float> output(static_cast<size_t>(test_tile_size) * test_tile_size * 3 * scale_factor_ * scale_factor_);
         
-        auto result = crossscale::benchmark("tile_process", [&]() {
+        auto result = upix::benchmark("tile_process", [&]() {
             std::atomic<bool> cancel = false;
             // fire-and-forget: benchmark measures timing only; a failure here
             // means the model is misconfigured and benchmark() returns 0.0 below.
@@ -1182,7 +1182,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
 #if NCNN_VULKAN
         // Testing hook: pretend the device has less VRAM than it does, so the
         // OOM preflight / fallback ladder can be exercised on a big machine.
-        if (const char* forced = std::getenv("CROSSSCALE_GPU_FORCE_BUDGET_MB")) {
+        if (const char* forced = std::getenv("UPIX_GPU_FORCE_BUDGET_MB")) {
             try { return static_cast<size_t>(std::max(0, std::stoi(forced))); } catch (...) {}
         }
         if (current_device_ == DeviceType::GPU_VULKAN && vkdev_ != nullptr) {
@@ -1196,4 +1196,4 @@ std::unique_ptr<Engine> create_ncnn_engine() {
     return std::make_unique<NCNNEngineImpl>();
 }
 
-} // namespace crossscale
+} // namespace upix

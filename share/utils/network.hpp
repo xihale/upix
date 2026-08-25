@@ -10,7 +10,7 @@
 #include "network_error.hpp"  // NetworkError
 #include "stream_socket.hpp"
 
-namespace crossscale {
+namespace upix {
 
 // Maximum payload size for network messages (100 MB).
 inline constexpr uint32_t MAX_NETWORK_PAYLOAD = 100 * 1024 * 1024;
@@ -35,6 +35,14 @@ public:
     // Connect to a server
     auto connect(const std::string& host, uint16_t port)
         -> expected<void, NetworkError>;
+
+    // Connect with a bounded timeout: non-blocking connect + poll, then
+    // restore blocking mode on success. Host resolution goes through
+    // getaddrinfo (AF_UNSPEC + AI_ADDRCONFIG), so IPv6 literals and
+    // hostnames work, unlike the IPv4-only connect() above; every candidate
+    // address is tried until the shared deadline. Returns false on
+    // timeout/failure (no error detail — callers log host:port).
+    bool connect_with_timeout(const std::string& host, uint16_t port, int timeout_ms);
 
     // Set timeout (milliseconds)
     void set_timeout(int timeout_ms);
@@ -81,4 +89,4 @@ namespace network_utils {
     uint32_t crc32(const void* data, size_t size);
 }
 
-} // namespace crossscale
+} // namespace upix

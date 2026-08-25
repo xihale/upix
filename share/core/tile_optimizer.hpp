@@ -10,7 +10,7 @@
 #include <string>
 #include <unordered_map>
 
-namespace crossscale {
+namespace upix {
 
 // Member-function definitions below are `inline` because this header is
 // included by multiple TUs in the CLI binary. `inline` only relaxes the
@@ -288,4 +288,4 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
     return best_tile;
 }
 
-} // namespace crossscale
+} // namespace upix

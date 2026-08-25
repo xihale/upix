@@ -7,7 +7,7 @@
 #include <string>
 #include <string_view>
 
-namespace crossscale::perf {
+namespace upix::perf {
 
 // Overwrite-safe line writer. Writes to a path (or stdout if empty).
 class Reporter {
@@ -35,4 +35,4 @@ private:
     std::mutex write_mutex_;  // serializes concurrent emit_* calls
 };
 
-} // namespace crossscale::perf
+} // namespace upix::perf

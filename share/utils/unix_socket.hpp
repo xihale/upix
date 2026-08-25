@@ -6,7 +6,7 @@
 #include <mutex>
 #include "stream_socket.hpp"  // StreamSocket + NetworkError (via network_error.hpp)
 
-namespace crossscale {
+namespace upix {
 
 // AF_UNIX stream socket — local-only, no network stack, filesystem-permission
 // scoped. Mirrors the TCPSocket/TCPServer surface so callers can swap between
@@ -65,4 +65,4 @@ private:
     std::string path_;
 };
 
-} // namespace crossscale
+} // namespace upix

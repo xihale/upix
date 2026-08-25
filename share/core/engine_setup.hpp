@@ -8,7 +8,7 @@
 #include "core/model_manager.hpp"
 #include "utils/expected.hpp"
 
-namespace crossscale {
+namespace upix {
 
 // Result of the create→initialize→scan_models→select→load_model recipe.
 // `selected` points into `models`' scanned model vector — valid as long as
@@ -55,4 +55,4 @@ auto setup_engine(
     std::string_view model_name     // empty → first available
 ) -> expected<EngineSetupResult, std::string>;
 
-} // namespace crossscale
+} // namespace upix

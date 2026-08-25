@@ -4,7 +4,7 @@
 #include <cstring>
 #include <stdexcept>
 
-namespace crossscale {
+namespace upix {
 
 void EncryptedSession::activate(const SessionKey& key) {
     key_ = key;
@@ -70,4 +70,4 @@ auto EncryptedSession::open(const uint8_t* wire, size_t wire_len) const
     return std::make_pair(real_hdr, std::move(*opened));
 }
 
-} // namespace crossscale
+} // namespace upix
