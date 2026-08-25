@@ -7,10 +7,9 @@
 #include <cctype>
 #include <cstring>
 #include <filesystem>
+#include <format>
 #include <fstream>
-#include <iomanip>
 #include <memory>
-#include <sstream>
 
 #include <curl/curl.h>
 #include <zip.h>
@@ -69,9 +68,7 @@ auto http_get(const std::string& url, std::string& body, std::string& error,
     curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &status);
     // HTTP must return 200; other protocols (file://) report 0 and rely on rc.
     if (status != 200 && status != 0) {
-        std::ostringstream oss;
-        oss << "HTTP " << status << " for " << url;
-        error = oss.str();
+        error = std::format("HTTP {} for {}", status, url);
         return false;
     }
     return true;
@@ -96,7 +93,7 @@ auto http_download_to_file(const std::string& url, const fs::path& dest,
 
     std::ofstream out(dest, std::ios::binary | std::ios::trunc);
     if (!out) {
-        error = "cannot open " + dest.string() + " for writing";
+        error = std::format("cannot open {} for writing", dest.string());
         return false;
     }
 
@@ -131,9 +128,7 @@ auto http_download_to_file(const std::string& url, const fs::path& dest,
     curl_easy_getinfo(curl.get(), CURLINFO_RESPONSE_CODE, &status);
     // HTTP must return 200; other protocols (file://) report 0 and rely on rc.
     if (status != 200 && status != 0) {
-        std::ostringstream oss;
-        oss << "HTTP " << status << " for " << url;
-        error = oss.str();
+        error = std::format("HTTP {} for {}", status, url);
         return false;
     }
     return true;
@@ -142,7 +137,7 @@ auto http_download_to_file(const std::string& url, const fs::path& dest,
 auto sha256_file(const fs::path& path, std::string& error) -> std::string {
     std::ifstream in(path, std::ios::binary);
     if (!in) {
-        error = "cannot open " + path.string();
+        error = std::format("cannot open {}", path.string());
         return {};
     }
     struct Free { void operator()(EVP_MD_CTX* p) const { EVP_MD_CTX_free(p); } };
@@ -161,10 +156,12 @@ auto sha256_file(const fs::path& path, std::string& error) -> std::string {
     unsigned int len = 0;
     EVP_DigestFinal_ex(ctx.get(), digest, &len);
 
-    std::ostringstream oss;
-    oss << std::hex << std::setfill('0');
-    for (unsigned int i = 0; i < len; ++i) oss << std::setw(2) << static_cast<int>(digest[i]);
-    return oss.str();
+    std::string hex;
+    hex.reserve(len * 2);
+    for (unsigned int i = 0; i < len; ++i) {
+        hex += std::format("{:02x}", digest[i]);
+    }
+    return hex;
 }
 
 // ── zip extraction (libzip) ─────────────────────────────────────────────────
@@ -199,12 +196,12 @@ auto extract_zip(const fs::path& zip_path, const fs::path& out_dir,
         struct FileClose { void operator()(zip_file_t* p) const { zip_fclose(p); } };
         std::unique_ptr<zip_file_t, FileClose> entry{zip_fopen_index(zip.get(), i, 0)};
         if (!entry) {
-            error = "cannot read zip entry '" + std::string(name) + "'";
+            error = std::format("cannot read zip entry '{}'", name);
             return false;
         }
         std::ofstream out(dest, std::ios::binary | std::ios::trunc);
         if (!out) {
-            error = "cannot write " + dest.string();
+            error = std::format("cannot write {}", dest.string());
             return false;
         }
         char buf[64 * 1024];
@@ -214,7 +211,7 @@ auto extract_zip(const fs::path& zip_path, const fs::path& out_dir,
         }
         out.close();
         if (!out.good()) {
-            error = "short write for " + dest.string();
+            error = std::format("short write for {}", dest.string());
             return false;
         }
         written.push_back(dest);
@@ -257,8 +254,9 @@ auto fetch_remote_models(const std::string& repo, std::string& error)
         return std::nullopt;
     }
     if (parsed.version != 1) {
-        error = "unsupported manifest version " + std::to_string(parsed.version) +
-                " (this build understands version 1)";
+        error = std::format(
+            "unsupported manifest version {} (this build understands version 1)",
+            parsed.version);
         return std::nullopt;
     }
 
@@ -280,7 +278,8 @@ auto download_model(const RemoteModel& model,
     fs::path dir(models_dir);
     fs::create_directories(dir, ec);
     if (ec) {
-        res.message = "cannot create models directory " + dir.string() + ": " + ec.message();
+        res.message = std::format("cannot create models directory {}: {}",
+                                  dir.string(), ec.message());
         return res;
     }
 
@@ -300,8 +299,9 @@ auto download_model(const RemoteModel& model,
     std::string hash = sha256_file(zip_path, error);
     if (!error.empty() || hash != expected) {
         fs::remove(zip_path, ec);
-        res.message = error.empty() ? ("sha256 mismatch: expected " + expected + ", got " + hash)
-                                    : error;
+        res.message = error.empty()
+            ? std::format("sha256 mismatch: expected {}, got {}", expected, hash)
+            : error;
         return res;
     }
 
@@ -315,8 +315,9 @@ auto download_model(const RemoteModel& model,
     fs::remove(zip_path, ec);
     if (written.size() != 2) {
         for (const auto& p : written) fs::remove(p, ec);
-        res.message = "zip did not contain exactly one .param + one .bin (got " +
-                      std::to_string(written.size()) + " files)";
+        res.message = std::format(
+            "zip did not contain exactly one .param + one .bin (got {} files)",
+            written.size());
         return res;
     }
     for (const auto& p : written) {

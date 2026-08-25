@@ -8,9 +8,9 @@
 #include <atomic>
 #include <chrono>
 #include <csignal>
-#include <iostream>
 #include <memory>
 #include <optional>
+#include <print>
 #include <string>
 #include <thread>
 
@@ -32,8 +32,8 @@ int cmd_host(const args::Host& a) {
     // ── start ───────────────────────────────────────────────────────────────
     auto identity = crossscale::IdentityKey::load_or_create(
         crossscale::default_identity_path());
-    LOG_INFO("Host", "PC identity fingerprint: " +
-              crossscale::fingerprint(identity.public_key()));
+    LOG_INFO("Host", "PC identity fingerprint: {}",
+             crossscale::fingerprint(identity.public_key()));
 
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
@@ -48,12 +48,12 @@ int cmd_host(const args::Host& a) {
         if (previous == pct) {
             return;
         }
-        LOG_INFO("Host", "Task progress: " + std::to_string(pct) + "%");
+        LOG_INFO("Host", "Task progress: {}%", pct);
     };
 
     auto start_result = coordinator->start(a.port, identity);
     if (!start_result.has_value()) {
-        LOG_ERROR("Host", "Failed to start coordinator: " + start_result.error().message);
+        LOG_ERROR("Host", "Failed to start coordinator: {}", start_result.error().message);
         return 1;
     }
 
@@ -69,28 +69,30 @@ int cmd_host(const args::Host& a) {
             bool approved = false;
             if (a.auto_approve) {
                 approved = true;
-                LOG_INFO("Host", "自动批准配对(--auto-approve): " + req->device_name +
-                         " (" + req->fingerprint + ")");
+                LOG_INFO("Host", "自动批准配对(--auto-approve): {} ({})",
+                         req->device_name, req->fingerprint);
             } else {
-                std::cout << "\n┌─ 配对请求 ───────────────────────────────────────\n"
-                          << "│ 设备: " << req->device_name << "\n"
-                          << "│ 指纹: " << req->fingerprint << "\n"
-                          << "\n└──────────────────────────────────────────────────\n"
-                          << "允许此设备连接? [y/n]: " << std::flush;
+                std::print("\n┌─ 配对请求 ───────────────────────────────────────\n"
+                           "│ 设备: {}\n"
+                           "│ 指纹: {}\n"
+                           "\n└──────────────────────────────────────────────────\n"
+                           "允许此设备连接? [y/n]: ",
+                           req->device_name, req->fingerprint);
+                std::fflush(stdout);
                 std::string line;
                 if (std::getline(std::cin, line)) {
                     approved = (line == "y" || line == "Y" || line == "yes" || line == "YES");
                 } else {
                     // stdin EOF(例如后台运行) — 默认拒绝,避免无限等待。
-                    std::cout << "(stdin 不可读,默认拒绝)\n";
+                    std::println("(stdin 不可读,默认拒绝)");
                 }
             }
             coordinator->resolve_approval(req->id, approved);
             if (approved) {
-                LOG_INFO("Host", "已批准配对: " + req->device_name +
-                         " (" + req->fingerprint + ") — 已加入 TrustStore");
+                LOG_INFO("Host", "已批准配对: {} ({}) — 已加入 TrustStore",
+                         req->device_name, req->fingerprint);
             } else {
-                LOG_WARNING("Host", "已拒绝配对: " + req->device_name);
+                LOG_WARNING("Host", "已拒绝配对: {}", req->device_name);
             }
         }
 

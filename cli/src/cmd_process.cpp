@@ -23,6 +23,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <print>
 #include <string>
 #include <thread>
 #include <vector>
@@ -95,7 +96,7 @@ auto spawn_daemon_and_wait(const std::string& sock_path,
                 ::dup2(devnull, STDERR_FILENO);
                 if (devnull > STDERR_FILENO) ::close(devnull);
             }
-            const std::string idle = std::to_string(args::Daemon{}.idle_timeout_s);
+            const std::string idle = std::format("{}", args::Daemon{}.idle_timeout_s);
             std::vector<char> self(4096, '\0');
             ssize_t n = ::readlink("/proc/self/exe", self.data(), self.size() - 1);
             const char* exe = n > 0 ? self.data() : "crossscale";
@@ -143,8 +144,8 @@ int cmd_process(const args::Process& a) {
     std::signal(SIGTERM, signal_handler);
 
     if (a.input_path.empty()) {
-        std::cerr << "crossscale: no input given — try `crossscale <image>` "
-                     "or `crossscale -i <image>`\n";
+        std::println(stderr, "crossscale: no input given — try `crossscale <image>` "
+                             "or `crossscale -i <image>`");
         return 1;
     }
 
@@ -166,7 +167,7 @@ int cmd_process(const args::Process& a) {
 
     // Check if input is a directory for batch processing
     bool is_dir = fs::is_directory(input_path);
-    LOG_INFO("Debug", "Input path: " + input_path + " is_dir: " + std::to_string(is_dir));
+    LOG_INFO("Debug", "Input path: {} is_dir: {:d}", input_path, is_dir);
 
     // ── Daemon delegation (single-file only) ────────────────────────────────
     // If a local daemon is running, send it the image and let the warm engine
@@ -281,7 +282,8 @@ int cmd_process(const args::Process& a) {
                         prog.completed_tiles = static_cast<int>(sp.completed_tiles);
                         print_progress_stderr(prog, delegate_start_time);
                     } else {
-                        std::cerr << "\n" << std::flush;
+                        std::print(stderr, "\n");
+                        std::fflush(stderr);
                         LOG_INFO("Engine", "Inference done, encoding output...");
                     }
                     continue;
@@ -301,7 +303,7 @@ int cmd_process(const args::Process& a) {
             crossscale::ServeResponse resp{};
             std::memcpy(&resp, rhead.data(), sizeof(resp));
             if (!resp.ok) {
-                LOG_ERROR("Engine", "daemon error: " + std::string(resp.error));
+                LOG_ERROR("Engine", "daemon error: {}", std::string(resp.error));
                 return 1;
             }
             const size_t path_len =
@@ -310,9 +312,8 @@ int cmd_process(const args::Process& a) {
             const std::string saved_path(
                 reinterpret_cast<const char*>(rhead.data()) + sizeof(resp), path_len);
 
-            LOG_INFO("Engine", "Output saved (via warm daemon): " + saved_path);
-            LOG_INFO("Engine", "Processing complete: " + std::to_string(resp.width) +
-                               "x" + std::to_string(resp.height));
+            LOG_INFO("Engine", "Output saved (via warm daemon): {}", saved_path);
+            LOG_INFO("Engine", "Processing complete: {}x{}", resp.width, resp.height);
             return 0;
         };
 
@@ -331,23 +332,23 @@ int cmd_process(const args::Process& a) {
                 ? first_model_name(models_dir)
                 : model_name;
             batch.output_path = derive_default_output(input_path, model, true);
-            LOG_INFO("Engine", "Output directory: " + batch.output_path);
+            LOG_INFO("Engine", "Output directory: {}", batch.output_path);
         }
         return run_batch(batch);
     }
 
     // Single file processing continues...
-    LOG_INFO("Engine", "Loading image: " + input_path);
+    LOG_INFO("Engine", "Loading image: {}", input_path);
 
     auto image_result = crossscale::Image::load(input_path);
     if (!image_result.has_value()) {
-        LOG_ERROR("Engine", "Failed to load image: " + image_result.error().message);
+        LOG_ERROR("Engine", "Failed to load image: {}", image_result.error().message);
         return 1;
     }
 
     auto& image = image_result.value();
-    LOG_INFO("Engine", "Image loaded: " + std::to_string(image.width()) + "x" +
-             std::to_string(image.height()) + " (" + std::to_string(image.channels()) + " channels)");
+    LOG_INFO("Engine", "Image loaded: {}x{} ({} channels)",
+             image.width(), image.height(), image.channels());
 
     // Engine init + model load via the shared recipe. ENGINE_DEFAULT mirrors the
     // original `engine->initialize()` (no arg): try GPU, fall back to CPU.
@@ -366,11 +367,12 @@ int cmd_process(const args::Process& a) {
     // keep it alive for the whole function (used again at line ~289 below).
     crossscale::ModelManager manager = std::move(setup->models);
     if (model_name.empty()) {
-        LOG_INFO("Engine", "No model specified, using first available: " + selected_model->name);
+        LOG_INFO("Engine", "No model specified, using first available: {}", selected_model->name);
     }
     std::string model_name_resolved = selected_model->name;
     int model_input_channels = std::max(1, selected_model->input_channels);
-    LOG_INFO("Engine", "Using model: " + model_name_resolved + " (" + std::to_string(selected_model->scale_factor) + "x)");
+    LOG_INFO("Engine", "Using model: {} ({}x)", model_name_resolved,
+             selected_model->scale_factor);
     // Override engine's heuristic scale detection with the authoritative value
     // parsed from the model filename.
     engine->set_scale_factor(selected_model->scale_factor);
@@ -384,12 +386,12 @@ int cmd_process(const args::Process& a) {
     LOG_INFO("Engine", "Model loaded successfully");
 
     int scale = engine->get_scale_factor();
-    LOG_INFO("Engine", "Scale factor: " + std::to_string(scale) + "x");
+    LOG_INFO("Engine", "Scale factor: {}x", scale);
 
     // Auto tile size: use engine's VRAM-aware recommendation if not explicitly set
     if (!tile_size_explicit && !auto_tile) {
         tile_size = engine->get_recommended_tile_size();
-        LOG_INFO("Engine", "Auto-selected tile size: " + std::to_string(tile_size));
+        LOG_INFO("Engine", "Auto-selected tile size: {}", tile_size);
     }
 
     int input_channels_before = image.channels();
@@ -397,11 +399,8 @@ int cmd_process(const args::Process& a) {
         return 1;
     }
     if (image.channels() != input_channels_before) {
-        LOG_INFO(
-            "Engine",
-            "Adjusted input channels: " + std::to_string(input_channels_before) +
-                " -> " + std::to_string(image.channels())
-        );
+        LOG_INFO("Engine", "Adjusted input channels: {} -> {}",
+                 input_channels_before, image.channels());
     }
 
     // 加载配置文件（如果指定）
@@ -410,9 +409,9 @@ int cmd_process(const args::Process& a) {
         auto cfg_result = crossscale::ProcessingConfig::load(config_file);
         if (cfg_result.has_value()) {
             config = cfg_result.value();
-            LOG_INFO("Config", "Loaded config from " + config_file);
+            LOG_INFO("Config", "Loaded config from {}", config_file);
         } else {
-            LOG_WARNING("Config", "Failed to load config: " + cfg_result.error());
+            LOG_WARNING("Config", "Failed to load config: {}", cfg_result.error());
         }
     }
 
@@ -432,7 +431,7 @@ int cmd_process(const args::Process& a) {
         std::string inferred = infer_format_from_extension(eff_output);
         if (!inferred.empty()) {
             config.output_format = crossscale::normalize_output_format(inferred);
-            LOG_INFO("Config", "Auto-detected output format: " + inferred);
+            LOG_INFO("Config", "Auto-detected output format: {}", inferred);
         }
     }
 
@@ -453,7 +452,7 @@ int cmd_process(const args::Process& a) {
         );
         config.auto_tile_size = true;
 
-        LOG_INFO("Config", "Optimal tile size determined: " + std::to_string(config.tile_size));
+        LOG_INFO("Config", "Optimal tile size determined: {}", config.tile_size);
     }
 
     // 验证配置
@@ -461,7 +460,7 @@ int cmd_process(const args::Process& a) {
     if (!errors.empty()) {
         LOG_ERROR("Config", "Configuration errors:");
         for (const auto& err : errors) {
-            LOG_ERROR("Config", "  - " + err);
+            LOG_ERROR("Config", "  - {}", err);
         }
         return 1;
     }
@@ -477,9 +476,8 @@ int cmd_process(const args::Process& a) {
     int out_height = image.height() * scale;
     crossscale::Image output_image(out_width, out_height, image.channels());
 
-    LOG_INFO("Engine", "Processing image with tile_size=" + std::to_string(config.tile_size) +
-            " overlap=" + std::to_string(config.tile_overlap) +
-            " batch_size=" + std::to_string(batch_size) + "...");
+    LOG_INFO("Engine", "Processing image with tile_size={} overlap={} batch_size={}...",
+             config.tile_size, config.tile_overlap, batch_size);
 
     std::atomic<bool> cancel_flag{false};
     bool enable_progress_log_single = false;
@@ -499,9 +497,8 @@ int cmd_process(const args::Process& a) {
                 float pct = progress.percentage();
                 if (progress.completed_tiles % 10 == 0 ||
                     progress.completed_tiles == progress.total_tiles) {
-                    LOG_INFO("Engine", "Progress: " + std::to_string(progress.completed_tiles) +
-                            "/" + std::to_string(progress.total_tiles) +
-                            " tiles (" + std::to_string(pct) + "%)");
+                    LOG_INFO("Engine", "Progress: {}/{} tiles ({:.0f}%)",
+                             progress.completed_tiles, progress.total_tiles, pct);
                 }
             }
         },
@@ -509,7 +506,7 @@ int cmd_process(const args::Process& a) {
     );
 
     if (!process_result.has_value()) {
-        LOG_ERROR("Engine", "Processing failed: " + process_result.error().message);
+        LOG_ERROR("Engine", "Processing failed: {}", process_result.error().message);
         return 1;
     }
 
@@ -517,11 +514,11 @@ int cmd_process(const args::Process& a) {
     LOG_INFO("Engine", "Inference done, encoding and saving output...");
     auto save_result = output_image.save(final_output_path, config.output_quality);
     if (!save_result.has_value()) {
-        LOG_ERROR("Engine", "Failed to save output: " + save_result.error().message);
+        LOG_ERROR("Engine", "Failed to save output: {}", save_result.error().message);
         return 1;
     }
 
-    LOG_INFO("Engine", "Output saved: " + final_output_path.string());
-    LOG_INFO("Engine", "Processing complete: " + std::to_string(out_width) + "x" + std::to_string(out_height));
+    LOG_INFO("Engine", "Output saved: {}", final_output_path.string());
+    LOG_INFO("Engine", "Processing complete: {}x{}", out_width, out_height);
     return 0;
 }

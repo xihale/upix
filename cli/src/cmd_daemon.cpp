@@ -7,8 +7,9 @@
 // stop:   read the daemon's pid file and SIGTERM it.
 // status: read-only report — pid file, liveness, socket reachability.
 #include <csignal>
-#include <fstream>
 #include <filesystem>
+#include <fstream>
+#include <print>
 #include <string>
 
 #include <unistd.h>
@@ -29,8 +30,8 @@ int cmd_daemon(const args::Daemon& a) {
         socket_path = crossscale::default_serve_socket_path();
     }
     if (socket_path.empty()) {
-        std::cerr << "daemon: no default socket path available "
-                     "(set XDG_CACHE_HOME or HOME)\n";
+        std::println(stderr, "daemon: no default socket path available "
+                             "(set XDG_CACHE_HOME or HOME)");
         return 1;
     }
 
@@ -42,18 +43,18 @@ int cmd_daemon(const args::Daemon& a) {
         // socket, and the start path unlinks the pid file.
         std::ifstream pf(pid_path);
         if (!pf) {
-            std::cerr << "stop: daemon not running (no pid file at " << pid_path << ")\n";
+            std::println(stderr, "stop: daemon not running (no pid file at {})", pid_path);
             return 1;
         }
         pid_t pid = 0;
         pf >> pid;
         if (pid <= 0) {
-            std::cerr << "stop: corrupt pid file at " << pid_path << "\n";
+            std::println(stderr, "stop: corrupt pid file at {}", pid_path);
             return 1;
         }
         if (::kill(pid, SIGTERM) < 0) {
-            std::cerr << "stop: kill pid " << pid << " failed: "
-                      << std::strerror(errno) << "\n";
+            std::println(stderr, "stop: kill pid {} failed: {}", pid,
+                         std::strerror(errno));
             // Stale pid file: clean it up so next start isn't confused.
             if (errno == ESRCH) std::filesystem::remove(pid_path);
             return 1;
@@ -63,13 +64,12 @@ int cmd_daemon(const args::Daemon& a) {
         // leave `daemon status` reporting "running" for a moment after stop.
         for (int i = 0; i < 60; ++i) {  // up to 3 s
             if (::kill(pid, 0) != 0 && errno == ESRCH) {
-                std::cout << "stopped (pid " << pid << ")\n";
+                std::println("stopped (pid {})", pid);
                 return 0;
             }
             ::usleep(50 * 1000);
         }
-        std::cout << "stop signal sent; pid " << pid
-                  << " still exiting (processing a request?)\n";
+        std::println("stop signal sent; pid {} still exiting (processing a request?)", pid);
         return 0;
     }
 
@@ -77,24 +77,24 @@ int cmd_daemon(const args::Daemon& a) {
         // Plain stdout — a status line is user-facing output, not a log.
         std::ifstream pf(pid_path);
         if (!pf) {
-            std::cout << "not running\n";
+            std::println("not running");
             return 1;
         }
         pid_t pid = 0;
         pf >> pid;
         if (pid <= 0) {
-            std::cerr << "status: corrupt pid file at " << pid_path << "\n";
+            std::println(stderr, "status: corrupt pid file at {}", pid_path);
             return 1;
         }
         if (::kill(pid, 0) != 0) {
-            std::cout << "not running (stale pid file)\n";
+            std::println("not running (stale pid file)");
             return 1;
         }
         // Liveness alone can race with shutdown; the socket is the real contract.
         std::error_code ec;
         const bool sock_up = std::filesystem::exists(socket_path, ec);
-        std::cout << "running (pid " << pid << ", socket " << socket_path
-                  << (sock_up ? ")" : " — socket file missing!") << "\n";
+        std::println("running (pid {}, socket {}{})", pid, socket_path,
+                     sock_up ? ")" : " — socket file missing!");
         return 0;
     }
 
@@ -106,7 +106,7 @@ int cmd_daemon(const args::Daemon& a) {
             pid_t existing = 0;
             pf >> existing;
             if (existing > 0 && ::kill(existing, 0) == 0) {
-                std::cerr << "daemon already running (pid " << existing << ")\n";
+                std::println(stderr, "daemon already running (pid {})", existing);
                 return 1;
             }
             // pid file present but process dead → stale, overwrite below.

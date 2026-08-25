@@ -22,7 +22,8 @@
 #include <cctype>
 #include <cstdlib>
 #include <filesystem>
-#include <iostream>
+#include <format>
+#include <print>
 #include <set>
 #include <string>
 #include <vector>
@@ -150,7 +151,7 @@ void complete_models(const std::string& models_dir_override) {
     auto models = manager.scan_models();
     if (!models.has_value()) return;
     for (const auto& m : *models) {
-        emit(m.name, m.scale_factor > 0 ? std::to_string(m.scale_factor) + "x" : "");
+        emit(m.name, m.scale_factor > 0 ? std::format("{}x", m.scale_factor) : "");
     }
 }
 
@@ -198,7 +199,7 @@ void complete_subcommands(const CLI::App* node, const std::string& cur) {
          node->get_subcommands([](const CLI::App*) { return true; })) {
         // group("") hides a subcommand from help; keep it out of completions too.
         if (s->get_group().empty() || s->get_name().empty()) continue;
-        if (cur.empty() || s->get_name().rfind(cur, 0) == 0) {
+        if (cur.empty() || s->get_name().starts_with(cur)) {
             emit(s->get_name(), s->get_description());
         }
     }
@@ -212,7 +213,7 @@ void complete_option_names(const CLI::App* node, const std::string& cur) {
             const size_t comma = all.find(',', start);
             const std::string name =
                 all.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
-            if (!name.empty() && name[0] == '-' && name.rfind(cur, 0) == 0) {
+            if (!name.empty() && name.starts_with('-') && name.starts_with(cur)) {
                 emit(name, o->get_description());
             }
             if (comma == std::string::npos) break;
@@ -315,7 +316,7 @@ int cmd_complete_impl(int argc, char* argv[]) {
     // catalog): no candidates rather than misleading ones.
 
     for (const Cand& c : g_out) {
-        std::cout << c.value << '\t' << c.desc << '\n';
+        std::println("{}\t{}", c.value, c.desc);
     }
     return 0;
 }

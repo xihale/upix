@@ -5,8 +5,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
-#include <iomanip>
-#include <sstream>
+#include <format>
+#include <print>
 #include <string>
 #include <vector>
 
@@ -48,10 +48,10 @@ auto default_models_dir() -> std::string {
         return env;
     }
     if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg) {
-        return std::string(xdg) + "/crossscale/models";
+        return std::format("{}/crossscale/models", xdg);
     }
     if (const char* home = std::getenv("HOME"); home && *home) {
-        return std::string(home) + "/.local/share/crossscale/models";
+        return std::format("{}/.local/share/crossscale/models", home);
     }
     return "./models";  // no HOME/XDG at all (degenerate): keep something usable
 }
@@ -77,22 +77,22 @@ void print_progress_stderr(const crossscale::ProcessingProgress& prog,
     double elapsed = std::chrono::duration<double>(now - start_time).count();
     float pct = prog.percentage();
 
-    std::ostringstream oss;
-    oss << std::fixed << std::setprecision(0) << pct << "% ("
-        << prog.completed_tiles << "/" << prog.total_tiles;
+    std::string line = std::format("{:.0f}% ({}/{}", pct,
+                                   prog.completed_tiles, prog.total_tiles);
 
     if (prog.completed_tiles > 0 && elapsed > 0.1 && prog.completed_tiles < prog.total_tiles) {
         double tiles_per_sec = prog.completed_tiles / elapsed;
         double remaining_tiles = prog.total_tiles - prog.completed_tiles;
         double eta_sec = remaining_tiles / tiles_per_sec;
-        oss << ", ETA " << eta_sec << "s";
+        line += std::format(", ETA {:.0f}s", eta_sec);
     }
 
-    oss << ")";
-    std::cerr << "\r" << oss.str() << std::flush;
+    line += ')';
+    std::print(stderr, "\r{}", line);
+    std::fflush(stderr);
 
     if (prog.completed_tiles >= prog.total_tiles) {
-        std::cerr << "\n";
+        std::println(stderr, "");
     }
 }
 
@@ -208,39 +208,26 @@ auto normalize_channels_for_model(crossscale::Image& image,
 
     auto converted = convert_image_channels(image, expected_channels);
     if (!converted.has_value()) {
-        LOG_ERROR(
-            "Engine",
-            "Input image channel count " + std::to_string(image.channels()) +
-                " is incompatible with model input channels " + std::to_string(expected_channels) +
-                ": " + image_path
-        );
+        LOG_ERROR("Engine",
+                  "Input image channel count {} is incompatible with model input channels {}: {}",
+                  image.channels(), expected_channels, image_path);
         return false;
     }
 
-    LOG_WARNING(
-        "Engine",
-        "Input image channel count " + std::to_string(image.channels()) +
-            " does not match model input channels " + std::to_string(expected_channels) +
-            ", converting channels: " + image_path
-    );
+    LOG_WARNING("Engine",
+                "Input image channel count {} does not match model input channels {}, converting channels: {}",
+                image.channels(), expected_channels, image_path);
 
     image = std::move(converted.value());
     if (image.channels() != expected_channels) {
-        LOG_ERROR(
-            "Engine",
-            "Failed to convert input channels from " + std::to_string(image.channels()) +
-                " to " + std::to_string(expected_channels) +
-                ": " + image_path
-        );
+        LOG_ERROR("Engine", "Failed to convert input channels from {} to {}: {}",
+                  image.channels(), expected_channels, image_path);
         return false;
     }
 
     if (image.channels() < 1 || image.channels() > 4) {
-        LOG_ERROR(
-            "Engine",
-            "Converted image has unsupported channel count " + std::to_string(image.channels()) +
-            ": " + image_path
-        );
+        LOG_ERROR("Engine", "Converted image has unsupported channel count {}: {}",
+                  image.channels(), image_path);
         return false;
     }
 
@@ -281,22 +268,20 @@ void print_connection_card(uint16_t port, const std::array<uint8_t, 32>& identit
     const std::string fp = crossscale::fingerprint(identity_pubkey);
     const std::string pk_b64 = crossscale::base64_encode(identity_pubkey.data(), 32);
 
-    std::cout << "\nConnection Information:\n";
+    std::println("\nConnection Information:");
     for (size_t i = 0; i < addresses.size(); ++i) {
-        std::cout << "  IP: " << addresses[i];
-        if (i == 0) std::cout << "  (default for QR)";
-        std::cout << "\n";
+        std::print("  IP: {}", addresses[i]);
+        if (i == 0) std::print("  (default for QR)");
+        std::println("");
     }
-    std::cout << "  Port: " << port << "\n"
-              << "  Fingerprint: " << fp << "\n\n"
-              << "QR Code (scan with Android app):\n\n";
+    std::println("  Port: {}", port);
+    std::println("  Fingerprint: {}\n", fp);
+    std::println("QR Code (scan with Android app):\n");
 
     // v2 JSON: carries fingerprint + identity pubkey. Android rejects v1.
-    const std::string json =
-        "{\"v\":2,\"ip\":\"" + addresses[0] +
-        "\",\"port\":" + std::to_string(port) +
-        ",\"fp\":\"" + fp + "\""
-        ",\"pk\":\"" + pk_b64 + "\""
-        ",\"name\":\"CrossScale-Server\"}";
-    std::cout << generate_qr_ascii(json) << "\n";
+    const std::string json = std::format(
+        "{{\"v\":2,\"ip\":\"{}\",\"port\":{},\"fp\":\"{}\""
+        ",\"pk\":\"{}\",\"name\":\"CrossScale-Server\"}}",
+        addresses[0], port, fp, pk_b64);
+    std::println("{}", generate_qr_ascii(json));
 }

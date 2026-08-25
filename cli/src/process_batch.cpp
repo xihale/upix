@@ -5,6 +5,7 @@
 // inside run_batch; their [&] captures resolve to run_batch's locals.
 // No logic change — A/B md5 verified bit-identical.
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <csignal>
@@ -13,11 +14,14 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <future>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <ranges>
+#include <span>
 #include <string>
 #include <thread>
 #include <utility>
@@ -50,12 +54,14 @@ namespace {
 std::pair<uint32_t, uint32_t> sniff_image_dimensions(const fs::path& path) {
     std::ifstream f(path, std::ios::binary);
     if (!f) return {0, 0};
-    unsigned char sig[24] = {};
-    f.read(reinterpret_cast<char*>(sig), 24);
+    std::array<unsigned char, 24> sig{};
+    f.read(reinterpret_cast<char*>(sig.data()), static_cast<std::streamsize>(sig.size()));
     const auto got = static_cast<size_t>(f.gcount());
+    const auto sig_bytes = std::span(sig).first(got);
 
-    static const unsigned char kPngSig[8] = {0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
-    if (got >= 24 && std::equal(sig, sig + 8, kPngSig)) {
+    static constexpr std::array<unsigned char, 8> kPngSig = {
+        0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
+    if (got >= 24 && std::ranges::equal(sig_bytes.first(8), kPngSig)) {
         const auto be32 = [&](int o) {
             return (static_cast<uint32_t>(sig[o]) << 24) |
                    (static_cast<uint32_t>(sig[o + 1]) << 16) |
@@ -141,11 +147,7 @@ int run_batch(const args::Process& a) {
             if (!p.is_regular_file()) continue;
             std::string ext = p.path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-            bool is_img = false;
-            for (const auto& e : extensions) {
-                if (ext == e) { is_img = true; break; }
-            }
-            if (!is_img) continue;
+            if (!std::ranges::contains(extensions, ext)) continue;
             std::string rel = fs::relative(p.path(), input_path).string();
             std::string out_file = fs::path(output_path) / rel;
             tasks.emplace_back(p.path().string(), out_file);
@@ -154,7 +156,7 @@ int run_batch(const args::Process& a) {
             LOG_WARNING("CLI", "No image files found in input directory");
             return 0;
         }
-        LOG_INFO("CLI", "Found " + std::to_string(tasks.size()) + " images to process");
+        LOG_INFO("CLI", "Found {} images to process", tasks.size());
 
         // Largest-first (LPT) scheduling: the biggest image dominates the
         // critical path, so it must start first when workers run in
@@ -170,7 +172,7 @@ int run_batch(const args::Process& a) {
         crossscale::ModelManager manager(models_dir);
         auto models_opt = manager.scan_models();
         if (!models_opt.has_value() || models_opt->empty()) {
-            LOG_ERROR("Engine", "No models found in " + models_dir);
+            LOG_ERROR("Engine", "No models found in {}", models_dir);
             return 1;
         }
         auto& models = models_opt.value();
@@ -178,19 +180,17 @@ int run_batch(const args::Process& a) {
         const crossscale::ModelInfo* selected_model = nullptr;
         if (model_name.empty()) {
             selected_model = &models[0];
-            LOG_INFO("Engine", "No model specified, using first available: " + selected_model->name);
+            LOG_INFO("Engine", "No model specified, using first available: {}",
+                     selected_model->name);
         } else {
-            for (const auto& m : models) {
-                if (m.name == model_name) {
-                    selected_model = &m;
-                    break;
-                }
-            }
+            const auto it = std::ranges::find(models, model_name,
+                                              &crossscale::ModelInfo::name);
+            if (it != models.end()) selected_model = &*it;
             if (!selected_model) {
-                LOG_ERROR("Engine", "Model not found: " + model_name);
+                LOG_ERROR("Engine", "Model not found: {}", model_name);
                 LOG_ERROR("Engine", "Available models:");
                 for (const auto& m : models) {
-                    LOG_ERROR("Engine", "  - " + m.name + " (" + std::to_string(m.scale_factor) + "x)");
+                    LOG_ERROR("Engine", "  - {} ({}x)", m.name, m.scale_factor);
                 }
                 return 1;
             }
@@ -201,7 +201,8 @@ int run_batch(const args::Process& a) {
         std::string model_name_used = selected_model->name;
         size_t model_total_size = selected_model->total_size;
         int model_input_channels = std::max(1, selected_model->input_channels);
-        LOG_INFO("Engine", "Using model: " + model_name_used + " (" + std::to_string(selected_model->scale_factor) + "x)");
+        LOG_INFO("Engine", "Using model: {} ({}x)", model_name_used,
+                 selected_model->scale_factor);
 
         // Load configuration if specified
         crossscale::ProcessingConfig config;
@@ -209,9 +210,9 @@ int run_batch(const args::Process& a) {
             auto cfg_result = crossscale::ProcessingConfig::load(config_file);
             if (cfg_result.has_value()) {
                 config = cfg_result.value();
-                LOG_INFO("Config", "Loaded config from " + config_file);
+                LOG_INFO("Config", "Loaded config from {}", config_file);
             } else {
-                LOG_WARNING("Config", "Failed to load config: " + cfg_result.error());
+                LOG_WARNING("Config", "Failed to load config: {}", cfg_result.error());
             }
         }
 
@@ -233,7 +234,7 @@ int run_batch(const args::Process& a) {
                 std::string inferred = infer_format_from_extension(tasks[0].second);
                 if (!inferred.empty()) {
                     config.output_format = crossscale::normalize_output_format(inferred);
-                    LOG_INFO("Config", "Auto-detected output format: " + inferred);
+                    LOG_INFO("Config", "Auto-detected output format: {}", inferred);
                 }
             }
         }
@@ -243,7 +244,7 @@ int run_batch(const args::Process& a) {
         if (!errors.empty()) {
             LOG_ERROR("Config", "Configuration errors:");
             for (const auto& err : errors) {
-                LOG_ERROR("Config", "  - " + err);
+                LOG_ERROR("Config", "  - {}", err);
             }
             return 1;
         }
@@ -264,7 +265,7 @@ int run_batch(const args::Process& a) {
             }
             auto img_res = crossscale::Image::load(in_path);
             if (!img_res.has_value()) {
-                LOG_ERROR("Task", "Failed to load image: " + in_path);
+                LOG_ERROR("Task", "Failed to load image: {}", in_path);
                 return std::nullopt;
             }
 
@@ -303,13 +304,13 @@ int run_batch(const args::Process& a) {
 
         auto infer_prepared_task = [&](PreparedTask&& prepared, crossscale::Engine& eng) -> std::optional<ProcessedTask> {
             if (enable_progress_log) {
-                LOG_INFO("Engine", "Processing image: " + prepared.in_path);
+                LOG_INFO("Engine", "Processing image: {}", prepared.in_path);
             }
 
             crossscale::ProcessingConfig local_config = config;
 
             if (auto_tile || local_config.auto_tile_size) {
-                LOG_INFO("Task", "Auto-tile for " + prepared.in_path);
+                LOG_INFO("Task", "Auto-tile for {}", prepared.in_path);
                 crossscale::TileSizeOptimizer optimizer;
                 crossscale::ModelConstraints mc;
                 mc.model_name = model_name_used;
@@ -322,7 +323,7 @@ int run_batch(const args::Process& a) {
                     prepared.width, prepared.height
                 );
                 local_config.auto_tile_size = true;
-                LOG_INFO("Task", "Optimal tile size: " + std::to_string(local_config.tile_size));
+                LOG_INFO("Task", "Optimal tile size: {}", local_config.tile_size);
             }
 
             crossscale::TileConfig tile_config;
@@ -346,7 +347,8 @@ int run_batch(const args::Process& a) {
                         prog.total_tiles > 0 &&
                         (prog.completed_tiles % 10 == 0 || prog.completed_tiles == prog.total_tiles)) {
                         float pct = prog.percentage();
-                        LOG_INFO("Engine", "Progress: " + std::to_string(prog.completed_tiles) + "/" + std::to_string(prog.total_tiles) + " tiles (" + std::to_string(pct) + "%)");
+                        LOG_INFO("Engine", "Progress: {}/{} tiles ({:.0f}%)",
+                                 prog.completed_tiles, prog.total_tiles, pct);
                     }
                 },
                 g_cancel_requested
@@ -356,7 +358,7 @@ int run_batch(const args::Process& a) {
                 if (g_cancel_requested.load()) {
                     LOG_WARNING("Task", "Processing cancelled by signal");
                 }
-                LOG_ERROR("Task", "Processing failed: " + result.error().message);
+                LOG_ERROR("Task", "Processing failed: {}", result.error().message);
                 return std::nullopt;
             }
 
@@ -379,12 +381,13 @@ int run_batch(const args::Process& a) {
 
             auto save_res = processed.output_image.save(final_out_path, config.output_quality);
             if (!save_res.has_value()) {
-                LOG_ERROR("Task", "Failed to save output: " + save_res.error().message + " -> " + final_out_path.string());
+                LOG_ERROR("Task", "Failed to save output: {} -> {}",
+                          save_res.error().message, final_out_path.string());
                 return false;
             }
 
             if (enable_progress_log) {
-                LOG_INFO("Task", "Completed: " + final_out_path.string());
+                LOG_INFO("Task", "Completed: {}", final_out_path.string());
             }
             return true;
         };
@@ -415,12 +418,13 @@ int run_batch(const args::Process& a) {
                 return 1;
             }
             const bool initialized_on_gpu = engine->current_device() == crossscale::DeviceType::GPU_VULKAN;
-            LOG_INFO("Engine", "Engine initialized on " + std::string(initialized_on_gpu ? "GPU" : "CPU"));
+            LOG_INFO("Engine", "Engine initialized on {}",
+                     initialized_on_gpu ? "GPU" : "CPU");
 
             // Load model once
             auto load_result = engine->load_model(param_path, bin_path);
             if (!load_result.has_value()) {
-                LOG_ERROR("Engine", "Failed to load model: " + load_result.error().message);
+                LOG_ERROR("Engine", "Failed to load model: {}", load_result.error().message);
                 return 1;
             }
             // Override engine's heuristic scale detection with the
@@ -429,13 +433,13 @@ int run_batch(const args::Process& a) {
             LOG_INFO("Engine", "Model loaded successfully");
 
             int scale = engine->get_scale_factor();
-            LOG_INFO("Engine", "Scale factor: " + std::to_string(scale) + "x");
+            LOG_INFO("Engine", "Scale factor: {}x", scale);
 
             // Auto tile size: use engine's VRAM-aware recommendation if not explicitly set
             if (!tile_size_explicit && !auto_tile) {
                 tile_size = engine->get_recommended_tile_size();
                 config.tile_size = tile_size;
-                LOG_INFO("Engine", "Auto-selected tile size: " + std::to_string(tile_size));
+                LOG_INFO("Engine", "Auto-selected tile size: {}", tile_size);
             }
 
             size_t success_count = 0;
@@ -628,7 +632,8 @@ int run_batch(const args::Process& a) {
                 }
             }
 
-            LOG_INFO("CLI", "Processing summary: " + std::to_string(success_count) + "/" + std::to_string(tasks.size()) + " succeeded");
+            LOG_INFO("CLI", "Processing summary: {}/{} succeeded",
+                     success_count, tasks.size());
             return success_count == tasks.size() ? 0 : 1;
         } else {
             if (use_gpu) {
@@ -640,12 +645,13 @@ int run_batch(const args::Process& a) {
                     auto engine = crossscale::create_ncnn_engine();
                     auto init_result = engine->initialize(crossscale::DeviceType::GPU_VULKAN);
                     if (!init_result.has_value()) {
-                        return {nullptr, "Failed to initialize GPU engine #" + std::to_string(i)};
+                        return {nullptr, std::format("Failed to initialize GPU engine #{}", i)};
                     }
                     auto load_result = engine->load_model(param_path, bin_path);
                     if (!load_result.has_value()) {
-                        return {nullptr, "Failed to load model into GPU engine #" + std::to_string(i) +
-                                            ": " + load_result.error().message};
+                        return {nullptr, std::format(
+                            "Failed to load model into GPU engine #{}: {}",
+                            i, load_result.error().message)};
                     }
                     return {std::move(engine), ""};
                 };
@@ -691,16 +697,13 @@ int run_batch(const args::Process& a) {
                     }
                     if (!jobs_explicit) {
                         requested_workers = fit;
-                        LOG_INFO("Engine", "Auto-selected jobs=" + std::to_string(fit) +
-                                 " from VRAM budget " + std::to_string(budget_mb) +
-                                 "MB (projected peak " + std::to_string(peak_mb) +
-                                 "MB with 4 workers; use -j to override)");
+                        LOG_INFO("Engine",
+                                 "Auto-selected jobs={} from VRAM budget {}MB (projected peak {}MB with 4 workers; use -j to override)",
+                                 fit, budget_mb, peak_mb);
                     } else if (requested_workers > fit) {
-                        LOG_WARNING("Engine", "jobs=" + std::to_string(requested_workers) +
-                                    " would overcommit VRAM (projected peak " +
-                                    std::to_string(peak_mb) + "MB vs budget " +
-                                    std::to_string(budget_mb) + "MB), capping to " +
-                                    std::to_string(fit) + " workers");
+                        LOG_WARNING("Engine",
+                                    "jobs={} would overcommit VRAM (projected peak {}MB vs budget {}MB), capping to {} workers",
+                                    requested_workers, peak_mb, budget_mb, fit);
                         requested_workers = fit;
                     }
                 }
@@ -723,16 +726,15 @@ int run_batch(const args::Process& a) {
                     for (auto& init_future : init_futures) {
                         auto init_result = init_future.get();
                         if (!init_result.engine) {
-                            LOG_WARNING("Engine", init_result.error +
-                                        ", continuing with " +
-                                        std::to_string(gpu_engines.size()) + " workers");
+                            LOG_WARNING("Engine", "{}, continuing with {} workers",
+                                        init_result.error, gpu_engines.size());
                             break;
                         }
                         gpu_engines.push_back(std::move(init_result.engine));
                     }
                 }
                 worker_count = gpu_engines.size();
-                LOG_INFO("Engine", "GPU engine workers ready: " + std::to_string(worker_count));
+                LOG_INFO("Engine", "GPU engine workers ready: {}", worker_count);
 
                 // Same auto tile-size selection as the jobs<=1 path: without
                 // this, jobs>1 silently used the CLI default (256) while
@@ -741,7 +743,7 @@ int run_batch(const args::Process& a) {
                 if (!tile_size_explicit && !auto_tile) {
                     tile_size = gpu_engines[0]->get_recommended_tile_size();
                     config.tile_size = tile_size;
-                    LOG_INFO("Engine", "Auto-selected tile size: " + std::to_string(tile_size));
+                    LOG_INFO("Engine", "Auto-selected tile size: {}", tile_size);
                 }
 
                 std::atomic<size_t> next_task{0};
@@ -768,8 +770,9 @@ int run_batch(const args::Process& a) {
                     w.join();
                 }
 
-                LOG_INFO("CLI", "Processing summary: " + std::to_string(success_count) + "/" + std::to_string(tasks.size()) + " succeeded");
-                return success_count == tasks.size() ? 0 : 1;
+                LOG_INFO("CLI", "Processing summary: {}/{} succeeded",
+                         success_count.load(), tasks.size());
+                return success_count.load() == tasks.size() ? 0 : 1;
             } else {
                 // CPU EnginePool: fixed worker pool pulling tasks via an atomic
                 // index (same shape as the GPU jobs>1 branch). One std::async
@@ -778,7 +781,7 @@ int run_batch(const args::Process& a) {
                 size_t requested_workers = static_cast<size_t>(std::max(1, jobs));
                 size_t worker_count = std::min(requested_workers, tasks.size());
                 crossscale::EnginePool pool(worker_count, param_path, bin_path, crossscale::DeviceType::CPU);
-                LOG_INFO("Engine", "Created engine pool with " + std::to_string(worker_count) + " CPU engines");
+                LOG_INFO("Engine", "Created engine pool with {} CPU engines", worker_count);
 
                 // Same auto tile-size selection as the jobs<=1 path: without
                 // this, jobs>1 silently used the CLI default (256) while
@@ -789,7 +792,7 @@ int run_batch(const args::Process& a) {
                     tile_size = probe->get_recommended_tile_size();
                     pool.release(probe);
                     config.tile_size = tile_size;
-                    LOG_INFO("Engine", "Auto-selected tile size: " + std::to_string(tile_size));
+                    LOG_INFO("Engine", "Auto-selected tile size: {}", tile_size);
                 }
 
                 std::atomic<size_t> next_task{0};
@@ -809,7 +812,7 @@ int run_batch(const args::Process& a) {
                             try {
                                 ok = process_one(tasks[idx].first, tasks[idx].second, *eng);
                             } catch (const std::exception& e) {
-                                LOG_ERROR("Engine", std::string("Task processing exception: ") + e.what());
+                                LOG_ERROR("Engine", "Task processing exception: {}", e.what());
                                 ok = false;
                             } catch (...) {
                                 LOG_ERROR("Engine", "Task processing unknown exception");
@@ -827,7 +830,8 @@ int run_batch(const args::Process& a) {
                     w.join();
                 }
 
-                LOG_INFO("CLI", "Processing summary: " + std::to_string(success_count.load()) + "/" + std::to_string(tasks.size()) + " succeeded");
+                LOG_INFO("CLI", "Processing summary: {}/{} succeeded",
+                         success_count.load(), tasks.size());
                 return success_count.load() == tasks.size() ? 0 : 1;
             }
         }

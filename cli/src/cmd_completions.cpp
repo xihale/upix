@@ -15,7 +15,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
+#include <print>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -131,16 +131,16 @@ auto zsh_completion_dir() -> std::pair<fs::path, bool> {
 // Write `text` to `path`, report, and keep going. Returns false on failure.
 auto report_write(const fs::path& path, std::string_view text) -> bool {
     if (!write_to(path, text)) {
-        std::cerr << "completions: failed to write " << path.string() << "\n";
+        std::println(stderr, "completions: failed to write {}", path.string());
         return false;
     }
-    std::cout << "Installed: " << path.string() << "\n";
+    std::println("Installed: {}", path.string());
     return true;
 }
 
 auto install_completions(const std::string& shell) -> int {
     if (home_dir().empty()) {
-        std::cerr << "completions: --install needs $HOME\n";
+        std::println(stderr, "completions: --install needs $HOME");
         return 1;
     }
     // bash and fish autoload by file name, so write one copy per supported
@@ -151,15 +151,15 @@ auto install_completions(const std::string& shell) -> int {
         for (const char* name : {"crossscale", "crossscale-cli"}) {
             if (!report_write(dir / name, BASH)) return 1;
         }
-        std::cout << "Restart your shell to pick it up.\n";
+        std::println("Restart your shell to pick it up.");
     } else if (shell == "zsh") {
         const auto [dir, needs_fpath] = zsh_completion_dir();
         if (!report_write(dir / "_crossscale", ZSH)) return 1;
         if (needs_fpath) {
-            std::cout << "Add this to ~/.zshrc (before compinit), then restart zsh:\n"
-                      << "  fpath=(" << dir.string() << " $fpath)\n";
+            std::println("Add this to ~/.zshrc (before compinit), then restart zsh:\n"
+                         "  fpath=({} $fpath)", dir.string());
         } else {
-            std::cout << "Restart zsh (or rerun compinit) to pick it up.\n";
+            std::println("Restart zsh (or rerun compinit) to pick it up.");
         }
     } else {
         const fs::path dir = user_dir("XDG_CONFIG_HOME", "fish/completions",
@@ -167,7 +167,7 @@ auto install_completions(const std::string& shell) -> int {
         for (const char* name : {"crossscale", "crossscale-cli"}) {
             if (!report_write(dir / (std::string(name) + ".fish"), FISH)) return 1;
         }
-        std::cout << "New fish sessions pick it up automatically.\n";
+        std::println("New fish sessions pick it up automatically.");
     }
     return 0;
 }
@@ -177,12 +177,12 @@ auto install_completions(const std::string& shell) -> int {
 int cmd_completions(const args::Completions& a) {
     if (a.install) return install_completions(a.shell);
     if (a.shell == "bash") {
-        std::cout << BASH;
+        std::print("{}", BASH);
     } else if (a.shell == "zsh") {
-        std::cout << ZSH;
+        std::print("{}", ZSH);
     } else {
-        std::cout << FISH;
+        std::print("{}", FISH);
     }
-    std::cout << "\n";
+    std::println("");
     return 0;
 }

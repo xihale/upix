@@ -7,9 +7,8 @@
 #include <algorithm>
 #include <cctype>
 #include <filesystem>
-#include <iomanip>
-#include <iostream>
-#include <sstream>
+#include <format>
+#include <print>
 #include <string>
 #include <vector>
 
@@ -35,16 +34,14 @@ auto find_remote(const std::vector<crossscale::cli::RemoteModel>& models,
         return s;
     };
     auto key = norm(name);
-    for (const auto& m : models) {
-        if (norm(m.name) == key) return &m;
-    }
-    return nullptr;
+    const auto it = std::ranges::find_if(models, [&](const auto& m) {
+        return norm(m.name) == key;
+    });
+    return it != models.end() ? &*it : nullptr;
 }
 
 auto mb(double bytes) -> std::string {
-    std::ostringstream oss;
-    oss << std::fixed << std::setprecision(1) << (bytes / 1024.0 / 1024.0) << " MB";
-    return oss.str();
+    return std::format("{:.1f} MB", bytes / 1024.0 / 1024.0);
 }
 
 int cmd_model_list(const args::Model& a) {
@@ -60,7 +57,7 @@ int cmd_model_list(const args::Model& a) {
         if (!fs::is_directory(manager.models_directory(), ec)) return 0;
         auto names = manager.scan_models();
         if (names.has_value()) {
-            for (const auto& m : *names) std::cout << m.name << "\n";
+            for (const auto& m : *names) std::println("{}", m.name);
         }
         return 0;
     }
@@ -68,18 +65,18 @@ int cmd_model_list(const args::Model& a) {
     auto models = manager.scan_models();
 
     if (!models.has_value()) {
-        LOG_ERROR("Model", "Failed to scan models: " + models.error().message);
+        LOG_ERROR("Model", "Failed to scan models: {}", models.error().message);
         return 1;
     }
 
-    std::cout << "Installed models (" << manager.models_directory().string() << "):\n";
+    std::println("Installed models ({}):", manager.models_directory().string());
     if (models.value().empty()) {
-        std::cout << "  (none — try `crossscale model download <name>` or `model list-remote`)\n";
+        std::println("  (none — try `crossscale model download <name>` or `model list-remote`)");
         return 0;
     }
     for (const auto& m : models.value()) {
-        std::cout << "  " << m.name << " (" << m.scale_factor << "x, "
-                  << (m.total_size / 1024 / 1024) << " MB)\n";
+        std::println("  {} ({}x, {} MB)", m.name, m.scale_factor,
+                     m.total_size / 1024 / 1024);
     }
     return 0;
 }
@@ -88,19 +85,19 @@ int cmd_model_list_remote(const args::Model& a) {
     std::string error;
     auto remote = crossscale::cli::fetch_remote_models(a.repo, error);
     if (!remote) {
-        LOG_ERROR("Model", "Failed to fetch remote models: " + error);
+        LOG_ERROR("Model", "Failed to fetch remote models: {}", error);
         return 1;
     }
 
-    std::cout << "Models available in the release (" << crossscale::cli::manifest_url(a.repo)
-              << "):\n";
+    std::println("Models available in the release ({}):",
+                 crossscale::cli::manifest_url(a.repo));
     if (remote->empty()) {
-        std::cout << "  (manifest is empty)\n";
+        std::println("  (manifest is empty)");
     }
     for (const auto& m : *remote) {
-        std::cout << "  " << m.name << " (" << m.scale << "x, " << mb(m.size_bytes) << ")\n";
+        std::println("  {} ({}x, {})", m.name, m.scale, mb(m.size_bytes));
     }
-    std::cout << "\nDownload with: crossscale model download <name>\n";
+    std::println("\nDownload with: crossscale model download <name>");
     return 0;
 }
 
@@ -113,7 +110,7 @@ int cmd_model_download(const args::Model& a) {
     std::string error;
     auto remote = crossscale::cli::fetch_remote_models(a.repo, error);
     if (!remote) {
-        LOG_ERROR("Model", "Failed to fetch remote models: " + error);
+        LOG_ERROR("Model", "Failed to fetch remote models: {}", error);
         return 1;
     }
 
@@ -122,31 +119,33 @@ int cmd_model_download(const args::Model& a) {
     for (const auto& name : a.names) {
         const auto* m = find_remote(*remote, name);
         if (m == nullptr) {
-            LOG_ERROR("Model", "Model not found in release: " + name);
+            LOG_ERROR("Model", "Model not found in release: {}", name);
             failures++;
             continue;
         }
 
-        std::cout << "Downloading " << m->name << " (" << m->scale << "x, " << mb(m->size_bytes)
-                  << ") ... " << std::flush;
+        std::print("Downloading {} ({}x, {}) ... ", m->name, m->scale,
+                   mb(m->size_bytes));
+        std::fflush(stdout);
         auto last_pct = -1;
         auto result = crossscale::cli::download_model(*m, dir.string(),
             [&](const crossscale::cli::DownloadProgress& p) {
                 if (p.total > 0) {
                     int pct = static_cast<int>(p.downloaded * 100 / p.total);
                     if (pct != last_pct && pct % 10 == 0) {
-                        std::cout << pct << "% " << std::flush;
+                        std::print("{}% ", pct);
+                        std::fflush(stdout);
                         last_pct = pct;
                     }
                 }
             });
         if (!result.ok) {
-            std::cout << "\n";
-            LOG_ERROR("Model", "Download failed: " + result.message);
+            std::println("");
+            LOG_ERROR("Model", "Download failed: {}", result.message);
             failures++;
             continue;
         }
-        std::cout << "done\n  " << result.param_path << "\n  " << result.bin_path << "\n";
+        std::println("done\n  {}\n  {}", result.param_path, result.bin_path);
     }
     return failures == 0 ? 0 : 1;
 }
@@ -164,7 +163,7 @@ int cmd_model_import(const args::Model& a) {
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) {
-        LOG_ERROR("Model", "Cannot create models directory " + dir.string() + ": " + ec.message());
+        LOG_ERROR("Model", "Cannot create models directory {}: {}", dir.string(), ec.message());
         return 1;
     }
 
@@ -178,7 +177,7 @@ int cmd_model_import(const args::Model& a) {
         if (ext == ".param") params.push_back(src);
         else if (ext == ".bin") bins.push_back(src);
         else {
-            LOG_ERROR("Model", "Unsupported file type (expected .param/.bin): " + raw);
+            LOG_ERROR("Model", "Unsupported file type (expected .param/.bin): {}", raw);
             failures++;
         }
     }
@@ -189,7 +188,7 @@ int cmd_model_import(const args::Model& a) {
             return b.stem() == param.stem();
         });
         if (it == bins.end()) {
-            LOG_ERROR("Model", "No matching .bin for " + param.string());
+            LOG_ERROR("Model", "No matching .bin for {}", param.string());
             failures++;
             continue;
         }
@@ -197,22 +196,22 @@ int cmd_model_import(const args::Model& a) {
         fs::path dst_bin = dir / it->filename();
         fs::copy_file(param, dst_param, fs::copy_options::overwrite_existing, ec);
         if (ec) {
-            LOG_ERROR("Model", "Copy failed: " + param.string() + ": " + ec.message());
+            LOG_ERROR("Model", "Copy failed: {}: {}", param.string(), ec.message());
             failures++;
             continue;
         }
         fs::copy_file(*it, dst_bin, fs::copy_options::overwrite_existing, ec);
         if (ec) {
-            LOG_ERROR("Model", "Copy failed: " + it->string() + ": " + ec.message());
+            LOG_ERROR("Model", "Copy failed: {}: {}", it->string(), ec.message());
             failures++;
             continue;
         }
-        std::cout << "Imported " << param.stem().string() << "\n  " << dst_param.string()
-                  << "\n  " << dst_bin.string() << "\n";
+        std::println("Imported {}\n  {}\n  {}", param.stem().string(),
+                     dst_param.string(), dst_bin.string());
         bins.erase(it);
     }
     for (const auto& b : bins) {
-        LOG_ERROR("Model", "No matching .param for " + b.string());
+        LOG_ERROR("Model", "No matching .param for {}", b.string());
         failures++;
     }
     return failures == 0 ? 0 : 1;
@@ -225,6 +224,6 @@ int cmd_model(const args::Model& a) {
     if (a.subcommand == "list-remote") return cmd_model_list_remote(a);
     if (a.subcommand == "download") return cmd_model_download(a);
     if (a.subcommand == "import") return cmd_model_import(a);
-    LOG_ERROR("Model", "Unknown model subcommand: " + a.subcommand);
+    LOG_ERROR("Model", "Unknown model subcommand: {}", a.subcommand);
     return 1;
 }

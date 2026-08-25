@@ -4,6 +4,7 @@
 // cli_app.cpp via CLI11. main() just parses argv and dispatches to the
 // cmd_*.cpp entry point that CLI11 selected.
 #include <optional>
+#include <print>
 #include <string>
 
 #include <CLI/CLI.hpp>
@@ -41,6 +42,6 @@ auto main(int argc, char* argv[]) -> int {
     }
 
     // No subcommand ran (e.g. bare `crossscale`). Show top-level help.
-    std::cout << app->help();
+    std::print("{}", app->help());
     return 0;
 }
