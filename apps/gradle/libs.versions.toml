@@ -1,13 +1,13 @@
 [versions]
-agp = "9.0.1"
-kotlin = "2.3.10"
-compileSdk = "36"
-targetSdk = "36"
+agp = "9.3.0"
+kotlin = "2.4.10"
+compileSdk = "37"
+targetSdk = "37"
 minSdk = "26"
 coreKtx = "1.17.0"
 lifecycle = "2.10.0"
 activityCompose = "1.12.4"
-composeBom = "2026.02.00"
+composeBom = "2026.08.00"
 # material-icons-core/extended are NOT covered by the Compose BOM; 1.7.8 is the
 # final release on their independent version line and stays API-compatible with
 # newer Compose releases (they only contain ImageVector definitions).
