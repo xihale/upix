@@ -196,6 +196,8 @@ int cmd_process(const args::Process& a) {
             crossscale::UnixSocket sock;
             auto conn = sock.connect(sock_path);
             if (!conn) return std::nullopt;  // lost a race with daemon shutdown
+            const auto delegate_start_time = std::chrono::steady_clock::now();
+            LOG_INFO("Engine", "delegating to warm engine daemon...");
 
             // 2. Build contiguous payload = [ServeRequest][image], one frame.
             crossscale::ServeRequest req{};
@@ -225,20 +227,45 @@ int cmd_process(const args::Process& a) {
             auto frame = crossscale::Protocol::serialize(h, payload.data());
             if (!sock.send_all(frame.data(), frame.size())) return std::nullopt;
 
-            // 3. Read the result stream: MSG_SERVE_RESPONSE carries
-            //    [ServeResponse] + the leading bytes, MSG_SERVE_DATA frames
-            //    continue until img_length is reached. Chunks land straight in
-            //    the final buffer — peak memory stays at one copy of the image.
+            // 3. Read frames until the result header: MSG_SERVE_PROGRESS
+            //    carries tile progress (render the same live line the inline
+            //    path shows), then MSG_SERVE_RESPONSE carries [ServeResponse]
+            //    + the leading bytes. MSG_SERVE_DATA frames continue until
+            //    img_length is reached. Chunks land straight in the final
+            //    buffer — peak memory stays at one copy of the image.
             std::vector<uint8_t> rhdr(crossscale::Protocol::HEADER_SIZE);
-            if (!sock.receive_all(rhdr.data(), rhdr.size())) {
-                LOG_ERROR("Engine", "daemon connection lost mid-request");
-                return 1;
-            }
-            auto rparsed = crossscale::Protocol::parse_header(rhdr.data(), rhdr.size());
-            if (!rparsed || rparsed->type != crossscale::MessageType::MSG_SERVE_RESPONSE ||
-                rparsed->payload_length < sizeof(crossscale::ServeResponse)) {
-                LOG_ERROR("Engine", "malformed daemon response");
-                return 1;
+            std::optional<crossscale::MessageHeader> rparsed;
+            while (true) {
+                if (!sock.receive_all(rhdr.data(), rhdr.size())) {
+                    LOG_ERROR("Engine", "daemon connection lost mid-request");
+                    return 1;
+                }
+                rparsed = crossscale::Protocol::parse_header(rhdr.data(), rhdr.size());
+                if (!rparsed) {
+                    LOG_ERROR("Engine", "malformed daemon response");
+                    return 1;
+                }
+                if (rparsed->type == crossscale::MessageType::MSG_SERVE_PROGRESS &&
+                    rparsed->payload_length == sizeof(crossscale::ServeProgress)) {
+                    std::vector<uint8_t> pbuf(rparsed->payload_length);
+                    if (!sock.receive_all(pbuf.data(), pbuf.size())) {
+                        LOG_ERROR("Engine", "daemon connection lost mid-progress");
+                        return 1;
+                    }
+                    crossscale::ServeProgress sp{};
+                    std::memcpy(&sp, pbuf.data(), sizeof(sp));
+                    crossscale::ProcessingProgress prog;
+                    prog.total_tiles = static_cast<int>(sp.total_tiles);
+                    prog.completed_tiles = static_cast<int>(sp.completed_tiles);
+                    print_progress_stderr(prog, delegate_start_time);
+                    continue;
+                }
+                if (rparsed->type != crossscale::MessageType::MSG_SERVE_RESPONSE ||
+                    rparsed->payload_length < sizeof(crossscale::ServeResponse)) {
+                    LOG_ERROR("Engine", "malformed daemon response");
+                    return 1;
+                }
+                break;  // response header frame is in rhdr/rparsed
             }
             std::vector<uint8_t> rhead(rparsed->payload_length);
             if (!sock.receive_all(rhead.data(), rhead.size())) {

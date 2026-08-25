@@ -54,6 +54,10 @@ enum class MessageType : uint16_t {
     MSG_SERVE_REQUEST = 0x0601,   // client→daemon: upscale request
     MSG_SERVE_RESPONSE = 0x0602,  // daemon→client: [ServeResponse][leading bytes]
     MSG_SERVE_DATA = 0x0603,      // daemon→client: continuation image bytes
+    // daemon→client: tile progress while a request is being processed, so the
+    // client can render the same live progress line the inline path shows.
+    // Sent between MSG_SERVE_REQUEST and MSG_SERVE_RESPONSE.
+    MSG_SERVE_PROGRESS = 0x0604,
 };
 
 struct MessageHeader {
@@ -210,6 +214,13 @@ struct ServeResponse {
     char model_name[64];     // model actually used (daemon's choice when request
                              // named none) — lets the client derive default
                              // output names like `img_<model>.png`
+};
+
+// MSG_SERVE_PROGRESS payload. Mirrors ProcessingProgress's two counters so
+// the client can rebuild its usual "42% [7/169 tiles, ETA 12s]" line.
+struct ServeProgress {
+    uint32_t completed_tiles;
+    uint32_t total_tiles;
 };
 
 class Protocol {

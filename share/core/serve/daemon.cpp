@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <malloc.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -201,10 +202,24 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
         tc.batch_size = 1;
 
         std::atomic<bool> cancel{false};
+        // Stream tile progress to the client so it can render the same live
+        // progress line the inline path shows. Throttled to whole-percent
+        // changes; a failed progress send is non-fatal (the terminal response
+        // reports real errors).
+        int last_sent_pct = -1;
+        auto progress_sink = [&](const ProcessingProgress& prog) {
+            const int pct = static_cast<int>(prog.percentage());
+            if (pct == last_sent_pct) return;
+            last_sent_pct = pct;
+            ServeProgress msg{};
+            msg.completed_tiles = static_cast<uint32_t>(prog.completed_tiles);
+            msg.total_tiles = static_cast<uint32_t>(prog.total_tiles);
+            (void)send_via(*sock, MessageType::MSG_SERVE_PROGRESS, &msg, sizeof(msg));
+        };
         auto res = processor_->process_image_u8(
             img_in, out_bytes.data(),
             req.width, req.height, req.channels,
-            *engine_, tc, {}, cancel, /*enable_alpha_bicubic=*/true);
+            *engine_, tc, progress_sink, cancel, /*enable_alpha_bicubic=*/true);
         if (!res) {
             err_msg = res.error().message;
             out_bytes.clear();
@@ -284,6 +299,11 @@ auto ServeDaemon::run() -> void {
         // still serialized inside handle_client via engine_mutex_.
         std::thread([this, c = std::move(*client)]() mutable {
             handle_client(std::move(c));
+            // A served request leaves hundreds of MB of freed heap (result
+            // buffer, staging) that glibc keeps for reuse. Hand it back to
+            // the OS so the daemon's RSS tracks what it is actually holding,
+            // not the largest request it ever saw.
+            malloc_trim(0);
         }).detach();
     }
 }
