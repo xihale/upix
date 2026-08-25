@@ -309,6 +309,7 @@ int cmd_process(const args::Process& a) {
                 }
                 got += chunk->payload_length;
             }
+            LOG_INFO("Engine", "Inference done, encoding and saving output...");
 
             crossscale::ProcessingConfig config;
             if (!config_file.empty()) {
@@ -537,6 +538,7 @@ int cmd_process(const args::Process& a) {
     }
 
     const auto final_output_path = crossscale::resolve_output_path(eff_output, config);
+    LOG_INFO("Engine", "Inference done, encoding and saving output...");
     auto save_result = output_image.save(final_output_path, config.output_quality);
     if (!save_result.has_value()) {
         LOG_ERROR("Engine", "Failed to save output: " + save_result.error().message);

@@ -77,18 +77,17 @@ void print_progress_stderr(const crossscale::ProcessingProgress& prog,
     float pct = prog.percentage();
 
     std::ostringstream oss;
-    oss << std::fixed << std::setprecision(1) << pct << "%  ["
-        << prog.completed_tiles << "/" << prog.total_tiles << " tiles";
+    oss << std::fixed << std::setprecision(0) << pct << "% ("
+        << prog.completed_tiles << "/" << prog.total_tiles;
 
-    if (prog.completed_tiles > 0 && elapsed > 0.1) {
+    if (prog.completed_tiles > 0 && elapsed > 0.1 && prog.completed_tiles < prog.total_tiles) {
         double tiles_per_sec = prog.completed_tiles / elapsed;
         double remaining_tiles = prog.total_tiles - prog.completed_tiles;
         double eta_sec = remaining_tiles / tiles_per_sec;
-        oss << ", " << std::setprecision(1) << tiles_per_sec << " tiles/s"
-            << ", ETA " << std::setprecision(1) << eta_sec << "s";
+        oss << ", ETA " << eta_sec << "s";
     }
 
-    oss << "]";
+    oss << ")";
     std::cerr << "\r" << oss.str() << std::flush;
 
     if (prog.completed_tiles >= prog.total_tiles) {
