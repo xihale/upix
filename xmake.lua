@@ -1,5 +1,8 @@
 set_project("crossscale")
-set_version("0.1.0")
+-- CLI/desktop release channel: feeds crossscale-cli --version (on_load in
+-- cli/xmake.lua). The Android app versions independently in
+-- apps/app/build.gradle.kts. Release tags: cli-v*, android-v*, models.
+set_version("0.2.0")
 set_languages("c++23")
 
 add_repositories("crossscale-local " .. os.scriptdir())

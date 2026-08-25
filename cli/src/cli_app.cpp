@@ -14,6 +14,12 @@
 #include "args.hpp"
 #include "common.hpp"  // default_models_dir
 
+// Injected by the build (-DCROSSSCALE_VERSION=...); xmake.lua's set_version()
+// is the single source of truth. "dev" covers direct compiler invocations.
+#ifndef CROSSSCALE_VERSION
+#define CROSSSCALE_VERSION "dev"
+#endif
+
 // Set by a subcommand callback; read by main(). std::nullopt means "no
 // subcommand ran" (e.g. bare --help, or no verb given).
 std::optional<int> g_exit_code;
@@ -22,7 +28,7 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     auto app = std::make_unique<CLI::App>(
         "CrossScale - Distributed Image Super-Resolution", "crossscale");
 
-    app->set_version_flag("--version,-V", "0.1.0");
+    app->set_version_flag("--version,-V", CROSSSCALE_VERSION);
 
     // Reusable validators.
     auto tile_range = CLI::Range(16, 8192);

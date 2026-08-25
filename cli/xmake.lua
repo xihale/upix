@@ -3,7 +3,15 @@
 -- (or imported locally with `crossscale model import`).
 target("crossscale-cli")
     set_kind("binary")
-    add_rules("crossscale.host_isa", "crossscale.upx")
+    set_rules("crossscale.host_isa", "crossscale.upx")
+
+    -- Single source of truth: root xmake.lua's set_version() feeds the
+    -- CLI11 --version output via CROSSSCALE_VERSION (cli_app.cpp). The
+    -- project module is script-scope only, hence on_load.
+    on_load(function (target)
+        import("core.project.project")
+        target:add('defines', 'CROSSSCALE_VERSION="v' .. project.version() .. '"')
+    end)
 
     add_deps("crossscale-core", "crossscale-perf")
     add_packages("ncnn~runtime", "libwebp", "glaze", "qr-code-generator-cpp", "cli11", "libsodium", "libcurl", "openssl", "libzip")
