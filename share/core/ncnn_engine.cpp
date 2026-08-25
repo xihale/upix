@@ -380,11 +380,25 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
 
         // Pre-padding models (Real-CUGAN "se"): feed a replicate-border padded
         // frame so the model's internal crops cancel out and output stays
-        // exactly width*scale x height*scale.
+        // exactly width*scale x height*scale. ncnn's CPU layers silently emit
+        // garbage (or corrupt the heap) for this family at certain net input
+        // WIDTH classes while the GPU path is unaffected everywhere — verified
+        // by tile-probe sweeps: x2 needs an even net width, x3 needs
+        // net % 4 == 0. Extend the replicate pad on the right into the
+        // verified-safe class and crop the extra columns off below.
         ncnn::Mat in_feed;
+        int pad_right = model_prepadding_;
         if (model_prepadding_ > 0) {
+            const int net_w = width + 2 * model_prepadding_;
+            int extra = 0;
+            if (scale_factor_ == 3) {
+                extra = (4 - net_w % 4) % 4;
+            } else {
+                extra = net_w % 2;
+            }
+            pad_right += extra;
             ncnn::copy_make_border(in, in_feed,
-                model_prepadding_, model_prepadding_, model_prepadding_, model_prepadding_,
+                model_prepadding_, model_prepadding_, model_prepadding_, pad_right,
                 ncnn::BORDER_REPLICATE, 0.f);
         }
         
@@ -438,7 +452,9 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             return std::unexpected(EngineError{3, "Processing cancelled"});
         }
         
-        if (out.w != expected_out_width || out.h != expected_out_height || out.c != channels) {
+        // Pre-padding runs may emit up to (align-1)*scale extra columns/rows
+        // from the alignment extension; the valid frame is the top-left one.
+        if (out.c != channels || out.w < expected_out_width || out.h < expected_out_height) {
             return std::unexpected(EngineError{
                 16,
                 "Output shape mismatch: expected=" +
@@ -448,15 +464,15 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             });
         }
 
-        const int out_width = out.w;
-        const int out_height = out.h;
+        const int out_width = expected_out_width;
+        const int out_height = expected_out_height;
 
         for (int c = 0; c < channels; ++c) {
             const float* out_channel = out.channel(c);
             for (int h = 0; h < out_height; ++h) {
                 for (int w = 0; w < out_width; ++w) {
                     size_t dst_idx = (static_cast<size_t>(h) * out_width + w) * channels + c;
-                    size_t src_idx = static_cast<size_t>(h) * out_width + w;
+                    size_t src_idx = static_cast<size_t>(h) * out.w + w;
                     output[dst_idx] = out_channel[src_idx];
                 }
             }

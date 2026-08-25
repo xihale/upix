@@ -21,18 +21,28 @@ target("crossscale-core")
         end
     end)
     before_build(function (target)
-        if os.isfile(spirv_pack) then
-            return
+        if not os.isfile(spirv_pack) then
+            import("core.project.project")
+            local dump = project.target("dump-spirv")
+            assert(dump, "dump-spirv target missing")
+            local bin = dump:targetfile()
+            if not os.isfile(bin) then
+                os.execv(os.programfile(), {"build", "dump-spirv"})
+                bin = dump:targetfile()
+            end
+            print("generating " .. spirv_pack)
+            os.execv(bin, {spirv_pack})
         end
-        import("core.project.project")
-        local dump = project.target("dump-spirv")
-        assert(dump, "dump-spirv target missing")
-        local bin = dump:targetfile()
-        if not os.isfile(bin) then
-            os.execv(os.programfile(), {"build", "dump-spirv"})
-            bin = dump:targetfile()
+        -- The pack reaches the binary through .incbin inside spirv_pack.S,
+        -- which xmake's dependency scan cannot see: after regenerating the
+        -- pack, every target would keep linking the OLD shaders until the .S
+        -- happened to recompile. Rewrite it (same bytes) to bump its mtime so
+        -- the assembler reruns whenever the bin is newer.
+        local spirv_pack_s = path.join(os.scriptdir(), "..", "share", "core", "spirv_pack.S")
+        if os.mtime(spirv_pack) > os.mtime(spirv_pack_s) then
+            local source = io.readfile(spirv_pack_s)
+            io.writefile(spirv_pack_s, source)
+            print("bumping " .. spirv_pack_s .. " for regenerated SPIR-V pack")
         end
-        print("generating " .. spirv_pack)
-        os.execv(bin, {spirv_pack})
     end)
 
