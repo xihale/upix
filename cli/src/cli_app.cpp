@@ -211,10 +211,11 @@ auto build_app() -> std::unique_ptr<CLI::App> {
         }
     });
 
-    // ── completions ──────────────────────────────────────────────────────────
+    // ── completions (hidden from help and TAB candidates; one-off setup) ────
     static args::Completions completions_args;
     auto* comp = app->add_subcommand(
         "completions", "Print or install a shell completion script (bash/zsh/fish)");
+    comp->group("");  // hidden from help; complete_subcommands() skips it too
     comp->add_option("shell", completions_args.shell, "Target shell")
         ->required()
         ->check(CLI::IsMember({"bash", "zsh", "fish"}));
