@@ -17,6 +17,7 @@ target("crossscale-cli")
         "src/cmd_perf.cpp",
         "src/cmd_host.cpp",
         "src/cmd_daemon.cpp",
+        "src/cmd_completions.cpp",
         "src/cmd_process.cpp",
         "src/process_batch.cpp"
     )

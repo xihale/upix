@@ -50,6 +50,20 @@ int cmd_model_list(const args::Model& a) {
     crossscale::ModelManager manager(a.models_dir.empty()
                                          ? fs::current_path() / "models"
                                          : fs::path(a.models_dir));
+
+    // Machine-readable form: names only, and quiet — the logger writes to
+    // stdout by design, so any diagnostic would pollute what scripts and
+    // shell completions consume. Missing/unscannable dir → no output at all.
+    if (a.names_only) {
+        std::error_code ec;
+        if (!fs::is_directory(manager.models_directory(), ec)) return 0;
+        auto names = manager.scan_models();
+        if (names.has_value()) {
+            for (const auto& m : *names) std::cout << m.name << "\n";
+        }
+        return 0;
+    }
+
     auto models = manager.scan_models();
 
     if (!models.has_value()) {

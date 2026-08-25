@@ -189,7 +189,14 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
         out_h = req.height * scale;
         out_bytes.resize(static_cast<size_t>(out_w) * out_h * out_c);
         TileConfig tc;
-        tc.tile_size = req.tile_size;
+        // tile_size 0 = "auto": the client didn't pin a size, so apply the
+        // same engine recommendation the inline path uses (cmd_process's
+        // `!tile_size_explicit && !auto_tile` branch) — keeps daemon-delegated
+        // and inline output byte-identical without the client needing its own
+        // engine to ask.
+        tc.tile_size = req.tile_size > 0
+            ? req.tile_size
+            : engine_->get_recommended_tile_size();
         tc.overlap = req.tile_overlap;
         tc.batch_size = 1;
 

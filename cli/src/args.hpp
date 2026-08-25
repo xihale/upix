@@ -47,6 +47,8 @@ struct Model {
     std::string repo;               // "owner/name", empty = default upstream
     std::vector<std::string> names; // download: model names from the manifest
     std::vector<std::string> files; // import: local .param/.bin paths
+    bool names_only = false;        // list: one name per line, no header/sizes
+                                    // (machine-readable; used by completions)
 };
 
 // `perf {list-probes, gpu-efficiency, gpu-concurrency, gpu-reuse}`.
@@ -83,6 +85,13 @@ struct Daemon {
     bool force_cpu = false;
     bool foreground = false;
     int idle_timeout_s = 600;       // exit after this many idle seconds (0 = never)
+};
+
+// `completions <bash|zsh|fish>` — emit a shell completion script to stdout,
+// or with -i/--install write it into the shell's user completion directory.
+struct Completions {
+    std::string shell;              // bash / zsh / fish
+    bool install = false;           // write to the standard dir instead of printing
 };
 
 }  // namespace args

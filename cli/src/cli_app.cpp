@@ -97,6 +97,8 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     auto* mlist = model->add_subcommand("list", "List installed models");
     mlist->add_option("--models-dir", model_list_args.models_dir,
                       "Models directory (default: ./models)");
+    mlist->add_flag("--names-only", model_list_args.names_only,
+                    "Print model names only, one per line (for scripts/completions)");
     mlist->callback([] { model_list_args.subcommand = "list";
                          g_exit_code = cmd_model(model_list_args); });
 
@@ -267,6 +269,18 @@ auto build_app() -> std::unique_ptr<CLI::App> {
             g_exit_code = cmd_daemon(daemon_args);
         }
     });
+
+    // ── completions ──────────────────────────────────────────────────────────
+    static args::Completions completions_args;
+    auto* comp = app->add_subcommand(
+        "completions", "Print or install a shell completion script (bash/zsh/fish)");
+    comp->add_option("shell", completions_args.shell, "Target shell")
+        ->required()
+        ->check(CLI::IsMember({"bash", "zsh", "fish"}));
+    comp->add_flag("-i,--install", completions_args.install,
+                   "Write the script into this shell's user completion directory "
+                   "instead of printing it");
+    comp->callback([] { g_exit_code = cmd_completions(completions_args); });
 
     return app;
 }

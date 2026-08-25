@@ -182,7 +182,9 @@ struct ModelDownloadResponse {
 // payload = [Serve{Request,Response} struct][img_length bytes] contiguous.
 struct ServeRequest {
     char model_name[64];     // empty = use daemon's current model; non-empty & different -> lazy reload
-    int32_t tile_size;
+    int32_t tile_size;       // 0 = auto: daemon substitutes its engine's recommended size
+                             // (the same rule the inline CLI path applies), so both paths
+                             // produce identical pixels; >0 = use exactly this size
     int32_t tile_overlap;
     int32_t width;
     int32_t height;

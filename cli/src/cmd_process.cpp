@@ -173,8 +173,9 @@ int cmd_process(const args::Process& a) {
     // running, spawn one in the background and wait for it (it idle-exits on
     // its own later). Falls back silently (returns nullopt) if the daemon
     // never comes up or the connection fails; on a real daemon-side error
-    // returns 1.
-    if (!is_dir && !no_daemon) {
+    // returns 1. --auto-tile stays inline: the optimizer benchmarks the
+    // engine directly, which ServeRequest cannot carry.
+    if (!is_dir && !no_daemon && !auto_tile) {
         auto delegate = [&]() -> std::optional<int> {
             // 1. Probe: no daemon accepting → try to start one (30 s cap);
             //    give up silently on failure and let the inline path run.
@@ -199,7 +200,11 @@ int cmd_process(const args::Process& a) {
             crossscale::ServeRequest req{};
             std::memset(req.model_name, 0, sizeof(req.model_name));
             model_name.copy(req.model_name, sizeof(req.model_name) - 1);
-            req.tile_size = tile_size;
+            // 0 = "auto": the daemon substitutes its engine's recommended
+            // tile size — the same rule the inline path applies below — so
+            // both paths produce identical pixels when --tile-size is not
+            // pinned. An explicit --tile-size is forwarded as-is.
+            req.tile_size = tile_size_explicit ? tile_size : 0;
             req.tile_overlap = tile_overlap;
             req.width = image.width();
             req.height = image.height();
