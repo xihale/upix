@@ -15,6 +15,7 @@
 #include <cstring>
 #include <filesystem>
 #include <malloc.h>
+#include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -64,6 +65,17 @@ struct ConnGuard {
     }
 };
 
+// Accessor subclass: StreamSocket keeps its fd protected with no public getter,
+// but teardown needs the fd number to ::shutdown() a connection whose thread is
+// blocked in recv(). (Calling close() from another thread would deadlock on
+// io_mutex_, which receive_all holds across the blocking read.) Legal C++: a
+// derived class may read protected base members through its own objects.
+class ConnSock : public UnixSocket {
+public:
+    explicit ConnSock(UnixSocket&& s) : UnixSocket(std::move(s)) {}
+    [[nodiscard]] auto fd() const -> int { return socket_; }
+};
+
 } // namespace
 
 auto default_serve_socket_path() -> std::string {
@@ -83,6 +95,9 @@ ServeDaemon::ServeDaemon() = default;
 ServeDaemon::~ServeDaemon() {
     stop();
     if (server_) server_->stop();
+    // Join connection threads before engine_/processor_ (members below) are
+    // destroyed, so no thread can touch them after teardown.
+    drain_connections();
 }
 
 auto ServeDaemon::start(const std::string& socket_path,
@@ -307,10 +322,30 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     send_via(*sock, MessageType::MSG_SERVE_RESPONSE, head.data(), head.size());
 }
 
+auto ServeDaemon::drain_connections() -> void {
+    // Interrupt readers before joining: a client that connected but never sent
+    // bytes would block recv() forever and hang the joins below. ::shutdown on
+    // the dup'd watch fd wakes the blocked recv() with an error; the watch fd
+    // itself is closed immediately (the connection's real fd belongs to the
+    // thread's UnixSocket).
+    for (auto& ct : conn_threads_) ct.thread.request_stop();
+    for (auto& ct : conn_threads_) {
+        if (ct.watch_fd >= 0) {
+            ::shutdown(ct.watch_fd, SHUT_RDWR);
+            ::close(ct.watch_fd);
+            ct.watch_fd = -1;
+        }
+    }
+    for (auto& ct : conn_threads_) {
+        if (ct.thread.joinable()) ct.thread.join();
+    }
+    conn_threads_.clear();
+}
+
 auto ServeDaemon::run() -> void {
-    running_.store(true);
+    const std::stop_token st = stop_src_.get_token();
     last_active_ms_.store(steady_now_ms());
-    while (running_.load() && !stop_requested_.load()) {
+    while (!st.stop_requested()) {
         auto client = server_->accept();
         if (!client) {
             if (client.error().code == EAGAIN) {
@@ -327,30 +362,38 @@ auto ServeDaemon::run() -> void {
                 }
                 continue;
             }
-            if (!stop_requested_.load()) {
+            if (!st.stop_requested()) {
                 LOG_WARNING("Daemon", "accept error: {}", client.error().message);
             }
             continue;
         }
         active_conns_.fetch_add(1);
         last_active_ms_.store(steady_now_ms());
-        // Detach: each connection runs on its own thread so a slow GPU inference
-        // on one client doesn't block accept() for others. Engine access is
-        // still serialized inside handle_client via engine_mutex_.
-        std::thread([this, c = std::move(*client)]() mutable {
+        // Each connection runs on its own tracked jthread so a slow GPU
+        // inference on one client doesn't block accept() for others; drain at
+        // loop exit guarantees none outlives run()/the daemon. Engine access is
+        // still serialized inside handle_client via engine_mutex_. The watch fd
+        // lets drain_connections() unstick a reader blocked on this client.
+        auto sock = std::make_unique<ConnSock>(std::move(**client));
+        const int watch_fd = ::dup(sock->fd());
+        ConnThread ct;
+        ct.watch_fd = watch_fd;
+        ct.thread = std::jthread([this, c = std::move(sock)]() mutable {
             handle_client(std::move(c));
             // A served request leaves hundreds of MB of freed heap (result
             // buffer, staging) that glibc keeps for reuse. Hand it back to
             // the OS so the daemon's RSS tracks what it is actually holding,
             // not the largest request it ever saw.
             malloc_trim(0);
-        }).detach();
+        });
+        conn_threads_.push_back(std::move(ct));
     }
+    // Same teardown path for stop(), fatal error, and idle exit.
+    drain_connections();
 }
 
 auto ServeDaemon::stop() -> void {
-    stop_requested_.store(true);
-    running_.store(false);
+    stop_src_.request_stop();
 }
 
 auto ServeDaemon::set_idle_timeout(int seconds) -> void {

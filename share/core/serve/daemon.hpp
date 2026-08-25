@@ -19,7 +19,10 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <stop_token>
 #include <string>
+#include <thread>
+#include <vector>
 
 namespace crossscale {
 
@@ -50,9 +53,10 @@ public:
                const std::string& model_name,
                ServeDevice device) -> int;
 
-    // Blocking accept loop. Spawns one thread per connection. Returns when
-    // stop() is called (from a signal handler or another thread) or on a fatal
-    // server error, or when the idle timeout elapses (see set_idle_timeout).
+    // Blocking accept loop. Spawns one tracked jthread per connection. Returns
+    // when stop() is called (from a signal handler or another thread) or on a
+    // fatal server error, or when the idle timeout elapses (see
+    // set_idle_timeout). On return all connection threads have been joined.
     auto run() -> void;
 
     // Request shutdown from any thread. Wakes the accept loop within ~500 ms.
@@ -73,13 +77,28 @@ private:
     // by engine_mutex_. Returns the param/bin resolution error if lookup fails.
     auto ensure_model_loaded(const std::string& model_name) -> int;
 
+    // Join every connection thread. Interrupts blocked socket reads first (via
+    // ::shutdown on a per-connection watch fd) so a client that connected but
+    // never sent bytes cannot hang teardown forever.
+    auto drain_connections() -> void;
+
+    // One accepted connection: its thread plus a dup() of the connection fd
+    // used only to ::shutdown() it during teardown (waking a recv() that is
+    // blocked on an unresponsive client). The dup is closed after shutdown.
+    struct ConnThread {
+        std::jthread thread;
+        int watch_fd = -1;
+    };
+
     std::unique_ptr<Engine> engine_;
     std::unique_ptr<ModelManager> models_;
     std::unique_ptr<UnixServer> server_;
     std::unique_ptr<TileProcessor> processor_;
     std::mutex engine_mutex_;     // serializes engine access (Vulkan constraint)
-    std::atomic<bool> running_{false};
-    std::atomic<bool> stop_requested_{false};
+    // Single shutdown source of truth: stop() requests it, run()'s accept loop
+    // and drain_connections() poll the derived token.
+    std::stop_source stop_src_;
+    std::vector<ConnThread> conn_threads_;  // touched only by run()/destructor
     std::atomic<int> active_conns_{0};        // connections accepted but not finished
     std::atomic<int64_t> last_active_ms_{0};  // steady-clock ms of last accept/completion
     int idle_timeout_s_ = 0;
