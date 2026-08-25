@@ -1,6 +1,8 @@
 package com.crossscale
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import java.io.ByteArrayOutputStream
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.crossscale.nativelib.NCNNEngine
@@ -64,19 +66,21 @@ class RemoteDistributedTest {
         return learnedPubKey
     }
 
-    // 64x64 RGB synthetic image (deterministic gradient) reused across formats.
+    // 64x64 synthetic image (deterministic gradient), PNG-encoded: the new
+    // wire protocol ships encoded file bytes and the PC decodes them.
     private val syntheticRgb: ByteArray by lazy {
         val size = 64
-        val rgb = ByteArray(size * size * 3)
-        var i = 0
-        for (y in 0 until size) {
-            for (x in 0 until size) {
-                rgb[i++] = (x * 4 and 0xFF).toByte()
-                rgb[i++] = (y * 4 and 0xFF).toByte()
-                rgb[i++] = ((x + y) and 0xFF).toByte()
-            }
+        val pixels = IntArray(size * size) { i ->
+            val x = i % size
+            val y = i / size
+            (0xFF shl 24) or ((x * 4 and 0xFF) shl 16) or ((y * 4 and 0xFF) shl 8) or ((x + y) and 0xFF)
         }
-        rgb
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        bmp.setPixels(pixels, 0, size, 0, 0, size, size)
+        val out = ByteArrayOutputStream()
+        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+        bmp.recycle()
+        out.toByteArray()
     }
 
     /** Assert the bytes start with the magic header of the requested format. */
@@ -112,9 +116,7 @@ class RemoteDistributedTest {
             tileSize = 64,
             tileOverlap = 8,
             inputImage = syntheticRgb,
-            width = 64,
-            height = 64,
-            channels = 3,
+            inputFormat = "png",
             outputFormat = format,
             outputQuality = 95   // ignored by lossless PNG; honors jpg/webp
         )
