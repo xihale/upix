@@ -13,7 +13,7 @@ target("upix-cli")
         target:add('defines', 'UPIX_VERSION="v' .. project.version() .. '"')
     end)
 
-    add_deps("upix-core", "upix-perf")
+    add_deps("upix-core")
     add_packages("ncnn~runtime", "libwebp", "glaze", "qr-code-generator-cpp", "cli11", "libsodium", "libcurl", "openssl", "libzip")
 
     add_files(
@@ -22,7 +22,6 @@ target("upix-cli")
         "src/common.cpp",
         "src/cmd_model.cpp",
         "src/model_downloader.cpp",
-        "src/cmd_perf.cpp",
         "src/cmd_host.cpp",
         "src/cmd_daemon.cpp",
         "src/cmd_completions.cpp",

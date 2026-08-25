@@ -53,23 +53,6 @@ struct Model {
                                     // (machine-readable; used by completions)
 };
 
-// `perf {list-probes, gpu-efficiency, gpu-concurrency, gpu-reuse}`.
-// One instance per nested subcommand (see cli_app.cpp) so each gets its own
-// default values. duration/warmup are kept as raw strings ("5s", "1.5") and
-// parsed to seconds in cmd_perf, matching the legacy "strip trailing s" rule.
-struct Perf {
-    std::string subcommand;         // list-probes / gpu-efficiency / ...
-    std::string model_name;
-    std::string models_dir;         // pre-filled by cli_app.cpp from default_models_dir()
-    std::string out_path;
-    int tile_size = 256;
-    int concurrency = 2;            // gpu-concurrency default; gpu-reuse overrides to 1
-    std::string duration_s = "5s";  // gpu-efficiency default; others override
-    std::string warmup_s = "1s";
-    int sample_ms = 100;
-    bool no_cpu_baseline = false;   // gpu-efficiency only
-};
-
 // `host {start, info}` — the coordination server phones pair with.
 struct Host {
     std::string subcommand;         // start / info (bare `host` = start)

@@ -150,11 +150,15 @@ time and remembered afterwards.
 
 ### Performance Probes
 
+Probes ship as a separate `upix-perf` binary (built from `tools/`, lands next
+to `upix-cli`) so the main CLI stays lean — they are developer/tuning tooling,
+not an end-user feature:
+
 ```bash
-./upix-cli perf list-probes           # list available probes
-./upix-cli perf gpu-efficiency        # GPU vs CPU tile throughput
-./upix-cli perf gpu-concurrency       # scaling across N engines
-./upix-cli perf gpu-reuse             # fresh vs reused VkCompute
+./upix-perf list-probes           # list available probes
+./upix-perf gpu-efficiency        # GPU vs CPU tile throughput
+./upix-perf gpu-concurrency       # scaling across N engines
+./upix-perf gpu-reuse             # fresh vs reused VkCompute
 ```
 
 ### Shell Completions

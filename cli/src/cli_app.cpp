@@ -89,7 +89,7 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     });
 
     // ── model ───────────────────────────────────────────────────────────────
-    // One Model instance per nested subcommand (like perf) so each carries its
+    // One Model instance per nested subcommand so each carries its
     // own models_dir/repo. `repo` is bound on the subcommands that hit the
     // network (list-remote/download); list/import are purely local.
     auto* model = app->add_subcommand("model", "Manage models (list, download, import)");
@@ -134,68 +134,7 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     mimp->callback([] { model_imp_args.subcommand = "import";
                         g_exit_code = cmd_model(model_imp_args); });
 
-    // ── perf ────────────────────────────────────────────────────────────────
-    // One Perf instance per nested subcommand so each carries its own defaults
-    // (gpu-efficiency: dur=5s/warm=1s/no-concurrency; gpu-concurrency:
-    // conc=2/dur=6s/warm=2s; gpu-reuse: conc=1/dur=6s/warm=2s).
-    auto* perf = app->add_subcommand("perf", "GPU/CPU performance probes");
-
-    static args::Perf perf_list_args;
-    perf_list_args.models_dir = default_models_dir();  // env-aware (common.cpp)
-    perf->add_subcommand("list-probes", "List available perf probes")
-        ->callback([] { perf_list_args.subcommand = "list-probes";
-                        g_exit_code = cmd_perf(perf_list_args); });
-
-    static args::Perf eff_args;
-    eff_args.models_dir = default_models_dir();  // env-aware (common.cpp)
-    auto* eff = perf->add_subcommand("gpu-efficiency", "Measure GPU vs CPU tile throughput");
-    eff->add_option("--model", eff_args.model_name, "Model name (default: first available)");
-    eff->add_option("--models-dir", eff_args.models_dir, "Models directory")->capture_default_str();
-    eff->add_option("--tile", eff_args.tile_size, "Tile size")->check(tile_range)->capture_default_str();
-    eff->add_option("--duration", eff_args.duration_s, "Duration (e.g. 5s)")->capture_default_str();
-    eff->add_option("--warmup", eff_args.warmup_s, "Warmup (e.g. 1s)")->capture_default_str();
-    eff->add_option("--sample-ms", eff_args.sample_ms, "Sample interval ms")
-        ->check(CLI::Range(10, 10000))->capture_default_str();
-    eff->add_flag("--no-cpu-baseline", eff_args.no_cpu_baseline, "Skip CPU baseline");
-    eff->add_option("--out", eff_args.out_path, "Output file (default: stdout)");
-    eff->callback([] { eff_args.subcommand = "gpu-efficiency";
-                       g_exit_code = cmd_perf(eff_args); });
-
-    static args::Perf conc_args;
-    conc_args.models_dir = default_models_dir();  // env-aware (common.cpp)
-    conc_args.concurrency = 2; conc_args.duration_s = "6s"; conc_args.warmup_s = "2s";
-    auto* conc = perf->add_subcommand("gpu-concurrency", "Measure scaling across N concurrent engines");
-    conc->add_option("--model", conc_args.model_name, "Model name");
-    conc->add_option("--models-dir", conc_args.models_dir, "Models directory")->capture_default_str();
-    conc->add_option("--tile", conc_args.tile_size, "Tile size")->check(tile_range)->capture_default_str();
-    conc->add_option("--concurrency", conc_args.concurrency, "Number of concurrent engines")
-        ->check(CLI::Range(1, 16))->capture_default_str();
-    conc->add_option("--duration", conc_args.duration_s, "Duration (e.g. 6s)")->capture_default_str();
-    conc->add_option("--warmup", conc_args.warmup_s, "Warmup (e.g. 2s)")->capture_default_str();
-    conc->add_option("--sample-ms", conc_args.sample_ms, "Sample interval ms")
-        ->check(CLI::Range(10, 10000))->capture_default_str();
-    conc->add_option("--out", conc_args.out_path, "Output file (default: stdout)");
-    conc->callback([] { conc_args.subcommand = "gpu-concurrency";
-                        g_exit_code = cmd_perf(conc_args); });
-
-    static args::Perf reuse_args;
-    reuse_args.models_dir = default_models_dir();  // env-aware (common.cpp)
-    reuse_args.concurrency = 1; reuse_args.duration_s = "6s"; reuse_args.warmup_s = "2s";
-    auto* reuse = perf->add_subcommand("gpu-reuse", "A/B fresh vs reused VkCompute per tile");
-    reuse->add_option("--model", reuse_args.model_name, "Model name");
-    reuse->add_option("--models-dir", reuse_args.models_dir, "Models directory")->capture_default_str();
-    reuse->add_option("--tile", reuse_args.tile_size, "Tile size")->check(tile_range)->capture_default_str();
-    reuse->add_option("--concurrency", reuse_args.concurrency, "Number of concurrent engines")
-        ->check(CLI::Range(1, 16))->capture_default_str();
-    reuse->add_option("--duration", reuse_args.duration_s, "Duration (e.g. 6s)")->capture_default_str();
-    reuse->add_option("--warmup", reuse_args.warmup_s, "Warmup (e.g. 2s)")->capture_default_str();
-    reuse->add_option("--sample-ms", reuse_args.sample_ms, "Sample interval ms")
-        ->check(CLI::Range(10, 10000))->capture_default_str();
-    reuse->add_option("--out", reuse_args.out_path, "Output file (default: stdout)");
-    reuse->callback([] { reuse_args.subcommand = "gpu-reuse";
-                         g_exit_code = cmd_perf(reuse_args); });
-
-    // ── host ──────────────────────────────────────────────────────────────────
+    // ── host ────────────────────────────────────────────────────────────────────
     // The coordination server phones pair with (TCP + QR invite). Distinct from
     // `daemon`, which is the local warm-engine process `process` delegates to.
     static args::Host host_args;

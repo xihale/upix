@@ -12,8 +12,8 @@
 
 ```
                   ┌──────────── PC CLI (cli/, C++23) ────────────┐
-                  │  隐式 process / process / host / daemon /    │
-                  │  model / perf                                 │
+                  │  隐式 upscale / model / host / daemon /      │
+                  │  completions    （perf 探针在 tools/upix-perf）│
                   └───────────────┬──────────────────────────────┘
                                   │ 链接静态库
                   ┌───────────────▼──────────────────────────────┐
@@ -33,7 +33,8 @@
 | 目录 | 角色 | 构建 | 标准 |
 |------|------|------|------|
 | `share/` | 共享 C++ 核心：推理引擎、tile 处理、分布式协议、serve 守护进程（daemon 命令）、网络/工具、perf 框架 | xmake 静态库（PC）/ CMake 直接编译（Android） | C++23 (PC), C++17 (JNI) |
-| `cli/` | PC 命令行入口，已模块化（`main.cpp` 仅 39 行薄入口 + `cli_app.cpp` 命令树 + 9 个 `cmd_*.cpp`） | xmake → `upix-cli` | C++23 |
+| `cli/` | PC 命令行入口，已模块化（`main.cpp` 薄入口 + `cli_app.cpp` 命令树 + `cmd_*.cpp` 每个子命令一个） | xmake → `upix-cli` | C++23 |
+| `tools/` | 主机侧工具：SPIR-V 打包器 + 独立性能探针 `upix-perf`（share/perf 的前端，不进主 CLI） | xmake → `dump-spirv`、`upix-perf` | C++23 |
 | `apps/` | Android 应用（Jetpack Compose + MVVM） | Gradle + CMake/NDK | Kotlin + C++17 JNI |
 | `models/` | ncnn 模型仓库（`.param` + `.bin`） | 运行时扫描 | — |
 | `docs/`、`scripts/` | 文档与运维脚本 | — | — |
@@ -213,7 +214,7 @@ daemon 生命周期全自动：`upix process` 单图路径发现无 daemon 时�
 
 ### 5.1 PC CLI（`cli/`，已模块化）
 
-**子命令**：`process` / `model list` / `benchmark` / `perf {list-probes|gpu-efficiency|gpu-concurrency|gpu-reuse}` / `server {start|info}` / `worker connect` / `serve {start|stop}` / `completion`。
+**子命令**：隐式 upscale（无动词）/ `model {list|list-remote|download|import}` / `host {start|info}` / `daemon {start|stop|status}` / `completions <bash|zsh|fish>`；性能探针在独立二进制 `upix-perf {list-probes|gpu-efficiency|gpu-concurrency|gpu-reuse}`。
 
 **结构**：
 - `main.cpp`（39 行）：薄入口，parse argv 并 dispatch

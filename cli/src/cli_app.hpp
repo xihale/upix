@@ -24,7 +24,6 @@ namespace args { struct Completions; }
 
 int cmd_process(const args::Process& a);
 int cmd_model(const args::Model& a);
-int cmd_perf(const args::Perf& a);
 int cmd_host(const args::Host& a);
 int cmd_daemon(const args::Daemon& a);
 int cmd_completions(const args::Completions& a);

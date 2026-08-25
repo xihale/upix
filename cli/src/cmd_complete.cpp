@@ -309,10 +309,10 @@ int cmd_complete_impl(int argc, char* argv[]) {
         static const std::set<std::string> ncnn_exts{"param", "bin"};
         complete_files(cur, &ncnn_exts);
     } else if (positionals == 0) {
-        // Nested verb slots: model/perf/host/daemon sub-subcommands.
+        // Nested verb slots: model/host/daemon sub-subcommands.
         complete_subcommands(node, cur);
     }
-    // Everything else (daemon/host/perf verbs, `model download`'s remote
+    // Everything else (daemon/host verbs, `model download`'s remote
     // catalog): no candidates rather than misleading ones.
 
     for (const Cand& c : g_out) {

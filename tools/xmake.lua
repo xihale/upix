@@ -14,6 +14,31 @@ target("dump-spirv")
         add_syslinks("dl")
     end
 
+-- Standalone performance-probe CLI. Kept out of upix-cli so the shipped CLI
+-- stays lean; probes are developer/tuning tooling. Target name differs from
+-- share/perf's static lib "upix-perf"; set_basename restores the natural
+-- binary name, so it lands next to upix-cli as build/<plat>/<arch>/<mode>/upix-perf.
+target("upix-perf-tool")
+    set_kind("binary")
+    set_basename("upix-perf")
+    add_rules("upix.host_isa")
+
+    -- Single source of truth: root xmake.lua's set_version() feeds --version,
+    -- same mechanism as cli_app.cpp.
+    on_load(function (target)
+        import("core.project.project")
+        target:add('defines', 'UPIX_VERSION="v' .. project.version() .. '"')
+    end)
+
+    add_deps("upix-core", "upix-perf")
+    add_packages("ncnn~runtime", "cli11")
+    add_includedirs("$(projectdir)/share")
+    add_files("upix_perf_main.cpp")
+
+    if is_plat("linux", "bsd") then
+        add_syslinks("dl")  -- NVML is dlopen'd at runtime by share/perf probes
+    end
+
 target("upix-core")
     on_load(function (target)
         if not os.isfile(spirv_pack) then
