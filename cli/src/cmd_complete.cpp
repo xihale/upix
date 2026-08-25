@@ -14,6 +14,10 @@
 //     ships: png/jpg/jpeg/webp always, avif only when system libavif loads
 //     (avif_decode_available()).
 //
+// Output protocol: "candidate\tdescription" lines, plus display-only hint
+// lines starting with '!' (e.g. a folder with no decodable images) that the
+// shell adapters print instead of offering — see cmd_completions.cpp.
+//
 // main.cpp dispatches argv[1] == "__complete" here before any CLI11 parsing.
 // The last WORD is the partial word under the cursor (may be empty). Output is
 // stdout lines only; diagnostics must never reach it, so nothing here logs and
@@ -82,6 +86,11 @@ void complete_output_formats() {
 // Directory entries matching the typed prefix; directories always offered with
 // a trailing '/' so paths stay navigable, files filtered by `exts` (null =
 // any file). A leading "~" round-trips so home-relative typing keeps working.
+//
+// When an extension-filtered completion finds nothing decodable here, a '!'
+// hint line is emitted instead of silence — the shell adapters print it as a
+// message ("no processable images here") rather than falling back to listing
+// every unrelated file in the folder.
 void complete_files(const std::string& typed_prefix, const std::set<std::string>* exts,
                     bool dirs_only = false) {
     std::string real = typed_prefix;
@@ -112,7 +121,7 @@ void complete_files(const std::string& typed_prefix, const std::set<std::string>
     const fs::path dir = dir_real.empty() ? fs::path(".") : fs::path(dir_real);
     std::error_code ec;
     fs::directory_iterator it(dir, fs::directory_options::skip_permission_denied, ec);
-    if (ec) return;
+    ec.clear();  // unreadable/missing dir → zero hits → the "none here" hint below
 
     std::vector<Cand> hits;
     for (const fs::directory_iterator end; it != end; it.increment(ec)) {
@@ -129,6 +138,19 @@ void complete_files(const std::string& typed_prefix, const std::set<std::string>
             if (ext.size() < 2 || exts->count(ext.substr(1)) == 0) continue;
         }
         hits.push_back({shown_dir + name + (is_dir ? "/" : ""), ""});
+    }
+
+    // Filtered input completion with no matches: say what the folder lacks.
+    // Plain-path completions (output etc.) stay silent — there the shell's own
+    // filename fallback is the right answer for free-form typing.
+    if (hits.empty() && exts != nullptr && !dirs_only) {
+        std::string ext_list;
+        for (const auto& e : image_exts()) {
+            ext_list += ext_list.empty() ? e : "/" + e;
+        }
+        emit("!" + (dir_real.empty() ? std::string() : shown_dir + " ") +
+                 "has no processable images (" + ext_list + ")");
+        return;
     }
 
     std::sort(hits.begin(), hits.end(),

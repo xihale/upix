@@ -40,8 +40,9 @@ void signal_handler(int);
 void daemon_signal_handler(int);
 
 // ── Defaults ────────────────────────────────────────────────────────────────
-// $CROSSSCALE_MODELS_DIR > ./models (the --models-dir flag wins by being bound
-// directly to each subcommand's models_dir field).
+// $CROSSSCALE_MODELS_DIR > $XDG_DATA_HOME/crossscale/models (per-user store,
+// never cwd-relative; the --models-dir flag wins by being bound directly to
+// each subcommand's models_dir field).
 auto default_models_dir() -> std::string;
 
 // ── Image / format helpers ──────────────────────────────────────────────────

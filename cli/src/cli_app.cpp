@@ -95,7 +95,7 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     model_list_args.models_dir = default_models_dir();  // env-aware (common.cpp)
     auto* mlist = model->add_subcommand("list", "List installed models");
     mlist->add_option("--models-dir", model_list_args.models_dir,
-                      "Models directory (default: ./models)");
+                      "Models directory (default: " + default_models_dir() + ")");
     mlist->add_flag("--names-only", model_list_args.names_only,
                     "Print model names only, one per line (for scripts/completions)");
     mlist->callback([] { model_list_args.subcommand = "list";
@@ -115,7 +115,7 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     mdl->add_option("names", model_dl_args.names, "Model name(s), see list-remote")
         ->required();
     mdl->add_option("--models-dir", model_dl_args.models_dir,
-                    "Models directory (default: ./models)");
+                    "Models directory (default: " + default_models_dir() + ")");
     mdl->add_option("--repo", model_dl_args.repo,
                     "GitHub repo owner/name (default: upstream release)");
     mdl->callback([] { model_dl_args.subcommand = "download";
@@ -127,7 +127,7 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     mimp->add_option("files", model_imp_args.files, "Local .param/.bin file path(s)")
         ->required();
     mimp->add_option("--models-dir", model_imp_args.models_dir,
-                     "Models directory (default: ./models)");
+                     "Models directory (default: " + default_models_dir() + ")");
     mimp->callback([] { model_imp_args.subcommand = "import";
                         g_exit_code = cmd_model(model_imp_args); });
 

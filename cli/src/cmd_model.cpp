@@ -15,6 +15,7 @@
 
 #include "args.hpp"
 #include "cli_app.hpp"
+#include "common.hpp"  // default_models_dir
 #include "model_downloader.hpp"
 #include "utils/logger.hpp"
 #include "core/model_manager.hpp"
@@ -48,7 +49,7 @@ auto mb(double bytes) -> std::string {
 
 int cmd_model_list(const args::Model& a) {
     crossscale::ModelManager manager(a.models_dir.empty()
-                                         ? fs::current_path() / "models"
+                                         ? fs::path(default_models_dir())
                                          : fs::path(a.models_dir));
 
     // Machine-readable form: names only, and quiet — the logger writes to
@@ -116,7 +117,7 @@ int cmd_model_download(const args::Model& a) {
         return 1;
     }
 
-    fs::path dir = a.models_dir.empty() ? fs::path("models") : fs::path(a.models_dir);
+    fs::path dir = a.models_dir.empty() ? fs::path(default_models_dir()) : fs::path(a.models_dir);
     int failures = 0;
     for (const auto& name : a.names) {
         const auto* m = find_remote(*remote, name);
@@ -159,7 +160,7 @@ int cmd_model_import(const args::Model& a) {
         return 1;
     }
 
-    fs::path dir = a.models_dir.empty() ? fs::path("models") : fs::path(a.models_dir);
+    fs::path dir = a.models_dir.empty() ? fs::path(default_models_dir()) : fs::path(a.models_dir);
     std::error_code ec;
     fs::create_directories(dir, ec);
     if (ec) {

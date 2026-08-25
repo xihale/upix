@@ -18,7 +18,7 @@ struct Process {
     std::string input_path;
     std::string output_path;
     std::string model_name;
-    std::string models_dir = "./models";
+    std::string models_dir;         // pre-filled by cli_app.cpp from default_models_dir()
     std::string config_file;        // empty = none
     int tile_size = 256;
     int tile_overlap = 16;
@@ -43,7 +43,7 @@ struct Process {
 // subcommand (see cli_app.cpp) so each carries its own models_dir/repo.
 struct Model {
     std::string subcommand;         // list / list-remote / download / import
-    std::string models_dir;         // empty = ./models
+    std::string models_dir;         // pre-filled by cli_app.cpp from default_models_dir()
     std::string repo;               // "owner/name", empty = default upstream
     std::vector<std::string> names; // download: model names from the manifest
     std::vector<std::string> files; // import: local .param/.bin paths
@@ -58,7 +58,7 @@ struct Model {
 struct Perf {
     std::string subcommand;         // list-probes / gpu-efficiency / ...
     std::string model_name;
-    std::string models_dir = "./models";
+    std::string models_dir;         // pre-filled by cli_app.cpp from default_models_dir()
     std::string out_path;
     int tile_size = 256;
     int concurrency = 2;            // gpu-concurrency default; gpu-reuse overrides to 1
@@ -73,14 +73,14 @@ struct Host {
     std::string subcommand;         // start / info (bare `host` = start)
     uint16_t port = 9527;
     bool auto_approve = false;      // start: auto-approve pairing requests (testing/CI)
-    std::string models_dir = "./models";
+    std::string models_dir;         // pre-filled by cli_app.cpp from default_models_dir()
 };
 
 // `daemon {start, stop, status}` — the local warm-engine daemon.
 struct Daemon {
     std::string subcommand;         // start / stop / status (bare `daemon` = start)
     std::string model_name;
-    std::string models_dir = "./models";
+    std::string models_dir;         // pre-filled by cli_app.cpp from default_models_dir()
     std::string socket_path;        // empty = default_serve_socket_path()
     bool force_cpu = false;
     bool foreground = false;

@@ -24,8 +24,11 @@ crossscale model list                 # list models installed locally
 crossscale model import ~/my-model.param ~/my-model.bin   # local custom models
 ```
 
-By default downloads land in `./models` (the same directory `process` scans);
-override with `--models-dir`.
+Models live in the per-user store `$XDG_DATA_HOME/crossscale/models`
+(`~/.local/share/crossscale/models` by default) — independent of the working
+directory, so running from anywhere finds the same models. Override per
+invocation with `--models-dir` or globally with `$CROSSSCALE_MODELS_DIR`.
+The directory is created on demand by `model download` / `model import`.
 
 ### Android
 
@@ -47,9 +50,9 @@ models/
     x2.bin
 ```
 
-A `models/models` symlink pointing at a machine-local store (e.g.
-`~/.config/CrossScale/models`) is followed by the scanner; it is untracked —
-create it locally if you want that directory scanned.
+A `models/models` symlink pointing at a machine-local store is followed by
+the scanner when you pass that directory explicitly (`--models-dir`); the
+default resolution no longer depends on any cwd-relative path.
 
 ## Publishing (maintainers)
 

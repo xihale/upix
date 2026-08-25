@@ -37,14 +37,22 @@ void daemon_signal_handler(int) {
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 // Models directory resolution: `--models-dir` flag (bound by cli_app.cpp) >
-// $CROSSSCALE_MODELS_DIR > ./models. Lets the CLI run from any cwd (e.g.
-// ~/Pictures) without repeating --models-dir.
+// $CROSSSCALE_MODELS_DIR > the per-user store $XDG_DATA_HOME/crossscale/models
+// (~/.local/share/crossscale/models by default). A fixed user-level location,
+// so the CLI finds its models from any cwd and never scatters a ./models
+// directory into whatever folder it was launched from.
 auto default_models_dir() -> std::string {
     if (const char* env = std::getenv("CROSSSCALE_MODELS_DIR");
         env && *env) {
         return env;
     }
-    return "./models";
+    if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg) {
+        return std::string(xdg) + "/crossscale/models";
+    }
+    if (const char* home = std::getenv("HOME"); home && *home) {
+        return std::string(home) + "/.local/share/crossscale/models";
+    }
+    return "./models";  // no HOME/XDG at all (degenerate): keep something usable
 }
 
 // ── Image / format helpers ──────────────────────────────────────────────────

@@ -107,7 +107,7 @@ install_recover "$APP_APK" || die "failed to install app APK"
 adb install -r -t "$TEST_APK" || die "failed to install androidTest APK"
 ok "APKs installed"
 
-# ── Phase 3: start PC coordinator (CWD=cli/ so ./models resolves) ──────────
+# ── Phase 3: start PC coordinator (default per-user models store) ──────────
 phase "Start coordinator (port $PORT, --auto-approve, model $MODEL)"
 # `exec` replaces the subshell with the CLI so $! is the coordinator PID
 # itself (kill/trap then reaches it directly).
