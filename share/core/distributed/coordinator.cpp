@@ -111,10 +111,8 @@ auto Coordinator::start(uint16_t port, IdentityKey& identity)
 
     port_ = port;
     running_ = true;
-    if (accept_thread_.joinable()) {
-        accept_thread_.join();
-    }
-    accept_thread_ = std::thread(&Coordinator::accept_loop, this);
+    // jthread move-assignment stops + joins any previous accept thread.
+    accept_thread_ = std::jthread([this](std::stop_token st) { accept_loop(st); });
 
     LOG_INFO("Coordinator", "Server started on port {}", port_);
     return {};
@@ -132,28 +130,34 @@ void Coordinator::stop() {
     LOG_INFO("Coordinator", "Stopping coordinator...");
     running_ = false;
 
+    // Shutdown ordering matters:
+    //   1. Close the listener first — request_stop() cannot interrupt a thread
+    //      blocked in a socket syscall; closing the fd makes the next 500 ms
+    //      poll tick in TCPServer::accept() fail immediately (same pattern as
+    //      the serve daemon).
+    //   2. Then join the accept thread; its loop observes the stop token on
+    //      every poll-tick wake.
+    //   3. Then stop+join the client handler threads. A handler sitting in
+    //      recv() wakes via its own socket timeouts and drops the connection
+    //      at the next stop-token check between frames; the pairing-gate wait
+    //      resolves through its promise as before.
     if (server_) {
         server_->stop();
+        server_.reset();
     }
 
     if (accept_thread_.joinable()) {
+        accept_thread_.request_stop();
         accept_thread_.join();
     }
-    
-    // Join all client handler threads
-    {
-        std::lock_guard<std::mutex> lock(client_threads_mutex_);
-        for (auto& t : client_threads_) {
-            if (t.joinable()) {
-                t.join();
-            }
-        }
-        client_threads_.clear();
-    }
 
-    if (server_) {
-        server_.reset();
+    for (auto& t : client_threads_) {
+        t.request_stop();
+        if (t.joinable()) {
+            t.join();
+        }
     }
+    client_threads_.clear();
 
     LOG_INFO("Coordinator", "Coordinator stopped");
 }
@@ -283,29 +287,26 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     return *encoded;
 }
 
-void Coordinator::accept_loop() {
-    while (running_) {
+void Coordinator::accept_loop(std::stop_token st) {
+    // The stop token is checked on every iteration; TCPServer::accept() polls
+    // with a 500 ms timeout so this loop re-runs at least every 500 ms even
+    // with no incoming connections.
+    while (!st.stop_requested()) {
         auto client = server_->accept();
         if (!client.has_value()) {
             // EAGAIN/ETIMEDOUT is the normal poll-timeout wake-up: loop back
-            // and re-check running_. Only log genuinely unexpected errors.
+            // and re-check the stop token. Only log genuinely unexpected errors.
             const int code = client.error().code;
-            if (running_ && code != EAGAIN && code != ETIMEDOUT) {
+            if (!st.stop_requested() && code != EAGAIN && code != ETIMEDOUT) {
                 LOG_ERROR("Coordinator", "Accept failed: {}", client.error().message);
             }
             continue;
         }
 
-        {
-            std::lock_guard<std::mutex> lock(client_threads_mutex_);
-            // Clean up finished threads
-            client_threads_.erase(
-                std::remove_if(client_threads_.begin(), client_threads_.end(),
-                    [](const std::thread& t) { return !t.joinable(); }),
-                client_threads_.end());
-            client_threads_.emplace_back(
-                &Coordinator::handle_client, this, std::move(client.value()));
-        }
+        client_threads_.emplace_back(
+            [this, sock = std::move(client.value())](std::stop_token st) mutable {
+                handle_client(st, std::move(sock));
+            });
     }
 }
 
@@ -463,7 +464,12 @@ bool Coordinator::run_handshake(WorkerConnection& conn) {
     return true;
 }
 
-void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
+void Coordinator::handle_client(std::stop_token st,
+                                std::unique_ptr<TCPSocket> socket) {
+    // Shutdown raced with an accepted connection: drop it immediately.
+    if (st.stop_requested()) {
+        return;
+    }
 
     // First, peek the very first header to decide which kind of client this is.
     //   - MSG_KEY_HELLO → encrypted ECDH+sig handshake, then pairing gate and
@@ -639,6 +645,10 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
                 // progress callback runs on this same thread (process_locally is
                 // synchronous), so no locking on last_sent_pct is needed.
                 int last_sent_pct = -1;
+                // Stop requested while queued: don't start a long upscale.
+                if (st.stop_requested()) {
+                    return;
+                }
                 const auto task_start = std::chrono::steady_clock::now();
                 auto progress_sink = [&conn, &last_sent_pct, &task_start, this](float frac) {
                     const int pct = static_cast<int>(

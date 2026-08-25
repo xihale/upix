@@ -109,8 +109,10 @@ public:
     void resolve_approval(uint64_t id, bool approved);
 
 private:
-    void accept_loop();
-    void handle_client(std::unique_ptr<TCPSocket> socket);
+    void accept_loop(std::stop_token st);
+    // Runs on its own jthread; `st` is checked at phase boundaries so a
+    // shutdown request drops the connection instead of serving it.
+    void handle_client(std::stop_token st, std::unique_ptr<TCPSocket> socket);
 
     // Run the server side of the ECDH+signature handshake on conn. On success
     // conn.session is active and conn.peer_* are populated; returns false on
@@ -140,10 +142,14 @@ private:
                                const MessageHeader& hdr, const std::vector<uint8_t>& payload);
 
     std::unique_ptr<TCPServer> server_;
-    std::thread accept_thread_;
+    std::jthread accept_thread_;
 
-    std::vector<std::thread> client_threads_;
-    std::mutex client_threads_mutex_;
+    // One jthread per accepted connection. Only accept_loop pushes and only
+    // stop() joins/clears (after accept_thread_ is joined), so no lock is
+    // needed. Finished jthreads stay joinable in the vector until stop()
+    // reaps them — same retention as the old (dead-code) sweep, but stop()
+    // now frees them deterministically.
+    std::vector<std::jthread> client_threads_;
 
     // Local inference engine + tile processor (lazy-init on first submit, then
     // kept warm across requests — mirrors share/core/serve/daemon.cpp).
