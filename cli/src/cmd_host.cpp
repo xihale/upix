@@ -1,4 +1,4 @@
-// `crossscale server {start, info}`.
+// `crossscale host {start, info}` — the coordinator phones pair with.
 //
 // start: launch a Coordinator on `port`, print the connection card (IP/QR/key),
 //        and poll until Ctrl+C. Each submitted image is upscaled on the PC's own
@@ -21,7 +21,7 @@
 #include "core/distributed/coordinator.hpp"
 #include "core/distributed/identity.hpp"
 
-int cmd_server(const args::Server& a) {
+int cmd_host(const args::Host& a) {
     if (a.subcommand == "info") {
         auto identity = crossscale::IdentityKey::load_or_create(
             crossscale::default_identity_path());
@@ -32,14 +32,14 @@ int cmd_server(const args::Server& a) {
     // ── start ───────────────────────────────────────────────────────────────
     auto identity = crossscale::IdentityKey::load_or_create(
         crossscale::default_identity_path());
-    LOG_INFO("Server", "PC identity fingerprint: " +
+    LOG_INFO("Host", "PC identity fingerprint: " +
               crossscale::fingerprint(identity.public_key()));
 
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
     auto coordinator = std::make_unique<crossscale::Coordinator>();
-    coordinator->set_models_directory("./models");
+    coordinator->set_models_directory(a.models_dir);
     coordinator->set_trust_store_path(crossscale::default_trust_path());
     coordinator->on_task_progress() = [](float progress) {
         static std::atomic<int> last_pct{-1};
@@ -48,16 +48,16 @@ int cmd_server(const args::Server& a) {
         if (previous == pct) {
             return;
         }
-        LOG_INFO("Server", "Task progress: " + std::to_string(pct) + "%");
+        LOG_INFO("Host", "Task progress: " + std::to_string(pct) + "%");
     };
 
     auto start_result = coordinator->start(a.port, identity);
     if (!start_result.has_value()) {
-        LOG_ERROR("Server", "Failed to start coordinator: " + start_result.error().message);
+        LOG_ERROR("Host", "Failed to start coordinator: " + start_result.error().message);
         return 1;
     }
 
-    LOG_INFO("Server", "Coordinator running. Press Ctrl+C to stop.");
+    LOG_INFO("Host", "Coordinator running. Press Ctrl+C to stop.");
 
     print_connection_card(a.port, identity.public_key());
 
@@ -69,7 +69,7 @@ int cmd_server(const args::Server& a) {
             bool approved = false;
             if (a.auto_approve) {
                 approved = true;
-                LOG_INFO("Server", "自动批准配对(--auto-approve): " + req->device_name +
+                LOG_INFO("Host", "自动批准配对(--auto-approve): " + req->device_name +
                          " (" + req->fingerprint + ")");
             } else {
                 std::cout << "\n┌─ 配对请求 ───────────────────────────────────────\n"
@@ -87,17 +87,17 @@ int cmd_server(const args::Server& a) {
             }
             coordinator->resolve_approval(req->id, approved);
             if (approved) {
-                LOG_INFO("Server", "已批准配对: " + req->device_name +
+                LOG_INFO("Host", "已批准配对: " + req->device_name +
                          " (" + req->fingerprint + ") — 已加入 TrustStore");
             } else {
-                LOG_WARNING("Server", "已拒绝配对: " + req->device_name);
+                LOG_WARNING("Host", "已拒绝配对: " + req->device_name);
             }
         }
 
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
 
-    LOG_INFO("Server", "Shutting down coordinator...");
+    LOG_INFO("Host", "Shutting down coordinator...");
     coordinator->stop();
     return 0;
 }

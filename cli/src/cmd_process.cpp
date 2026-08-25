@@ -1,8 +1,9 @@
 // `crossscale process` — the main upscale path.
 //
-// Single file: try to delegate to a warm serve daemon first (skips the ~490ms
-// init+load), else init an inline engine and process. Directory: batch over
-// all images, with optional GPU submit-queue pipeline or CPU EnginePool.
+// Single file: try to delegate to a warm daemon first (skips the ~490ms
+// init+load), spawning one if none is running, else init an inline engine and
+// process. Directory: batch over all images, with optional GPU submit-queue
+// pipeline or CPU EnginePool.
 //
 // Migrated verbatim from the legacy monolithic main.cpp; only the argv parsing
 // (now done by CLI11 in cli_app.cpp) was removed. Business logic is unchanged.
@@ -15,6 +16,8 @@
 #include <cstring>
 #include <deque>
 #include <filesystem>
+#include <fcntl.h>
+#include <fstream>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -22,6 +25,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <sys/wait.h>
+#include <unistd.h>
 
 #include "args.hpp"
 #include "cli_app.hpp"
@@ -42,9 +48,104 @@
 
 namespace fs = std::filesystem;
 
+namespace {
+
+// Probe the daemon socket. Returns true when a daemon accepts connections.
+// Removes a stale socket file (daemon died without cleanup) so a fresh spawn
+// isn't blocked by it.
+auto try_connect_daemon(const std::string& sock_path) -> bool {
+    std::error_code ec;
+    if (!std::filesystem::exists(sock_path, ec)) return false;
+    crossscale::UnixSocket sock;
+    if (sock.connect(sock_path).has_value()) return true;
+    std::filesystem::remove(sock_path, ec);
+    return false;
+}
+
+// Is a daemon alive per its pid file? Race guard: a concurrent process that
+// already spawned a daemon gets to finish; we only wait below.
+auto daemon_pid_alive(const std::string& sock_path) -> bool {
+    std::ifstream pf(sock_path + ".pid");
+    if (!pf) return false;
+    pid_t pid = 0;
+    pf >> pid;
+    return pid > 0 && ::kill(pid, 0) == 0;
+}
+
+// Re-exec ourselves as `crossscale daemon` in the background, then wait until
+// the socket accepts connections. Readiness == connect success: the daemon
+// binds only after engine init + model load, so a few seconds is normal
+// (30 s cap for big models on slow disks). Returns false if it never comes
+// up; the caller silently falls back to inline processing.
+auto spawn_daemon_and_wait(const std::string& sock_path,
+                           const std::string& models_dir,
+                           const std::string& model_name) -> bool {
+    if (!daemon_pid_alive(sock_path)) {
+        LOG_INFO("Engine", "starting warm engine daemon...");
+        pid_t pid = ::fork();
+        if (pid == 0) {
+            // Child: detach from the CLI's stdio, exec the daemon command.
+            // `crossscale daemon` daemonizes itself (fork + setsid + close
+            // stdio), so this process exits almost immediately.
+            int devnull = ::open("/dev/null", O_RDWR);
+            if (devnull >= 0) {
+                ::dup2(devnull, STDIN_FILENO);
+                ::dup2(devnull, STDOUT_FILENO);
+                ::dup2(devnull, STDERR_FILENO);
+                if (devnull > STDERR_FILENO) ::close(devnull);
+            }
+            const std::string idle = std::to_string(args::Daemon{}.idle_timeout_s);
+            std::vector<char> self(4096, '\0');
+            ssize_t n = ::readlink("/proc/self/exe", self.data(), self.size() - 1);
+            const char* exe = n > 0 ? self.data() : "crossscale";
+            if (!model_name.empty()) {
+                ::execl(exe, "crossscale", "daemon",
+                        "--models-dir", models_dir.c_str(),
+                        "--model", model_name.c_str(),
+                        "--idle-timeout", idle.c_str(),
+                        static_cast<char*>(nullptr));
+            } else {
+                ::execl(exe, "crossscale", "daemon",
+                        "--models-dir", models_dir.c_str(),
+                        "--idle-timeout", idle.c_str(),
+                        static_cast<char*>(nullptr));
+            }
+            ::_exit(127);  // exec failed
+        }
+        if (pid > 0) {
+            ::waitpid(pid, nullptr, 0);  // reap the short-lived launcher
+        }
+    }
+    for (int i = 0; i < 300; ++i) {  // 30 s @ 100 ms
+        if (try_connect_daemon(sock_path)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return false;
+}
+
+// Model used to tag a derived default output when the user named none: the
+// first model the manager finds in models_dir — the same "first available"
+// rule setup_engine and run_batch use.
+auto first_model_name(const std::string& models_dir) -> std::string {
+    crossscale::ModelManager manager(models_dir);
+    auto scan = manager.scan_models();
+    if (scan && !scan->empty() && !manager.available_models().empty()) {
+        return manager.available_models().front().name;
+    }
+    return "model";
+}
+
+}  // namespace
+
 int cmd_process(const args::Process& a) {
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
+
+    if (a.input_path.empty()) {
+        std::cerr << "crossscale: no input given — try `crossscale <image>` "
+                     "or `crossscale process -i <image>`\n";
+        return 1;
+    }
 
     const std::string& input_path = a.input_path;
     const std::string& output_path = a.output_path;
@@ -66,22 +167,27 @@ int cmd_process(const args::Process& a) {
     bool is_dir = fs::is_directory(input_path);
     LOG_INFO("Debug", "Input path: " + input_path + " is_dir: " + std::to_string(is_dir));
 
-    // ── Serve-daemon delegation (single-file only) ──────────────────────────
-    // If a local serve daemon is running, send it the image and let the warm
-    // engine do inference — skipping the ~490 ms init+load fixed cost. Falls
-    // back silently (returns nullopt) if no daemon or the connection fails;
-    // on a real daemon-side error returns 1.
+    // ── Daemon delegation (single-file only) ────────────────────────────────
+    // If a local daemon is running, send it the image and let the warm engine
+    // do inference — skipping the ~490 ms init+load fixed cost. If none is
+    // running, spawn one in the background and wait for it (it idle-exits on
+    // its own later). Falls back silently (returns nullopt) if the daemon
+    // never comes up or the connection fails; on a real daemon-side error
+    // returns 1.
     if (!is_dir && !no_daemon) {
         auto delegate = [&]() -> std::optional<int> {
-            // 1. Probe: no socket file / connect fails → no daemon, fall back.
+            // 1. Probe: no daemon accepting → try to start one (30 s cap);
+            //    give up silently on failure and let the inline path run.
             std::string sock_path = crossscale::default_serve_socket_path();
             if (sock_path.empty()) return std::nullopt;
-            std::error_code ec;
-            if (!std::filesystem::exists(sock_path, ec)) return std::nullopt;
-
+            if (!try_connect_daemon(sock_path) &&
+                !spawn_daemon_and_wait(sock_path, models_dir, model_name)) {
+                return std::nullopt;
+            }
+            // (Re)connect: the probe's socket was a throwaway.
             crossscale::UnixSocket sock;
             auto conn = sock.connect(sock_path);
-            if (!conn) return std::nullopt;  // stale socket → no daemon
+            if (!conn) return std::nullopt;  // lost a race with daemon shutdown
 
             // 2. Load image; on failure let the inline path report the error.
             auto img_res = crossscale::Image::load(input_path);
@@ -166,7 +272,13 @@ int cmd_process(const args::Process& a) {
             if (cli_output_quality >= 0) config.output_quality = cli_output_quality;
             if (!cli_output_format.empty()) config.output_format = cli_output_format;
 
-            auto final_path = crossscale::resolve_output_path(output_path, config);
+            // No explicit output → derive `img_<model>.png` from the model the
+            // daemon actually used (it may differ from -m: empty means its own).
+            const std::string effective_out =
+                output_path.empty()
+                    ? derive_default_output(input_path, resp.model_name, false)
+                    : output_path;
+            auto final_path = crossscale::resolve_output_path(effective_out, config);
             if (!final_path.parent_path().empty()) {
                 std::filesystem::create_directories(final_path.parent_path());
             }
@@ -183,11 +295,22 @@ int cmd_process(const args::Process& a) {
 
         auto delegated = delegate();
         if (delegated.has_value()) return delegated.value();
-        // else: no daemon / probe failed → fall through to inline path
+        // else: no daemon / spawn failed → fall through to inline path
     }
 
     if (is_dir) {
-        return run_batch(a);
+        // No explicit output → derive a sibling `dir_<model>/`. Copy the args
+        // so the const contract holds; the tag model mirrors what run_batch
+        // will load (-m when given, else first available).
+        args::Process batch = a;
+        if (batch.output_path.empty()) {
+            const std::string model = model_name.empty()
+                ? first_model_name(models_dir)
+                : model_name;
+            batch.output_path = derive_default_output(input_path, model, true);
+            LOG_INFO("Engine", "Output directory: " + batch.output_path);
+        }
+        return run_batch(batch);
     }
 
     // Single file processing continues...
@@ -228,6 +351,12 @@ int cmd_process(const args::Process& a) {
     // Override engine's heuristic scale detection with the authoritative value
     // parsed from the model filename.
     engine->set_scale_factor(selected_model->scale_factor);
+
+    // No explicit output → derive `img_<model>.png` next to the input.
+    const std::string eff_output =
+        output_path.empty()
+            ? derive_default_output(input_path, model_name_resolved, false)
+            : output_path;
 
     LOG_INFO("Engine", "Model loaded successfully");
 
@@ -277,7 +406,7 @@ int cmd_process(const args::Process& a) {
         config.output_format = crossscale::normalize_output_format(cli_output_format);
     } else {
         // Auto-infer output format from output file extension
-        std::string inferred = infer_format_from_extension(output_path);
+        std::string inferred = infer_format_from_extension(eff_output);
         if (!inferred.empty()) {
             config.output_format = crossscale::normalize_output_format(inferred);
             LOG_INFO("Config", "Auto-detected output format: " + inferred);
@@ -361,7 +490,7 @@ int cmd_process(const args::Process& a) {
         return 1;
     }
 
-    const auto final_output_path = crossscale::resolve_output_path(output_path, config);
+    const auto final_output_path = crossscale::resolve_output_path(eff_output, config);
     auto save_result = output_image.save(final_output_path, config.output_quality);
     if (!save_result.has_value()) {
         LOG_ERROR("Engine", "Failed to save output: " + save_result.error().message);

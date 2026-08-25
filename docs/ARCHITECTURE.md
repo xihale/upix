@@ -12,13 +12,14 @@
 
 ```
                   ┌──────────── PC CLI (cli/, C++23) ────────────┐
-                  │  process / server / worker / serve /          │
-                  │  model / benchmark / perf / completion        │
+                  │  隐式 process / process / host / daemon /    │
+                  │  model / perf                                 │
                   └───────────────┬──────────────────────────────┘
                                   │ 链接静态库
                   ┌───────────────▼──────────────────────────────┐
                   │          share/ (static lib, C++)            │
-                  │  core/     推理引擎 + tile + 分布式调度 + serve│
+                  │  core/     推理引擎 + tile + 分布式调度 +     │
+                  │            serve daemon（热引擎）             │
                   │  utils/    网络 / 图像 / 日志 / 加密           │
                   │  perf/     模块化性能测试框架                  │
                   └───────────────┬──────────────────────────────┘
@@ -31,7 +32,7 @@
 
 | 目录 | 角色 | 构建 | 标准 |
 |------|------|------|------|
-| `share/` | 共享 C++ 核心：推理引擎、tile 处理、分布式协议、serve 守护进程、网络/工具、perf 框架 | xmake 静态库（PC）/ CMake 直接编译（Android） | C++23 (PC), C++17 (JNI) |
+| `share/` | 共享 C++ 核心：推理引擎、tile 处理、分布式协议、serve 守护进程（daemon 命令）、网络/工具、perf 框架 | xmake 静态库（PC）/ CMake 直接编译（Android） | C++23 (PC), C++17 (JNI) |
 | `cli/` | PC 命令行入口，已模块化（`main.cpp` 仅 39 行薄入口 + `cli_app.cpp` 命令树 + 9 个 `cmd_*.cpp`） | xmake → `crossscale-cli` | C++23 |
 | `apps/` | Android 应用（Jetpack Compose + MVVM） | Gradle + CMake/NDK | Kotlin + C++17 JNI |
 | `models/` | ncnn 模型仓库（`.param` + `.bin`） | 运行时扫描 | — |
@@ -168,7 +169,7 @@ auto_tile_size=true 时：
 | `network.{hpp,cpp}` | POSIX socket 薄封装（`TCPSocket`/`TCPServer`）+ `crc32` + 本地 IP/auth-key 生成 |
 | `mdns.{hpp,cpp}` | 局域网服务发现。`MDNSBroadcaster` 用 avahi-publish-service 发 `_crossscale._tcp`（PC 服务端广播） |
 | `crypto.{hpp,cpp}` | `sha256_hex` / `generate_uuid`，用于 task_id/device_id 生成与 mDNS key hash |
-| `unix_socket.{hpp,cpp}` | Unix Domain Socket（serve daemon 用，Linux/macOS） |
+| `unix_socket.{hpp,cpp}` | Unix Domain Socket（daemon 用，Linux/macOS） |
 
 > **mDNS 职责分离**：PC 端只广播（`MDNSBroadcaster`），发现侧由 Android `MDNSDiscovery.kt`（原生 NsdManager）承担。原 C++ `MDNSDiscovery` stub 已删除。
 
@@ -176,7 +177,7 @@ auto_tile_size=true 时：
 
 ```
 启动认证：
-  CLI server start → Coordinator.start() → TCPServer.listen()
+  CLI host → Coordinator.start() → TCPServer.listen()
   Worker.connect() → send MSG_AUTH_REQUEST → 收 device_id
         → engine.benchmark(256) 测速 → send MSG_DEVICE_PROFILE
         → Coordinator → Scheduler.register_device() → normalize_weights()
@@ -196,11 +197,13 @@ auto_tile_size=true 时：
 
 ---
 
-## 4. serve 守护进程（`share/core/serve/`）
+## 4. daemon 守护进程（`share/core/serve/`）
 
-`crossscale serve` 是**本地长驻守护进程**，持有一份已初始化+已加载模型的 ncnn 引擎（"热引擎"），通过 Unix domain socket 接受 `crossscale process` 单图请求并回传超分结果。目的是**把单图调用的 ~490ms 固定开销（Vulkan init + model load）摊薄到零**，单图从 ~0.85s 降到 ~0.12s（~4×，小图最高 ~15×）。无守护进程时 CLI 行为零变化（静默回退内联路径）。
+`crossscale daemon` 是**本地常驻守护进程**，持有一份已初始化+已加载模型的 ncnn 引擎（"热引擎"），通过 Unix domain socket 接受 `crossscale process` 单图请求并回传超分结果。目的是**把单图调用的 ~490ms 固定开销（Vulkan init + model load）摊薄到零**，单图从 ~0.85s 降到 ~0.12s（~4×，小图最高 ~15×）。
 
-**为什么与 coordinator 独立**：两者职责正交。serve 解决"单图固定开销"（无状态，1连接=1请求，持引擎，UnixSocket 本地）；coordinator 解决"多设备任务分配"（有状态，worker 注册/心跳/任务循环，不持引擎，TCP 局域网）。合并会让一个类同时管本地无状态 RPC + 分布式有状态调度，职责膨胀。两者真正共享的是协议帧格式（已复用 `Protocol::serialize`）和 `TileProcessor`（都用 `process_image_u8`）。
+daemon 生命周期全自动：`crossscale process` 单图路径发现无 daemon 时自动在后台拉起一个（`--idle-timeout` 默认 600s），空闲超时自动退出，无需手动 `daemon start`。`--no-daemon` 跳过委托与拉起；拉起失败静默回退内联路径（行为与无 daemon 一致）。
+
+**为什么与 coordinator 独立**：两者职责正交。daemon 解决"单图固定开销"（无状态，1连接=1请求，持引擎，UnixSocket 本地）；coordinator 解决"多设备任务分配"（有状态，worker 注册/心跳/任务循环，不持引擎，TCP 局域网）。合并会让一个类同时管本地无状态 RPC + 分布式有状态调度，职责膨胀。两者真正共享的是协议帧格式（已复用 `Protocol::serialize`）和 `TileProcessor`（都用 `process_image_u8`）。
 
 完整设计见 git 历史中的 `docs/SERVE_DAEMON_DESIGN.md`（已随仓库精简移除）。
 

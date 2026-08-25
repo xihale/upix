@@ -42,9 +42,20 @@ The native engine (`libcrossscale-native.so`) is built with xmake by a Gradle ta
 ### Single Image
 
 ```bash
+./crossscale-cli input.png                                # → input_Real-ESRGANv3-anime-x2.png
+./crossscale-cli input.png output.png                     # explicit output
+./crossscale-cli input.png -m Real-CUGAN-conservative-x2  # pick a model
+```
+
+The first form is the common one: no verb, no flags — the output name derives
+from the input and the model that produced it (`<stem>_<model>.<ext>`, next to
+the input). The legacy long form is fully supported:
+
+```bash
 ./crossscale-cli process -i input.png -o output.png -m Real-ESRGANv3-anime-x2
 ```
-Use `--output-quality <1-100>` to trade file size for fidelity and `--output-format <png|jpg|jpeg|webp>` to override the saved container.
+
+Use `--output-quality <1-100>` to trade file size for fidelity and `--output-format <png|jpg|jpeg|webp|avif>` to override the saved container.
 
 Optional parameters:
 
@@ -54,20 +65,32 @@ Optional parameters:
 - `--auto-tile` – Enable automatic tile size optimization
 - `--min-tile N` / `--max-tile N` – Bounds for auto-tile
 - `--config FILE` – Load configuration from JSON file
+- `--no-daemon` – Skip the warm-engine daemon (process inline)
+
+#### Warm-engine daemon
+
+Single-image requests are served by a background warm-engine daemon that keeps
+the GPU context and model loaded, skipping the ~490 ms init cost per call. It
+is fully automatic: the first `process` call starts one if none is running, and
+it exits by itself after 600 idle seconds (`--idle-timeout` to change, `0` to
+keep it forever). Manual control when wanted:
+
+```bash
+./crossscale-cli daemon status                 # is it running?
+./crossscale-cli daemon stop                   # stop it now
+./crossscale-cli daemon start --cpu --fg       # explicit start (foreground, CPU)
+```
 
 ### Directory Processing
 
 Process all images in a directory (recursively), preserving directory structure:
 
 ```bash
-# Single-threaded (default)
-./crossscale-cli process -i input_dir -o output_dir -m Real-ESRGANv3-anime-x2
+./crossscale-cli input_dir                     # → input_dir_<model>/ next to it
 
-# Multi-threaded (parallel images, CPU only)
-./crossscale-cli process -i input_dir -o output_dir -m Real-ESRGANv3-anime-x2 --jobs 4
-
-# GPU-accelerated (single-image sequential)
-./crossscale-cli process -i input_dir -o output_dir -m Real-ESRGANv3-anime-x2 --gpu
+# Legacy / explicit forms
+./crossscale-cli process -i input_dir -o output_dir -m Real-ESRGANv3-anime-x2 --jobs 4   # CPU parallel
+./crossscale-cli process -i input_dir -o output_dir --gpu                                # GPU sequential
 ```
 
 **Important GPU behavior**:
@@ -89,7 +112,8 @@ and downloaded on demand (see `models/README.md`):
 ```
 
 Models are discovered from the `models` directory (default `./models`, override
-with `--models`). Each model is a `.param` + `.bin` pair; both layouts work:
+with `--models-dir` on any subcommand, or set `CROSSSCALE_MODELS_DIR` to work
+from any directory). Each model is a `.param` + `.bin` pair; both layouts work:
 
 ```
 models/
@@ -105,38 +129,32 @@ of your own `.param`/`.bin`/`.zip` files.
 
 ### Distributed Mode
 
-Start a coordinator (server):
+Start the coordinator for phones (`host`; bare form defaults to `start`):
 
 ```bash
-./crossscale-cli server start -p 9527 -k mysecret
+./crossscale-cli host                    # listen on 9527, print the QR card
+./crossscale-cli host -p 9527 --auto-approve   # auto-approve pairing (CI)
 ```
 
-Show connection info (QR code for Android app):
+Show the connection card without starting anything:
 
 ```bash
-./crossscale-cli server info
+./crossscale-cli host info
 ```
 
-Connect a worker (e.g., another machine or GPU-enabled local machine):
+Distributed offloading is driven from the Android app, not the CLI. With `host`
+running, open the Android app, scan the QR (or connect manually with the IP and
+port from the card), and submit an image; the PC upscales it and returns the
+result over the encrypted protocol. Pairing is approved on the PC the first
+time and remembered afterwards.
+
+### Performance Probes
 
 ```bash
-./crossscale-cli worker connect host:port -k mysecret
-```
-
-Client-side offloading (distributed upscaling):
-
-Distributed offloading is driven from the Android app, not the CLI. After
-`server start`, open the Android app, scan the QR from `server info` (or connect
-manually), and submit an image for distributed upscaling over the JNI bridge.
-The CLI's distributed roles are `server` (coordinator) and `worker`; there is no
-`client` subcommand.
-
-### Benchmark
-
-Run synthetic benchmark:
-
-```bash
-./crossscale-cli benchmark
+./crossscale-cli perf list-probes           # list available probes
+./crossscale-cli perf gpu-efficiency        # GPU vs CPU tile throughput
+./crossscale-cli perf gpu-concurrency       # scaling across N engines
+./crossscale-cli perf gpu-reuse             # fresh vs reused VkCompute
 ```
 
 ## Performance Notes
@@ -160,8 +178,6 @@ You can save frequently used settings in a JSON file:
   "auto_tile_size": false,
   "min_tile_size": 64,
   "max_tile_size": 512,
-  "max_memory_mb": 0,
-  "num_threads": 0,
   "use_gpu": true,
   "model_name": "Real-ESRGANv3-anime-x2",
   "output_quality": 90,
@@ -174,7 +190,7 @@ Load with `--config FILE`. CLI flags override the loaded configuration.
 
 ## Troubleshooting
 
-- **No models found**: Run `./crossscale-cli model list-remote && ./crossscale-cli model download <name>`, or use `--models` to point at an existing directory. On Android, use 模型 → 下载模型.
+- **No models found**: Run `./crossscale-cli model list-remote && ./crossscale-cli model download <name>`, or use `--models-dir` to point at an existing directory (or export `CROSSSCALE_MODELS_DIR`). On Android, use 模型 → 下载模型.
 - **Out of memory**: Reduce tile size or reduce `--jobs`. For GPU mode, close other applications to free VRAM. If GPU memory is insufficient, try smaller tile sizes (128 or 192).
 - **Slow GPU performance**: Increase `--batch-size` to improve GPU occupancy. Ensure you are not using `--jobs` with `--gpu` (they are incompatible). For large directories, consider using CPU mode with `--jobs` for parallel image processing, or process images individually with `--gpu`.
 - **Crashes with GPU in directory mode**: This should no longer occur as GPU directory mode now uses a single shared engine sequentially. If you experience crashes, ensure you are using the latest version.

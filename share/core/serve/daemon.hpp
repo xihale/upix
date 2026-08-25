@@ -16,6 +16,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -50,12 +51,18 @@ public:
                ServeDevice device) -> int;
 
     // Blocking accept loop. Spawns one thread per connection. Returns when
-    // stop() is called (from a signal handler or another thread) or on fatal
-    // server error.
+    // stop() is called (from a signal handler or another thread) or on a fatal
+    // server error, or when the idle timeout elapses (see set_idle_timeout).
     auto run() -> void;
 
     // Request shutdown from any thread. Wakes the accept loop within ~500 ms.
     auto stop() -> void;
+
+    // Exit run() after `seconds` with no in-flight connection and no new one.
+    // The poll-tick granularity of the accept loop bounds how promptly this is
+    // noticed. 0 (the default) disables the idle exit; the positive default for
+    // the CLI is set by cmd_daemon (600 s).
+    auto set_idle_timeout(int seconds) -> void;
 
 private:
     // Handle one client connection on its own thread. Takes ownership of the
@@ -73,6 +80,9 @@ private:
     std::mutex engine_mutex_;     // serializes engine access (Vulkan constraint)
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};
+    std::atomic<int> active_conns_{0};        // connections accepted but not finished
+    std::atomic<int64_t> last_active_ms_{0};  // steady-clock ms of last accept/completion
+    int idle_timeout_s_ = 0;
     std::string socket_path_;
     std::string loaded_model_name_;
     ServeDevice device_ = ServeDevice::GPU;

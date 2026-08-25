@@ -66,21 +66,23 @@ struct Perf {
     bool no_cpu_baseline = false;   // gpu-efficiency only
 };
 
-// `server {start, info}`.
-struct Server {
-    std::string subcommand;         // start / info
+// `host {start, info}` — the coordination server phones pair with.
+struct Host {
+    std::string subcommand;         // start / info (bare `host` = start)
     uint16_t port = 9527;
     bool auto_approve = false;      // start: auto-approve pairing requests (testing/CI)
+    std::string models_dir = "./models";
 };
 
-// `serve {start, stop}`.
-struct Serve {
-    std::string subcommand;         // start / stop (default start)
+// `daemon {start, stop, status}` — the local warm-engine daemon.
+struct Daemon {
+    std::string subcommand;         // start / stop / status (bare `daemon` = start)
     std::string model_name;
     std::string models_dir = "./models";
     std::string socket_path;        // empty = default_serve_socket_path()
     bool force_cpu = false;
     bool foreground = false;
+    int idle_timeout_s = 600;       // exit after this many idle seconds (0 = never)
 };
 
 }  // namespace args

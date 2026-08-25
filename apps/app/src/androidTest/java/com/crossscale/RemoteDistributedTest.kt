@@ -17,7 +17,7 @@ import org.junit.runners.MethodSorters
  * an image through it over the encrypted distributed protocol.
  *
  * Requires a coordinator running on the host machine reachable from the device:
- *   crossscale-cli server start -p <port> --auto-approve
+ *   crossscale-cli host -p <port> --auto-approve
  * (run from a directory whose ./models holds a model). The host/port/model are
  * passed as instrumentation arguments, e.g. via am instrument:
  *   adb shell am instrument -w \

@@ -18,11 +18,11 @@ auto build_app() -> std::unique_ptr<CLI::App>;
 namespace args { struct Process;   }
 namespace args { struct Model;     }
 namespace args { struct Perf;      }
-namespace args { struct Server;    }
-namespace args { struct Serve;     }
+namespace args { struct Host;      }
+namespace args { struct Daemon;    }
 
 int cmd_process(const args::Process& a);
 int cmd_model(const args::Model& a);
 int cmd_perf(const args::Perf& a);
-int cmd_server(const args::Server& a);
-int cmd_serve(const args::Serve& a);
+int cmd_host(const args::Host& a);
+int cmd_daemon(const args::Daemon& a);

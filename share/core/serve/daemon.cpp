@@ -10,6 +10,7 @@
 #include "utils/logger.hpp"
 #include "utils/unix_socket.hpp"
 
+#include <chrono>
 #include <cstring>
 #include <filesystem>
 #include <thread>
@@ -45,6 +46,24 @@ auto send_serve_error(UnixSocket& sock, const char* message) -> void {
     std::strncpy(r.error, message, sizeof(r.error) - 1);
     send_via(sock, MessageType::MSG_SERVE_RESPONSE, &r, sizeof(r));
 }
+
+// Steady-clock ms — shared clock for the idle-timeout bookkeeping.
+auto steady_now_ms() -> int64_t {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// RAII: one live connection. Decrements active_conns_ and refreshes
+// last_active_ms_ when handle_client returns, so a finished request never
+// counts its own runtime toward the idle timeout.
+struct ConnGuard {
+    std::atomic<int>& conns;
+    std::atomic<int64_t>& last_active;
+    ~ConnGuard() {
+        conns.fetch_sub(1);
+        last_active.store(steady_now_ms());
+    }
+};
 
 } // namespace
 
@@ -83,7 +102,7 @@ auto ServeDaemon::start(const std::string& socket_path,
         model_name
     );
     if (!setup) {
-        LOG_ERROR("Serve", setup.error());
+        LOG_ERROR("Daemon", setup.error());
         return 2;
     }
     loaded_model_name_ = setup->selected->name;  // read pointer before moving models
@@ -104,27 +123,29 @@ auto ServeDaemon::start(const std::string& socket_path,
     server_ = std::make_unique<UnixServer>();
     auto listen_res = server_->listen(socket_path_);
     if (!listen_res) {
-        LOG_ERROR("Serve", "socket listen failed at " + socket_path_ +
+        LOG_ERROR("Daemon", "socket listen failed at " + socket_path_ +
                            ": " + listen_res.error().message);
         return 7;
     }
 
-    LOG_INFO("Serve", "daemon ready: socket=" + socket_path_ +
+    LOG_INFO("Daemon", "daemon ready: socket=" + socket_path_ +
                       " model=" + loaded_model_name_ +
                       " scale=" + std::to_string(engine_->get_scale_factor()) +
                       " device=" + (device == ServeDevice::GPU ? "GPU" : "CPU") +
                       " pid=" + std::to_string(::getpid()));
-    LOG_INFO("Serve", "`crossscale process` will now reuse this warm engine");
+    LOG_INFO("Daemon", "`crossscale process` will now reuse this warm engine");
     return 0;
 }
 
 auto ServeDaemon::ensure_model_loaded(const std::string& model_name) -> int {
     // Caller already holds engine_mutex_.
-    return switch_model(*engine_, *models_, loaded_model_name_, model_name, "Serve") ? 0 : 1;
+    return switch_model(*engine_, *models_, loaded_model_name_, model_name, "Daemon") ? 0 : 1;
 }
 
 auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
-    // sock owns the fd; closed exactly once on return.
+    // sock owns the fd; closed exactly once on return. The guard keeps the
+    // idle-timeout accounting truthful for this connection's whole lifetime.
+    ConnGuard conn{active_conns_, last_active_ms_};
 
     // ── 1. Read request header ──────────────────────────────────────────────
     std::vector<uint8_t> hdr_buf(Protocol::HEADER_SIZE);
@@ -155,12 +176,14 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     std::vector<uint8_t> out_bytes;
     int out_w = 0, out_h = 0, out_c = req.channels;
     std::string err_msg;
+    std::string used_model;  // captured under the lock; read below without it
     {
         std::lock_guard<std::mutex> lk(engine_mutex_);
         if (ensure_model_loaded(req.model_name) != 0) {
             send_serve_error(*sock, "model load failed");
             return;
         }
+        used_model = loaded_model_name_;
         int scale = engine_->get_scale_factor();
         out_w = req.width * scale;
         out_h = req.height * scale;
@@ -189,6 +212,10 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
         resp.height = out_h;
         resp.channels = out_c;
         resp.img_length = static_cast<uint32_t>(out_bytes.size());
+        // Report the model actually used — ensure_model_loaded may have
+        // reloaded (request named none, or a different one).
+        std::strncpy(resp.model_name, used_model.c_str(),
+                     sizeof(resp.model_name) - 1);
     } else {
         resp.ok = 0;
         std::strncpy(resp.error, err_msg.c_str(), sizeof(resp.error) - 1);
@@ -206,15 +233,32 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
 
 auto ServeDaemon::run() -> void {
     running_.store(true);
+    last_active_ms_.store(steady_now_ms());
     while (running_.load() && !stop_requested_.load()) {
         auto client = server_->accept();
         if (!client) {
-            if (client.error().code == EAGAIN) continue;  // poll timeout
+            if (client.error().code == EAGAIN) {
+                // Poll-timeout tick: exit when idle. A connection in flight
+                // (active_conns_ > 0) always suppresses this, and ConnGuard
+                // refreshes last_active_ms_ on completion, so a long request
+                // never counts its own runtime as idle time.
+                if (idle_timeout_s_ > 0 && active_conns_.load() == 0) {
+                    auto idle_ms = steady_now_ms() - last_active_ms_.load();
+                    if (idle_ms / 1000 >= idle_timeout_s_) {
+                        LOG_INFO("Daemon", "idle for " +
+                                  std::to_string(idle_ms / 1000) + "s, exiting");
+                        break;
+                    }
+                }
+                continue;
+            }
             if (!stop_requested_.load()) {
-                LOG_WARNING("Serve", "accept error: " + client.error().message);
+                LOG_WARNING("Daemon", "accept error: " + client.error().message);
             }
             continue;
         }
+        active_conns_.fetch_add(1);
+        last_active_ms_.store(steady_now_ms());
         // Detach: each connection runs on its own thread so a slow GPU inference
         // on one client doesn't block accept() for others. Engine access is
         // still serialized inside handle_client via engine_mutex_.
@@ -227,6 +271,10 @@ auto ServeDaemon::run() -> void {
 auto ServeDaemon::stop() -> void {
     stop_requested_.store(true);
     running_.store(false);
+}
+
+auto ServeDaemon::set_idle_timeout(int seconds) -> void {
+    idle_timeout_s_ = seconds > 0 ? seconds : 0;
 }
 
 } // namespace crossscale

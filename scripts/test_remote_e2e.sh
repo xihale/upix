@@ -2,7 +2,7 @@
 #
 # test_remote_e2e.sh — end-to-end test of the phone↔PC distributed path.
 #
-# Brings up a PC coordinator (crossscale server start --auto-approve), then runs
+# Brings up a PC coordinator (crossscale host --auto-approve), then runs
 # the RemoteDistributedTest instrumented test on a connected device, which pairs
 # with the coordinator and upscales a synthetic image through it over the
 # encrypted protocol. Verifies the real remote logic: ECDH handshake, CONNECT
@@ -111,7 +111,7 @@ ok "APKs installed"
 phase "Start coordinator (port $PORT, --auto-approve, model $MODEL)"
 # `exec` replaces the subshell with the CLI so $! is the coordinator PID
 # itself (kill/trap then reaches it directly).
-( cd "$CLI_DIR" && exec "$CLI_BIN" server start -p "$PORT" --auto-approve ) >"$SRV_LOG" 2>&1 &
+( cd "$CLI_DIR" && exec "$CLI_BIN" host -p "$PORT" --auto-approve ) >"$SRV_LOG" 2>&1 &
 COORD_PID=$!
 ok "coordinator PID $COORD_PID (log: $SRV_LOG)"
 

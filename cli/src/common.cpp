@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
 #include <iomanip>
 #include <sstream>
 #include <string>
@@ -19,7 +21,7 @@
 // ── Global run-state ────────────────────────────────────────────────────────
 std::atomic<bool> g_running{true};
 std::atomic<bool> g_cancel_requested{false};
-crossscale::ServeDaemon* g_serve_daemon = nullptr;
+crossscale::ServeDaemon* g_daemon = nullptr;
 
 // ── Signal handlers ─────────────────────────────────────────────────────────
 void signal_handler(int) {
@@ -27,10 +29,22 @@ void signal_handler(int) {
     g_cancel_requested = true;
 }
 
-void serve_signal_handler(int) {
+void daemon_signal_handler(int) {
     g_running = false;
     g_cancel_requested = true;
-    if (g_serve_daemon) g_serve_daemon->stop();
+    if (g_daemon) g_daemon->stop();
+}
+
+// ── Defaults ────────────────────────────────────────────────────────────────
+// Models directory resolution: `--models-dir` flag (bound by cli_app.cpp) >
+// $CROSSSCALE_MODELS_DIR > ./models. Lets the CLI run from any cwd (e.g.
+// ~/Pictures) without repeating --models-dir.
+auto default_models_dir() -> std::string {
+    if (const char* env = std::getenv("CROSSSCALE_MODELS_DIR");
+        env && *env) {
+        return env;
+    }
+    return "./models";
 }
 
 // ── Image / format helpers ──────────────────────────────────────────────────
@@ -150,6 +164,48 @@ static auto convert_image_channels(const crossscale::Image& source, int target_c
     }
 
     return converted;
+}
+
+// Model names are directory names in the models dir; they can carry characters
+// that don't belong in a filename (spaces, path separators). Flatten them.
+static auto sanitize_model_for_filename(const std::string& model) -> std::string {
+    std::string out;
+    out.reserve(model.size());
+    for (char c : model) {
+        switch (c) {
+            case '/': case '\\': case ' ': case '\t':
+                out += '_';
+                break;
+            default:
+                out += c;
+        }
+    }
+    return out.empty() ? "model" : out;
+}
+
+// Default output location when the user gave none (`crossscale img.png`):
+// sibling of the input, tagged with the model that produced it so results from
+// different models coexist — `img.png` → `img_<model>.png` (input extension
+// kept when it maps to a known output format, else .png), and a directory
+// input `shots/` → `shots_<model>/` next to it.
+auto derive_default_output(const std::string& input_path,
+                           const std::string& model_name,
+                           bool input_is_dir) -> std::string {
+    namespace fs = std::filesystem;
+    fs::path in(input_path);
+    const std::string tag = "_" + sanitize_model_for_filename(model_name);
+
+    if (input_is_dir) {
+        // filename() of "shots/" is "shots"; of "/" is "" (rejected upstream).
+        return (in.parent_path() / (in.filename().string() + tag)).string() + "/";
+    }
+
+    std::string ext = in.extension().string();
+    if (ext.empty() || infer_format_from_extension(in.filename().string()).empty()) {
+        ext = ".png";
+    }
+    fs::path out = in.parent_path() / (in.stem().string() + tag + ext);
+    return out.string();
 }
 
 auto normalize_channels_for_model(crossscale::Image& image,

@@ -197,6 +197,9 @@ struct ServeResponse {
     int32_t channels;
     uint32_t img_length;
     char error[128];
+    char model_name[64];     // model actually used (daemon's choice when request
+                             // named none) — lets the client derive default
+                             // output names like `img_<model>.png`
 };
 
 class Protocol {

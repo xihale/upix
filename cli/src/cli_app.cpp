@@ -7,10 +7,12 @@
 #include "cli_app.hpp"
 
 #include <CLI/CLI.hpp>
+#include <iostream>
 #include <optional>
 #include <string>
 
 #include "args.hpp"
+#include "common.hpp"  // default_models_dir
 
 // Set by a subcommand callback; read by main(). std::nullopt means "no
 // subcommand ran" (e.g. bare --help, or no verb given).
@@ -27,11 +29,14 @@ auto build_app() -> std::unique_ptr<CLI::App> {
 
     // ── process ─────────────────────────────────────────────────────────────
     static args::Process proc_args;
+    proc_args.models_dir = default_models_dir();  // env-aware (common.cpp)
     auto* proc = app->add_subcommand("process", "Upscale an image or directory");
-    proc->add_option("-i,--input", proc_args.input_path, "Input image or directory")
-        ->required()->expected(1);
-    proc->add_option("-o,--output", proc_args.output_path, "Output image or directory")
-        ->required();
+    // Each option mixes a positional name with flags, so `process img.png` and
+    // `process -i img.png` are interchangeable. Output is optional — omitted,
+    // it derives `img_<model>.png` (or `dir_<model>/` in batch mode).
+    proc->add_option("input,-i,--input", proc_args.input_path, "Input image or directory");
+    proc->add_option("output,-o,--output", proc_args.output_path,
+                     "Output path (default: derived from input + model)");
     proc->add_option("-m,--model", proc_args.model_name, "Model name (default: first available)");
     proc->add_option("--models", proc_args.models_dir, "Models directory")
         ->capture_default_str();
@@ -50,7 +55,8 @@ auto build_app() -> std::unique_ptr<CLI::App> {
                                       "Parallel workers for directory mode")
         ->check(CLI::Range(1, 1024))->capture_default_str();
     proc->add_flag("--gpu", proc_args.use_gpu, "Force GPU for directory mode");
-    proc->add_flag("--no-daemon", proc_args.no_daemon, "Skip serve-daemon delegation");
+    proc->add_flag("--no-daemon", proc_args.no_daemon,
+                   "Never use the warm-engine daemon (process inline)");
     proc->add_option("--output-quality", proc_args.output_quality,
                      "Output quality 0-100 (default: 95)")
         ->check(CLI::Range(0, 100));
@@ -64,6 +70,22 @@ auto build_app() -> std::unique_ptr<CLI::App> {
         g_exit_code = cmd_process(proc_args);
     });
 
+    // ── implicit process ──────────────────────────────────────────────────────
+    // Bare `crossscale img.png [out.png]` (no verb) means `process`. A first
+    // token matching a subcommand name still wins, so only a file literally
+    // named "model"/"process"/... is shadowed. Shares proc_args with `process`.
+    auto* root_input = app->add_option("input", proc_args.input_path,
+                                       "Input image or directory (implies `process`)")
+                           ->expected(0, 1);
+    app->add_option("output", proc_args.output_path,
+                    "Output path (default: derived from input + model)")
+        ->expected(0, 1);
+    app->callback([root_input] {
+        if (root_input->count() > 0) {
+            g_exit_code = cmd_process(proc_args);
+        }
+    });
+
     // ── model ───────────────────────────────────────────────────────────────
     // One Model instance per nested subcommand (like perf) so each carries its
     // own models_dir/repo. `repo` is bound on the subcommands that hit the
@@ -71,6 +93,7 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     auto* model = app->add_subcommand("model", "Manage models (list, download, import)");
 
     static args::Model model_list_args;
+    model_list_args.models_dir = default_models_dir();  // env-aware (common.cpp)
     auto* mlist = model->add_subcommand("list", "List installed models");
     mlist->add_option("--models-dir", model_list_args.models_dir,
                       "Models directory (default: ./models)");
@@ -78,6 +101,7 @@ auto build_app() -> std::unique_ptr<CLI::App> {
                          g_exit_code = cmd_model(model_list_args); });
 
     static args::Model model_remote_args;
+    model_remote_args.models_dir = default_models_dir();  // env-aware (common.cpp)
     auto* mremote = model->add_subcommand("list-remote", "List models in the GitHub release");
     mremote->add_option("--repo", model_remote_args.repo,
                         "GitHub repo owner/name (default: upstream release)");
@@ -85,6 +109,7 @@ auto build_app() -> std::unique_ptr<CLI::App> {
                            g_exit_code = cmd_model(model_remote_args); });
 
     static args::Model model_dl_args;
+    model_dl_args.models_dir = default_models_dir();  // env-aware (common.cpp)
     auto* mdl = model->add_subcommand("download", "Download model(s) from the release");
     mdl->add_option("names", model_dl_args.names, "Model name(s), see list-remote")
         ->required();
@@ -96,6 +121,7 @@ auto build_app() -> std::unique_ptr<CLI::App> {
                        g_exit_code = cmd_model(model_dl_args); });
 
     static args::Model model_imp_args;
+    model_imp_args.models_dir = default_models_dir();  // env-aware (common.cpp)
     auto* mimp = model->add_subcommand("import", "Import local .param/.bin files");
     mimp->add_option("files", model_imp_args.files, "Local .param/.bin file path(s)")
         ->required();
@@ -111,11 +137,13 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     auto* perf = app->add_subcommand("perf", "GPU/CPU performance probes");
 
     static args::Perf perf_list_args;
+    perf_list_args.models_dir = default_models_dir();  // env-aware (common.cpp)
     perf->add_subcommand("list-probes", "List available perf probes")
         ->callback([] { perf_list_args.subcommand = "list-probes";
                         g_exit_code = cmd_perf(perf_list_args); });
 
     static args::Perf eff_args;
+    eff_args.models_dir = default_models_dir();  // env-aware (common.cpp)
     auto* eff = perf->add_subcommand("gpu-efficiency", "Measure GPU vs CPU tile throughput");
     eff->add_option("--model", eff_args.model_name, "Model name (default: first available)");
     eff->add_option("--models-dir", eff_args.models_dir, "Models directory")->capture_default_str();
@@ -130,6 +158,7 @@ auto build_app() -> std::unique_ptr<CLI::App> {
                        g_exit_code = cmd_perf(eff_args); });
 
     static args::Perf conc_args;
+    conc_args.models_dir = default_models_dir();  // env-aware (common.cpp)
     conc_args.concurrency = 2; conc_args.duration_s = "6s"; conc_args.warmup_s = "2s";
     auto* conc = perf->add_subcommand("gpu-concurrency", "Measure scaling across N concurrent engines");
     conc->add_option("--model", conc_args.model_name, "Model name");
@@ -146,6 +175,7 @@ auto build_app() -> std::unique_ptr<CLI::App> {
                         g_exit_code = cmd_perf(conc_args); });
 
     static args::Perf reuse_args;
+    reuse_args.models_dir = default_models_dir();  // env-aware (common.cpp)
     reuse_args.concurrency = 1; reuse_args.duration_s = "6s"; reuse_args.warmup_s = "2s";
     auto* reuse = perf->add_subcommand("gpu-reuse", "A/B fresh vs reused VkCompute per tile");
     reuse->add_option("--model", reuse_args.model_name, "Model name");
@@ -161,54 +191,80 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     reuse->callback([] { reuse_args.subcommand = "gpu-reuse";
                          g_exit_code = cmd_perf(reuse_args); });
 
-    // ── server ──────────────────────────────────────────────────────────────
-    static args::Server server_args;
-    auto* server = app->add_subcommand("server", "Start or query the coordination server");
-    auto* sstart = server->add_subcommand("start", "Start the coordinator (accepts one phone, upscales submitted images)");
-    sstart->add_option("-p", server_args.port, "Port")->capture_default_str();
-    sstart->add_flag("--auto-approve", server_args.auto_approve,
-                     "Auto-approve all pairing requests without prompting (for automated testing/CI)");
-    sstart->callback([] { server_args.subcommand = "start";
-                          g_exit_code = cmd_server(server_args); });
-    auto* sinfo = server->add_subcommand("info", "Print the connection card (IP/QR/key)");
-    sinfo->add_option("-p", server_args.port, "Port")->capture_default_str();
-    sinfo->callback([] { server_args.subcommand = "info";
-                         g_exit_code = cmd_server(server_args); });
-
-    // ── serve ───────────────────────────────────────────────────────────────
-    // Flags are shared by start/stop. We register them on each nested
-    // subcommand (binding the same field twice is fine) so `serve start --cpu`
-    // and `serve stop --socket X` both parse correctly. A bare `serve` with no
-    // nested subcommand defaults to `start` (matches the legacy behavior).
-    static args::Serve serve_args;
-    auto* serve = app->add_subcommand("serve", "Manage the warm-engine daemon");
-
-    auto add_serve_flags = [&](CLI::App* s) {
-        s->add_option("--model", serve_args.model_name, "Model name");
-        s->add_option("--models-dir", serve_args.models_dir, "Models directory")
+    // ── host ──────────────────────────────────────────────────────────────────
+    // The coordination server phones pair with (TCP + QR invite). Distinct from
+    // `daemon`, which is the local warm-engine process `process` delegates to.
+    static args::Host host_args;
+    host_args.models_dir = default_models_dir();  // env-aware (common.cpp)
+    auto* host = app->add_subcommand("host", "Start or query the coordinator for phones");
+    auto add_host_start_flags = [&](CLI::App* s) {
+        s->add_option("-p,--port", host_args.port, "Port")->capture_default_str();
+        s->add_option("--models-dir", host_args.models_dir, "Models directory")
             ->capture_default_str();
-        s->add_option("--socket", serve_args.socket_path, "Unix socket path");
-        s->add_flag("--cpu", serve_args.force_cpu, "Force CPU");
-        s->add_flag("--fg", serve_args.foreground, "Run in foreground");
+        s->add_flag("--auto-approve", host_args.auto_approve,
+                    "Auto-approve all pairing requests without prompting (for automated testing/CI)");
+    };
+    auto* hstart = host->add_subcommand("start", "Start the coordinator (accepts one phone, upscales submitted images)");
+    add_host_start_flags(hstart);
+    hstart->callback([] { host_args.subcommand = "start";
+                          g_exit_code = cmd_host(host_args); });
+    auto* hinfo = host->add_subcommand("info", "Print the connection card (IP/QR/key)");
+    hinfo->add_option("-p,--port", host_args.port, "Port")->capture_default_str();
+    hinfo->callback([] { host_args.subcommand = "info";
+                         g_exit_code = cmd_host(host_args); });
+
+    // Bare `host` (no nested subcommand) → default to start (same as daemon).
+    add_host_start_flags(host);
+    host->callback([] {
+        if (host_args.subcommand.empty()) {
+            host_args.subcommand = "start";
+            g_exit_code = cmd_host(host_args);
+        }
+    });
+
+    // ── daemon ────────────────────────────────────────────────────────────────
+    // Flags are shared by start/stop. We register them on each nested
+    // subcommand (binding the same field twice is fine) so `daemon start --cpu`
+    // and `daemon stop --socket X` both parse correctly. A bare `daemon` with no
+    // nested subcommand defaults to `start` (matches the legacy behavior).
+    static args::Daemon daemon_args;
+    daemon_args.models_dir = default_models_dir();  // env-aware (common.cpp)
+    auto* daemon = app->add_subcommand("daemon", "Manage the warm-engine daemon");
+
+    auto add_daemon_flags = [&](CLI::App* s) {
+        s->add_option("--model", daemon_args.model_name, "Model name");
+        s->add_option("--models-dir", daemon_args.models_dir, "Models directory")
+            ->capture_default_str();
+        s->add_option("--socket", daemon_args.socket_path, "Unix socket path");
+        s->add_flag("--cpu", daemon_args.force_cpu, "Force CPU");
+        s->add_flag("--fg", daemon_args.foreground, "Run in foreground");
+        s->add_option("--idle-timeout", daemon_args.idle_timeout_s,
+                      "Exit after N idle seconds (0 = never)")
+            ->check(CLI::Range(0, 86400))->capture_default_str();
     };
 
-    auto* serve_start = serve->add_subcommand("start", "Start the daemon (default)");
-    add_serve_flags(serve_start);
-    serve_start->callback([] { serve_args.subcommand = "start";
-                               g_exit_code = cmd_serve(serve_args); });
+    auto* daemon_start = daemon->add_subcommand("start", "Start the daemon (default)");
+    add_daemon_flags(daemon_start);
+    daemon_start->callback([] { daemon_args.subcommand = "start";
+                                g_exit_code = cmd_daemon(daemon_args); });
 
-    auto* serve_stop = serve->add_subcommand("stop", "Stop the daemon");
-    serve_stop->add_option("--socket", serve_args.socket_path, "Unix socket path");
-    serve_stop->callback([] { serve_args.subcommand = "stop";
-                              g_exit_code = cmd_serve(serve_args); });
+    auto* daemon_stop = daemon->add_subcommand("stop", "Stop the daemon");
+    daemon_stop->add_option("--socket", daemon_args.socket_path, "Unix socket path");
+    daemon_stop->callback([] { daemon_args.subcommand = "stop";
+                               g_exit_code = cmd_daemon(daemon_args); });
 
-    // Bare `serve` (no nested subcommand) → default to start. Also accept the
-    // shared flags directly on `serve` so `serve --cpu --fg` works without a verb.
-    add_serve_flags(serve);
-    serve->callback([] {
-        if (serve_args.subcommand.empty()) {
-            serve_args.subcommand = "start";
-            g_exit_code = cmd_serve(serve_args);
+    auto* daemon_status = daemon->add_subcommand("status", "Report whether the daemon is running");
+    daemon_status->add_option("--socket", daemon_args.socket_path, "Unix socket path");
+    daemon_status->callback([] { daemon_args.subcommand = "status";
+                                 g_exit_code = cmd_daemon(daemon_args); });
+
+    // Bare `daemon` (no nested subcommand) → default to start. Also accept the
+    // shared flags directly on `daemon` so `daemon --cpu --fg` works without a verb.
+    add_daemon_flags(daemon);
+    daemon->callback([] {
+        if (daemon_args.subcommand.empty()) {
+            daemon_args.subcommand = "start";
+            g_exit_code = cmd_daemon(daemon_args);
         }
     });
 
