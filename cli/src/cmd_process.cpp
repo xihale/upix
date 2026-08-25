@@ -178,6 +178,35 @@ int cmd_process(const args::Process& a) {
     // engine directly, which ServeRequest cannot carry.
     if (!is_dir && !no_daemon && !auto_tile) {
         auto delegate = [&]() -> std::optional<int> {
+            // 0. Size pre-flight. Decode here once (the pixels are reused
+            //    below) and predict the upscaled payload from the model that
+            //    would serve the request. Over the local socket cap there is
+            //    no point waking the daemon — it would finish the whole GPU
+            //    inference just for the client to discard the answer and redo
+            //    everything inline.
+            auto img_res = crossscale::Image::load(input_path);
+            if (!img_res) return std::nullopt;
+            auto& image = img_res.value();
+            if (image.size() == 0) return std::nullopt;
+            {
+                crossscale::ModelManager mgr(models_dir);
+                if (mgr.scan_models()) {
+                    std::optional<crossscale::ModelInfo> info;
+                    if (!model_name.empty()) {
+                        info = mgr.get_model(model_name);
+                    } else if (!mgr.available_models().empty()) {
+                        info = mgr.available_models().front();  // daemon default pick
+                    }
+                    const int scale = info ? info->scale_factor : 0;
+                    if (scale > 1 &&
+                        static_cast<size_t>(image.width()) * scale *
+                            image.height() * scale * image.channels() >
+                            MAX_SERVE_PAYLOAD) {
+                        return std::nullopt;  // straight to inline processing
+                    }
+                }
+            }
+
             // 1. Probe: no daemon accepting → try to start one (30 s cap);
             //    give up silently on failure and let the inline path run.
             std::string sock_path = crossscale::default_serve_socket_path();
@@ -191,13 +220,7 @@ int cmd_process(const args::Process& a) {
             auto conn = sock.connect(sock_path);
             if (!conn) return std::nullopt;  // lost a race with daemon shutdown
 
-            // 2. Load image; on failure let the inline path report the error.
-            auto img_res = crossscale::Image::load(input_path);
-            if (!img_res) return std::nullopt;
-            auto& image = img_res.value();
-            if (image.size() == 0) return std::nullopt;
-
-            // 3. Build contiguous payload = [ServeRequest][image], one frame.
+            // 2. Build contiguous payload = [ServeRequest][image], one frame.
             crossscale::ServeRequest req{};
             std::memset(req.model_name, 0, sizeof(req.model_name));
             model_name.copy(req.model_name, sizeof(req.model_name) - 1);
@@ -225,7 +248,7 @@ int cmd_process(const args::Process& a) {
             auto frame = crossscale::Protocol::serialize(h, payload.data());
             if (!sock.send_all(frame.data(), frame.size())) return std::nullopt;
 
-            // 4. Read response header, then contiguous payload
+            // 3. Read response header, then contiguous payload
             //    [ServeResponse][image].
             std::vector<uint8_t> rhdr(crossscale::Protocol::HEADER_SIZE);
             if (!sock.receive_all(rhdr.data(), rhdr.size())) {
@@ -238,12 +261,12 @@ int cmd_process(const args::Process& a) {
                 LOG_ERROR("Engine", "malformed daemon response");
                 return 1;
             }
-            if (rparsed->payload_length > MAX_NETWORK_PAYLOAD) {
-                // Oversized output (large-image ×2/×4 exceeds the shared
-                // protocol cap): the daemon finished fine, but hauling the
-                // pixels over the socket is off the table. Fall back to the
-                // inline path instead of failing — the result is identical,
-                // only the warm-engine reuse is lost.
+            if (rparsed->payload_length > MAX_SERVE_PAYLOAD) {
+                // Belt-and-braces behind the size pre-flight above (it can be
+                // fooled when an already-running daemon serves a different,
+                // larger-scale model than predicted): fall back to the inline
+                // path instead of failing — the result is identical, only the
+                // warm-engine reuse is lost.
                 LOG_WARNING("Engine", "daemon response too large, falling back to inline processing");
                 return std::nullopt;
             }
@@ -266,7 +289,7 @@ int cmd_process(const args::Process& a) {
                 return 1;
             }
 
-            // 5. Wrap into Image and save (same path as inline single-file).
+            // 4. Wrap into Image and save (same path as inline single-file).
             crossscale::Image out_image(resp.width, resp.height, resp.channels);
             std::memcpy(out_image.data(), out, out_size);
 
