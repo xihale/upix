@@ -6,6 +6,7 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -343,6 +344,12 @@ auto walk_boxes(const uint8_t* data, size_t begin, size_t end, IspeWalk& out, in
     }
 }
 
+// Thread count shared by the encoder (parallel tiles) and RGB conversions.
+auto codec_threads() -> int {
+    const unsigned hw = std::thread::hardware_concurrency();
+    return hw > 0 ? static_cast<int>(hw) : 4;
+}
+
 }  // namespace
 
 auto looks_like_avif(const uint8_t* data, size_t size) -> bool {
@@ -400,6 +407,7 @@ auto load(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError> {
     api.rgb_set_defaults(&rgb, image);
     rgb.format = kAvifRgbFormatRgb;
     rgb.depth = 8;
+    rgb.max_threads = codec_threads();  // parallel YUV→RGB when libyuv steps aside
     const avifResult alloc_result = api.rgb_allocate_pixels(&rgb);
     if (alloc_result != kAvifOk || rgb.pixels == nullptr || rgb.width == 0 || rgb.height == 0) {
         api.image_destroy(image);
@@ -461,6 +469,7 @@ auto save(const Image& image, int quality) -> expected<std::vector<uint8_t>, Ima
     api.rgb_set_defaults(&rgb, avif_image);
     rgb.format = image.channels() == 4 ? kAvifRgbFormatRgba : kAvifRgbFormatRgb;
     rgb.depth = 8;
+    rgb.max_threads = codec_threads();
     rgb.pixels = const_cast<uint8_t*>(image.data());
     rgb.row_bytes = static_cast<uint32_t>(image.width() * image.channels());
 
@@ -481,6 +490,9 @@ auto save(const Image& image, int quality) -> expected<std::vector<uint8_t>, Ima
     overlay->quality = quality;
     overlay->quality_alpha = quality;
     overlay->speed = kAvifSpeedStill;
+    // Without threads the encoder is single-threaded: a 4500² still takes ~13 s
+    // where `avifenc -j N` (parallel tiles) takes ~2.4 s on the same machine.
+    overlay->max_threads = codec_threads();
 
     AvifRWData output{nullptr, 0};
     const avifResult write_result = api.encoder_write(encoder, avif_image, &output);
