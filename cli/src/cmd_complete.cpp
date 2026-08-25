@@ -267,9 +267,13 @@ int cmd_complete_impl(int argc, char* argv[]) {
         }
         if (!only_positional && tok.size() >= 2 && tok[0] == '-') {
             const CLI::Option* o = find_option(node, tok);
-            // "--x=v" carries its value inline; bare "--x" opens a value slot.
-            if (o != nullptr && takes_value(o) && tok.find('=') == std::string::npos) {
-                pending = o;
+            if (o != nullptr && takes_value(o)) {
+                const auto eq = tok.find('=');
+                if (eq == std::string::npos) {
+                    pending = o;  // bare "--x": value is the next word
+                } else if (opt_is(o, {"models", "models-dir"})) {
+                    models_dir_override = tok.substr(eq + 1);  // inline "--x=v"
+                }
             }
             continue;
         }
