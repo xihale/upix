@@ -99,7 +99,7 @@ auto run_client_handshake(
             error_msg = "KEY_HELLO header recv failed";
             return std::nullopt;
         }
-        auto parsed_hdr = crossscale::Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
+        auto parsed_hdr = crossscale::Protocol::parse_header(hdr_buf);
         if (!parsed_hdr || parsed_hdr->type != crossscale::MessageType::MSG_KEY_HELLO ||
             parsed_hdr->payload_length != sizeof(s_hello)) {
             error_msg = "unexpected message during handshake";
@@ -177,7 +177,7 @@ auto run_client_handshake(
             error_msg = "AUTH_RESPONSE header recv failed";
             return std::nullopt;
         }
-        auto parsed = crossscale::Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
+        auto parsed = crossscale::Protocol::parse_header(hdr_buf);
         if (!parsed) {
             error_msg = "AUTH_RESPONSE header invalid";
             return std::nullopt;
@@ -251,7 +251,7 @@ auto perform_connect_request(
         error_msg = "CONNECT_RESPONSE header recv failed";
         return false;
     }
-    auto parsed = crossscale::Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
+    auto parsed = crossscale::Protocol::parse_header(hdr_buf);
     if (!parsed) {
         error_msg = "CONNECT_RESPONSE header invalid";
         return false;
@@ -301,7 +301,7 @@ auto recv_encrypted_frame(
         error_msg = "response header receive failed";
         return std::nullopt;
     }
-    auto parsed = crossscale::Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
+    auto parsed = crossscale::Protocol::parse_header(hdr_buf);
     if (!parsed) {
         error_msg = "response header is invalid";
         return std::nullopt;
