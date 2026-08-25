@@ -22,8 +22,6 @@ struct ProcessingProgress;
 
 // Maximum payload size for network messages (100 MB).
 using crossscale::MAX_NETWORK_PAYLOAD;
-// Local unix-socket serve daemon payload bound (2 GiB).
-using crossscale::MAX_SERVE_PAYLOAD;
 
 // ── Global run-state ────────────────────────────────────────────────────────
 // Set false by signal handlers; long-running loops (process, host, daemon)

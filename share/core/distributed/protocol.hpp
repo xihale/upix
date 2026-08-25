@@ -47,7 +47,8 @@ enum class MessageType : uint16_t {
     // Local serve daemon (Unix domain socket). Separate range so the daemon's
     // protocol can evolve independently of the TCP protocol.
     MSG_SERVE_REQUEST = 0x0601,   // client→daemon: upscale request
-    MSG_SERVE_RESPONSE = 0x0602,  // daemon→client: upscale result
+    MSG_SERVE_RESPONSE = 0x0602,  // daemon→client: [ServeResponse][leading bytes]
+    MSG_SERVE_DATA = 0x0603,      // daemon→client: continuation image bytes
 };
 
 struct MessageHeader {
@@ -178,8 +179,10 @@ struct ModelDownloadResponse {
 
 // ── Local serve daemon messages ─────────────────────────────────────────────
 // The daemon holds a warm engine; clients send an image, receive the upscaled
-// result. On the wire: Protocol header + payload, where
-// payload = [Serve{Request,Response} struct][img_length bytes] contiguous.
+// result. The result streams back in bounded frames: MSG_SERVE_RESPONSE
+// carries [ServeResponse][leading image bytes], then MSG_SERVE_DATA frames
+// continue the raw bytes until img_length is reached. No single frame ever
+// has to hold the whole image, so result size has no practical ceiling.
 struct ServeRequest {
     char model_name[64];     // empty = use daemon's current model; non-empty & different -> lazy reload
     int32_t tile_size;       // 0 = auto: daemon substitutes its engine's recommended size

@@ -178,34 +178,11 @@ int cmd_process(const args::Process& a) {
     // engine directly, which ServeRequest cannot carry.
     if (!is_dir && !no_daemon && !auto_tile) {
         auto delegate = [&]() -> std::optional<int> {
-            // 0. Size pre-flight. Decode here once (the pixels are reused
-            //    below) and predict the upscaled payload from the model that
-            //    would serve the request. Over the local socket cap there is
-            //    no point waking the daemon — it would finish the whole GPU
-            //    inference just for the client to discard the answer and redo
-            //    everything inline.
+            // 0. Load image; on failure let the inline path report the error.
             auto img_res = crossscale::Image::load(input_path);
             if (!img_res) return std::nullopt;
             auto& image = img_res.value();
             if (image.size() == 0) return std::nullopt;
-            {
-                crossscale::ModelManager mgr(models_dir);
-                if (mgr.scan_models()) {
-                    std::optional<crossscale::ModelInfo> info;
-                    if (!model_name.empty()) {
-                        info = mgr.get_model(model_name);
-                    } else if (!mgr.available_models().empty()) {
-                        info = mgr.available_models().front();  // daemon default pick
-                    }
-                    const int scale = info ? info->scale_factor : 0;
-                    if (scale > 1 &&
-                        static_cast<size_t>(image.width()) * scale *
-                            image.height() * scale * image.channels() >
-                            MAX_SERVE_PAYLOAD) {
-                        return std::nullopt;  // straight to inline processing
-                    }
-                }
-            }
 
             // 1. Probe: no daemon accepting → try to start one (30 s cap);
             //    give up silently on failure and let the inline path run.
@@ -248,8 +225,10 @@ int cmd_process(const args::Process& a) {
             auto frame = crossscale::Protocol::serialize(h, payload.data());
             if (!sock.send_all(frame.data(), frame.size())) return std::nullopt;
 
-            // 3. Read response header, then contiguous payload
-            //    [ServeResponse][image].
+            // 3. Read the result stream: MSG_SERVE_RESPONSE carries
+            //    [ServeResponse] + the leading bytes, MSG_SERVE_DATA frames
+            //    continue until img_length is reached. Chunks land straight in
+            //    the final buffer — peak memory stays at one copy of the image.
             std::vector<uint8_t> rhdr(crossscale::Protocol::HEADER_SIZE);
             if (!sock.receive_all(rhdr.data(), rhdr.size())) {
                 LOG_ERROR("Engine", "daemon connection lost mid-request");
@@ -261,37 +240,48 @@ int cmd_process(const args::Process& a) {
                 LOG_ERROR("Engine", "malformed daemon response");
                 return 1;
             }
-            if (rparsed->payload_length > MAX_SERVE_PAYLOAD) {
-                // Belt-and-braces behind the size pre-flight above (it can be
-                // fooled when an already-running daemon serves a different,
-                // larger-scale model than predicted): fall back to the inline
-                // path instead of failing — the result is identical, only the
-                // warm-engine reuse is lost.
-                LOG_WARNING("Engine", "daemon response too large, falling back to inline processing");
-                return std::nullopt;
-            }
-            std::vector<uint8_t> rpayload(rparsed->payload_length);
-            if (!sock.receive_all(rpayload.data(), rpayload.size())) {
+            std::vector<uint8_t> rhead(rparsed->payload_length);
+            if (!sock.receive_all(rhead.data(), rhead.size())) {
                 LOG_ERROR("Engine", "truncated daemon response");
                 return 1;
             }
-
             crossscale::ServeResponse resp{};
-            std::memcpy(&resp, rpayload.data(), sizeof(resp));
+            std::memcpy(&resp, rhead.data(), sizeof(resp));
             if (!resp.ok) {
                 LOG_ERROR("Engine", "daemon error: " + std::string(resp.error));
                 return 1;
             }
-            const uint8_t* out = rpayload.data() + sizeof(resp);
-            size_t out_size = rparsed->payload_length - sizeof(resp);
-            if (out_size != resp.img_length) {
+
+            // 4. Assemble the image while it streams in (saved below, same
+            //    path as inline single-file).
+            crossscale::Image out_image(resp.width, resp.height, resp.channels);
+            const size_t expected = resp.img_length;
+            size_t got = rparsed->payload_length - sizeof(resp);
+            if (got > expected || expected != out_image.size()) {
                 LOG_ERROR("Engine", "daemon response length mismatch");
                 return 1;
             }
-
-            // 4. Wrap into Image and save (same path as inline single-file).
-            crossscale::Image out_image(resp.width, resp.height, resp.channels);
-            std::memcpy(out_image.data(), out, out_size);
+            std::memcpy(out_image.data(), rhead.data() + sizeof(resp), got);
+            rhead.clear();
+            rhead.shrink_to_fit();
+            while (got < expected) {
+                if (!sock.receive_all(rhdr.data(), rhdr.size())) {
+                    LOG_ERROR("Engine", "daemon connection lost mid-transfer");
+                    return 1;
+                }
+                auto chunk = crossscale::Protocol::parse_header(rhdr.data(), rhdr.size());
+                if (!chunk || chunk->type != crossscale::MessageType::MSG_SERVE_DATA ||
+                    chunk->payload_length == 0 ||
+                    chunk->payload_length > expected - got) {
+                    LOG_ERROR("Engine", "malformed daemon data chunk");
+                    return 1;
+                }
+                if (!sock.receive_all(out_image.data() + got, chunk->payload_length)) {
+                    LOG_ERROR("Engine", "truncated daemon data chunk");
+                    return 1;
+                }
+                got += chunk->payload_length;
+            }
 
             crossscale::ProcessingConfig config;
             if (!config_file.empty()) {

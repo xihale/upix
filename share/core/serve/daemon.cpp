@@ -211,31 +211,44 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
         }
     }
 
-    // ── 4. Send response: payload = [ServeResponse][image] contiguous ───────
+    // ── 4. Send response: [ServeResponse][image] streamed in bounded frames.
+    // MSG_SERVE_RESPONSE carries the struct + the leading slice; MSG_SERVE_DATA
+    // frames continue the raw bytes. Slicing straight out of out_bytes keeps
+    // peak RAM at one image copy instead of three (payload + frame + image),
+    // and no frame ever has to hold the whole result.
     ServeResponse resp{};
-    if (err_msg.empty()) {
-        resp.ok = 1;
-        resp.width = out_w;
-        resp.height = out_h;
-        resp.channels = out_c;
-        resp.img_length = static_cast<uint32_t>(out_bytes.size());
-        // Report the model actually used — ensure_model_loaded may have
-        // reloaded (request named none, or a different one).
-        std::strncpy(resp.model_name, used_model.c_str(),
-                     sizeof(resp.model_name) - 1);
-    } else {
+    if (!err_msg.empty()) {
         resp.ok = 0;
         std::strncpy(resp.error, err_msg.c_str(), sizeof(resp.error) - 1);
+        send_via(*sock, MessageType::MSG_SERVE_RESPONSE, &resp, sizeof(resp));
+        return;
     }
+    resp.ok = 1;
+    resp.width = out_w;
+    resp.height = out_h;
+    resp.channels = out_c;
+    resp.img_length = static_cast<uint32_t>(out_bytes.size());
+    // Report the model actually used — ensure_model_loaded may have reloaded
+    // (request named none, or a different one).
+    std::strncpy(resp.model_name, used_model.c_str(), sizeof(resp.model_name) - 1);
 
-    // Assemble contiguous payload so Protocol::serialize produces one frame.
-    size_t payload_len = sizeof(resp) + (resp.ok ? out_bytes.size() : 0);
-    std::vector<uint8_t> payload(payload_len);
-    std::memcpy(payload.data(), &resp, sizeof(resp));
-    if (resp.ok && !out_bytes.empty()) {
-        std::memcpy(payload.data() + sizeof(resp), out_bytes.data(), out_bytes.size());
+    constexpr size_t SERVE_CHUNK_BYTES = 8u * 1024u * 1024u;
+    size_t offset = 0;
+    bool first_frame = true;
+    while (first_frame || offset < out_bytes.size()) {
+        const size_t n = std::min(SERVE_CHUNK_BYTES, out_bytes.size() - offset);
+        if (first_frame) {
+            std::vector<uint8_t> head(sizeof(resp) + n);
+            std::memcpy(head.data(), &resp, sizeof(resp));
+            std::memcpy(head.data() + sizeof(resp), out_bytes.data(), n);
+            send_via(*sock, MessageType::MSG_SERVE_RESPONSE, head.data(), head.size());
+            first_frame = false;
+        } else {
+            send_via(*sock, MessageType::MSG_SERVE_DATA,
+                     out_bytes.data() + offset, n);
+        }
+        offset += n;
     }
-    send_via(*sock, MessageType::MSG_SERVE_RESPONSE, payload.data(), payload.size());
 }
 
 auto ServeDaemon::run() -> void {

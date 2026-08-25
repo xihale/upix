@@ -15,11 +15,6 @@ namespace crossscale {
 // Maximum payload size for network messages (100 MB).
 inline constexpr uint32_t MAX_NETWORK_PAYLOAD = 100 * 1024 * 1024;
 
-// Sanity bound for the LOCAL unix-socket serve daemon (not a network hop):
-// u32 framing addresses up to 4 GiB, so allow large upscaled results instead
-// of inheriting the tighter network cap.
-inline constexpr uint32_t MAX_SERVE_PAYLOAD = 2048u * 1024u * 1024u;
-
 // Basic TCP socket wrapper. Framing I/O (send/receive and their _all
 // variants) plus the fd and I/O lock live in StreamSocket.
 class TCPSocket : public StreamSocket {
