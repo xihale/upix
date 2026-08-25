@@ -28,6 +28,11 @@ enum class MessageType : uint16_t {
     // firewalls cannot evict an idle connection, and lays the groundwork for the
     // phone to show real progress. The terminal result is still MSG_CLIENT_RESPONSE.
     MSG_TASK_PROGRESS = 0x0502,
+    // PC→phone: continuation result bytes after a MSG_CLIENT_RESPONSE whose
+    // encoded result exceeds MAX_NETWORK_PAYLOAD. Results at or below the cap
+    // stay in the single RESPONSE frame, so APKs predating this type still
+    // interoperate for every payload they could already receive.
+    MSG_CLIENT_DATA = 0x0504,
 
     // Pairing: phone→PC request immediately after the ECDH handshake; PC→phone
     // reply (gated on interactive approval the first time, auto-approved once

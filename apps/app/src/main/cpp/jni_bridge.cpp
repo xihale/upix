@@ -889,13 +889,14 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
         return nullptr;
     }
 
-    // Receive frames until the terminal MSG_CLIENT_RESPONSE. The PC streams
-    // MSG_TASK_PROGRESS frames while it upscales (the traffic keeps the link
-    // alive through NAT/stateful firewalls during the long, otherwise-idle
-    // processing, and carries real progress for a future UI hook). Drain those
-    // and keep reading until the result arrives. The result payload layout is
-    // [ClientTaskResponse struct][result image bytes] contiguous.
+    // Receive frames until the full result is assembled. The PC streams
+    // MSG_TASK_PROGRESS frames while it upscales, then sends the terminal
+    // MSG_CLIENT_RESPONSE ([ClientTaskResponse struct][leading result bytes]).
+    // Results larger than 100 MB continue in MSG_CLIENT_DATA chunks; keep
+    // reading until the byte count promised by result_data_length arrives.
     std::vector<uint8_t> result_payload;
+    size_t expected_total = 0;
+    bool have_response = false;
     while (true) {
         std::string frame_error;
         auto frame = recv_encrypted_frame(socket, *session, frame_error);
@@ -906,12 +907,33 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
         if (frame->first.type == crossscale::MessageType::MSG_TASK_PROGRESS) {
             continue;  // progress update; drain and wait for the result
         }
+        if (frame->first.type == crossscale::MessageType::MSG_CLIENT_DATA) {
+            if (!have_response) {
+                set_jni_last_error("Distributed result data arrived before the response header");
+                return nullptr;
+            }
+            result_payload.insert(result_payload.end(),
+                                  frame->second.begin(), frame->second.end());
+            if (result_payload.size() >= expected_total) {
+                break;
+            }
+            continue;
+        }
         if (frame->first.type != crossscale::MessageType::MSG_CLIENT_RESPONSE) {
             set_jni_last_error("Distributed response frame type is invalid");
             return nullptr;
         }
+        have_response = true;
         result_payload = std::move(frame->second);
-        break;
+        if (result_payload.size() < sizeof(crossscale::ClientTaskResponse)) {
+            set_jni_last_error("Distributed response payload is truncated");
+            return nullptr;
+        }
+        const auto* hdr = reinterpret_cast<const crossscale::ClientTaskResponse*>(result_payload.data());
+        expected_total = sizeof(crossscale::ClientTaskResponse) + hdr->result_data_length;
+        if (result_payload.size() >= expected_total) {
+            break;  // single-frame result (the common case)
+        }
     }
     if (result_payload.size() < sizeof(crossscale::ClientTaskResponse)) {
         set_jni_last_error("Distributed response payload is truncated");
@@ -924,12 +946,9 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
         return nullptr;
     }
 
-    // Security fix: Validate result data length before use to prevent OOM.
-    if (task_response->result_data_length > MAX_PAYLOAD_LENGTH) {
-        set_jni_last_error("Distributed result data too large: " +
-                           std::to_string(task_response->result_data_length) + " bytes");
-        return nullptr;
-    }
+    // result_data_length is only trusted as a byte count to wait for; the
+    // truncation check below validates it against bytes actually received, so
+    // no allocation ever happens from a claimed length.
     // The result image bytes follow the ClientTaskResponse struct in result_payload.
     const size_t resp_hdr_size = sizeof(crossscale::ClientTaskResponse);
     if (resp_hdr_size + task_response->result_data_length > result_payload.size()) {

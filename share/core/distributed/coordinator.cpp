@@ -269,11 +269,13 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     if (!encoded) {
         return std::unexpected(CoordinatorError{5, "output encode failed: " + encoded.error().message});
     }
-    if (encoded->size() > MAX_NETWORK_PAYLOAD) {
+    // The result streams back in MSG_CLIENT_DATA chunks, so the only hard
+    // ceiling is what fits a uint32 total length. (Historically anything over
+    // 100 MB was rejected with "use jpg or webp"; chunking removed that.)
+    if (encoded->size() > 0xFFFFFFFFull) {
         return std::unexpected(CoordinatorError{
             6, "Encoded output too large for transport (" +
-               format_bytes(encoded->size()) +
-               "); use jpg or webp for large images"});
+               format_bytes(encoded->size()) + ")"});
     }
 
     const double inf_s = std::chrono::duration<double>(t_inf_end - t_inf_start).count();
@@ -687,16 +689,29 @@ void Coordinator::handle_client(std::unique_ptr<TCPSocket> socket) {
 
                 // Response header + result data go in one encrypted (boxed) frame,
                 // matching the way the phone opens it (session.open verifies the MAC).
-                std::vector<uint8_t> resp_payload(sizeof(ClientTaskResponse) +
-                                                  process_result.value_or(std::vector<uint8_t>{}).size());
+                // Encoded results above MAX_NETWORK_PAYLOAD stream as MSG_CLIENT_DATA
+                // continuation frames instead; small results stay single-frame so
+                // APKs that predate MSG_CLIENT_DATA keep working.
+                constexpr size_t CLIENT_CHUNK_BYTES = 8u * 1024u * 1024u;
+                const auto& result_bytes = process_result.value_or(std::vector<uint8_t>{});
+                const size_t leading_bytes =
+                    std::min<size_t>(result_bytes.size(), MAX_NETWORK_PAYLOAD);
+                std::vector<uint8_t> resp_payload(sizeof(ClientTaskResponse) + leading_bytes);
                 std::memcpy(resp_payload.data(), &response, sizeof(response));
-                if (process_result.has_value()) {
+                if (!result_bytes.empty()) {
                     std::memcpy(resp_payload.data() + sizeof(ClientTaskResponse),
-                                process_result->data(), process_result->size());
+                                result_bytes.data(), leading_bytes);
                 }
                 const auto t_send_start = std::chrono::steady_clock::now();
-                const bool sent_ok = send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
-                                                    resp_payload.data(), resp_payload.size());
+                bool sent_ok = send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
+                                              resp_payload.data(), resp_payload.size());
+                for (size_t offset = resp_payload.size() - sizeof(ClientTaskResponse);
+                     sent_ok && offset < result_bytes.size();
+                     offset += CLIENT_CHUNK_BYTES) {
+                    const size_t n = std::min(CLIENT_CHUNK_BYTES, result_bytes.size() - offset);
+                    sent_ok = send_encrypted(conn, MessageType::MSG_CLIENT_DATA,
+                                             result_bytes.data() + offset, n);
+                }
                 const auto t_send_end = std::chrono::steady_clock::now();
                 if (!sent_ok) {
                     LOG_ERROR("Coordinator", "Failed to send authenticated client response");
