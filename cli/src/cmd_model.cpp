@@ -29,7 +29,7 @@ auto find_remote(const std::vector<crossscale::cli::RemoteModel>& models,
                  const std::string& name) -> const crossscale::cli::RemoteModel* {
     auto norm = [](std::string s) {
         for (char& c : s) {
-            c = (c == '_') ? '-' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            c = (c == '_' || c == ' ') ? '-' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         }
         return s;
     };

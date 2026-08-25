@@ -14,11 +14,13 @@ namespace {
 // layout ("Real-ESRGANv3-anime_x2", underscore before the scale suffix) and
 // the PC's models/ directory ("Real-ESRGANv3-anime-x2", dash, see
 // parse_param_file below) — that disagree only on the word separator. Fold
-// both into one canonical lowercase/dash-joined form so a phone-submitted
-// name resolves regardless of which separator each side happened to use.
+// both into one canonical lowercase/dash-joined form (spaces count as
+// separators too, so shell-friendly "real cugan conservative x2" resolves)
+// so a submitted name resolves regardless of which separator each side
+// happened to use.
 std::string normalize_model_name(std::string s) {
     for (char& c : s) {
-        c = (c == '_') ? '-' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        c = (c == '_' || c == ' ') ? '-' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
     return s;
 }
