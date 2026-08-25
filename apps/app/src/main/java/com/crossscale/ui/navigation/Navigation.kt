@@ -66,15 +66,8 @@ fun CrossScaleNavigation(
     // 下载进度、连接状态）下沉到各自目的地收集，避免任一更新重跑整个 NavHost。
     val mainUiState by mainViewModel.uiState.collectAsStateWithLifecycle()
     val logRepository = container.logRepository
-    val appSettings = container.appSettingsRepository
 
     val scope = rememberCoroutineScope()
-
-    // 加密数据流开关(SharedPreferences 持久化, 默认关闭=吞吐优先)。
-    val streamEncryptedState = rememberSaveable {
-        mutableStateOf(appSettings.isStreamEncrypted())
-    }
-    val isStreamEncrypted = streamEncryptedState.value
 
     // App 启动即尝试自动重连上次的 PC (1:1 模型)。成功 -> Remote 模式;
     // 失败/无记录 -> Native 模式。mDNS 自动发现已移除。
@@ -259,11 +252,6 @@ fun CrossScaleNavigation(
                     },
                     onOpenHelp = {
                         navController.navigate(AppScreen.Help.route)
-                    },
-                    isStreamEncrypted = isStreamEncrypted,
-                    onStreamEncryptedChange = { enabled ->
-                        appSettings.setStreamEncrypted(enabled)
-                        streamEncryptedState.value = enabled
                     },
                     detailPaneContent = { detail ->
                         when (detail) {

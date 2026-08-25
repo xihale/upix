@@ -22,8 +22,7 @@ object NativeWorker {
     external fun nativeRequestConnection(
         host: String,
         port: Int,
-        peerPubKeyB64: String,
-        wantsEncryptedStream: Boolean
+        peerPubKeyB64: String
     ): String?
 
     /**

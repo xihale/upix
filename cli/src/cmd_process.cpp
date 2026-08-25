@@ -245,7 +245,6 @@ int cmd_process(const args::Process& a) {
 
             crossscale::MessageHeader h{};
             h.magic = crossscale::Protocol::MAGIC;
-            h.version = crossscale::Protocol::VERSION;
             h.type = crossscale::MessageType::MSG_SERVE_REQUEST;
             h.payload_length = static_cast<uint32_t>(payload.size());
             h.checksum = 0;  // filled by serialize
@@ -262,7 +261,7 @@ int cmd_process(const args::Process& a) {
                     LOG_ERROR("Engine", "daemon connection lost mid-request");
                     return 1;
                 }
-                rparsed = crossscale::Protocol::parse_header(rhdr.data(), rhdr.size());
+                rparsed = crossscale::Protocol::parse_header(rhdr);
                 if (!rparsed) {
                     LOG_ERROR("Engine", "malformed daemon response");
                     return 1;

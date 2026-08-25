@@ -52,8 +52,7 @@ class RemoteDistributedTest {
         val learnedPubKey = NativeWorker.nativeRequestConnection(
             host = host(),
             port = port(),
-            peerPubKeyB64 = "",      // TOFU: learn the PC key on first contact
-            wantsEncryptedStream = true
+            peerPubKeyB64 = ""      // TOFU: learn the PC key on first contact
         )
         assertNotNull(
             "Pairing failed (PC unreachable, rejected, or MITM mismatch). " +
@@ -109,7 +108,6 @@ class RemoteDistributedTest {
             host = host(),
             port = port(),
             peerPubKeyB64 = key,
-            wantsEncryptedStream = true,
             modelName = model(),
             tileSize = 64,
             tileOverlap = 8,

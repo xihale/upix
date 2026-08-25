@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -21,26 +22,20 @@ enum class MessageType : uint16_t {
     MSG_AUTH_RESPONSE = 0x0004,
 
     // One-shot image submit (phone→PC, inside EncryptedSession after pairing).
+    // The phone ships compressed input file bytes; the PC decodes, upscales,
+    // encodes, and streams the result back.
     MSG_CLIENT_SUBMIT = 0x0500,
     MSG_CLIENT_RESPONSE = 0x0501,
-    // PC→phone streamed progress while a CLIENT_SUBMIT is being processed. Keeps
-    // traffic flowing during the (potentially minutes-long) upscale so NAT/stateful
-    // firewalls cannot evict an idle connection, and lays the groundwork for the
-    // phone to show real progress. The terminal result is still MSG_CLIENT_RESPONSE.
+    // PC→phone streamed progress while a CLIENT_SUBMIT is being processed
+    // (TaskProgress payload). Keeps traffic flowing during the (potentially
+    // minutes-long) upscale so NAT/stateful firewalls cannot evict an idle
+    // connection, and lets the phone show real progress with its own ETA.
+    // The terminal result is still MSG_CLIENT_RESPONSE.
     MSG_TASK_PROGRESS = 0x0502,
-    // Compressed-input submit (phone→PC): the phone ships the original file
-    // bytes and the PC decodes, upscales, encodes, and streams the result
-    // back. Only sent by APKs that know this protocol, so legacy peers never
-    // see it. Progress for these tasks rides on MSG_TASK_PROGRESS_V2.
-    MSG_CLIENT_SUBMIT_V2 = 0x0503,
     // PC→phone: continuation result bytes after a MSG_CLIENT_RESPONSE whose
     // encoded result exceeds MAX_NETWORK_PAYLOAD. Results at or below the cap
-    // stay in the single RESPONSE frame, so APKs predating this type still
-    // interoperate for every payload they could already receive.
-    MSG_CLIENT_DATA = 0x0504,
-    // Rich progress for MSG_CLIENT_SUBMIT_V2 tasks (TaskProgressV2 payload):
-    // completed/total tiles let the phone compute percent and its own ETA.
-    MSG_TASK_PROGRESS_V2 = 0x0505,
+    // stay in the single RESPONSE frame.
+    MSG_CLIENT_DATA = 0x0503,
 
     // Pairing: phone→PC request immediately after the ECDH handshake; PC→phone
     // reply (gated on interactive approval the first time, auto-approved once
@@ -70,7 +65,6 @@ enum class MessageType : uint16_t {
 
 struct MessageHeader {
     uint32_t magic = 0x53534358;
-    uint8_t version = 2;
     MessageType type;
     uint32_t payload_length;
     uint32_t checksum;
@@ -96,46 +90,11 @@ struct AuthResponse {
     uint8_t trusted;  // 0 = first-time (TOFU pending), 1 = already in TrustStore
 };
 
-// One-shot image submit (phone→PC). The raw u8 image pixels follow the struct
-// contiguously inside the same encrypted frame. output_format/quality tell the
-// PC how to encode the upscaled result (raw RGB doesn't scale to camera photos).
+// One-shot image submit (phone→PC). Compressed input file bytes follow the
+// struct contiguously inside the same encrypted frame; the PC decodes them, so
+// raw pixels never cross the radio. output_format/quality tell the PC how to
+// encode the upscaled result.
 struct ClientTaskSubmit {
-    uint32_t image_width;
-    uint32_t image_height;
-    uint8_t channels;
-    char model_name[64];
-    uint32_t tile_size;
-    uint32_t tile_overlap;
-    uint32_t image_data_length;
-    char output_format[8];  // "jpg"/"png"/"webp"/"avif"
-    uint8_t output_quality; // 1..100
-};
-
-struct ClientTaskResponse {
-    uint8_t success;
-    char error_message[128];
-    uint32_t result_data_length;
-};
-
-// Streamed upscale progress (PC→phone), 0..100. Sent inside the EncryptedSession
-// as MSG_TASK_PROGRESS frames between CLIENT_SUBMIT and CLIENT_RESPONSE. The phone
-// drains these (and may surface them to the UI) until the terminal CLIENT_RESPONSE.
-struct TaskProgressMessage {
-    uint32_t percent;  // 0..100 inclusive
-};
-
-// Rich progress (PC→phone) for SUBMIT_V2 tasks. stage 0 = inference tiles,
-// percent/eta_seconds valid; stage 1 = inference done, the PC is encoding
-// the result (percent/eta meaningless). The PC computes the ETA, so the
-// phone gets a real time estimate without needing tile internals.
-struct TaskProgressV2 {
-    uint32_t stage;           // 0 = tiles, 1 = encoding result
-    uint32_t percent;         // 0..100 (stage 0)
-    uint32_t eta_seconds;     // estimated seconds remaining (stage 0), else 0
-};
-
-// SUBMIT_V2 payload header; compressed input file bytes follow contiguously.
-struct ClientTaskSubmitV2 {
     char model_name[64];      // empty = PC's first available model
     char input_format[16];    // "jpg"/"png"/"webp"/"avif" (from source mime/name)
     char output_format[16];   // empty -> PC defaults to jpg
@@ -145,26 +104,41 @@ struct ClientTaskSubmitV2 {
     uint32_t input_data_length;
 };
 
+struct ClientTaskResponse {
+    uint8_t success;
+    char error_message[128];
+    uint32_t result_data_length;
+};
+
+// Streamed upscale progress (PC→phone). Sent inside the EncryptedSession as
+// MSG_TASK_PROGRESS frames between CLIENT_SUBMIT and CLIENT_RESPONSE.
+// stage 0 = inference tiles, percent/eta_seconds valid; stage 1 = inference
+// done, the PC is encoding the result (percent/eta meaningless). The PC
+// computes the ETA from observed tile rate, so the phone gets a real time
+// estimate without needing tile internals. The phone drains these (and may
+// surface them to the UI) until the terminal CLIENT_RESPONSE.
+struct TaskProgress {
+    uint32_t stage;           // 0 = tiles, 1 = encoding result
+    uint32_t percent;         // 0..100 (stage 0)
+    uint32_t eta_seconds;     // estimated seconds remaining (stage 0), else 0
+};
+
 // Pairing request: phone→PC immediately after the ECDH handshake succeeds.
-// Carries the device's human-readable name, its own fingerprint (so the PC can
-// show "Xiaomi ... ABCD1234" in the approval prompt), and whether the phone has
-// its data-stream encryption toggle on (the effective stream mode is negotiated
-// as min(pc, phone) by the PC).
+// Carries the device's human-readable name and its own fingerprint (so the PC
+// can show "Xiaomi ... ABCD1234" in the approval prompt). All frames are
+// always encrypted by EncryptedSession; there is no separate stream mode.
 struct ClientConnectRequest {
     char device_name[64];
     char fingerprint[17];          // 16 hex chars + NUL
-    uint8_t wants_encrypted_stream; // 1 = phone's toggle is ON
 };
 
 // Pairing response: PC→phone.
-//   approved         0 = PC denied (phone must disconnect), 1 = allowed
-//   trusted          0 = first-time (just approved this session), 1 = already
-//                    in TrustStore (auto-approved, no prompt shown on PC)
-//   stream_encrypted final negotiated data-stream mode (0 = plaintext, 1 = enc)
+//   approved  0 = PC denied (phone must disconnect), 1 = allowed
+//   trusted   0 = first-time (just approved this session), 1 = already
+//             in TrustStore (auto-approved, no prompt shown on PC)
 struct ClientConnectResponse {
     uint8_t approved;
     uint8_t trusted;
-    uint8_t stream_encrypted;
 };
 
 // ── Shared model library messages ───────────────────────────────────────────
@@ -259,13 +233,13 @@ struct ServeProgress {
 class Protocol {
 public:
     static constexpr uint32_t MAGIC = 0x53534358;
-    static constexpr uint8_t VERSION = 2;
-    static constexpr size_t HEADER_SIZE = 15;
+    // magic[4] type[2] payload_length[4] checksum[4], little-endian.
+    static constexpr size_t HEADER_SIZE = 14;
 
     static auto serialize(const MessageHeader& header, const void* payload)
         -> std::vector<uint8_t>;
 
-    static auto parse_header(const uint8_t* data, size_t size)
+    static auto parse_header(std::span<const uint8_t> data)
         -> std::optional<MessageHeader>;
 
     static auto compute_checksum(const void* data, size_t size) -> uint32_t;

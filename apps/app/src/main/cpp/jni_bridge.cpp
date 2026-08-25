@@ -225,18 +225,16 @@ auto perform_connect_request(
     crossscale::EncryptedSession& session,
     const std::string& device_name,
     const std::string& own_fingerprint,
-    bool wants_encrypted_stream,
     std::string& error_msg
 ) -> bool {
     error_msg.clear();
 
-    // (1) 构造 ClientConnectRequest: 设备名 + 自己的指纹 + 加密意愿。
+    // (1) 构造 ClientConnectRequest: 设备名 + 自己的指纹。
     crossscale::ClientConnectRequest req{};
     std::memset(req.device_name, 0, sizeof(req.device_name));
     std::strncpy(req.device_name, device_name.c_str(), sizeof(req.device_name) - 1);
     std::memset(req.fingerprint, 0, sizeof(req.fingerprint));
     std::strncpy(req.fingerprint, own_fingerprint.c_str(), sizeof(req.fingerprint) - 1);
-    req.wants_encrypted_stream = wants_encrypted_stream ? 1 : 0;
 
     crossscale::MessageHeader req_hdr{};
     req_hdr.type = crossscale::MessageType::MSG_CLIENT_CONNECT_REQUEST;
@@ -287,8 +285,6 @@ auto perform_connect_request(
         error_msg = "PC denied the connection";
         return false;
     }
-    // Stream encryption was removed (all frames are sealed); resp->stream_encrypted
-    // is now always 0 and ignored. The session stays in its default sealed mode.
     return true;
 }
 
@@ -373,8 +369,7 @@ auto open_paired_link(
     const std::string own_fp = crossscale::fingerprint(g_identity->public_key());
     std::string pairing_error;
     if (!perform_connect_request(
-            link.socket, *session, "CrossScale-Android", own_fp,
-            /*wants_encrypted_stream=*/false, pairing_error)) {
+            link.socket, *session, "CrossScale-Android", own_fp, pairing_error)) {
         error_msg = "pairing failed: " + pairing_error;
         return std::nullopt;
     }
@@ -736,7 +731,6 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
     jstring host,
     jint port,
     jstring peer_pubkey_b64,
-    jboolean wants_encrypted_stream,
     jstring model_name,
     jint tile_size,
     jint tile_overlap,
@@ -849,18 +843,17 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
     const std::string own_fp = crossscale::fingerprint(g_identity->public_key());
     std::string pairing_error;
     if (!perform_connect_request(
-            socket, *session, "CrossScale-Android", own_fp,
-            wants_encrypted_stream == JNI_TRUE, pairing_error)) {
+            socket, *session, "CrossScale-Android", own_fp, pairing_error)) {
         set_jni_last_error("Distributed pairing failed: " + pairing_error);
         return nullptr;
     }
 
-    // Pack ClientTaskSubmitV2 struct + compressed input bytes contiguously
+    // Pack ClientTaskSubmit struct + compressed input bytes contiguously
     // into one plaintext payload, then seal into a single encrypted frame.
     // The phone ships the ORIGINAL file bytes; the PC decodes them, so raw
     // pixels never cross the radio (a 12 MP photo uploads as ~4 MB of JPEG,
     // not ~36 MB of RGB).
-    crossscale::ClientTaskSubmitV2 submit_request{};
+    crossscale::ClientTaskSubmit submit_request{};
     std::strncpy(submit_request.model_name, model_str.c_str(), sizeof(submit_request.model_name) - 1);
     std::strncpy(submit_request.input_format, input_format_str.c_str(),
                  sizeof(submit_request.input_format) - 1);
@@ -876,7 +869,7 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
     std::memcpy(plaintext.data() + sizeof(submit_request), input_bytes.data(), input_bytes.size());
 
     crossscale::MessageHeader submit_header{};
-    submit_header.type = crossscale::MessageType::MSG_CLIENT_SUBMIT_V2;
+    submit_header.type = crossscale::MessageType::MSG_CLIENT_SUBMIT;
     submit_header.payload_length = static_cast<uint32_t>(plaintext.size());
     auto submit_wire = session->seal(submit_header, plaintext.data());
     if (!socket.send_all(submit_wire.data(), submit_wire.size()).has_value()) {
@@ -899,9 +892,9 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
             set_jni_last_error("Distributed " + frame_error);
             return nullptr;
         }
-        if (frame->first.type == crossscale::MessageType::MSG_TASK_PROGRESS_V2 &&
-            frame->second.size() >= sizeof(crossscale::TaskProgressV2)) {
-            crossscale::TaskProgressV2 prog{};
+        if (frame->first.type == crossscale::MessageType::MSG_TASK_PROGRESS &&
+            frame->second.size() >= sizeof(crossscale::TaskProgress)) {
+            crossscale::TaskProgress prog{};
             std::memcpy(&prog, frame->second.data(), sizeof(prog));
             if (prog.stage == 0) {
                 // Surfaced via logcat for now; the UI can subscribe later.
@@ -911,9 +904,6 @@ Java_com_crossscale_nativelib_NCNNEngine_nativeProcessImageDistributed(
                 LOGI("PC inference done, encoding result");
             }
             continue;  // progress update; drain and wait for the result
-        }
-        if (frame->first.type == crossscale::MessageType::MSG_TASK_PROGRESS) {
-            continue;  // legacy progress frame; drain and wait for the result
         }
         if (frame->first.type == crossscale::MessageType::MSG_CLIENT_DATA) {
             if (!have_response) {
@@ -1041,8 +1031,7 @@ Java_com_crossscale_nativelib_NativeWorker_nativeRequestConnection(
     jobject thiz,
     jstring host,
     jint port,
-    jstring peer_pubkey_b64,
-    jboolean wants_encrypted_stream
+    jstring peer_pubkey_b64
 ) {
     (void)thiz;
     set_jni_last_error("");
@@ -1118,7 +1107,6 @@ Java_com_crossscale_nativelib_NativeWorker_nativeRequestConnection(
         *session,
         "CrossScale-Android",
         own_fingerprint,
-        wants_encrypted_stream == JNI_TRUE,
         pairing_error
     );
     if (!approved) {

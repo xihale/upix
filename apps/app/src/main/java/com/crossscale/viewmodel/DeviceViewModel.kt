@@ -11,7 +11,6 @@ import com.crossscale.AppContainer
 import com.crossscale.R
 import com.crossscale.data.model.ConnectionState
 import com.crossscale.data.model.RemoteEndpoint
-import com.crossscale.data.repository.AppSettingsRepository
 import com.crossscale.data.repository.DeviceRepository
 import com.crossscale.data.repository.LogRepository
 import com.crossscale.data.repository.PairingRepository
@@ -57,7 +56,6 @@ class DeviceViewModel(
     private val deviceRepository: DeviceRepository,
     private val pairingRepository: PairingRepository,
     private val coordinatorClient: CoordinatorClient,
-    private val appSettingsRepository: AppSettingsRepository,
     private val logRepository: LogRepository,
     private val stringProvider: StringProvider
 ) : ViewModel() {
@@ -84,9 +82,8 @@ class DeviceViewModel(
                 logRepository.info("DeviceViewModel", "No last paired PC, staying disconnected")
                 return@launch
             }
-            val wantsEncrypted = isStreamEncryptionEnabled()
             deviceRepository.setConnecting()
-            val learned = performConnection(pc.host, pc.port, pc.identityPubKey, wantsEncrypted)
+            val learned = performConnection(pc.host, pc.port, pc.identityPubKey)
             if (learned != null) {
                 establishTrustedConnection(pc.host, pc.port, learned)
                 logRepository.info(
@@ -112,7 +109,6 @@ class DeviceViewModel(
         host: String,
         port: Int,
         peerPubKeyB64: String?,
-        wantsEncryptedStream: Boolean = isStreamEncryptionEnabled()
     ) {
         val normalizedHost = host.trim()
         if (normalizedHost.isBlank() || port <= 0) {
@@ -122,7 +118,7 @@ class DeviceViewModel(
         val knownKey = peerPubKeyB64?.trim().orEmpty()
         deviceRepository.setConnecting()
         viewModelScope.launch {
-            val learned = performConnection(normalizedHost, port, knownKey, wantsEncryptedStream)
+            val learned = performConnection(normalizedHost, port, knownKey)
             if (learned == null) {
                 onConnectionFailure(
                     normalizedHost, port,
@@ -162,8 +158,7 @@ class DeviceViewModel(
         requestConnection(
             host = invite.host,
             port = invite.port,
-            peerPubKeyB64 = invite.identityPubKey,
-            wantsEncryptedStream = isStreamEncryptionEnabled()
+            peerPubKeyB64 = invite.identityPubKey
         )
     }
 
@@ -183,8 +178,7 @@ class DeviceViewModel(
             requestConnection(
                 host = normalizedHost,
                 port = port,
-                peerPubKeyB64 = trusted?.identityPubKey,
-                wantsEncryptedStream = isStreamEncryptionEnabled()
+                peerPubKeyB64 = trusted?.identityPubKey
             )
         }
     }
@@ -279,10 +273,6 @@ class DeviceViewModel(
         }
     }
 
-    private fun isStreamEncryptionEnabled(): Boolean {
-        return appSettingsRepository.isStreamEncrypted()
-    }
-
     /**
      * 指纹 = SHA256(pubkey) 前 8 字节的大写 hex (16 字符), 与 C++ 侧
      * crossscale::fingerprint() (identity.cpp:126) 完全一致, 供用户跨设备肉眼核对。
@@ -306,11 +296,10 @@ class DeviceViewModel(
     private suspend fun performConnection(
         host: String,
         port: Int,
-        peerPubKeyB64: String,
-        wantsEncryptedStream: Boolean
+        peerPubKeyB64: String
     ): String? {
         return withContext(Dispatchers.IO) {
-            coordinatorClient.requestConnection(host, port, peerPubKeyB64, wantsEncryptedStream)
+            coordinatorClient.requestConnection(host, port, peerPubKeyB64)
         }
     }
 
@@ -362,7 +351,6 @@ class DeviceViewModel(
                     deviceRepository = container.deviceRepository,
                     pairingRepository = container.pairingRepository,
                     coordinatorClient = container.coordinatorClient,
-                    appSettingsRepository = container.appSettingsRepository,
                     logRepository = container.logRepository,
                     stringProvider = container.stringProvider
                 )

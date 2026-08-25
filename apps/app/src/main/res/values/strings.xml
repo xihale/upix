@@ -181,10 +181,7 @@
 
     <!-- Settings screen -->
     <string name="settings_current_model">当前模型：%1$s</string>
-    <string name="settings_stream_encryption_title">加密传输（图像与结果）</string>
-    <string name="settings_stream_encryption_subtitle">关闭可提速；控制指令仍加密</string>
     <string name="settings_section_general">通用</string>
-    <string name="settings_section_transfer">传输</string>
     <string name="settings_section_about">关于</string>
     <string name="settings_about_version">版本 %1$s</string>
     <string name="settings_about_project">项目地址</string>

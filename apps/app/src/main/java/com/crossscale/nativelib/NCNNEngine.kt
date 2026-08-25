@@ -21,7 +21,6 @@ object NCNNEngine {
         host: String,
         port: Int,
         peerPubKeyB64: String,
-        wantsEncryptedStream: Boolean,
         modelName: String,
         tileSize: Int,
         tileOverlap: Int,

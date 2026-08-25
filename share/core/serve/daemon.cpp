@@ -31,7 +31,6 @@ auto send_via(UnixSocket& sock, MessageType type, const void* payload, size_t le
     -> bool {
     MessageHeader h{};
     h.magic = Protocol::MAGIC;
-    h.version = Protocol::VERSION;
     h.type = type;
     h.payload_length = static_cast<uint32_t>(len);
     h.checksum = Protocol::compute_checksum(payload, len);
@@ -150,7 +149,7 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     // ── 1. Read request header ──────────────────────────────────────────────
     std::vector<uint8_t> hdr_buf(Protocol::HEADER_SIZE);
     if (!sock->receive_all(hdr_buf.data(), hdr_buf.size())) return;
-    auto parsed = Protocol::parse_header(hdr_buf.data(), hdr_buf.size());
+    auto parsed = Protocol::parse_header(hdr_buf);
     if (!parsed || parsed->type != MessageType::MSG_SERVE_REQUEST ||
         parsed->payload_length < sizeof(ServeRequest)) {
         // Malformed: send a minimal error response and bail.

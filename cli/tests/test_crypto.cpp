@@ -132,7 +132,7 @@ int main() {
         hdr.payload_length = (uint32_t)payload.size();
 
         auto wire = s.seal(hdr, payload.data());
-        CHECK(wire.size() == 15 + 24 + 64 + 16);
+        CHECK(wire.size() == 14 + 24 + 64 + 16);
 
         auto opened = s.open(wire.data(), wire.size());
         CHECK(opened.has_value());
@@ -141,8 +141,8 @@ int main() {
         CHECK(opened->second.size() == 64);
         CHECK(std::memcmp(opened->second.data(), payload.data(), 64) == 0);
 
-        // 篡改密文应失败(flip a ciphertext byte at offset 15+24+5 = 44)
-        wire[44] ^= 0xFF;
+        // 篡改密文应失败(flip a ciphertext byte at offset 14+24+5 = 43)
+        wire[43] ^= 0xFF;
         CHECK(!s.open(wire.data(), wire.size()));
         printf("OK encrypted session seal/open + tamper reject\n");
     }
@@ -157,7 +157,7 @@ int main() {
         hdr.type = MessageType::MSG_CLIENT_SUBMIT;
         hdr.payload_length = 0;
         auto wire = s.seal(hdr, nullptr);
-        CHECK(wire.size() == 15 + 24 + 0 + 16);  // 55
+        CHECK(wire.size() == 14 + 24 + 0 + 16);  // 54
         auto opened = s.open(wire.data(), wire.size());
         CHECK(opened.has_value());
         CHECK(opened->first.payload_length == 0);
@@ -170,21 +170,20 @@ int main() {
         EncryptedSession s;
         EncryptedSession::SessionKey k{};
         s.activate(k);
-        // too short (< 15)
+        // too short (< 14)
         uint8_t tiny[10] = {};
         CHECK(!s.open(tiny, sizeof(tiny)));
         // header-only with bogus payload_length
-        std::vector<uint8_t> bogus(15 + 24 + 16, 0);  // min-size but all-zero nonce+ct
+        std::vector<uint8_t> bogus(14 + 24 + 16, 0);  // min-size but all-zero nonce+ct
         // parse_header needs magic; set it so we get past header parse to MAC fail
         // magic = 0x53534358 little-endian
         bogus[0]=0x58; bogus[1]=0x43; bogus[2]=0x53; bogus[3]=0x53;
-        bogus[4]=2;  // version
         // type=0x0006 (HEARTBEAT) little-endian
-        bogus[5]=0x06; bogus[6]=0x00;
+        bogus[4]=0x06; bogus[5]=0x00;
         // payload_length = 40 (24+16) little-endian
-        bogus[7]=40; bogus[8]=0; bogus[9]=0; bogus[10]=0;
+        bogus[6]=40; bogus[7]=0; bogus[8]=0; bogus[9]=0;
         // checksum = 0
-        // bytes 15.. end are all zero nonce+ct → MAC will fail
+        // bytes 14.. end are all zero nonce+ct → MAC will fail
         CHECK(!s.open(bogus.data(), bogus.size()));
         printf("OK encrypted session rejects short/bogus wire\n");
     }

@@ -48,8 +48,7 @@ class CoordinatorClient(
     fun requestConnection(
         host: String,
         port: Int,
-        peerPubKeyB64: String,
-        wantsEncryptedStream: Boolean
+        peerPubKeyB64: String
     ): String? {
         val normalizedHost = host.trim()
         val normalizedPeerPubKeyB64 = peerPubKeyB64.trim()
@@ -70,8 +69,7 @@ class CoordinatorClient(
             NativeWorker.nativeRequestConnection(
                 host = normalizedHost,
                 port = port,
-                peerPubKeyB64 = normalizedPeerPubKeyB64,
-                wantsEncryptedStream = wantsEncryptedStream
+                peerPubKeyB64 = normalizedPeerPubKeyB64
             )
         } catch (e: UnsatisfiedLinkError) {
             logRepository.error("CoordinatorClient", "Native bridge unavailable: ${e.message}")
@@ -87,8 +85,7 @@ class CoordinatorClient(
             connectedEndpoint = ConnectedEndpoint(
                 host = normalizedHost,
                 port = port,
-                peerPubKeyB64 = learnedPubKey,
-                streamEncrypted = wantsEncryptedStream
+                peerPubKeyB64 = learnedPubKey
             )
             _connected.value = true
             logRepository.info("CoordinatorClient", "Connected to $normalizedHost:$port")
@@ -225,7 +222,6 @@ class CoordinatorClient(
             host = endpoint.host,
             port = endpoint.port,
             peerPubKeyB64 = endpoint.peerPubKeyB64,
-            wantsEncryptedStream = endpoint.streamEncrypted,
             modelName = modelName,
             tileSize = tileSize.coerceAtLeast(MIN_TILE_SIZE),
             tileOverlap = tileOverlap.coerceAtLeast(0),
@@ -322,8 +318,7 @@ class CoordinatorClient(
     private data class ConnectedEndpoint(
         val host: String,
         val port: Int,
-        val peerPubKeyB64: String,
-        val streamEncrypted: Boolean = false
+        val peerPubKeyB64: String
     )
 
     private companion object {

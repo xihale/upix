@@ -35,13 +35,12 @@ auto EncryptedSession::seal(const MessageHeader& header,
     out_hdr.payload_length = static_cast<uint32_t>(nonce_len + ct_len);
     out_hdr.checksum = 0;
 
-    // 手工 pack 15B header(小端,与 parse_header 读取顺序一致)
+    // 手工 pack 14B header(小端,与 parse_header 读取顺序一致)
     std::vector<uint8_t> wire(Protocol::HEADER_SIZE);
     put_u32(wire.data()+0, out_hdr.magic);
-    wire[4] = out_hdr.version;
-    put_u16(wire.data()+5, static_cast<uint16_t>(out_hdr.type));
-    put_u32(wire.data()+7, out_hdr.payload_length);
-    put_u32(wire.data()+11, out_hdr.checksum);
+    put_u16(wire.data()+4, static_cast<uint16_t>(out_hdr.type));
+    put_u32(wire.data()+6, out_hdr.payload_length);
+    put_u32(wire.data()+10, out_hdr.checksum);
 
     // 产 nonce+ct,追加
     auto nonce_ct = sodium::secretbox_seal(
@@ -55,7 +54,7 @@ auto EncryptedSession::open(const uint8_t* wire, size_t wire_len) const
     if (!active_) return std::nullopt;
     if (wire_len < Protocol::HEADER_SIZE) return std::nullopt;
 
-    auto hdr = Protocol::parse_header(wire, Protocol::HEADER_SIZE);
+    auto hdr = Protocol::parse_header({wire, Protocol::HEADER_SIZE});
     if (!hdr) return std::nullopt;
 
     const size_t nonce_ct_len = wire_len - Protocol::HEADER_SIZE;

@@ -31,7 +31,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
@@ -75,8 +74,6 @@ fun SettingsScreen(
     onOpenModels: () -> Unit,
     onOpenLogs: () -> Unit,
     onOpenHelp: () -> Unit,
-    isStreamEncrypted: Boolean,
-    onStreamEncryptedChange: (Boolean) -> Unit,
     detailPaneContent: (@Composable (SettingsDetail) -> Unit)? = null
 ) {
     val useListDetail = detailPaneContent != null &&
@@ -99,8 +96,6 @@ fun SettingsScreen(
             ) { openDetail ->
                 SettingsListBody(
                     selectedModelName = selectedModelName,
-                    isStreamEncrypted = isStreamEncrypted,
-                    onStreamEncryptedChange = onStreamEncryptedChange,
                     onOpenModels = { openDetail(SettingsDetail.MODELS) },
                     onOpenLogs = { openDetail(SettingsDetail.LOGS) },
                     onOpenHelp = { openDetail(SettingsDetail.HELP) }
@@ -124,8 +119,6 @@ fun SettingsScreen(
                 ) {
                     SettingsListBody(
                         selectedModelName = selectedModelName,
-                        isStreamEncrypted = isStreamEncrypted,
-                        onStreamEncryptedChange = onStreamEncryptedChange,
                         onOpenModels = onOpenModels,
                         onOpenLogs = onOpenLogs,
                         onOpenHelp = onOpenHelp
@@ -200,8 +193,6 @@ private fun SettingsListDetailPane(
 @Composable
 private fun SettingsListBody(
     selectedModelName: String?,
-    isStreamEncrypted: Boolean,
-    onStreamEncryptedChange: (Boolean) -> Unit,
     onOpenModels: () -> Unit,
     onOpenLogs: () -> Unit,
     onOpenHelp: () -> Unit
@@ -225,18 +216,6 @@ private fun SettingsListBody(
             icon = Icons.AutoMirrored.Outlined.HelpOutline,
             title = stringResource(R.string.common_help),
             onClick = onOpenHelp
-        )
-    }
-
-    SettingsSection(title = stringResource(R.string.settings_section_transfer)) {
-        // 加密数据流传输开关: 控制图像/结果数据流是否加密(吞吐优先时关闭)。
-        // 控制帧始终加密; 仅大 payload 走 stream 路径。整行可点，Switch 只作状态展示。
-        SettingsToggleRow(
-            icon = Icons.Outlined.Lock,
-            title = stringResource(R.string.settings_stream_encryption_title),
-            subtitle = stringResource(R.string.settings_stream_encryption_subtitle),
-            checked = isStreamEncrypted,
-            onToggle = { onStreamEncryptedChange(!isStreamEncrypted) }
         )
     }
 
@@ -370,21 +349,3 @@ private fun SettingsEntryRow(
     SettingsRow(icon = icon, title = title, subtitle = subtitle, onClick = onClick)
 }
 
-/** 开关行：整行点击切换，[checked] 仅作状态展示（单一事件源，避免双触发）。 */
-@Composable
-private fun SettingsToggleRow(
-    icon: ImageVector,
-    title: String,
-    subtitle: String?,
-    checked: Boolean,
-    onToggle: () -> Unit
-) {
-    SettingsRow(
-        icon = icon,
-        title = title,
-        subtitle = subtitle,
-        onClick = onToggle
-    ) {
-        Switch(checked = checked, onCheckedChange = null)
-    }
-}
