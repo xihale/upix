@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">CrossScale</string>
+    <string name="app_name">Upix</string>
 
     <!-- Shared across screens -->
     <string name="common_cancel">取消</string>
@@ -34,6 +34,8 @@
     <string name="home_use_default_output">使用默认</string>
     <string name="home_backup_original">备份原图</string>
     <string name="home_include_subdirectories">包含子目录</string>
+    <string name="home_skip_sr_marked">跳过已超分图片</string>
+    <string name="processing_progress_skipped">已跳过 %1$d（超分标记）</string>
     <string name="home_select_model_sheet_title">选择模型</string>
     <string name="home_model_subtitle">x%1$d</string>
     <string name="home_restore_backup">恢复备份</string>

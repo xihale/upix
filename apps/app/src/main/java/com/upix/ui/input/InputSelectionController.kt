@@ -1,4 +1,4 @@
-package com.crossscale.ui.input
+package com.upix.ui.input
 
 import android.Manifest
 import android.content.Context
@@ -17,22 +17,22 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
-import com.crossscale.R
-import com.crossscale.data.model.ModelImportResult
-import com.crossscale.data.repository.LogRepository
-import com.crossscale.util.isImageSourceDecodable
-import com.crossscale.util.needsLegacyWritePermission
-import com.crossscale.util.persistUriPermission
-import com.crossscale.viewmodel.MainUiState
-import com.crossscale.viewmodel.MainViewModel
-import com.crossscale.viewmodel.ProcessingViewModel
+import com.upix.R
+import com.upix.data.model.ModelImportResult
+import com.upix.data.repository.LogRepository
+import com.upix.util.isImageSourceDecodable
+import com.upix.util.needsLegacyWritePermission
+import com.upix.util.persistUriPermission
+import com.upix.viewmodel.MainUiState
+import com.upix.viewmodel.MainViewModel
+import com.upix.viewmodel.ProcessingViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
- * 输入获取关注点的状态持有器（从 CrossScaleApp 原样迁出）：
+ * 输入获取关注点的状态持有器（从 UpixApp 原样迁出）：
  * 选图 / 选文件夹 / 模型导入的 SAF 流程，以及与队列启动耦合的
  * 存储写权限流程（pendingQueueStartBatchId 与 startBatchQueue 保持原子）。
  *
@@ -78,7 +78,7 @@ internal class InputSelectionController(
 
     fun handlePickedImageUris(uris: List<Uri>, pickerName: String) {
         if (uris.isEmpty()) {
-            logRepository.warning("CrossScaleApp", "$pickerName returned no images")
+            logRepository.warning("UpixApp", "$pickerName returned no images")
             return
         }
         // 先在主线程快照 UI 状态，避免协程里读到过期值。
@@ -88,6 +88,7 @@ internal class InputSelectionController(
         val overwriteOriginal = mainUiState.overwriteOriginalImage
         val backupOriginal = mainUiState.backupOriginalImage
         val processNestedFolders = mainUiState.processNestedFolders
+        val skipSrMarkedInputs = mainUiState.skipSrMarkedInputs
 
         scope.launch {
             val inputSources = uris.map { uri -> uri.toString() }
@@ -111,12 +112,12 @@ internal class InputSelectionController(
             val queueEligibleSources = inputSources.filterNot { source -> source in corruptedSources }
             if (corruptedSources.isNotEmpty()) {
                 logRepository.warning(
-                    "CrossScaleApp",
+                    "UpixApp",
                     "Skipped ${corruptedSources.size} corrupted image(s) from queue"
                 )
             }
             if (selectedModelName == null) {
-                logRepository.warning("CrossScaleApp", "No model selected, skip auto enqueue for newly added images")
+                logRepository.warning("UpixApp", "No model selected, skip auto enqueue for newly added images")
             } else {
                 queueEligibleSources.forEach { source ->
                     processingViewModel.enqueueBatch(
@@ -126,12 +127,13 @@ internal class InputSelectionController(
                         outputDirectoryUri = outputDirectoryUri,
                         overwriteOriginal = overwriteOriginal,
                         backupOriginal = backupOriginal,
-                        processNestedFolders = processNestedFolders
+                        processNestedFolders = processNestedFolders,
+                        skipSrMarkedInputs = skipSrMarkedInputs
                     )
                 }
             }
             logRepository.info(
-                "CrossScaleApp",
+                "UpixApp",
                 "Added ${uris.size} input images via $pickerName, queue eligible=${queueEligibleSources.size}"
             )
         }
@@ -139,64 +141,84 @@ internal class InputSelectionController(
 
     fun handlePickedInputFolderUri(uri: Uri?) {
         if (uri == null) {
-            logRepository.warning("CrossScaleApp", "Folder picker canceled")
+            logRepository.warning("UpixApp", "Folder picker canceled")
             return
         }
-        persistUriPermission(context = context, uri = uri, read = true, write = true)
+        // 先在主线程快照 UI 状态，避免协程里读到过期值（同 handlePickedImageUris）。
         val selectedModelName = mainUiState.selectedModel?.name
         val useRemote = mainUiState.useRemote
         val outputDirectoryUri = mainUiState.selectedOutputDirectoryUri
         val overwriteOriginal = mainUiState.overwriteOriginalImage
         val backupOriginal = mainUiState.backupOriginalImage
         val processNestedFolders = mainUiState.processNestedFolders
+        val skipSrMarkedInputs = mainUiState.skipSrMarkedInputs
         val inputSource = uri.toString()
-        mainViewModel.selectImage(inputSource)
-        if (selectedModelName == null) {
-            logRepository.warning("CrossScaleApp", "No model selected, skip auto enqueue for newly added folder")
-        } else {
-            processingViewModel.enqueueBatch(
-                imagePath = inputSource,
-                modelName = selectedModelName,
-                distributedMode = useRemote,
-                outputDirectoryUri = outputDirectoryUri,
-                overwriteOriginal = overwriteOriginal,
-                backupOriginal = backupOriginal,
-                processNestedFolders = processNestedFolders
-            )
+        scope.launch {
+            // 授权持久化是 takePersistableUriPermission 的 binder IPC：
+            // 搬到 IO 线程，不再阻塞 picker 回调所在的主线程。
+            withContext(Dispatchers.IO) {
+                persistUriPermission(context = context, uri = uri, read = true, write = true)
+            }
+            // 回到主线程（scope 是主线程域）更新选中状态并入队。
+            mainViewModel.selectImage(inputSource)
+            if (selectedModelName == null) {
+                logRepository.warning("UpixApp", "No model selected, skip auto enqueue for newly added folder")
+            } else {
+                processingViewModel.enqueueBatch(
+                    imagePath = inputSource,
+                    modelName = selectedModelName,
+                    distributedMode = useRemote,
+                    outputDirectoryUri = outputDirectoryUri,
+                    overwriteOriginal = overwriteOriginal,
+                    backupOriginal = backupOriginal,
+                    processNestedFolders = processNestedFolders,
+                    skipSrMarkedInputs = skipSrMarkedInputs
+                )
+            }
+            logRepository.info("UpixApp", "Added input folder: $uri")
         }
-        logRepository.info("CrossScaleApp", "Added input folder: $uri")
     }
 
     fun handlePickedOutputFolderUri(uri: Uri?) {
         if (uri == null) {
-            logRepository.warning("CrossScaleApp", "Output folder picker canceled")
+            logRepository.warning("UpixApp", "Output folder picker canceled")
         } else {
-            persistUriPermission(context = context, uri = uri, read = true, write = true)
-            mainViewModel.selectOutputDirectory(uri.toString())
-            logRepository.info("CrossScaleApp", "Selected output folder: $uri")
+            scope.launch {
+                // 授权持久化是 binder IPC：搬到 IO 线程执行。
+                withContext(Dispatchers.IO) {
+                    persistUriPermission(context = context, uri = uri, read = true, write = true)
+                }
+                mainViewModel.selectOutputDirectory(uri.toString())
+                logRepository.info("UpixApp", "Selected output folder: $uri")
+            }
         }
     }
 
     fun handleImportedModelUris(uris: List<Uri>, pickerName: String) {
         if (uris.isEmpty()) {
-            logRepository.warning("CrossScaleApp", "$pickerName did not return model files")
+            logRepository.warning("UpixApp", "$pickerName did not return model files")
         } else {
-            uris.forEach { uri ->
-                persistUriPermission(context = context, uri = uri, read = true, write = false)
-            }
-            mainViewModel.importModels(uris) { result ->
-                val message = buildModelImportFeedbackMessage(result, context)
-                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            scope.launch {
+                // 授权持久化 ×N 是逐条 binder IPC：搬到 IO 线程批量执行。
+                withContext(Dispatchers.IO) {
+                    uris.forEach { uri ->
+                        persistUriPermission(context = context, uri = uri, read = true, write = false)
+                    }
+                }
+                mainViewModel.importModels(uris) { result ->
+                    val message = buildModelImportFeedbackMessage(result, context)
+                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                }
             }
         }
     }
 
     fun onWritePermissionResult(granted: Boolean) {
         if (granted) {
-            logRepository.info("CrossScaleApp", "Storage write permission granted")
+            logRepository.info("UpixApp", "Storage write permission granted")
             processingViewModel.startBatchQueue(pendingQueueStartBatchId.value)
         } else {
-            logRepository.warning("CrossScaleApp", "Storage write permission denied, queue start canceled")
+            logRepository.warning("UpixApp", "Storage write permission denied, queue start canceled")
             // 拒绝权限导致队列未启动：必须给用户可见反馈。
             Toast.makeText(
                 context,
@@ -263,7 +285,7 @@ internal fun rememberInputSelection(
         contract = ActivityResultContracts.PickMultipleVisualMedia()
     ) { uris ->
         if (uris.isNullOrEmpty()) {
-            logRepository.warning("CrossScaleApp", "Multiple image picker canceled")
+            logRepository.warning("UpixApp", "Multiple image picker canceled")
             return@rememberLauncherForActivityResult
         }
         controller.handlePickedImageUris(uris, "system photo picker")
@@ -285,7 +307,7 @@ internal fun rememberInputSelection(
         contract = ActivityResultContracts.OpenMultipleDocuments()
     ) { uris ->
         if (uris.isNullOrEmpty()) {
-            logRepository.warning("CrossScaleApp", "Model import canceled")
+            logRepository.warning("UpixApp", "Model import canceled")
             return@rememberLauncherForActivityResult
         }
         controller.handleImportedModelUris(uris, "system picker")

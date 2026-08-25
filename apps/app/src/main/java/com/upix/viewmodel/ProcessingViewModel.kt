@@ -1,4 +1,4 @@
-package com.crossscale.viewmodel
+package com.upix.viewmodel
 
 import androidx.compose.runtime.Stable
 import androidx.lifecycle.ViewModel
@@ -6,19 +6,22 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import com.crossscale.AppContainer
-import com.crossscale.data.model.ProcessingStatus
-import com.crossscale.data.repository.BatchOutputStore
-import com.crossscale.data.repository.ImageProcessingStore
-import com.crossscale.data.repository.InputSourceResolver
-import com.crossscale.data.repository.LogRepository
-import com.crossscale.data.repository.ModelProvider
-import com.crossscale.data.repository.ProcessingCheckpoint
-import com.crossscale.data.repository.ProcessingCheckpointStore
-import com.crossscale.data.repository.ProcessingQueueStore
-import com.crossscale.data.repository.canRetryFailedOnly
-import com.crossscale.network.CoordinatorClient
-import com.crossscale.util.StringProvider
+import com.upix.AppContainer
+import com.upix.data.model.ProcessingStatus
+import com.upix.data.repository.BatchOutputStore
+import com.upix.data.repository.ImageProcessingStore
+import com.upix.data.repository.InputSourceResolver
+import com.upix.data.repository.LogRepository
+import com.upix.data.repository.ModelProvider
+import com.upix.data.repository.ProcessingCheckpoint
+import com.upix.data.repository.ProcessingCheckpointStore
+import com.upix.data.repository.ProcessingQueueStore
+import com.upix.data.repository.ResolvedImageInput
+import com.upix.data.repository.SrMarkerInfo
+import com.upix.data.repository.canRetryFailedOnly
+import com.upix.data.repository.probeSrMarker
+import com.upix.network.CoordinatorClient
+import com.upix.util.StringProvider
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,7 +58,8 @@ class ProcessingViewModel(
     private val coordinatorClient: CoordinatorClient? = null,
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
-    private val stringProvider: StringProvider
+    private val stringProvider: StringProvider,
+    private val probeSrMarker: (ResolvedImageInput) -> SrMarkerInfo?
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ProcessingUiState())
     val uiState: StateFlow<ProcessingUiState> = _uiState.asStateFlow()
@@ -74,7 +78,8 @@ class ProcessingViewModel(
         inputSourceRepository = inputSourceRepository,
         batchOutputRepository = batchOutputRepository,
         checkpointRepository = checkpointRepository,
-        logRepository = logRepository
+        logRepository = logRepository,
+        probeSrMarker = probeSrMarker
     )
 
     private val runEngine = ProcessingRunEngine(
@@ -175,7 +180,8 @@ class ProcessingViewModel(
         outputDirectoryUri: String? = null,
         overwriteOriginal: Boolean = false,
         backupOriginal: Boolean = true,
-        processNestedFolders: Boolean = true
+        processNestedFolders: Boolean = true,
+        skipSrMarkedInputs: Boolean = true
     ) {
         queueController.pauseBatchQueueForManualRun()
         startProcessingInternal(
@@ -186,6 +192,7 @@ class ProcessingViewModel(
             overwriteOriginal = overwriteOriginal,
             backupOriginal = backupOriginal,
             processNestedFolders = processNestedFolders,
+            skipSrMarkedInputs = skipSrMarkedInputs,
             resumeCheckpoint = null,
             retryFailedOnly = false,
             resumePendingUris = null,
@@ -200,7 +207,8 @@ class ProcessingViewModel(
         outputDirectoryUri: String?,
         overwriteOriginal: Boolean = false,
         backupOriginal: Boolean = true,
-        processNestedFolders: Boolean = true
+        processNestedFolders: Boolean = true,
+        skipSrMarkedInputs: Boolean = true
     ): String? = queueController.enqueueBatch(
         imagePath = imagePath,
         modelName = modelName,
@@ -208,7 +216,8 @@ class ProcessingViewModel(
         outputDirectoryUri = outputDirectoryUri,
         overwriteOriginal = overwriteOriginal,
         backupOriginal = backupOriginal,
-        processNestedFolders = processNestedFolders
+        processNestedFolders = processNestedFolders,
+        skipSrMarkedInputs = skipSrMarkedInputs
     )
 
     fun startBatchQueue(preferredBatchId: String? = null) = queueController.startBatchQueue(preferredBatchId)
@@ -218,13 +227,15 @@ class ProcessingViewModel(
         outputDirectoryUri: String?,
         overwriteOriginal: Boolean,
         backupOriginal: Boolean,
-        processNestedFolders: Boolean
+        processNestedFolders: Boolean,
+        skipSrMarkedInputs: Boolean
     ) = queueController.syncPendingQueueDefaults(
         distributedMode = distributedMode,
         outputDirectoryUri = outputDirectoryUri,
         overwriteOriginal = overwriteOriginal,
         backupOriginal = backupOriginal,
-        processNestedFolders = processNestedFolders
+        processNestedFolders = processNestedFolders,
+        skipSrMarkedInputs = skipSrMarkedInputs
     )
 
     fun pauseBatchQueue() = queueController.pauseBatchQueue()
@@ -317,7 +328,8 @@ class ProcessingViewModel(
                 outputDirectoryUri = task.outputDirectoryUri,
                 overwriteOriginal = task.overwriteOriginal,
                 backupOriginal = task.backupOriginal,
-                processNestedFolders = task.processNestedFolders
+                processNestedFolders = task.processNestedFolders,
+                skipSrMarkedInputs = task.skipSrMarkedInputs
             )
         }
     }
@@ -368,6 +380,7 @@ class ProcessingViewModel(
             overwriteOriginal = checkpoint.overwriteOriginal,
             backupOriginal = checkpoint.backupOriginal,
             processNestedFolders = checkpoint.processNestedFolders,
+            skipSrMarkedInputs = checkpoint.skipSrMarkedInputs,
             resumeCheckpoint = checkpoint,
             retryFailedOnly = retryFailedOnly,
             resumePendingUris = resumePendingUris,
@@ -429,6 +442,7 @@ class ProcessingViewModel(
         overwriteOriginal: Boolean,
         backupOriginal: Boolean,
         processNestedFolders: Boolean,
+        skipSrMarkedInputs: Boolean,
         resumeCheckpoint: ProcessingCheckpoint?,
         retryFailedOnly: Boolean,
         resumePendingUris: Set<String>?,
@@ -441,6 +455,7 @@ class ProcessingViewModel(
         overwriteOriginal = overwriteOriginal,
         backupOriginal = backupOriginal,
         processNestedFolders = processNestedFolders,
+        skipSrMarkedInputs = skipSrMarkedInputs,
         resumeCheckpoint = resumeCheckpoint,
         retryFailedOnly = retryFailedOnly,
         resumePendingUris = resumePendingUris,
@@ -546,7 +561,16 @@ class ProcessingViewModel(
                     queueRepository = container.processingQueueRepository,
                     nativeImageProcessingRepository = container.nativeImageProcessingRepository,
                     coordinatorClient = container.coordinatorClient,
-                    stringProvider = container.stringProvider
+                    stringProvider = container.stringProvider,
+                    probeSrMarker = { input ->
+                        probeSrMarker(
+                            resolver = container.appContext.contentResolver,
+                            uri = input.uri,
+                            displayName = input.displayName
+                        ) { message ->
+                            container.logRepository.warning("ProcessingViewModel", message)
+                        }
+                    }
                 )
             }
         }

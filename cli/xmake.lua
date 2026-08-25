@@ -1,19 +1,19 @@
 -- CLI target. Models are NOT bundled with the binary: they are distributed
--- via the GitHub "models" release and fetched with `crossscale model download`
--- (or imported locally with `crossscale model import`).
-target("crossscale-cli")
+-- via the GitHub "models" release and fetched with `upix model download`
+-- (or imported locally with `upix model import`).
+target("upix-cli")
     set_kind("binary")
-    set_rules("crossscale.host_isa", "crossscale.upx")
+    set_rules("upix.host_isa", "upix.upx")
 
     -- Single source of truth: root xmake.lua's set_version() feeds the
-    -- CLI11 --version output via CROSSSCALE_VERSION (cli_app.cpp). The
+    -- CLI11 --version output via UPIX_VERSION (cli_app.cpp). The
     -- project module is script-scope only, hence on_load.
     on_load(function (target)
         import("core.project.project")
-        target:add('defines', 'CROSSSCALE_VERSION="v' .. project.version() .. '"')
+        target:add('defines', 'UPIX_VERSION="v' .. project.version() .. '"')
     end)
 
-    add_deps("crossscale-core", "crossscale-perf")
+    add_deps("upix-core", "upix-perf")
     add_packages("ncnn~runtime", "libwebp", "glaze", "qr-code-generator-cpp", "cli11", "libsodium", "libcurl", "openssl", "libzip")
 
     add_files(
@@ -33,25 +33,35 @@ target("crossscale-cli")
 
 target("test_crypto")
     set_kind("binary")
-    add_deps("crossscale-core")
+    add_deps("upix-core")
     add_packages("libsodium")
     add_files("$(projectdir)/cli/tests/test_crypto.cpp")
     set_targetdir("$(projectdir)/cli/build")
 
 target("test_protocol")
     set_kind("binary")
-    add_deps("crossscale-core")
+    add_deps("upix-core")
     add_files("$(projectdir)/cli/tests/test_protocol.cpp")
     set_targetdir("$(projectdir)/cli/build")
 
 target("test_image_avif")
     set_kind("binary")
-    add_deps("crossscale-core")
+    add_deps("upix-core")
     add_packages("libwebp", "libpng", "libjpeg", "libdeflate")
     if is_plat("linux", "bsd") then
         add_syslinks("dl")
     end
     add_files("$(projectdir)/cli/tests/test_image_avif.cpp")
+    set_targetdir("$(projectdir)/cli/build")
+
+target("test_sr_marker")
+    set_kind("binary")
+    add_deps("upix-core")
+    add_packages("libwebp", "libpng", "libjpeg", "libdeflate")
+    if is_plat("linux", "bsd") then
+        add_syslinks("dl")
+    end
+    add_files("$(projectdir)/cli/tests/test_sr_marker.cpp")
     set_targetdir("$(projectdir)/cli/build")
 
 target("test_gpu_precision")

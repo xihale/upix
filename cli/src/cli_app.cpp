@@ -14,10 +14,10 @@
 #include "args.hpp"
 #include "common.hpp"  // default_models_dir
 
-// Injected by the build (-DCROSSSCALE_VERSION=...); xmake.lua's set_version()
+// Injected by the build (-DUPIX_VERSION=...); xmake.lua's set_version()
 // is the single source of truth. "dev" covers direct compiler invocations.
-#ifndef CROSSSCALE_VERSION
-#define CROSSSCALE_VERSION "dev"
+#ifndef UPIX_VERSION
+#define UPIX_VERSION "dev"
 #endif
 
 // Set by a subcommand callback; read by main(). std::nullopt means "no
@@ -26,23 +26,23 @@ std::optional<int> g_exit_code;
 
 auto build_app() -> std::unique_ptr<CLI::App> {
     auto app = std::make_unique<CLI::App>(
-        "CrossScale - Distributed Image Super-Resolution", "crossscale");
+        "Upix - Distributed Image Super-Resolution", "upix");
 
-    app->set_version_flag("--version,-V", CROSSSCALE_VERSION);
+    app->set_version_flag("--version,-V", UPIX_VERSION);
 
     // Reusable validators.
     auto tile_range = CLI::Range(16, 8192);
 
     // ── upscale (implicit root verb) ─────────────────────────────────────────
-    // Bare `crossscale img.png [out.png]` is the upscale path; a first token
+    // Bare `upix img.png [out.png]` is the upscale path; a first token
     // matching a subcommand name still wins, so only a file literally named
     // "model"/"daemon"/... is shadowed. The old explicit `process` subcommand
-    // is gone — its options live on the root, so `crossscale in.png -m x
+    // is gone — its options live on the root, so `upix in.png -m x
     // --tile-size 256` works anywhere.
     static args::Process proc_args;
     proc_args.models_dir = default_models_dir();  // env-aware (common.cpp)
-    // Each option mixes a positional name with flags, so `crossscale img.png`
-    // and `crossscale -i img.png` are interchangeable. Output is optional —
+    // Each option mixes a positional name with flags, so `upix img.png`
+    // and `upix -i img.png` are interchangeable. Output is optional —
     // omitted, it derives `img_<model>.png` (or `dir_<model>/` in batch mode).
     auto* input_opt = app->add_option("input,-i,--input", proc_args.input_path,
                                       "Input image or directory")
@@ -70,6 +70,9 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     app->add_flag("--gpu", proc_args.use_gpu, "Force GPU for directory mode");
     app->add_flag("--no-daemon", proc_args.no_daemon,
                   "Never use the warm-engine daemon (process inline)");
+    app->add_flag("-f,--force", proc_args.force,
+                  "Re-process inputs that already carry an SR marker "
+                  "(such inputs are skipped by default)");
     app->add_option("--output-quality", proc_args.output_quality,
                     "Output quality 0-100 (default: 95)")
         ->check(CLI::Range(0, 100));

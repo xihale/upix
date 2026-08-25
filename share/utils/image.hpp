@@ -6,7 +6,7 @@
 #include <cstdint>
 #include "expected.hpp"
 
-namespace crossscale {
+namespace upix {
 
 struct ImageError {
     int code;
@@ -32,6 +32,11 @@ public:
     static auto load(const std::filesystem::path& path)
         -> expected<Image, ImageError>;
 
+    // Raw encoded file bytes, no decode. For callers that sniff metadata
+    // (sr_marker::probe) and decode later from the same buffer.
+    static auto load_raw(const std::filesystem::path& path)
+        -> expected<std::vector<uint8_t>, ImageError>;
+
     // Decode an in-memory encoded file (same formats as load()). The phone
     // path uses this to decode on the PC so the phone ships compressed bytes
     // instead of raw pixels.
@@ -39,10 +44,14 @@ public:
                                  const std::vector<uint8_t>& data)
         -> expected<Image, ImageError>;
 
-    auto save(const std::filesystem::path& path, int quality = 90) const
+    // `xmp`: optional XMP payload embedded as a metadata marker (PNG iTXt,
+    // JPEG APP1, WebP "XMP " chunk, AVIF XMP item). Empty = no marker.
+    auto save(const std::filesystem::path& path, int quality = 90,
+              const std::string& xmp = {}) const
         -> expected<void, ImageError>;
 
-    auto save_to_memory(const std::string& format = "png", int quality = 90) const
+    auto save_to_memory(const std::string& format = "png", int quality = 90,
+                        const std::string& xmp = {}) const
         -> expected<std::vector<uint8_t>, ImageError>;
 
     // Get pixel data
@@ -68,4 +77,4 @@ private:
     int channels_ = 3;  // Default RGB
 };
 
-} // namespace crossscale
+} // namespace upix

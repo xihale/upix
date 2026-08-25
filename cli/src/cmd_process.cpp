@@ -1,4 +1,4 @@
-// `crossscale <image>` — the main upscale path (the old explicit `process`
+// `upix <image>` — the main upscale path (the old explicit `process`
 // subcommand is gone; the same options live on the root verb).
 //
 // Single file: try to delegate to a warm daemon first (skips the ~490ms
@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <fcntl.h>
@@ -36,6 +37,7 @@
 #include "common.hpp"
 #include "utils/image.hpp"
 #include "utils/logger.hpp"
+#include "utils/sr_marker.hpp"
 #include "utils/unix_socket.hpp"
 #include "core/config.hpp"
 #include "core/serve/daemon.hpp"  // default_serve_socket_path, ServeRequest/Response
@@ -58,7 +60,7 @@ namespace {
 auto try_connect_daemon(const std::string& sock_path) -> bool {
     std::error_code ec;
     if (!std::filesystem::exists(sock_path, ec)) return false;
-    crossscale::UnixSocket sock;
+    upix::UnixSocket sock;
     if (sock.connect(sock_path).has_value()) return true;
     std::filesystem::remove(sock_path, ec);
     return false;
@@ -74,7 +76,7 @@ auto daemon_pid_alive(const std::string& sock_path) -> bool {
     return pid > 0 && ::kill(pid, 0) == 0;
 }
 
-// Re-exec ourselves as `crossscale daemon` in the background, then wait until
+// Re-exec ourselves as `upix daemon` in the background, then wait until
 // the socket accepts connections. Readiness == connect success: the daemon
 // binds only after engine init + model load, so a few seconds is normal
 // (30 s cap for big models on slow disks). Returns false if it never comes
@@ -87,7 +89,7 @@ auto spawn_daemon_and_wait(const std::string& sock_path,
         pid_t pid = ::fork();
         if (pid == 0) {
             // Child: detach from the CLI's stdio, exec the daemon command.
-            // `crossscale daemon` daemonizes itself (fork + setsid + close
+            // `upix daemon` daemonizes itself (fork + setsid + close
             // stdio), so this process exits almost immediately.
             int devnull = ::open("/dev/null", O_RDWR);
             if (devnull >= 0) {
@@ -99,15 +101,15 @@ auto spawn_daemon_and_wait(const std::string& sock_path,
             const std::string idle = std::format("{}", args::Daemon{}.idle_timeout_s);
             std::vector<char> self(4096, '\0');
             ssize_t n = ::readlink("/proc/self/exe", self.data(), self.size() - 1);
-            const char* exe = n > 0 ? self.data() : "crossscale";
+            const char* exe = n > 0 ? self.data() : "upix";
             if (!model_name.empty()) {
-                ::execl(exe, "crossscale", "daemon",
+                ::execl(exe, "upix", "daemon",
                         "--models-dir", models_dir.c_str(),
                         "--model", model_name.c_str(),
                         "--idle-timeout", idle.c_str(),
                         static_cast<char*>(nullptr));
             } else {
-                ::execl(exe, "crossscale", "daemon",
+                ::execl(exe, "upix", "daemon",
                         "--models-dir", models_dir.c_str(),
                         "--idle-timeout", idle.c_str(),
                         static_cast<char*>(nullptr));
@@ -129,7 +131,7 @@ auto spawn_daemon_and_wait(const std::string& sock_path,
 // first model the manager finds in models_dir — the same "first available"
 // rule setup_engine and run_batch use.
 auto first_model_name(const std::string& models_dir) -> std::string {
-    crossscale::ModelManager manager(models_dir);
+    upix::ModelManager manager(models_dir);
     auto scan = manager.scan_models();
     if (scan && !scan->empty() && !manager.available_models().empty()) {
         return manager.available_models().front().name;
@@ -144,8 +146,8 @@ int cmd_process(const args::Process& a) {
     std::signal(SIGTERM, signal_handler);
 
     if (a.input_path.empty()) {
-        std::println(stderr, "crossscale: no input given — try `crossscale <image>` "
-                             "or `crossscale -i <image>`");
+        std::println(stderr, "upix: no input given — try `upix <image>` "
+                             "or `upix -i <image>`");
         return 1;
     }
 
@@ -169,6 +171,30 @@ int cmd_process(const args::Process& a) {
     bool is_dir = fs::is_directory(input_path);
     LOG_INFO("Debug", "Input path: {} is_dir: {:d}", input_path, is_dir);
 
+    // ── Already-super-resolved guard (single-file only) ────────────────────
+    // Read the file once here: the marker check needs the raw bytes, and the
+    // inline path below reuses them for decoding (identical to Image::load,
+    // which is read_file + load_from_memory by extension).
+    std::vector<uint8_t> input_bytes;
+    if (!is_dir) {
+        auto raw = upix::Image::load_raw(input_path);
+        if (!raw.has_value()) {
+            LOG_ERROR("Engine", "Failed to load image: {}", raw.error().message);
+            return 1;
+        }
+        input_bytes = std::move(raw.value());
+        if (!a.force) {
+            if (auto marker = upix::sr_marker::probe(input_bytes.data(),
+                                                     input_bytes.size())) {
+                LOG_INFO("Engine",
+                         "Skipped (already super-resolved by this tool): {} "
+                         "[model={} scale={}x ts={}]; re-run with --force to process anyway",
+                         input_path, marker->model, marker->scale, marker->ts);
+                return 0;
+            }
+        }
+    }
+
     // ── Daemon delegation (single-file only) ────────────────────────────────
     // If a local daemon is running, send it the image and let the warm engine
     // do inference — skipping the ~490 ms init+load fixed cost. If none is
@@ -183,9 +209,9 @@ int cmd_process(const args::Process& a) {
 
             // Resolve output format/quality up front: they ride in the request
             // because the daemon does the encoding too.
-            crossscale::ProcessingConfig config;
+            upix::ProcessingConfig config;
             if (!config_file.empty()) {
-                auto cfg = crossscale::ProcessingConfig::load(config_file);
+                auto cfg = upix::ProcessingConfig::load(config_file);
                 if (cfg) config = cfg.value();
             }
             if (cli_output_quality >= 0) config.output_quality = cli_output_quality;
@@ -207,14 +233,14 @@ int cmd_process(const args::Process& a) {
 
             // 1. Probe: no daemon accepting → try to start one (30 s cap);
             //    give up silently on failure and let the inline path run.
-            std::string sock_path = crossscale::default_serve_socket_path();
+            std::string sock_path = upix::default_serve_socket_path();
             if (sock_path.empty()) return std::nullopt;
             if (!try_connect_daemon(sock_path) &&
                 !spawn_daemon_and_wait(sock_path, models_dir, model_name)) {
                 return std::nullopt;
             }
             // (Re)connect: the probe's socket was a throwaway.
-            crossscale::UnixSocket sock;
+            upix::UnixSocket sock;
             auto conn = sock.connect(sock_path);
             if (!conn) return std::nullopt;  // lost a race with daemon shutdown
             const auto delegate_start_time = std::chrono::steady_clock::now();
@@ -222,7 +248,7 @@ int cmd_process(const args::Process& a) {
 
             // 2. Request = struct + [input path][output path]. No image bytes
             //    ever cross the socket — the daemon reads and writes the files.
-            crossscale::ServeRequest req{};
+            upix::ServeRequest req{};
             model_name.copy(req.model_name, sizeof(req.model_name) - 1);
             out_fmt.copy(req.output_format, sizeof(req.output_format) - 1);
             // 0 = "auto": the daemon substitutes its engine's recommended tile
@@ -244,40 +270,40 @@ int cmd_process(const args::Process& a) {
                             out_abs.data(), req.output_path_length);
             }
 
-            crossscale::MessageHeader h{};
-            h.magic = crossscale::Protocol::MAGIC;
-            h.type = crossscale::MessageType::MSG_SERVE_REQUEST;
+            upix::MessageHeader h{};
+            h.magic = upix::Protocol::MAGIC;
+            h.type = upix::MessageType::MSG_SERVE_REQUEST;
             h.payload_length = static_cast<uint32_t>(payload.size());
             h.checksum = 0;  // filled by serialize
-            auto frame = crossscale::Protocol::serialize(h, payload.data());
+            auto frame = upix::Protocol::serialize(h, payload.data());
             if (!sock.send_all(frame.data(), frame.size())) return std::nullopt;
 
             // 3. Drain frames until the response: MSG_SERVE_PROGRESS stage 0
             //    renders the same live line as the inline path; stage 1 marks
             //    the encode phase; MSG_SERVE_RESPONSE carries the output path.
-            std::vector<uint8_t> rhdr(crossscale::Protocol::HEADER_SIZE);
-            std::optional<crossscale::MessageHeader> rparsed;
+            std::vector<uint8_t> rhdr(upix::Protocol::HEADER_SIZE);
+            std::optional<upix::MessageHeader> rparsed;
             while (true) {
                 if (!sock.receive_all(rhdr.data(), rhdr.size())) {
                     LOG_ERROR("Engine", "daemon connection lost mid-request");
                     return 1;
                 }
-                rparsed = crossscale::Protocol::parse_header(rhdr);
+                rparsed = upix::Protocol::parse_header(rhdr);
                 if (!rparsed) {
                     LOG_ERROR("Engine", "malformed daemon response");
                     return 1;
                 }
-                if (rparsed->type == crossscale::MessageType::MSG_SERVE_PROGRESS &&
-                    rparsed->payload_length == sizeof(crossscale::ServeProgress)) {
+                if (rparsed->type == upix::MessageType::MSG_SERVE_PROGRESS &&
+                    rparsed->payload_length == sizeof(upix::ServeProgress)) {
                     std::vector<uint8_t> pbuf(rparsed->payload_length);
                     if (!sock.receive_all(pbuf.data(), pbuf.size())) {
                         LOG_ERROR("Engine", "daemon connection lost mid-progress");
                         return 1;
                     }
-                    crossscale::ServeProgress sp{};
+                    upix::ServeProgress sp{};
                     std::memcpy(&sp, pbuf.data(), sizeof(sp));
                     if (sp.stage == 0) {
-                        crossscale::ProcessingProgress prog;
+                        upix::ProcessingProgress prog;
                         prog.total_tiles = static_cast<int>(sp.total_tiles);
                         prog.completed_tiles = static_cast<int>(sp.completed_tiles);
                         print_progress_stderr(prog, delegate_start_time);
@@ -288,8 +314,8 @@ int cmd_process(const args::Process& a) {
                     }
                     continue;
                 }
-                if (rparsed->type != crossscale::MessageType::MSG_SERVE_RESPONSE ||
-                    rparsed->payload_length < sizeof(crossscale::ServeResponse)) {
+                if (rparsed->type != upix::MessageType::MSG_SERVE_RESPONSE ||
+                    rparsed->payload_length < sizeof(upix::ServeResponse)) {
                     LOG_ERROR("Engine", "malformed daemon response");
                     return 1;
                 }
@@ -300,7 +326,7 @@ int cmd_process(const args::Process& a) {
                 LOG_ERROR("Engine", "truncated daemon response");
                 return 1;
             }
-            crossscale::ServeResponse resp{};
+            upix::ServeResponse resp{};
             std::memcpy(&resp, rhead.data(), sizeof(resp));
             if (!resp.ok) {
                 LOG_ERROR("Engine", "daemon error: {}", std::string(resp.error));
@@ -340,7 +366,10 @@ int cmd_process(const args::Process& a) {
     // Single file processing continues...
     LOG_INFO("Engine", "Loading image: {}", input_path);
 
-    auto image_result = crossscale::Image::load(input_path);
+    // Bytes were already read for the marker check above; decode from them
+    // (same extension-based dispatch as Image::load).
+    auto image_result = upix::Image::load_from_memory(
+        fs::path(input_path).extension().string(), input_bytes);
     if (!image_result.has_value()) {
         LOG_ERROR("Engine", "Failed to load image: {}", image_result.error().message);
         return 1;
@@ -352,8 +381,8 @@ int cmd_process(const args::Process& a) {
 
     // Engine init + model load via the shared recipe. ENGINE_DEFAULT mirrors the
     // original `engine->initialize()` (no arg): try GPU, fall back to CPU.
-    auto setup = crossscale::setup_engine(
-        crossscale::SetupDevice::ENGINE_DEFAULT,
+    auto setup = upix::setup_engine(
+        upix::SetupDevice::ENGINE_DEFAULT,
         models_dir,
         model_name
     );
@@ -365,7 +394,7 @@ int cmd_process(const args::Process& a) {
     auto engine = std::move(setup->engine);
     // `manager` owns the scanned model vector that `selected_model` points into;
     // keep it alive for the whole function (used again at line ~289 below).
-    crossscale::ModelManager manager = std::move(setup->models);
+    upix::ModelManager manager = std::move(setup->models);
     if (model_name.empty()) {
         LOG_INFO("Engine", "No model specified, using first available: {}", selected_model->name);
     }
@@ -404,9 +433,9 @@ int cmd_process(const args::Process& a) {
     }
 
     // 加载配置文件（如果指定）
-    crossscale::ProcessingConfig config;
+    upix::ProcessingConfig config;
     if (!config_file.empty()) {
-        auto cfg_result = crossscale::ProcessingConfig::load(config_file);
+        auto cfg_result = upix::ProcessingConfig::load(config_file);
         if (cfg_result.has_value()) {
             config = cfg_result.value();
             LOG_INFO("Config", "Loaded config from {}", config_file);
@@ -425,12 +454,12 @@ int cmd_process(const args::Process& a) {
         config.output_quality = cli_output_quality;
     }
     if (!cli_output_format.empty()) {
-        config.output_format = crossscale::normalize_output_format(cli_output_format);
+        config.output_format = upix::normalize_output_format(cli_output_format);
     } else {
         // Auto-infer output format from output file extension
         std::string inferred = infer_format_from_extension(eff_output);
         if (!inferred.empty()) {
-            config.output_format = crossscale::normalize_output_format(inferred);
+            config.output_format = upix::normalize_output_format(inferred);
             LOG_INFO("Config", "Auto-detected output format: {}", inferred);
         }
     }
@@ -439,8 +468,8 @@ int cmd_process(const args::Process& a) {
     if (auto_tile || config.auto_tile_size) {
         LOG_INFO("Config", "Auto-tile enabled, benchmarking...");
 
-        crossscale::TileSizeOptimizer optimizer;
-        crossscale::ModelConstraints model_constraints;
+        upix::TileSizeOptimizer optimizer;
+        upix::ModelConstraints model_constraints;
         model_constraints.model_name = model_name_resolved;
         model_constraints.model_size_mb = selected_model->total_size / (1024 * 1024);
         model_constraints.min_tile_size = config.min_tile_size;
@@ -466,22 +495,22 @@ int cmd_process(const args::Process& a) {
     }
 
     // 使用 TileProcessor 进行瓦片处理
-    crossscale::TileProcessor processor;
-    crossscale::TileConfig tile_config;
+    upix::TileProcessor processor;
+    upix::TileConfig tile_config;
     tile_config.tile_size = config.tile_size;
     tile_config.overlap = config.tile_overlap;
     tile_config.batch_size = batch_size;
 
     int out_width = image.width() * scale;
     int out_height = image.height() * scale;
-    crossscale::Image output_image(out_width, out_height, image.channels());
+    upix::Image output_image(out_width, out_height, image.channels());
 
     LOG_INFO("Engine", "Processing image with tile_size={} overlap={} batch_size={}...",
              config.tile_size, config.tile_overlap, batch_size);
 
     std::atomic<bool> cancel_flag{false};
     bool enable_progress_log_single = false;
-    if (const char* progress_env = std::getenv("CROSSSCALE_PROGRESS")) {
+    if (const char* progress_env = std::getenv("UPIX_PROGRESS")) {
         enable_progress_log_single = std::string(progress_env) == "1";
     }
 
@@ -490,7 +519,7 @@ int cmd_process(const args::Process& a) {
         image.data(), output_image.data(),
         image.width(), image.height(), image.channels(),
         *engine, tile_config,
-        [&](const crossscale::ProcessingProgress& progress) {
+        [&](const upix::ProcessingProgress& progress) {
             // Always print progress to stderr with ETA
             print_progress_stderr(progress, process_start_time);
             if (enable_progress_log_single && progress.total_tiles > 0) {
@@ -510,9 +539,11 @@ int cmd_process(const args::Process& a) {
         return 1;
     }
 
-    const auto final_output_path = crossscale::resolve_output_path(eff_output, config);
+    const auto final_output_path = upix::resolve_output_path(eff_output, config);
     LOG_INFO("Engine", "Inference done, encoding and saving output...");
-    auto save_result = output_image.save(final_output_path, config.output_quality);
+    const auto sr_xmp = upix::sr_marker::build_xmp(
+        model_name_resolved, scale, static_cast<int64_t>(std::time(nullptr)));
+    auto save_result = output_image.save(final_output_path, config.output_quality, sr_xmp);
     if (!save_result.has_value()) {
         LOG_ERROR("Engine", "Failed to save output: {}", save_result.error().message);
         return 1;

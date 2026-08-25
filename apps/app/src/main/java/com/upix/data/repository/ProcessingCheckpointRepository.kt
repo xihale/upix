@@ -1,4 +1,4 @@
-package com.crossscale.data.repository
+package com.upix.data.repository
 
 import android.content.Context
 import java.io.File
@@ -39,6 +39,8 @@ data class ProcessingCheckpoint(
     val overwriteOriginal: Boolean = false,
     val backupOriginal: Boolean = true,
     val processNestedFolders: Boolean = true,
+    // 断点续跑跟随创建 run 时的跳过开关（旧 checkpoint 缺键时默认 true）。
+    val skipSrMarkedInputs: Boolean = true,
     val createdAtEpochMs: Long,
     val updatedAtEpochMs: Long,
     val lastErrorMessage: String? = null,
@@ -64,7 +66,8 @@ class ProcessingCheckpointRepository(
     }
 
     override suspend fun persistCheckpoint(checkpoint: ProcessingCheckpoint) {
-        withContext(Dispatchers.IO) {
+        // 与 load/clear 一致：用注入的 ioDispatcher（单测可替换 TestDispatcher）。
+        withContext(ioDispatcher) {
             runCatching {
                 val payload = json.encodeToString(ProcessingCheckpoint.serializer(), checkpoint)
                 val tempFile = File(checkpointFile.parentFile, "${checkpointFile.name}.tmp")

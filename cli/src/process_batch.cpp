@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <filesystem>
 #include <format>
@@ -33,6 +34,7 @@
 #include "utils/image.hpp"
 #include "utils/image_avif.hpp"
 #include "utils/logger.hpp"
+#include "utils/sr_marker.hpp"
 #include "utils/unix_socket.hpp"
 #include "core/config.hpp"
 #include "core/serve/daemon.hpp"  // default_serve_socket_path, ServeRequest/Response
@@ -96,7 +98,7 @@ std::pair<uint32_t, uint32_t> sniff_image_dimensions(const fs::path& path) {
         std::vector<unsigned char> header(256 * 1024);
         f.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
         const auto n = static_cast<size_t>(f.gcount());
-        return crossscale::avif_codec::sniff_dimensions(header.data(), n);
+        return upix::avif_codec::sniff_dimensions(header.data(), n);
     }
     return {0, 0};
 }
@@ -169,7 +171,7 @@ int run_batch(const args::Process& a) {
         });
 
         // Model selection
-        crossscale::ModelManager manager(models_dir);
+        upix::ModelManager manager(models_dir);
         auto models_opt = manager.scan_models();
         if (!models_opt.has_value() || models_opt->empty()) {
             LOG_ERROR("Engine", "No models found in {}", models_dir);
@@ -177,14 +179,14 @@ int run_batch(const args::Process& a) {
         }
         auto& models = models_opt.value();
 
-        const crossscale::ModelInfo* selected_model = nullptr;
+        const upix::ModelInfo* selected_model = nullptr;
         if (model_name.empty()) {
             selected_model = &models[0];
             LOG_INFO("Engine", "No model specified, using first available: {}",
                      selected_model->name);
         } else {
             const auto it = std::ranges::find(models, model_name,
-                                              &crossscale::ModelInfo::name);
+                                              &upix::ModelInfo::name);
             if (it != models.end()) selected_model = &*it;
             if (!selected_model) {
                 LOG_ERROR("Engine", "Model not found: {}", model_name);
@@ -205,9 +207,9 @@ int run_batch(const args::Process& a) {
                  selected_model->scale_factor);
 
         // Load configuration if specified
-        crossscale::ProcessingConfig config;
+        upix::ProcessingConfig config;
         if (!config_file.empty()) {
-            auto cfg_result = crossscale::ProcessingConfig::load(config_file);
+            auto cfg_result = upix::ProcessingConfig::load(config_file);
             if (cfg_result.has_value()) {
                 config = cfg_result.value();
                 LOG_INFO("Config", "Loaded config from {}", config_file);
@@ -227,13 +229,13 @@ int run_batch(const args::Process& a) {
             config.output_quality = cli_output_quality;
         }
         if (!cli_output_format.empty()) {
-            config.output_format = crossscale::normalize_output_format(cli_output_format);
+            config.output_format = upix::normalize_output_format(cli_output_format);
         } else {
             // Auto-infer output format from first output file extension
             if (!tasks.empty()) {
                 std::string inferred = infer_format_from_extension(tasks[0].second);
                 if (!inferred.empty()) {
-                    config.output_format = crossscale::normalize_output_format(inferred);
+                    config.output_format = upix::normalize_output_format(inferred);
                     LOG_INFO("Config", "Auto-detected output format: {}", inferred);
                 }
             }
@@ -256,17 +258,46 @@ int run_batch(const args::Process& a) {
             int height = 0;
             int channels = 0;
             size_t pixel_bytes = 0;  // decoded frame bytes, for queue byte caps
-            crossscale::Image input_image;
+            upix::Image input_image;
         };
 
-        auto prepare_task = [&](const std::string& in_path, const std::string& out_path) -> std::optional<PreparedTask> {
+        // Tri-state outcome: a marker skip is neither a success nor a
+        // failure, so plain optional<PreparedTask> cannot represent it.
+        enum class PrepareStatus { Ok, Skipped, Failed };
+        struct PrepareOutcome {
+            PrepareStatus status = PrepareStatus::Failed;
+            std::optional<PreparedTask> task;
+        };
+        std::atomic<size_t> skip_count{0};
+
+        auto prepare_task = [&](const std::string& in_path, const std::string& out_path) -> PrepareOutcome {
             if (g_cancel_requested.load()) {
-                return std::nullopt;
+                return {PrepareStatus::Failed, std::nullopt};
             }
-            auto img_res = crossscale::Image::load(in_path);
+            // Read once: the SR-marker check needs the raw bytes and the
+            // decode below reuses them (same extension-based dispatch as
+            // Image::load).
+            auto raw = upix::Image::load_raw(in_path);
+            if (!raw.has_value()) {
+                LOG_ERROR("Task", "Failed to load image: {}", in_path);
+                return {PrepareStatus::Failed, std::nullopt};
+            }
+            if (!a.force) {
+                if (auto marker = upix::sr_marker::probe(raw.value().data(),
+                                                         raw.value().size())) {
+                    skip_count.fetch_add(1);
+                    LOG_INFO("Task",
+                             "Skipped (already super-resolved by this tool): {} "
+                             "[model={} scale={}x ts={}]; --force re-processes",
+                             in_path, marker->model, marker->scale, marker->ts);
+                    return {PrepareStatus::Skipped, std::nullopt};
+                }
+            }
+            auto img_res = upix::Image::load_from_memory(
+                fs::path(in_path).extension().string(), raw.value());
             if (!img_res.has_value()) {
                 LOG_ERROR("Task", "Failed to load image: {}", in_path);
-                return std::nullopt;
+                return {PrepareStatus::Failed, std::nullopt};
             }
 
             PreparedTask prepared;
@@ -275,7 +306,7 @@ int run_batch(const args::Process& a) {
             prepared.input_image = std::move(img_res.value());
 
             if (!normalize_channels_for_model(prepared.input_image, model_input_channels, in_path)) {
-                return std::nullopt;
+                return {PrepareStatus::Failed, std::nullopt};
             }
 
             prepared.width = prepared.input_image.width();
@@ -283,11 +314,11 @@ int run_batch(const args::Process& a) {
             prepared.channels = prepared.input_image.channels();
             prepared.pixel_bytes = prepared.input_image.size();
 
-            return prepared;
+            return {PrepareStatus::Ok, std::move(prepared)};
         };
 
         bool enable_progress_log = false;
-        if (const char* progress_env = std::getenv("CROSSSCALE_PROGRESS")) {
+        if (const char* progress_env = std::getenv("UPIX_PROGRESS")) {
             enable_progress_log = std::string(progress_env) == "1";
         }
         // Track processing start time for ETA
@@ -298,21 +329,22 @@ int run_batch(const args::Process& a) {
             int out_width = 0;
             int out_height = 0;
             int channels = 0;
+            int scale = 0;           // engine scale factor, for the SR marker
             size_t pixel_bytes = 0;  // encoded-ready frame bytes, for queue byte caps
-            crossscale::Image output_image;
+            upix::Image output_image;
         };
 
-        auto infer_prepared_task = [&](PreparedTask&& prepared, crossscale::Engine& eng) -> std::optional<ProcessedTask> {
+        auto infer_prepared_task = [&](PreparedTask&& prepared, upix::Engine& eng) -> std::optional<ProcessedTask> {
             if (enable_progress_log) {
                 LOG_INFO("Engine", "Processing image: {}", prepared.in_path);
             }
 
-            crossscale::ProcessingConfig local_config = config;
+            upix::ProcessingConfig local_config = config;
 
             if (auto_tile || local_config.auto_tile_size) {
                 LOG_INFO("Task", "Auto-tile for {}", prepared.in_path);
-                crossscale::TileSizeOptimizer optimizer;
-                crossscale::ModelConstraints mc;
+                upix::TileSizeOptimizer optimizer;
+                upix::ModelConstraints mc;
                 mc.model_name = model_name_used;
                 mc.model_size_mb = static_cast<float>(model_total_size) / (1024 * 1024);
                 mc.min_tile_size = local_config.min_tile_size;
@@ -326,21 +358,21 @@ int run_batch(const args::Process& a) {
                 LOG_INFO("Task", "Optimal tile size: {}", local_config.tile_size);
             }
 
-            crossscale::TileConfig tile_config;
+            upix::TileConfig tile_config;
             tile_config.tile_size = local_config.tile_size;
             tile_config.overlap = local_config.tile_overlap;
             tile_config.batch_size = local_config.batch_size;
 
             int out_width = prepared.width * eng.get_scale_factor();
             int out_height = prepared.height * eng.get_scale_factor();
-            crossscale::Image output_image(out_width, out_height, prepared.channels);
+            upix::Image output_image(out_width, out_height, prepared.channels);
 
-            crossscale::TileProcessor processor;
+            upix::TileProcessor processor;
             auto result = processor.process_image_u8(
                 prepared.input_image.data(), output_image.data(),
                 prepared.width, prepared.height, prepared.channels,
                 eng, tile_config,
-                [&](const crossscale::ProcessingProgress& prog) {
+                [&](const upix::ProcessingProgress& prog) {
                     // Always print progress to stderr
                     print_progress_stderr(prog, batch_start_time);
                     if (enable_progress_log &&
@@ -367,6 +399,7 @@ int run_batch(const args::Process& a) {
             processed.out_width = out_width;
             processed.out_height = out_height;
             processed.channels = prepared.channels;
+            processed.scale = eng.get_scale_factor();
             processed.pixel_bytes = output_image.size();
             processed.output_image = std::move(output_image);
             return processed;
@@ -374,12 +407,15 @@ int run_batch(const args::Process& a) {
 
         auto save_processed_task = [&](ProcessedTask&& processed) -> bool {
             std::filesystem::path out_path_obj(processed.out_path);
-            const std::filesystem::path final_out_path = crossscale::resolve_output_path(out_path_obj, config);
+            const std::filesystem::path final_out_path = upix::resolve_output_path(out_path_obj, config);
             if (!final_out_path.parent_path().empty()) {
                 std::filesystem::create_directories(final_out_path.parent_path());
             }
 
-            auto save_res = processed.output_image.save(final_out_path, config.output_quality);
+            const auto sr_xmp = upix::sr_marker::build_xmp(
+                model_name_used, processed.scale,
+                static_cast<int64_t>(std::time(nullptr)));
+            auto save_res = processed.output_image.save(final_out_path, config.output_quality, sr_xmp);
             if (!save_res.has_value()) {
                 LOG_ERROR("Task", "Failed to save output: {} -> {}",
                           save_res.error().message, final_out_path.string());
@@ -392,16 +428,21 @@ int run_batch(const args::Process& a) {
             return true;
         };
 
-        auto process_one = [&](const std::string& in_path, const std::string& out_path, crossscale::Engine& eng) -> bool {
+        enum class TaskResult { Success, Failure, Skipped };
+        auto process_one = [&](const std::string& in_path, const std::string& out_path, upix::Engine& eng) -> TaskResult {
             auto prepared = prepare_task(in_path, out_path);
-            if (!prepared.has_value()) {
-                return false;
+            if (prepared.status != PrepareStatus::Ok) {
+                return prepared.status == PrepareStatus::Skipped
+                           ? TaskResult::Skipped
+                           : TaskResult::Failure;
             }
-            auto processed = infer_prepared_task(std::move(prepared.value()), eng);
+            auto processed = infer_prepared_task(std::move(prepared.task.value()), eng);
             if (!processed.has_value()) {
-                return false;
+                return TaskResult::Failure;
             }
-            return save_processed_task(std::move(processed.value()));
+            return save_processed_task(std::move(processed.value()))
+                       ? TaskResult::Success
+                       : TaskResult::Failure;
         };
 
         // GPU directory mode defaults to VRAM-sized multi-engine concurrency
@@ -410,14 +451,14 @@ int run_batch(const args::Process& a) {
         const bool single_engine_mode =
             jobs <= 1 && !(use_gpu && !jobs_explicit && tasks.size() > 1);
         if (single_engine_mode) {
-            auto engine = crossscale::create_ncnn_engine();
-            auto device_type = use_gpu ? crossscale::DeviceType::GPU_VULKAN : crossscale::DeviceType::CPU;
+            auto engine = upix::create_ncnn_engine();
+            auto device_type = use_gpu ? upix::DeviceType::GPU_VULKAN : upix::DeviceType::CPU;
             auto init_result = engine->initialize(device_type);
             if (!init_result.has_value()) {
                 LOG_ERROR("Engine", "Failed to initialize engine");
                 return 1;
             }
-            const bool initialized_on_gpu = engine->current_device() == crossscale::DeviceType::GPU_VULKAN;
+            const bool initialized_on_gpu = engine->current_device() == upix::DeviceType::GPU_VULKAN;
             LOG_INFO("Engine", "Engine initialized on {}",
                      initialized_on_gpu ? "GPU" : "CPU");
 
@@ -491,10 +532,12 @@ int run_batch(const args::Process& a) {
                             }
                             const auto& task = tasks[idx];
                             auto prepared = prepare_task(task.first, task.second);
-                            if (!prepared.has_value()) {
+                            if (prepared.status != PrepareStatus::Ok) {
+                                // Skip (already logged + counted) or load
+                                // failure (error logged) — never enqueued.
                                 continue;
                             }
-                            const size_t task_bytes = prepared.value().pixel_bytes;
+                            const size_t task_bytes = prepared.task.value().pixel_bytes;
                             std::unique_lock<std::mutex> lock(prepared_mutex);
                             while ((prepared_queue.size() >= prepared_queue_limit ||
                                     (prepared_queue_bytes > 0 &&
@@ -506,7 +549,7 @@ int run_batch(const args::Process& a) {
                                 break;
                             }
                             prepared_queue_bytes += task_bytes;
-                            prepared_queue.emplace_back(std::move(prepared.value()));
+                            prepared_queue.emplace_back(std::move(prepared.task.value()));
                             lock.unlock();
                             prepared_cv.notify_one();
                         }
@@ -557,7 +600,7 @@ int run_batch(const args::Process& a) {
                             }
 
                             // Batch sizing + fill wait were tied to the (now-removed)
-                            // CROSSSCALE_GPU_SUBMIT_QUEUE* env vars. With submit_budget
+                            // UPIX_GPU_SUBMIT_QUEUE* env vars. With submit_budget
                             // pinned to 1 inside the engine, batching gains nothing —
                             // take one prepared task at a time.
                             prepared_queue_bytes -= prepared_queue.front().pixel_bytes;
@@ -626,24 +669,28 @@ int run_batch(const args::Process& a) {
                     if (g_cancel_requested.load()) {
                         break;
                     }
-                    if (process_one(task.first, task.second, *engine)) {
+                    if (process_one(task.first, task.second, *engine) == TaskResult::Success) {
                         success_count++;
                     }
                 }
             }
 
-            LOG_INFO("CLI", "Processing summary: {}/{} succeeded",
-                     success_count, tasks.size());
-            return success_count == tasks.size() ? 0 : 1;
+            const size_t skipped = skip_count.load();
+            LOG_INFO("CLI", "Processing summary: {}/{} succeeded{}",
+                     success_count, tasks.size(),
+                     skipped > 0 ? std::format(", {} skipped (already super-resolved)",
+                                               skipped)
+                                 : std::string{});
+            return success_count + skipped == tasks.size() ? 0 : 1;
         } else {
             if (use_gpu) {
                 struct EngineInitResult {
-                    std::unique_ptr<crossscale::Engine> engine;
+                    std::unique_ptr<upix::Engine> engine;
                     std::string error;
                 };
                 auto init_engine = [&](size_t i) -> EngineInitResult {
-                    auto engine = crossscale::create_ncnn_engine();
-                    auto init_result = engine->initialize(crossscale::DeviceType::GPU_VULKAN);
+                    auto engine = upix::create_ncnn_engine();
+                    auto init_result = engine->initialize(upix::DeviceType::GPU_VULKAN);
                     if (!init_result.has_value()) {
                         return {nullptr, std::format("Failed to initialize GPU engine #{}", i)};
                     }
@@ -709,7 +756,7 @@ int run_batch(const args::Process& a) {
                 }
                 size_t worker_count = std::min(requested_workers, tasks.size());
 
-                std::vector<std::unique_ptr<crossscale::Engine>> gpu_engines;
+                std::vector<std::unique_ptr<upix::Engine>> gpu_engines;
                 gpu_engines.reserve(worker_count);
                 gpu_engines.push_back(std::move(primary.engine));
 
@@ -759,7 +806,7 @@ int run_batch(const args::Process& a) {
                             if (idx >= tasks.size()) {
                                 break;
                             }
-                            if (process_one(tasks[idx].first, tasks[idx].second, eng)) {
+                            if (process_one(tasks[idx].first, tasks[idx].second, eng) == TaskResult::Success) {
                                 success_count.fetch_add(1);
                             }
                         }
@@ -770,9 +817,13 @@ int run_batch(const args::Process& a) {
                     w.join();
                 }
 
-                LOG_INFO("CLI", "Processing summary: {}/{} succeeded",
-                         success_count.load(), tasks.size());
-                return success_count.load() == tasks.size() ? 0 : 1;
+                const size_t skipped = skip_count.load();
+                LOG_INFO("CLI", "Processing summary: {}/{} succeeded{}",
+                         success_count.load(), tasks.size(),
+                         skipped > 0 ? std::format(", {} skipped (already super-resolved)",
+                                                   skipped)
+                                     : std::string{});
+                return success_count.load() + skipped == tasks.size() ? 0 : 1;
             } else {
                 // CPU EnginePool: fixed worker pool pulling tasks via an atomic
                 // index (same shape as the GPU jobs>1 branch). One std::async
@@ -780,7 +831,7 @@ int run_batch(const args::Process& a) {
                 // and stack N engines' default ncnn thread armies.
                 size_t requested_workers = static_cast<size_t>(std::max(1, jobs));
                 size_t worker_count = std::min(requested_workers, tasks.size());
-                crossscale::EnginePool pool(worker_count, param_path, bin_path, crossscale::DeviceType::CPU);
+                upix::EnginePool pool(worker_count, param_path, bin_path, upix::DeviceType::CPU);
                 LOG_INFO("Engine", "Created engine pool with {} CPU engines", worker_count);
 
                 // Same auto tile-size selection as the jobs<=1 path: without
@@ -788,7 +839,7 @@ int run_batch(const args::Process& a) {
                 // jobs=1 used the engine recommendation (128 on CPU), so the
                 // tile grid — and therefore the output — depended on --jobs.
                 if (!tile_size_explicit && !auto_tile) {
-                    crossscale::Engine* probe = pool.acquire();
+                    upix::Engine* probe = pool.acquire();
                     tile_size = probe->get_recommended_tile_size();
                     pool.release(probe);
                     config.tile_size = tile_size;
@@ -807,10 +858,11 @@ int run_batch(const args::Process& a) {
                             if (idx >= tasks.size()) {
                                 break;
                             }
-                            crossscale::Engine* eng = pool.acquire();
+                            upix::Engine* eng = pool.acquire();
                             bool ok = false;
                             try {
-                                ok = process_one(tasks[idx].first, tasks[idx].second, *eng);
+                                ok = process_one(tasks[idx].first, tasks[idx].second, *eng) ==
+                                     TaskResult::Success;
                             } catch (const std::exception& e) {
                                 LOG_ERROR("Engine", "Task processing exception: {}", e.what());
                                 ok = false;
@@ -830,9 +882,13 @@ int run_batch(const args::Process& a) {
                     w.join();
                 }
 
-                LOG_INFO("CLI", "Processing summary: {}/{} succeeded",
-                         success_count.load(), tasks.size());
-                return success_count.load() == tasks.size() ? 0 : 1;
+                const size_t skipped = skip_count.load();
+                LOG_INFO("CLI", "Processing summary: {}/{} succeeded{}",
+                         success_count.load(), tasks.size(),
+                         skipped > 0 ? std::format(", {} skipped (already super-resolved)",
+                                                   skipped)
+                                     : std::string{});
+                return success_count.load() + skipped == tasks.size() ? 0 : 1;
             }
         }
 }

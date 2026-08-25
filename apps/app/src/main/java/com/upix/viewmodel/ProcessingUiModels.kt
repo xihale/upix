@@ -1,11 +1,11 @@
-package com.crossscale.viewmodel
+package com.upix.viewmodel
 
 import androidx.compose.runtime.Immutable
-import com.crossscale.data.model.ProcessingTask
-import com.crossscale.data.repository.BatchOutputDirectory
-import com.crossscale.data.repository.PersistedQueueItemStatus
-import com.crossscale.data.repository.ProcessingFailureDetail
-import com.crossscale.data.repository.ResolvedImageInput
+import com.upix.data.model.ProcessingTask
+import com.upix.data.repository.BatchOutputDirectory
+import com.upix.data.repository.PersistedQueueItemStatus
+import com.upix.data.repository.ProcessingFailureDetail
+import com.upix.data.repository.ResolvedImageInput
 
 // List fields are treated as immutable by convention (never mutated after
 // construction), which keeps these states skippable for Compose.
@@ -31,6 +31,7 @@ data class ProcessingQueueItemSummary(
     val overwriteOriginal: Boolean = false,
     val backupOriginal: Boolean = true,
     val processNestedFolders: Boolean = true,
+    val skipSrMarkedInputs: Boolean = true,
     val createdAtEpochMs: Long,
     val expectedItems: Int? = null,
     val status: PersistedQueueItemStatus = PersistedQueueItemStatus.PENDING,
@@ -75,6 +76,8 @@ internal data class ProcessingRunSetup(
     val pendingImages: List<ResolvedImageInput>,
     val completedItems: Int,
     val totalItems: Int,
+    /** Inputs skipped because they carry this tool's own SR marker. */
+    val skippedItems: Int = 0,
     val outputDirectory: BatchOutputDirectory,
     val failureDetails: MutableMap<String, ProcessingFailureDetail>
 )

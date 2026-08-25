@@ -1,27 +1,27 @@
-package com.crossscale.viewmodel
+package com.upix.viewmodel
 
 import android.net.Uri
-import com.crossscale.data.model.ModelImportResult
-import com.crossscale.data.model.ModelInfo
-import com.crossscale.data.model.ProcessingStatus
-import com.crossscale.data.repository.BatchOutputDirectory
-import com.crossscale.data.repository.BatchOutputStore
-import com.crossscale.data.repository.ImageProcessingSession
-import com.crossscale.data.repository.ImageProcessingStore
-import com.crossscale.data.repository.InputSourceResolver
-import com.crossscale.data.repository.LogRepository
-import com.crossscale.data.repository.ModelProvider
-import com.crossscale.data.repository.NativeProcessResult
-import com.crossscale.data.repository.PersistedQueueItemStatus
-import com.crossscale.data.repository.ProcessingCheckpoint
-import com.crossscale.data.repository.ProcessingCheckpointStore
-import com.crossscale.data.repository.ProcessingFailureDetail
-import com.crossscale.data.repository.ProcessingPendingItem
-import com.crossscale.data.repository.ProcessingQueueRepository
-import com.crossscale.data.repository.ProcessingQueueSnapshot
-import com.crossscale.data.repository.ProcessingQueueStore
-import com.crossscale.data.repository.ResolvedImageInput
-import com.crossscale.util.StringProvider
+import com.upix.data.model.ModelImportResult
+import com.upix.data.model.ModelInfo
+import com.upix.data.model.ProcessingStatus
+import com.upix.data.repository.BatchOutputDirectory
+import com.upix.data.repository.BatchOutputStore
+import com.upix.data.repository.ImageProcessingSession
+import com.upix.data.repository.ImageProcessingStore
+import com.upix.data.repository.InputSourceResolver
+import com.upix.data.repository.LogRepository
+import com.upix.data.repository.ModelProvider
+import com.upix.data.repository.NativeProcessResult
+import com.upix.data.repository.PersistedQueueItemStatus
+import com.upix.data.repository.ProcessingCheckpoint
+import com.upix.data.repository.ProcessingCheckpointStore
+import com.upix.data.repository.ProcessingFailureDetail
+import com.upix.data.repository.ProcessingPendingItem
+import com.upix.data.repository.ProcessingQueueRepository
+import com.upix.data.repository.ProcessingQueueSnapshot
+import com.upix.data.repository.ProcessingQueueStore
+import com.upix.data.repository.ResolvedImageInput
+import com.upix.util.StringProvider
 import java.io.File
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -753,7 +753,9 @@ class ProcessingViewModelTest {
         nativeImageProcessingRepository = nativeImageProcessingRepository,
         ioDispatcher = mainDispatcherRule.testDispatcher,
         defaultDispatcher = defaultDispatcher,
-        stringProvider = StringProvider { _, _ -> "" }
+        stringProvider = StringProvider { _, _ -> "" },
+        // 默认不跳过：单测不携带真实标记字节，探测恒为 null。
+        probeSrMarker = { null }
     )
 
     private class FakeModelProvider(

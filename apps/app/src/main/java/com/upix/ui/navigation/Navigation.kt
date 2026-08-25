@@ -1,4 +1,4 @@
-package com.crossscale.ui.navigation
+package com.upix.ui.navigation
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -6,7 +6,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import com.crossscale.data.model.ProcessingStatus
+import com.upix.data.model.ProcessingStatus
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,39 +19,39 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import com.crossscale.AppContainer
-import com.crossscale.clearBatchQueue
-import com.crossscale.openQueuedBatchOutput
-import com.crossscale.removeQueuedBatch
-import com.crossscale.restoreBackup
-import com.crossscale.startProcessing
-import com.crossscale.ui.input.rememberInputSelection
-import com.crossscale.ui.components.SecondaryScreenScaffold
-import com.crossscale.ui.screens.ConnectionScreen
-import com.crossscale.ui.screens.HelpScreen
-import com.crossscale.ui.screens.HomeCallbacks
-import com.crossscale.ui.screens.HomeScreen
-import com.crossscale.ui.screens.LogsScreen
-import com.crossscale.ui.screens.ModelsScreen
-import com.crossscale.ui.screens.SettingsDetail
-import com.crossscale.ui.screens.SettingsScreen
-import com.crossscale.ui.theme.NavEnterTransition
-import com.crossscale.ui.theme.NavExitTransition
-import com.crossscale.ui.theme.NavPopEnterTransition
-import com.crossscale.ui.theme.NavPopExitTransition
-import com.crossscale.viewmodel.DeviceViewModel
-import com.crossscale.viewmodel.MainViewModel
-import com.crossscale.viewmodel.ModelsViewModel
-import com.crossscale.viewmodel.ProcessingViewModel
+import com.upix.AppContainer
+import com.upix.clearBatchQueue
+import com.upix.openQueuedBatchOutput
+import com.upix.removeQueuedBatch
+import com.upix.restoreBackup
+import com.upix.startProcessing
+import com.upix.ui.input.rememberInputSelection
+import com.upix.ui.components.SecondaryScreenScaffold
+import com.upix.ui.screens.ConnectionScreen
+import com.upix.ui.screens.HelpScreen
+import com.upix.ui.screens.HomeCallbacks
+import com.upix.ui.screens.HomeScreen
+import com.upix.ui.screens.LogsScreen
+import com.upix.ui.screens.ModelsScreen
+import com.upix.ui.screens.SettingsDetail
+import com.upix.ui.screens.SettingsScreen
+import com.upix.ui.theme.NavEnterTransition
+import com.upix.ui.theme.NavExitTransition
+import com.upix.ui.theme.NavPopEnterTransition
+import com.upix.ui.theme.NavPopExitTransition
+import com.upix.viewmodel.DeviceViewModel
+import com.upix.viewmodel.MainViewModel
+import com.upix.viewmodel.ModelsViewModel
+import com.upix.viewmodel.ProcessingViewModel
 
 /**
- * 导航图自行解析三个 ViewModel（与 CrossScaleApp 同一 Activity 级
+ * 导航图自行解析三个 ViewModel（与 UpixApp 同一 Activity 级
  * ViewModelStore，viewModel() 返回同一实例），并在各目的地的调用点
  * 直接绑定 VM 方法。跨 VM 的复合编排回调（startProcessing 等）位于
  * AppCallbacks.kt，此处仅做接线；不经过逐参数透传的回调墙。
  */
 @Composable
-fun CrossScaleNavigation(
+fun UpixNavigation(
     container: AppContainer,
     navController: NavHostController,
     modifier: Modifier = Modifier
@@ -148,6 +148,7 @@ fun CrossScaleNavigation(
                         onToggleOverwriteOriginal = mainViewModel::setOverwriteOriginalImage,
                         onToggleBackupOriginal = mainViewModel::setBackupOriginalImage,
                         onToggleProcessNestedFolders = mainViewModel::setProcessNestedFolders,
+                        onToggleSkipSrMarkedInputs = mainViewModel::setSkipSrMarkedInputs,
                         onSelectOutputFormat = mainViewModel::setOutputImageFormat,
                         onRefreshRemoteModels = modelsViewModel::refreshRemoteModels,
                         onDownloadRemoteModel = modelsViewModel::downloadRemoteModel,
@@ -168,7 +169,8 @@ fun CrossScaleNavigation(
                                 outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
                                 overwriteOriginal = mainUiState.overwriteOriginalImage,
                                 backupOriginal = mainUiState.backupOriginalImage,
-                                processNestedFolders = mainUiState.processNestedFolders
+                                processNestedFolders = mainUiState.processNestedFolders,
+                                skipSrMarkedInputs = mainUiState.skipSrMarkedInputs
                             )
                             inputSelection.startQueueWithWritePermissionCheck(null)
                         },
@@ -180,7 +182,8 @@ fun CrossScaleNavigation(
                                 context = context,
                                 batchId = batchId,
                                 processingViewModel = processingViewModel,
-                                logRepository = logRepository
+                                logRepository = logRepository,
+                                scope = scope
                             )
                         },
                         onRemoveQueuedBatch = { batchId ->

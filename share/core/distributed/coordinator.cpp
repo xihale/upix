@@ -6,6 +6,7 @@
 #include "utils/network.hpp"
 #include "utils/crypto.hpp"
 #include "utils/crypto_sodium.hpp"
+#include "utils/sr_marker.hpp"
 #include <thread>
 #include <cstring>
 #include <chrono>
@@ -13,11 +14,12 @@
 #include <cctype>
 #include <cerrno>
 #include <cstdio>
+#include <ctime>
 #include <format>
 #include <fstream>
 #include <optional>
 
-namespace crossscale {
+namespace upix {
 
 // Raw upscaled pixels are a transient buffer (encoded to jpg/png before
 // transport), so they may exceed MAX_NETWORK_PAYLOAD (utils/network.hpp).
@@ -264,7 +266,13 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     const auto t_enc_start = std::chrono::steady_clock::now();
     Image out_image(out_w, out_h, channels);
     std::memcpy(out_image.data(), out_bytes.data(), out_bytes.size());
-    auto encoded = out_image.save_to_memory(output_format, transport_quality);
+    // The SR marker rides with the remote output: the phone writes these
+    // bytes verbatim, so remote results are recognized on re-input the same
+    // way local ones are.
+    const auto sr_xmp = sr_marker::build_xmp(
+        model_name.empty() ? loaded_model_name_ : model_name, scale,
+        static_cast<int64_t>(std::time(nullptr)));
+    auto encoded = out_image.save_to_memory(output_format, transport_quality, sr_xmp);
     const auto t_enc_end = std::chrono::steady_clock::now();
     if (!encoded) {
         return std::unexpected(CoordinatorError{5, std::format("output encode failed: {}", encoded.error().message)});
@@ -1004,4 +1012,4 @@ void Coordinator::handle_model_download(WorkerConnection& conn,
              format_bytes(param_size + bin_size) + ")");
 }
 
-} // namespace crossscale
+} // namespace upix

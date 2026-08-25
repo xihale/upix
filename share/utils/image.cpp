@@ -22,12 +22,38 @@ extern "C" {
 #include <jpeglib.h>
 #include <webp/decode.h>
 #include <webp/encode.h>
+#include <webp/mux.h>
 #include <libdeflate.h>
 }
 
-namespace crossscale {
+namespace upix {
 
 namespace {
+    // Wrap the encoded WebP into the extended (VP8X) container and attach
+    // the XMP payload as its "XMP " chunk. libwebpmux post-pass — the
+    // Picture/encode API cannot carry metadata. Returns false (encoded
+    // untouched) on mux errors; callers degrade to an unmarked file.
+    auto webp_attach_xmp(std::vector<uint8_t>& encoded, const std::string& xmp) -> bool {
+        WebPMux* mux = WebPMuxNew();
+        if (mux == nullptr) {
+            return false;
+        }
+        const WebPData image{encoded.data(), encoded.size()};
+        const WebPData chunk{
+            reinterpret_cast<const uint8_t*>(xmp.data()), xmp.size()};
+        bool ok = WebPMuxSetImage(mux, &image, 1) == WEBP_MUX_OK &&
+                  WebPMuxSetChunk(mux, "XMP ", &chunk, 1) == WEBP_MUX_OK;
+        WebPData assembled{nullptr, 0};
+        if (ok && WebPMuxAssemble(mux, &assembled) == WEBP_MUX_OK) {
+            encoded.assign(assembled.bytes, assembled.bytes + assembled.size);
+        } else {
+            ok = false;
+        }
+        WebPDataClear(&assembled);
+        WebPMuxDelete(mux);
+        return ok;
+    }
+
     // WebPPicture writer that appends into a std::vector (WebPEncode calls it
     // once per encoded chunk; returning 0 aborts the encode).
     auto webp_vector_writer(const uint8_t* data, size_t size,
@@ -129,13 +155,32 @@ namespace {
                                              4 + data.size()));
     }
 
+    // iTXt payload carrying an XMP packet: the standard
+    // "XML:com.adobe.xmp" keyword, uncompressed, empty language tag and
+    // translated keyword, then the UTF-8 XML. Shared shape with the
+    // streaming-libpng path so both writers emit identical metadata.
+    auto build_png_xmp_itxt(std::string_view xmp) -> std::vector<uint8_t> {
+        static constexpr std::string_view kXmpKeyword = "XML:com.adobe.xmp";
+        std::vector<uint8_t> payload;
+        payload.reserve(kXmpKeyword.size() + 4 + xmp.size());
+        payload.insert(payload.end(), kXmpKeyword.begin(), kXmpKeyword.end());
+        payload.push_back(0);  // keyword terminator
+        payload.push_back(0);  // compression flag: uncompressed
+        payload.push_back(0);  // compression method: none
+        payload.push_back(0);  // language tag: empty
+        payload.push_back(0);  // translated keyword: empty
+        payload.insert(payload.end(), xmp.begin(), xmp.end());
+        return payload;
+    }
+
     // Hand-rolled PNG writer for the images this codebase produces: 8-bit,
     // 1-4 channels, non-interlaced (load strips 16-bit and expands palettes,
     // so every in-memory Image qualifies). Fixed AVG row filter (matches the
     // previous libpng configuration) + libdeflate zlib stream + libdeflate
     // CRC32. Returns false only on invalid dimensions or compressor
     // allocation/compress failure (OOM-class).
-    auto save_png_libdeflate(const Image& image, std::vector<uint8_t>& out, int level) -> bool {
+    auto save_png_libdeflate(const Image& image, std::vector<uint8_t>& out, int level,
+                             const std::string& xmp) -> bool {
         const int width = image.width();
         const int height = image.height();
         const int channels = image.channels();
@@ -199,7 +244,7 @@ namespace {
             compressor, filtered.get(), filtered_bytes, compressed.get(), bound);
         libdeflate_free_compressor(compressor);
         const auto compress_done = std::chrono::steady_clock::now();
-        if (std::getenv("CROSSSCALE_PIPELINE_TIMER") != nullptr) {
+        if (std::getenv("UPIX_PIPELINE_TIMER") != nullptr) {
             std::print(stderr, "[PERF] png save {}x{}: filter={}ms compress={}ms\n",
                        width, height,
                        static_cast<size_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -225,6 +270,10 @@ namespace {
         ihdr[11] = 0;  // filter: adaptive (per-row bytes carry the actual type)
         ihdr[12] = 0;  // interlace: none
         write_png_chunk(out, "IHDR", ihdr);
+        if (!xmp.empty()) {
+            const auto itxt = build_png_xmp_itxt(xmp);
+            write_png_chunk(out, "iTXt", itxt);
+        }
         write_png_chunk(out, "IDAT", {compressed.get(), compressed_size});
         write_png_chunk(out, "IEND", {});
         return true;
@@ -247,7 +296,8 @@ namespace {
         static_cast<std::ofstream*>(png_get_io_ptr(png))->flush();
     }
 
-    auto save_png_streaming(const Image& image, const std::filesystem::path& path, int level) -> expected<void, ImageError> {
+    auto save_png_streaming(const Image& image, const std::filesystem::path& path, int level,
+                            const std::string& xmp) -> expected<void, ImageError> {
         std::ofstream file(path, std::ios::binary);
         if (!file.is_open()) {
             return std::unexpected(ImageError{3, "Cannot open file for writing: " + path.string()});
@@ -281,6 +331,15 @@ namespace {
                          static_cast<png_uint_32>(image.height()),
                          8, kPngColorTypeByChannels[channels],
                          PNG_INTERLACE_NONE, PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+            if (!xmp.empty()) {
+                png_text text{};
+                text.compression = PNG_ITXT_COMPRESSION_NONE;
+                text.key = const_cast<png_charp>("XML:com.adobe.xmp");
+                // png_text::text is non-const; the packet outlives the call.
+                text.text = const_cast<png_charp>(xmp.c_str());
+                text.itxt_length = xmp.size();
+                png_set_text(png, info, &text, 1);
+            }
             png_write_info(png, info);
 
             std::vector<png_bytep> rows(static_cast<size_t>(image.height()));
@@ -480,19 +539,23 @@ Image& Image::operator=(Image&& other) noexcept {
     return *this;
 }
 
-auto Image::load(const std::filesystem::path& path) 
+auto Image::load(const std::filesystem::path& path)
     -> expected<Image, ImageError> {
-    if (!std::filesystem::exists(path)) {
-        return std::unexpected(ImageError{1, "File not found: " + path.string()});
-    }
-
-    auto file_data = read_file(path);
+    auto file_data = load_raw(path);
     if (!file_data.has_value()) {
         return std::unexpected(file_data.error());
     }
 
     std::string ext = path.extension().string();
     return load_from_memory(ext, file_data.value());
+}
+
+auto Image::load_raw(const std::filesystem::path& path)
+    -> expected<std::vector<uint8_t>, ImageError> {
+    if (!std::filesystem::exists(path)) {
+        return std::unexpected(ImageError{1, "File not found: " + path.string()});
+    }
+    return read_file(path);
 }
 
 auto Image::load_from_memory(const std::string& format,
@@ -519,7 +582,8 @@ auto Image::load_from_memory(const std::string& format,
     }
 }
 
-auto Image::save(const std::filesystem::path& path, int quality) const
+auto Image::save(const std::filesystem::path& path, int quality,
+                 const std::string& xmp) const
     -> expected<void, ImageError> {
     // Very large PNG outputs go straight to disk row-by-row instead of
     // materializing the whole compressed file (plus the fast path's ~2x raw
@@ -527,17 +591,18 @@ auto Image::save(const std::filesystem::path& path, int quality) const
     const std::string fmt = normalize_image_format(path.extension().string());
     if ((fmt.empty() || fmt == "png") && size() >= kPngStreamingThresholdBytes) {
         return save_png_streaming(*this, path,
-                                  png_libdeflate_level_from_quality(quality));
+                                  png_libdeflate_level_from_quality(quality), xmp);
     }
 
-    auto encoded = save_to_memory(path.extension().string(), quality);
+    auto encoded = save_to_memory(path.extension().string(), quality, xmp);
     if (!encoded.has_value()) {
         return std::unexpected(encoded.error());
     }
     return write_file(path, *encoded);
 }
 
-auto Image::save_to_memory(const std::string& format, int quality) const
+auto Image::save_to_memory(const std::string& format, int quality,
+                           const std::string& xmp) const
     -> expected<std::vector<uint8_t>, ImageError> {
     const std::string normalized_format = normalize_image_format(format);
     const std::string output_format = normalized_format.empty() ? "png" : normalized_format;
@@ -552,7 +617,7 @@ auto Image::save_to_memory(const std::string& format, int quality) const
             // (OOM-class); return the error instead of falling back.
             std::vector<uint8_t> encoded;
             if (!save_png_libdeflate(
-                    *this, encoded, png_libdeflate_level_from_quality(clamped_quality))) {
+                    *this, encoded, png_libdeflate_level_from_quality(clamped_quality), xmp)) {
                 return std::unexpected(ImageError{20, "PNG encode failed (libdeflate)"});
             }
             return encoded;
@@ -581,6 +646,19 @@ auto Image::save_to_memory(const std::string& format, int quality) const
             jpeg_set_quality(&cinfo, clamped_quality, TRUE);
             jpeg_start_compress(&cinfo, TRUE);
 
+            if (!xmp.empty()) {
+                // APP1 with the standard XMP namespace URI prefix.
+                static constexpr std::string_view kJpegXmpNamespace =
+                    "http://ns.adobe.com/xap/1.0/\0";
+                std::vector<uint8_t> app1;
+                app1.reserve(kJpegXmpNamespace.size() + xmp.size());
+                app1.insert(app1.end(), kJpegXmpNamespace.begin(),
+                            kJpegXmpNamespace.end());  // includes the NUL
+                app1.insert(app1.end(), xmp.begin(), xmp.end());
+                jpeg_write_marker(&cinfo, JPEG_APP0 + 1, app1.data(),
+                                  static_cast<unsigned int>(app1.size()));
+            }
+
             std::vector<JSAMPROW> row_pointers(height_);
             const size_t row_stride = static_cast<size_t>(width_) * channels_;
             for (const int y : std::views::iota(0, height_)) {
@@ -605,7 +683,7 @@ auto Image::save_to_memory(const std::string& format, int quality) const
         }
 
         if (output_format == "avif") {
-            return avif_codec::save(*this, clamped_quality);
+            return avif_codec::save(*this, clamped_quality, xmp);
         }
 
         if (output_format == "webp") {
@@ -649,6 +727,9 @@ auto Image::save_to_memory(const std::string& format, int quality) const
             if (!ok) {
                 return std::unexpected(ImageError{19, "WebP encode failed"});
             }
+            if (!xmp.empty() && !webp_attach_xmp(encoded, xmp)) {
+                LOG_WARNING("Image", "WebP XMP mux failed; writing without marker");
+            }
             return encoded;
         }
 
@@ -658,4 +739,4 @@ auto Image::save_to_memory(const std::string& format, int quality) const
     }
 }
 
-} // namespace crossscale
+} // namespace upix

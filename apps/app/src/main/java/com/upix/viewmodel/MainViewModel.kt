@@ -1,4 +1,4 @@
-package com.crossscale.viewmodel
+package com.upix.viewmodel
 
 import android.net.Uri
 import androidx.compose.runtime.Immutable
@@ -8,21 +8,22 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import com.crossscale.AppContainer
-import com.crossscale.R
-import com.crossscale.data.model.ConnectionState
-import com.crossscale.data.model.ModelImportResult
-import com.crossscale.data.model.ModelInfo
-import com.crossscale.data.model.ModelLibraryEntry
-import com.crossscale.data.model.PcModel
-import com.crossscale.data.repository.BatchOutputRepository
-import com.crossscale.data.repository.DeviceRepository
-import com.crossscale.data.repository.InputSourceSpec
-import com.crossscale.data.repository.LogRepository
-import com.crossscale.data.repository.ModelProvider
-import com.crossscale.data.repository.OutputImageFormat
-import com.crossscale.network.CoordinatorClient
-import com.crossscale.util.StringProvider
+import com.upix.AppContainer
+import com.upix.R
+import com.upix.data.model.ConnectionState
+import com.upix.data.model.ModelImportResult
+import com.upix.data.model.ModelInfo
+import com.upix.data.model.ModelLibraryEntry
+import com.upix.data.model.PcModel
+import com.upix.data.repository.BatchOutputRepository
+import com.upix.data.repository.DeviceRepository
+import com.upix.data.repository.InputSourceSpec
+import com.upix.data.repository.LogRepository
+import com.upix.data.repository.ModelProvider
+import com.upix.data.repository.OutputImageFormat
+import com.upix.data.repository.sanitizeModelName
+import com.upix.network.CoordinatorClient
+import com.upix.util.StringProvider
 import java.io.File
 import java.util.Locale
 import kotlinx.coroutines.Dispatchers
@@ -50,6 +51,7 @@ data class MainUiState(
     val overwriteOriginalImage: Boolean = false,
     val backupOriginalImage: Boolean = true,
     val processNestedFolders: Boolean = true,
+    val skipSrMarkedInputs: Boolean = true,
     val outputImageFormat: OutputImageFormat = OutputImageFormat.FOLLOW,
     val modelDirectoryPath: String = "",
     val useRemote: Boolean = false,
@@ -68,6 +70,7 @@ private data class MainTaskSettings(
     val overwriteOriginalImage: Boolean,
     val backupOriginalImage: Boolean,
     val processNestedFolders: Boolean,
+    val skipSrMarkedInputs: Boolean,
     val outputImageFormat: OutputImageFormat
 )
 
@@ -93,6 +96,7 @@ class MainViewModel(
     private val _overwriteOriginalImage = MutableStateFlow(false)
     private val _backupOriginalImage = MutableStateFlow(true)
     private val _processNestedFolders = MutableStateFlow(true)
+    private val _skipSrMarkedInputs = MutableStateFlow(true)
     private val _outputImageFormat = MutableStateFlow(OutputImageFormat.FOLLOW)
 
     private val baseUiState = combine(
@@ -146,13 +150,17 @@ class MainViewModel(
         _processNestedFolders,
         _outputImageFormat
     ) { corruptedInputSources, overwriteOriginalImage, backupOriginalImage, processNestedFolders, outputImageFormat ->
+        // skipSrMarkedInputs 由下一级 combine 填入（5 流上限），占位值不外泄。
         MainTaskSettings(
             corruptedInputSources = corruptedInputSources,
             overwriteOriginalImage = overwriteOriginalImage,
             backupOriginalImage = backupOriginalImage,
             processNestedFolders = processNestedFolders,
+            skipSrMarkedInputs = true,
             outputImageFormat = outputImageFormat
         )
+    }.combine(_skipSrMarkedInputs) { settings, skipSrMarkedInputs ->
+        settings.copy(skipSrMarkedInputs = skipSrMarkedInputs)
     }
 
     val uiState: StateFlow<MainUiState> = combine(
@@ -167,6 +175,7 @@ class MainViewModel(
             overwriteOriginalImage = settings.overwriteOriginalImage,
             backupOriginalImage = settings.backupOriginalImage,
             processNestedFolders = settings.processNestedFolders,
+            skipSrMarkedInputs = settings.skipSrMarkedInputs,
             outputImageFormat = settings.outputImageFormat,
             library = library,
             uploadingToPc = uploading,
@@ -266,14 +275,17 @@ class MainViewModel(
         if (entry.name in _downloadingFromPc.value) return
         _downloadingFromPc.update { it + entry.name }
         viewModelScope.launch {
-            val directory = File(modelsDirectory(), entry.name)
+            // PC 下发的模型名不可信：统一过 sanitizeModelName 再拼本地路径，
+            // 阻断路径穿越（与导入/发现扫描同一套命名规则）。
+            val safeName = sanitizeModelName(entry.name)
+            val directory = File(modelsDirectory(), safeName)
             val result = withContext(Dispatchers.IO) {
                 // 目标目录可能不存在（首次下载该模型），必须先建目录。
                 directory.mkdirs()
                 coordinatorClient.downloadModelFromPC(
                     name = entry.name,
-                    destParamPath = File(directory, "${entry.name}.param").absolutePath,
-                    destBinPath = File(directory, "${entry.name}.bin").absolutePath
+                    destParamPath = File(directory, "$safeName.param").absolutePath,
+                    destBinPath = File(directory, "$safeName.bin").absolutePath
                 )
             }
             result
@@ -421,6 +433,11 @@ class MainViewModel(
 
     fun setProcessNestedFolders(enabled: Boolean) {
         _processNestedFolders.value = enabled
+    }
+
+    /** 已超分输入（带本工具 XMP 标记）默认跳过；关闭后总是重新处理。 */
+    fun setSkipSrMarkedInputs(enabled: Boolean) {
+        _skipSrMarkedInputs.value = enabled
     }
 
     /** 输出格式：同步写入 BatchOutputRepository，输出名在处理时生成时读取。 */

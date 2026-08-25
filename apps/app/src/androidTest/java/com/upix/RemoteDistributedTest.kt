@@ -1,12 +1,12 @@
-package com.crossscale
+package com.upix
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import java.io.ByteArrayOutputStream
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.crossscale.nativelib.NCNNEngine
-import com.crossscale.nativelib.NativeWorker
+import com.upix.nativelib.NCNNEngine
+import com.upix.nativelib.NativeWorker
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.FixMethodOrder
@@ -19,13 +19,13 @@ import org.junit.runners.MethodSorters
  * an image through it over the encrypted distributed protocol.
  *
  * Requires a coordinator running on the host machine reachable from the device:
- *   crossscale-cli host -p <port> --auto-approve
+ *   upix-cli host -p <port> --auto-approve
  * (run from a directory whose ./models holds a model). The host/port/model are
  * passed as instrumentation arguments, e.g. via am instrument:
  *   adb shell am instrument -w \
  *     -e host 192.168.1.10 -e port 9530 -e model Real-ESRGANv3-anime-x2 \
- *     -e class com.crossscale.RemoteDistributedTest \
- *     com.crossscale.test/androidx.test.runner.AndroidJUnitRunner
+ *     -e class com.upix.RemoteDistributedTest \
+ *     com.upix.test/androidx.test.runner.AndroidJUnitRunner
  *
  * Orchestration: run the `am instrument` command above directly (see
  * scripts/android_test.sh for the general build/unit/smoke harness).
@@ -131,13 +131,20 @@ class RemoteDistributedTest {
         // back to jpg — verify via the magic header.
         assertEncodedFormat(encoded, format)
 
+        // Remote outputs carry this tool's SR XMP marker (the PC-side encoder
+        // stamps it), so feeding the result back is recognized and skipped.
+        assertNotNull(
+            "submit($format) result carries no SR marker",
+            NCNNEngine.nativeProbeSrMarker(encoded)
+        )
+
         // And the result must decode + be upscaled beyond the 64x64 input.
         val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(encoded, 0, encoded.size, opts)
         var outWidth = opts.outWidth
         var outHeight = opts.outHeight
         if (outWidth <= 0 && format == "avif") {
-            val ispe = com.crossscale.data.repository.AvifFormat.sniffDimensions(encoded)
+            val ispe = com.upix.data.repository.AvifFormat.sniffDimensions(encoded)
             outWidth = ispe?.first ?: 0
             outHeight = ispe?.second ?: 0
         }

@@ -1,4 +1,4 @@
-package com.crossscale.ui.screens.home
+package com.upix.ui.screens.home
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
@@ -23,6 +23,7 @@ import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Image
+import androidx.compose.material.icons.outlined.Layers
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.SubdirectoryArrowRight
@@ -54,14 +55,14 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.crossscale.R
-import com.crossscale.data.model.ModelInfo
-import com.crossscale.ui.theme.EnterMotionSpec
-import com.crossscale.ui.theme.ExpandSizeSpec
-import com.crossscale.ui.theme.Spacing
-import com.crossscale.ui.theme.ValueMono
-import com.crossscale.ui.theme.pressable
-import com.crossscale.ui.theme.valueStyleFor
+import com.upix.R
+import com.upix.data.model.ModelInfo
+import com.upix.ui.theme.EnterMotionSpec
+import com.upix.ui.theme.ExpandSizeSpec
+import com.upix.ui.theme.Spacing
+import com.upix.ui.theme.ValueMono
+import com.upix.ui.theme.pressable
+import com.upix.ui.theme.valueStyleFor
 
 /**
  * 参数卡：一张容器内聚合所有任务配置。
@@ -77,6 +78,7 @@ internal fun ParameterCard(
     overwriteOriginal: Boolean,
     backupOriginal: Boolean,
     processNestedFolders: Boolean,
+    skipSrMarkedInputs: Boolean = true,
     outputFormatLabel: String = "",
     availableScales: List<Int> = emptyList(),
     hasCustomOutputDirectory: Boolean = false,
@@ -87,7 +89,8 @@ internal fun ParameterCard(
     onUseDefaultOutputFolder: () -> Unit,
     onToggleOverwriteOriginal: (Boolean) -> Unit,
     onToggleBackupOriginal: (Boolean) -> Unit,
-    onToggleProcessNestedFolders: (Boolean) -> Unit
+    onToggleProcessNestedFolders: (Boolean) -> Unit,
+    onToggleSkipSrMarkedInputs: (Boolean) -> Unit = {}
 ) {
     var advancedExpanded by remember { mutableStateOf(false) }
     val expandIconRotation by animateFloatAsState(
@@ -312,6 +315,12 @@ internal fun ParameterCard(
                         title = stringResource(R.string.home_include_subdirectories),
                         checked = processNestedFolders,
                         onCheckedChange = onToggleProcessNestedFolders
+                    )
+                    SwitchListItem(
+                        icon = Icons.Outlined.Layers,
+                        title = stringResource(R.string.home_skip_sr_marked),
+                        checked = skipSrMarkedInputs,
+                        onCheckedChange = onToggleSkipSrMarkedInputs
                     )
                     Spacer(modifier = Modifier.height(Spacing.sm))
                 }

@@ -1,7 +1,7 @@
-package com.crossscale.data.model
+package com.upix.data.model
 
 import androidx.compose.runtime.Immutable
-import com.crossscale.data.repository.ProcessingFailureDetail
+import com.upix.data.repository.ProcessingFailureDetail
 
 enum class ProcessingStatus {
     IDLE,
@@ -24,10 +24,13 @@ data class ProcessingTask(
     val overwriteOriginal: Boolean = false,
     val backupOriginal: Boolean = true,
     val processNestedFolders: Boolean = true,
+    val skipSrMarkedInputs: Boolean = true,
     val currentItemName: String? = null,
     val completedItems: Int = 0,
     val pendingItems: Int = 0,
     val failedItems: Int = 0,
+    /** Already-super-resolved inputs skipped by the marker guard. */
+    val skippedItems: Int = 0,
     val failureDetails: List<ProcessingFailureDetail> = emptyList(),
     val totalItems: Int = 1,
     val lastErrorMessage: String? = null,

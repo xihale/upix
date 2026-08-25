@@ -1,4 +1,4 @@
-package com.crossscale.ui.components
+package com.upix.ui.components
 
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
@@ -18,12 +18,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
-import com.crossscale.R
-import com.crossscale.data.model.ProcessingStatus
-import com.crossscale.data.model.ProcessingTask
-import com.crossscale.ui.theme.Spacing
-import com.crossscale.ui.theme.smoothProgress
-import com.crossscale.ui.theme.valueStyleFor
+import com.upix.R
+import com.upix.data.model.ProcessingStatus
+import com.upix.data.model.ProcessingTask
+import com.upix.ui.theme.Spacing
+import com.upix.ui.theme.smoothProgress
+import com.upix.ui.theme.valueStyleFor
 
 /**
  * 舞台遮罩进度：处理中覆盖在图片舞台之上。
@@ -69,6 +69,13 @@ fun StageProgressOverlay(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+            if (task.skippedItems > 0) {
+                Text(
+                    text = stringResource(R.string.processing_progress_skipped, task.skippedItems),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             task.currentItemName?.let { itemName ->
                 // 文件/模型名属机器值：ASCII 走 ValueMono，含 CJK 回退系统字阶（§2.1/§2.2）。
                 Text(

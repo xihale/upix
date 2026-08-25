@@ -1,21 +1,23 @@
-package com.crossscale
+package com.upix
 
 import android.content.Context
 import android.widget.Toast
-import com.crossscale.data.repository.LogRepository
-import com.crossscale.data.repository.PersistedQueueItemStatus
-import com.crossscale.util.openImageOutput
-import com.crossscale.viewmodel.MainUiState
-import com.crossscale.viewmodel.MainViewModel
-import com.crossscale.viewmodel.ProcessingUiState
-import com.crossscale.viewmodel.ProcessingViewModel
+import com.upix.data.repository.LogRepository
+import com.upix.data.repository.PersistedQueueItemStatus
+import com.upix.util.openImageOutput
+import com.upix.viewmodel.MainUiState
+import com.upix.viewmodel.MainViewModel
+import com.upix.viewmodel.ProcessingUiState
+import com.upix.viewmodel.ProcessingViewModel
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 导航接线中的复合编排回调（跨 MainViewModel / ProcessingViewModel 的组合动作），
- * 从 CrossScaleApp 原样迁出，按 queue / checkpoint 区块分组。逻辑与原先
- * 内联在 CrossScaleNavigation 调用处的事件 lambda 逐字等价，仅在调用时
+ * 从 UpixApp 原样迁出，按 queue / checkpoint 区块分组。逻辑与原先
+ * 内联在 UpixNavigation 调用处的事件 lambda 逐字等价，仅在调用时
  * 以参数显式传入所需依赖。
  */
 
@@ -34,14 +36,15 @@ internal fun startProcessing(
         outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
         overwriteOriginal = mainUiState.overwriteOriginalImage,
         backupOriginal = mainUiState.backupOriginalImage,
-        processNestedFolders = mainUiState.processNestedFolders
+        processNestedFolders = mainUiState.processNestedFolders,
+        skipSrMarkedInputs = mainUiState.skipSrMarkedInputs
     )
     var hasQueueItems = processingUiState.queueItems.isNotEmpty()
     if (processingUiState.queueItems.isEmpty()) {
         val selectedModelName = mainUiState.selectedModel?.name
         val imagePath = mainUiState.selectedImagePath
         if (selectedModelName == null || imagePath == null) {
-            logRepository.warning("CrossScaleApp", "Select image and model before processing")
+            logRepository.warning("UpixApp", "Select image and model before processing")
             // 前置条件不满足必须给用户可见反馈，不能只写日志。
             Toast.makeText(
                 context,
@@ -56,7 +59,8 @@ internal fun startProcessing(
                 outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
                 overwriteOriginal = mainUiState.overwriteOriginalImage,
                 backupOriginal = mainUiState.backupOriginalImage,
-                processNestedFolders = mainUiState.processNestedFolders
+                processNestedFolders = mainUiState.processNestedFolders,
+                skipSrMarkedInputs = mainUiState.skipSrMarkedInputs
             )
             hasQueueItems = true
         }
@@ -82,17 +86,25 @@ internal fun openQueuedBatchOutput(
     context: Context,
     batchId: String,
     processingViewModel: ProcessingViewModel,
-    logRepository: LogRepository
+    logRepository: LogRepository,
+    scope: CoroutineScope
 ) {
     val outputUri = processingViewModel.outputUriForQueuedBatch(batchId)
     if (outputUri.isNullOrBlank()) {
-        logRepository.warning("CrossScaleApp", "No completed output found for batch=$batchId")
+        logRepository.warning("UpixApp", "No completed output found for batch=$batchId")
         notifyOpenOutputFailed(context)
     } else {
-        val opened = openImageOutput(context = context, rawOutput = outputUri, logRepository = logRepository)
-        if (!opened) {
-            // 文件被删/移动或无查看器：静默失败等于坏按钮，必须可见反馈。
-            notifyOpenOutputFailed(context)
+        // openImageOutput 内含 resolveActivity binder IPC 与输出文件 File.exists() 磁盘
+        // IO，而点击回调在主线程：整体搬到 IO 线程执行；scope 为主线程域，结果分支
+        // （失败 Toast）仍回主线程。
+        scope.launch {
+            val opened = withContext(Dispatchers.IO) {
+                openImageOutput(context = context, rawOutput = outputUri, logRepository = logRepository)
+            }
+            if (!opened) {
+                // 文件被删/移动或无查看器：静默失败等于坏按钮，必须可见反馈。
+                notifyOpenOutputFailed(context)
+            }
         }
     }
 }

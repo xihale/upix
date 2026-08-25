@@ -1,20 +1,20 @@
-package com.crossscale.viewmodel
+package com.upix.viewmodel
 
-import com.crossscale.R
-import com.crossscale.data.model.ProcessingStatus
-import com.crossscale.data.model.ProcessingTask
-import com.crossscale.data.repository.BatchOutputStore
-import com.crossscale.data.repository.ImageProcessingSession
-import com.crossscale.data.repository.ImageProcessingStore
-import com.crossscale.data.repository.LogRepository
-import com.crossscale.data.repository.ModelProvider
-import com.crossscale.data.repository.OutputImageFormat
-import com.crossscale.data.repository.ProcessingCheckpoint
-import com.crossscale.data.repository.ProcessingCheckpointStore
-import com.crossscale.data.repository.ProcessingFailureDetail
-import com.crossscale.data.repository.ResolvedImageInput
-import com.crossscale.network.CoordinatorClient
-import com.crossscale.util.StringProvider
+import com.upix.R
+import com.upix.data.model.ProcessingStatus
+import com.upix.data.model.ProcessingTask
+import com.upix.data.repository.BatchOutputStore
+import com.upix.data.repository.ImageProcessingSession
+import com.upix.data.repository.ImageProcessingStore
+import com.upix.data.repository.LogRepository
+import com.upix.data.repository.ModelProvider
+import com.upix.data.repository.OutputImageFormat
+import com.upix.data.repository.ProcessingCheckpoint
+import com.upix.data.repository.ProcessingCheckpointStore
+import com.upix.data.repository.ProcessingFailureDetail
+import com.upix.data.repository.ResolvedImageInput
+import com.upix.network.CoordinatorClient
+import com.upix.util.StringProvider
 import java.util.LinkedHashMap
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
@@ -50,6 +50,7 @@ internal class ProcessingRunEngine(
         overwriteOriginal: Boolean,
         backupOriginal: Boolean,
         processNestedFolders: Boolean,
+        skipSrMarkedInputs: Boolean,
         resumeCheckpoint: ProcessingCheckpoint?,
         retryFailedOnly: Boolean,
         resumePendingUris: Set<String>?,
@@ -84,6 +85,8 @@ internal class ProcessingRunEngine(
         val useRemote = coordinatorClient?.isConnected() == true
         val effectiveDistributedMode = useRemote
         batchOutputRepository.setWriteAvif(useRemote)
+        // 跳过开关与目录扫描同规则：resume 还原 checkpoint 记录的值。
+        val effectiveSkipSrMarked = resumeCheckpoint?.skipSrMarkedInputs ?: skipSrMarkedInputs
 
         // 快速失败路径保留在主线程：模型查表是内存操作。
         val modelInfo = modelRepository.getModelByName(modelName)
@@ -170,6 +173,7 @@ internal class ProcessingRunEngine(
                     overwriteOriginal = overwriteOriginal,
                     backupOriginal = backupOriginal,
                     processNestedFolders = processNestedFolders,
+                    skipSrMarkedInputs = skipSrMarkedInputs,
                     resumeCheckpoint = resumeCheckpoint,
                     retryFailedOnly = retryFailedOnly,
                     resumePendingUris = resumePendingUris
@@ -204,11 +208,18 @@ internal class ProcessingRunEngine(
             val pendingImages = setup.pendingImages
             val totalItems = setup.totalItems
             val completedCount = setup.completedItems
+            val srSkippedCount = setup.skippedItems
             val initialFailures = setup.failureDetails
             val initialFailureList = planner.orderedFailureDetails(initialFailures)
             val initialLastError = resumeCheckpoint?.lastErrorMessage
 
             if (pendingImages.isEmpty()) {
+                if (srSkippedCount > 0) {
+                    logRepository.info(
+                        "ProcessingViewModel",
+                        "Nothing to do: $srSkippedCount input(s) already super-resolved (marker), $totalItems total for source=$imagePath"
+                    )
+                }
                 checkpointRepository.clearCheckpoint()
                 if (!queueItemId.isNullOrBlank()) {
                     val existingOutputUri = withContext(ioDispatcher) {
@@ -271,10 +282,12 @@ internal class ProcessingRunEngine(
                         overwriteOriginal = outputDirectory.overwriteOriginal,
                         backupOriginal = outputDirectory.backupOriginal,
                         processNestedFolders = outputDirectory.processNestedFolders,
+                        skipSrMarkedInputs = effectiveSkipSrMarked,
                         currentItemName = runImages.firstOrNull()?.displayName,
                         completedItems = completedCount,
                         pendingItems = pendingImages.size,
                         failedItems = initialFailures.size,
+                        skippedItems = srSkippedCount,
                         failureDetails = initialFailureList,
                         totalItems = totalItems,
                         progress = planner.progressOf(completedCount, totalItems),
@@ -286,7 +299,7 @@ internal class ProcessingRunEngine(
             }
             logRepository.info(
                 "ProcessingViewModel",
-                "Started task $taskId with model=$modelName, total=$totalItems, completed=$completedCount, pending=${pendingImages.size}, run=${runImages.size}, retryFailedOnly=$retryFailedOnly, outputDir=${outputDirectory.displayPath}"
+                "Started task $taskId with model=$modelName, total=$totalItems, completed=$completedCount, pending=${pendingImages.size}, run=${runImages.size}, skippedSr=$srSkippedCount, retryFailedOnly=$retryFailedOnly, outputDir=${outputDirectory.displayPath}"
             )
 
             var successfulCount = completedCount
@@ -315,6 +328,7 @@ internal class ProcessingRunEngine(
                     outputDirectoryUri = outputDirectory.outputDirectoryUri,
                     overwriteOriginal = outputDirectory.overwriteOriginal,
                     backupOriginal = outputDirectory.backupOriginal,
+                    skipSrMarkedInputs = effectiveSkipSrMarked,
                     createdAtEpochMs = createdAt,
                     pendingImages = pendingByUri.values.toList(),
                     failureDetails = failureDetailsByUri,
@@ -400,8 +414,10 @@ internal class ProcessingRunEngine(
 
                     val startedAt = System.currentTimeMillis()
                     val currentSession = processingSession
-                    var result = withContext(defaultDispatcher) {
-                        if (remoteRouting) {
+                    // 远程路径是阻塞文件读 + 阻塞 JNI 网络，归 IO 调度器；
+                    // 本地路径是 CPU 密集的 JNI 推理，保持在 defaultDispatcher。
+                    val result = if (remoteRouting) {
+                        withContext(ioDispatcher) {
                             coordinatorClient!!.processInputRemotely(
                                 input = item,
                                 modelName = modelName,
@@ -409,7 +425,9 @@ internal class ProcessingRunEngine(
                                 tileOverlap = DISTRIBUTED_TILE_OVERLAP,
                                 outputFile = outputFile
                             )
-                        } else {
+                        }
+                    } else {
+                        withContext(defaultDispatcher) {
                             checkNotNull(currentSession).process(
                                 input = item,
                                 outputFile = outputFile

@@ -1,11 +1,13 @@
-package com.crossscale.data.repository
+package com.upix.data.repository
 
 import android.content.ContentResolver
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.exifinterface.media.ExifInterface
+import com.upix.nativelib.NCNNEngine
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -21,6 +23,9 @@ internal const val RGB_CHANNELS = 3
 
 private const val MAX_RGB_BUFFER_HEAP_RATIO = 0.85
 private const val ANDROID_AVIF_DECODE_SDK = 31
+
+/** 单个输入（远程处理上传用）的编码字节上限：256 MB，超过按失败处理而非 OOM。 */
+internal const val MAX_ENCODED_INPUT_BYTES: Long = 256L * 1024 * 1024
 
 /**
  * Decodes [uri] into a packed RGB (3 bytes/pixel) buffer for the native layer:
@@ -178,6 +183,47 @@ internal fun isExistsConflict(throwable: Throwable): Boolean {
             throwable.message?.contains("File exists", ignoreCase = true) == true)
 }
 
+// ── SR 标记探测（planner 跳过已超分输入用）─────────────────────────
+
+/** Parsed fields of a super-resolution marker found on an input image. */
+data class SrMarkerInfo(
+    val model: String,
+    val scale: Int,
+    val timestampSec: Long
+)
+
+/**
+ * Probes [uri] for this tool's own SR marker. Reads the full encoded bytes:
+ * in WebP/AVIF the XMP chunk sits after the image data, so a header-only
+ * read cannot see it. Returns null when the input is not one of our outputs
+ * or cannot be read (both mean "process normally"); [onError] gets a
+ * diagnostic only for read failures.
+ */
+internal fun probeSrMarker(
+    resolver: ContentResolver,
+    uri: Uri,
+    displayName: String,
+    onError: (String) -> Unit
+): SrMarkerInfo? {
+    val bytes = runCatching {
+        resolver.openInputStream(uri)?.use { stream -> stream.readBytes() }
+    }.onFailure { throwable ->
+        onError("Failed to read $displayName for SR marker probe: ${throwable.message}")
+    }.getOrNull() ?: return null
+    if (bytes.isEmpty()) return null
+    val raw = runCatching { NCNNEngine.nativeProbeSrMarker(bytes) }.getOrNull()
+        ?: return null
+    val parts = raw.split('|')
+    if (parts.size != 3) return null
+    val scale = parts[1].toIntOrNull() ?: return null
+    val timestampSec = parts[2].toLongOrNull() ?: return null
+    return SrMarkerInfo(
+        model = parts[0],
+        scale = scale,
+        timestampSec = timestampSec
+    )
+}
+
 // ── EXIF 朝向（缩略图与 RGB 解码共用）──────────────────────────────
 
 /**
@@ -227,6 +273,10 @@ internal fun applyExifRotation(bitmap: Bitmap, degrees: Int): Bitmap {
  * the radio carries ~1/10 the data. Format comes from the display name's
  * extension, falling back to the content provider's mime type. Returns null
  * on any failure; [onError] receives a diagnostic message.
+ *
+ * 输入完全不可信（用户可从 SAF 选到任意文件）：读取前先查声明大小，读取后
+ * 再校验实际大小，超过 [MAX_ENCODED_INPUT_BYTES] 直接判失败，绝不把超大
+ * 文件整个读进堆里 OOM。
  */
 internal fun readEncodedBytes(
     resolver: ContentResolver,
@@ -245,14 +295,32 @@ internal fun readEncodedBytes(
             else -> "jpg"
         }
     }
+    // 先查大小（SAF 用 OpenableColumns.SIZE，file:// 用 length()），
+    // 声明超限就不开流。声明可能缺失或不准，读完后再兜底校验一次。
+    val declaredSize = queryInputSizeBytes(resolver, uri)
+    if (declaredSize != null && declaredSize > MAX_ENCODED_INPUT_BYTES) {
+        onError(
+            "Input exceeds ${MAX_ENCODED_INPUT_BYTES / (1024L * 1024)} MB limit " +
+                "($declaredSize bytes): $displayName"
+        )
+        return null
+    }
     return try {
         resolver.openInputStream(uri)?.use { stream ->
             val bytes = stream.readBytes()
-            if (bytes.isEmpty()) {
-                onError("Input is empty: $displayName")
-                null
-            } else {
-                bytes to format
+            when {
+                bytes.isEmpty() -> {
+                    onError("Input is empty: $displayName")
+                    null
+                }
+                bytes.size > MAX_ENCODED_INPUT_BYTES -> {
+                    onError(
+                        "Input exceeds ${MAX_ENCODED_INPUT_BYTES / (1024L * 1024)} MB limit " +
+                            "(${bytes.size} bytes): $displayName"
+                    )
+                    null
+                }
+                else -> bytes to format
             }
         } ?: run {
             onError("Cannot open input stream: $displayName")
@@ -262,4 +330,25 @@ internal fun readEncodedBytes(
         onError("Failed to read $displayName: ${e.message}")
         null
     }
+}
+
+/** 输入声明大小：file:// 走 [File.length]，content:// 查 [OpenableColumns.SIZE]；未知返回 null。 */
+private fun queryInputSizeBytes(resolver: ContentResolver, uri: Uri): Long? {
+    if (uri.scheme.equals("file", ignoreCase = true)) {
+        val path = uri.path ?: return null
+        return runCatching { File(path).length() }.getOrNull()
+    }
+    return runCatching {
+        resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+            if (!cursor.moveToFirst()) {
+                return@use null
+            }
+            val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+            if (sizeIndex != -1 && !cursor.isNull(sizeIndex)) {
+                cursor.getLong(sizeIndex)
+            } else {
+                null
+            }
+        }
+    }.getOrNull()
 }

@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-namespace crossscale::avif_codec {
+namespace upix::avif_codec {
 
 // True when the buffer is an ISOBMFF file whose ftyp brands include avif/avis.
 auto looks_like_avif(const uint8_t* data, size_t size) -> bool;
@@ -16,8 +16,11 @@ auto looks_like_avif(const uint8_t* data, size_t size) -> bool;
 auto sniff_dimensions(const uint8_t* data, size_t size) -> std::pair<uint32_t, uint32_t>;
 
 // Decode/encode via dlopen of the system libavif. No compile-time link.
+// save() embeds `xmp` as the AVIF XMP item when non-empty and the loaded
+// libavif exports avifImageSetMetadataXMP (silently unmarked otherwise).
 auto load(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError>;
-auto save(const Image& image, int quality) -> expected<std::vector<uint8_t>, ImageError>;
+auto save(const Image& image, int quality, const std::string& xmp = {})
+    -> expected<std::vector<uint8_t>, ImageError>;
 
 // Quiet, cached probes: does the system libavif load with usable decode /
 // encode symbols? Same acceptance rules as load()/save() but they never log,
@@ -25,4 +28,4 @@ auto save(const Image& image, int quality) -> expected<std::vector<uint8_t>, Ima
 auto avif_decode_available() -> bool;
 auto avif_encode_available() -> bool;
 
-}  // namespace crossscale::avif_codec
+}  // namespace upix::avif_codec

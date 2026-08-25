@@ -1,8 +1,8 @@
-package com.crossscale.nativelib
+package com.upix.nativelib
 
 object NCNNEngine {
     init {
-        System.loadLibrary("crossscale-native")
+        System.loadLibrary("upix-native")
     }
     
     external fun nativeInit(deviceType: Int): Long
@@ -31,4 +31,11 @@ object NCNNEngine {
     ): ByteArray?
     external fun nativeGetScaleFactor(enginePtr: Long): Int
     external fun nativeRelease(enginePtr: Long)
+
+    /**
+     * Scans encoded image bytes for this tool's own SR XMP marker.
+     * Returns "model|scale|ts" for a marked input, null otherwise
+     * (including unreadable input — callers treat that as "process").
+     */
+    external fun nativeProbeSrMarker(encodedImage: ByteArray): String?
 }

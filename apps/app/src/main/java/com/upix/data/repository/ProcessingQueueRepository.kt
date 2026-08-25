@@ -1,7 +1,8 @@
-package com.crossscale.data.repository
+package com.upix.data.repository
 
 import android.content.Context
 import java.io.File
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,6 +30,8 @@ data class PersistedQueueItem(
     val overwriteOriginal: Boolean = false,
     val backupOriginal: Boolean = true,
     val processNestedFolders: Boolean = true,
+    // 旧队列文件缺该键时反序列化为默认 true（与 UI 默认一致）。
+    val skipSrMarkedInputs: Boolean = true,
     val createdAtEpochMs: Long,
     val expectedItems: Int? = null,
     val status: PersistedQueueItemStatus = PersistedQueueItemStatus.PENDING,
@@ -45,7 +48,9 @@ data class ProcessingQueueSnapshot(
 
 class ProcessingQueueRepository(
     context: Context,
-    private val logRepository: LogRepository
+    private val logRepository: LogRepository,
+    // 可注入 IO 调度器（与 ProcessingCheckpointRepository 同一模式，单测可注入 TestDispatcher）
+    private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) : ProcessingQueueStore {
     private val queueFile = File(context.filesDir, QUEUE_FILE_NAME)
     private val _queue = MutableStateFlow(ProcessingQueueSnapshot())
@@ -61,7 +66,7 @@ class ProcessingQueueRepository(
     override suspend fun persistQueue(snapshot: ProcessingQueueSnapshot) {
         val normalizedSnapshot = snapshot.normalizedForSave()
         if (normalizedSnapshot.items.isEmpty() && !normalizedSnapshot.isQueueRunning) {
-            withContext(Dispatchers.IO) {
+            withContext(ioDispatcher) {
                 runCatching {
                     if (queueFile.exists()) {
                         queueFile.delete()
@@ -77,7 +82,7 @@ class ProcessingQueueRepository(
             return
         }
 
-        withContext(Dispatchers.IO) {
+        withContext(ioDispatcher) {
             runCatching {
                 val payload = json.encodeToString(
                     ProcessingQueueSnapshot.serializer(),

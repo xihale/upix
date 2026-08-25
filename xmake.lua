@@ -1,11 +1,11 @@
-set_project("crossscale")
--- CLI/desktop release channel: feeds crossscale-cli --version (on_load in
+set_project("upix")
+-- CLI/desktop release channel: feeds upix-cli --version (on_load in
 -- cli/xmake.lua). The Android app versions independently in
 -- apps/app/build.gradle.kts. Release tags: cli-v*, android-v*, models.
 set_version("0.2.0")
 set_languages("c++23")
 
-add_repositories("crossscale-local " .. os.scriptdir())
+add_repositories("upix-local " .. os.scriptdir())
 
 add_rules("mode.debug", "mode.release")
 
@@ -57,7 +57,7 @@ option_end()
 
 -- The description scope cannot run processes or read files, so host probing
 -- happens in this rule's on_load, which runs with full API access.
-rule("crossscale.host_isa")
+rule("upix.host_isa")
     on_load(function (target)
         if not has_config("native_isa") then return end
         if os.host() ~= "linux" or target:plat() ~= "linux" or target:arch() ~= "x86_64" then return end
@@ -85,7 +85,7 @@ rule("crossscale.host_isa")
 rule_end()
 
 -- Optional UPX packing of desktop executables, opt in with: xmake f --upx=y
--- Intended for distribution builds: shrinks crossscale-cli ~15.9M -> ~7.9M
+-- Intended for distribution builds: shrinks upix-cli ~15.9M -> ~7.9M
 -- (+46 ms per launch). Never packs debug binaries, shared libs, or android.
 option("upx")
     set_default(false)
@@ -93,7 +93,7 @@ option("upx")
     set_description("Pack linux release executables with UPX after build")
 option_end()
 
-rule("crossscale.upx")
+rule("upix.upx")
     after_build(function (target)
         if not has_config("upx") then return end
         if os.host() ~= "linux" or target:plat() ~= "linux" or target:arch() ~= "x86_64" then return end
@@ -126,7 +126,9 @@ local ncnn_x86_isa = has_config("native_isa") and is_plat("linux") and "auto" or
 -- Runtime ncnn looks up a frozen SPIR-V pack and does not link glslang.
 -- dump-spirv (glslang-linked ncnn) generates share/core/spirv_pack.bin if missing.
 add_requires("ncnn~runtime 20260113", {configs = {vulkan = true, online_spirv = false, x86_isa = ncnn_x86_isa}})
-add_requires("libwebp", "libpng", "libjpeg", "glaze", "libsodium")
+-- libwebpmux: XMP marker chunks for WebP outputs (image.cpp post-mux).
+add_requires("libwebp", {configs = {libwebpmux = true}})
+add_requires("libpng", "libjpeg", "glaze", "libsodium")
 add_requires("libdeflate", {system = not is_plat("android")})
 if is_plat("android") then
     add_requires("libomp")

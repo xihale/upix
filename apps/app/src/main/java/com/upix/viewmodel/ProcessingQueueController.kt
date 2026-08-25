@@ -1,15 +1,15 @@
-package com.crossscale.viewmodel
+package com.upix.viewmodel
 
-import com.crossscale.R
-import com.crossscale.data.model.ProcessingStatus
-import com.crossscale.data.repository.InputSourceResolver
-import com.crossscale.data.repository.LogRepository
-import com.crossscale.data.repository.PersistedQueueItemStatus
-import com.crossscale.data.repository.ProcessingCheckpoint
-import com.crossscale.data.repository.ProcessingCheckpointStore
-import com.crossscale.data.repository.canRetryFailedOnly
-import com.crossscale.network.CoordinatorClient
-import com.crossscale.util.StringProvider
+import com.upix.R
+import com.upix.data.model.ProcessingStatus
+import com.upix.data.repository.InputSourceResolver
+import com.upix.data.repository.LogRepository
+import com.upix.data.repository.PersistedQueueItemStatus
+import com.upix.data.repository.ProcessingCheckpoint
+import com.upix.data.repository.ProcessingCheckpointStore
+import com.upix.data.repository.canRetryFailedOnly
+import com.upix.network.CoordinatorClient
+import com.upix.util.StringProvider
 import java.util.UUID
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -41,7 +41,8 @@ internal class ProcessingQueueController(
         outputDirectoryUri: String?,
         overwriteOriginal: Boolean = false,
         backupOriginal: Boolean = true,
-        processNestedFolders: Boolean = true
+        processNestedFolders: Boolean = true,
+        skipSrMarkedInputs: Boolean = true
     ): String? {
         val normalizedImagePath = imagePath.trim()
         val normalizedModelName = modelName.trim()
@@ -67,7 +68,8 @@ internal class ProcessingQueueController(
                     outputDirectoryUri = normalizedOutputDirectoryUri,
                     overwriteOriginal = overwriteOriginal,
                     backupOriginal = backupOriginal,
-                    processNestedFolders = processNestedFolders
+                    processNestedFolders = processNestedFolders,
+                    skipSrMarkedInputs = skipSrMarkedInputs
                 )
         }
 
@@ -125,6 +127,7 @@ internal class ProcessingQueueController(
             overwriteOriginal = overwriteOriginal,
             backupOriginal = backupOriginal,
             processNestedFolders = processNestedFolders,
+            skipSrMarkedInputs = skipSrMarkedInputs,
             createdAtEpochMs = System.currentTimeMillis()
         )
         viewModel.updateUiState { state ->
@@ -182,7 +185,8 @@ internal class ProcessingQueueController(
         outputDirectoryUri: String?,
         overwriteOriginal: Boolean,
         backupOriginal: Boolean,
-        processNestedFolders: Boolean
+        processNestedFolders: Boolean,
+        skipSrMarkedInputs: Boolean
     ) {
         val normalizedOutputDirectoryUri = outputDirectoryUri?.trim()?.ifBlank { null }
         var updatedCount = 0
@@ -197,7 +201,8 @@ internal class ProcessingQueueController(
                             outputDirectoryUri = normalizedOutputDirectoryUri,
                             overwriteOriginal = overwriteOriginal,
                             backupOriginal = backupOriginal,
-                            processNestedFolders = processNestedFolders
+                            processNestedFolders = processNestedFolders,
+                            skipSrMarkedInputs = skipSrMarkedInputs
                         )
                         if (updatedItem != item) {
                             updatedCount += 1
@@ -475,6 +480,7 @@ internal class ProcessingQueueController(
             overwriteOriginal = nextBatch.overwriteOriginal,
             backupOriginal = nextBatch.backupOriginal,
             processNestedFolders = nextBatch.processNestedFolders,
+            skipSrMarkedInputs = nextBatch.skipSrMarkedInputs,
             resumeCheckpoint = resumeCheckpoint,
             retryFailedOnly = nextBatch.retryFailedOnly,
             resumePendingUris = null,
@@ -605,9 +611,10 @@ internal class ProcessingQueueController(
         val sameMode = checkpoint.distributedMode == queueItem.distributedMode
         val sameOverwrite = checkpoint.overwriteOriginal == queueItem.overwriteOriginal
         val sameBackup = checkpoint.backupOriginal == queueItem.backupOriginal
+        val sameSkip = checkpoint.skipSrMarkedInputs == queueItem.skipSrMarkedInputs
         val sameOutputUri = checkpoint.outputDirectoryUri?.trim().orEmpty() ==
             queueItem.outputDirectoryUri?.trim().orEmpty()
-        if (!sameSource || !sameModel || !sameMode || !sameOverwrite || !sameBackup || !sameOutputUri) {
+        if (!sameSource || !sameModel || !sameMode || !sameOverwrite || !sameBackup || !sameSkip || !sameOutputUri) {
             return null
         }
         return checkpoint

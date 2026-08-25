@@ -1,11 +1,11 @@
-package com.crossscale.viewmodel
+package com.upix.viewmodel
 
-import com.crossscale.R
-import com.crossscale.data.repository.PersistedQueueItem
-import com.crossscale.data.repository.ProcessingCheckpoint
-import com.crossscale.data.repository.ProcessingQueueSnapshot
-import com.crossscale.data.repository.failedPendingCount
-import com.crossscale.util.StringProvider
+import com.upix.R
+import com.upix.data.repository.PersistedQueueItem
+import com.upix.data.repository.ProcessingCheckpoint
+import com.upix.data.repository.ProcessingQueueSnapshot
+import com.upix.data.repository.failedPendingCount
+import com.upix.util.StringProvider
 
 // Pure mappers extracted from ProcessingViewModel. No state, no I/O.
 // internal = visible to the :app module only (UI/data layers do not call these).
@@ -17,7 +17,8 @@ internal fun ProcessingQueueItemSummary.matchesBatchConfiguration(
     outputDirectoryUri: String?,
     overwriteOriginal: Boolean,
     backupOriginal: Boolean,
-    processNestedFolders: Boolean
+    processNestedFolders: Boolean,
+    skipSrMarkedInputs: Boolean = true
 ): Boolean {
     return this.source == source &&
         this.modelName == modelName &&
@@ -25,7 +26,8 @@ internal fun ProcessingQueueItemSummary.matchesBatchConfiguration(
         this.outputDirectoryUri == outputDirectoryUri &&
         this.overwriteOriginal == overwriteOriginal &&
         this.backupOriginal == backupOriginal &&
-        this.processNestedFolders == processNestedFolders
+        this.processNestedFolders == processNestedFolders &&
+        this.skipSrMarkedInputs == skipSrMarkedInputs
 }
 
 internal fun ProcessingUiState.toQueueSnapshot(): ProcessingQueueSnapshot {
@@ -49,6 +51,7 @@ internal fun ProcessingQueueItemSummary.toPersistedQueueItem(): PersistedQueueIt
         backupOriginal = backupOriginal,
         // 子目录开关必须随持久化往返，否则重启后丢失（旧文件缺该键时反序列化为默认 true）。
         processNestedFolders = processNestedFolders,
+        skipSrMarkedInputs = skipSrMarkedInputs,
         createdAtEpochMs = createdAtEpochMs,
         expectedItems = expectedItems,
         status = status,
@@ -69,6 +72,7 @@ internal fun PersistedQueueItem.toUiQueueItem(): ProcessingQueueItemSummary {
         overwriteOriginal = overwriteOriginal,
         backupOriginal = backupOriginal,
         processNestedFolders = processNestedFolders,
+        skipSrMarkedInputs = skipSrMarkedInputs,
         createdAtEpochMs = createdAtEpochMs,
         expectedItems = expectedItems,
         status = status,

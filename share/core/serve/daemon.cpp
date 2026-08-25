@@ -13,6 +13,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <ctime>
 #include <filesystem>
 #include <malloc.h>
 #include <sys/socket.h>
@@ -20,7 +21,9 @@
 #include <unistd.h>
 #include <vector>
 
-namespace crossscale {
+#include "utils/sr_marker.hpp"
+
+namespace upix {
 
 namespace {
 
@@ -88,7 +91,7 @@ auto default_serve_socket_path() -> std::string {
         if (!home || !*home) return {};
         base = std::string(home) + "/.cache";
     }
-    return base + "/crossscale/serve.sock";
+    return base + "/upix/serve.sock";
 }
 
 ServeDaemon::ServeDaemon() = default;
@@ -125,7 +128,7 @@ auto ServeDaemon::start(const std::string& socket_path,
     processor_ = std::make_unique<TileProcessor>();
 
     // ── Bind the socket ─────────────────────────────────────────────────────
-    // Create the parent directory first (e.g. ~/.cache/crossscale/); UnixServer
+    // Create the parent directory first (e.g. ~/.cache/upix/); UnixServer
     // only creates/unlinks the socket file itself.
     {
         std::error_code ec;
@@ -145,7 +148,7 @@ auto ServeDaemon::start(const std::string& socket_path,
     LOG_INFO("Daemon", "daemon ready: socket={} model={} scale={} device={} pid={}",
              socket_path_, loaded_model_name_, engine_->get_scale_factor(),
              device == ServeDevice::GPU ? "GPU" : "CPU", ::getpid());
-    LOG_INFO("Daemon", "`crossscale process` will now reuse this warm engine");
+    LOG_INFO("Daemon", "`upix process` will now reuse this warm engine");
     return 0;
 }
 
@@ -205,6 +208,7 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     }
 
     int out_w = 0, out_h = 0;
+    int used_scale = 0;
     Image out_image;
     {
         std::lock_guard<std::mutex> lk(engine_mutex_);
@@ -215,6 +219,7 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
 
         // Scale comes from the model that was just ensured under this lock.
         const int scale = engine_->get_scale_factor();
+        used_scale = scale;
         out_w = image.width() * scale;
         out_h = image.height() * scale;
         out_image = Image(out_w, out_h, image.channels());
@@ -296,8 +301,12 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
         std::error_code ec;
         std::filesystem::create_directories(final_path.parent_path(), ec);
     }
+    // Same SR marker the inline CLI path writes, so daemon-served outputs
+    // are recognized on re-input too.
+    const auto sr_xmp = sr_marker::build_xmp(
+        used_model, used_scale, static_cast<int64_t>(std::time(nullptr)));
     auto save_res = out_image.save(final_path,
-                                   static_cast<int>(req.output_quality));
+                                   static_cast<int>(req.output_quality), sr_xmp);
     if (!save_res) {
         send_serve_error(*sock, ("save failed: " + save_res.error().message).c_str());
         return;
@@ -400,4 +409,4 @@ auto ServeDaemon::set_idle_timeout(int seconds) -> void {
     idle_timeout_s_ = seconds > 0 ? seconds : 0;
 }
 
-} // namespace crossscale
+} // namespace upix

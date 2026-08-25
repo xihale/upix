@@ -37,6 +37,8 @@ struct Process {
     bool tile_size_explicit = false;  // set by cli_app.cpp when --tile-size is given
     bool use_gpu = false;
     bool no_daemon = false;
+    bool force = false;               // re-process inputs carrying an SR marker
+                                      // (default: such inputs are skipped)
 };
 
 // `model {list, list-remote, download, import}`. One instance per nested

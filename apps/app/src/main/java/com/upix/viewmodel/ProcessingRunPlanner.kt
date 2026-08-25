@@ -1,15 +1,16 @@
-package com.crossscale.viewmodel
+package com.upix.viewmodel
 
 import android.net.Uri
-import com.crossscale.data.model.ModelInfo
-import com.crossscale.data.repository.BatchOutputStore
-import com.crossscale.data.repository.InputSourceResolver
-import com.crossscale.data.repository.LogRepository
-import com.crossscale.data.repository.ProcessingCheckpoint
-import com.crossscale.data.repository.ProcessingCheckpointStore
-import com.crossscale.data.repository.ProcessingFailureDetail
-import com.crossscale.data.repository.ProcessingPendingItem
-import com.crossscale.data.repository.ResolvedImageInput
+import com.upix.data.model.ModelInfo
+import com.upix.data.repository.BatchOutputStore
+import com.upix.data.repository.InputSourceResolver
+import com.upix.data.repository.LogRepository
+import com.upix.data.repository.ProcessingCheckpoint
+import com.upix.data.repository.ProcessingCheckpointStore
+import com.upix.data.repository.ProcessingFailureDetail
+import com.upix.data.repository.ProcessingPendingItem
+import com.upix.data.repository.ResolvedImageInput
+import com.upix.data.repository.SrMarkerInfo
 
 // Run planning and checkpoint bookkeeping extracted from ProcessingViewModel.
 // The planner owns no state: every function is a computation over its arguments
@@ -19,7 +20,10 @@ class ProcessingRunPlanner(
     private val inputSourceRepository: InputSourceResolver,
     private val batchOutputRepository: BatchOutputStore,
     private val checkpointRepository: ProcessingCheckpointStore,
-    private val logRepository: LogRepository
+    private val logRepository: LogRepository,
+    // Byte-level SR-marker probe (reads the input URI). Injected so the
+    // planner stays testable without a ContentResolver.
+    private val probeSrMarker: (ResolvedImageInput) -> SrMarkerInfo?
 ) {
     internal fun buildRunSetup(
         imagePath: String,
@@ -28,6 +32,7 @@ class ProcessingRunPlanner(
         overwriteOriginal: Boolean,
         backupOriginal: Boolean,
         processNestedFolders: Boolean,
+        skipSrMarkedInputs: Boolean,
         resumeCheckpoint: ProcessingCheckpoint?,
         retryFailedOnly: Boolean,
         resumePendingUris: Set<String>?
@@ -55,6 +60,36 @@ class ProcessingRunPlanner(
         // 值，其余情况跟随调用参数（UI 开关 / 队列项），绝不读上一个任务。
         val scanNestedFolders = resumeCheckpoint?.processNestedFolders ?: processNestedFolders
 
+        // 已超分跳过同样跟随 checkpoint（resume 还原当时的语义）。
+        val skipMarkedInputs = resumeCheckpoint?.skipSrMarkedInputs ?: skipSrMarkedInputs
+
+        // Drops inputs carrying this tool's own SR marker (already
+        // super-resolved), logging each skip. Probe runs after the cheaper
+        // output-existence check, so only still-pending inputs are read.
+        fun filterSrMarked(
+            inputs: List<ResolvedImageInput>
+        ): Pair<List<ResolvedImageInput>, Int> {
+            if (!skipMarkedInputs) {
+                return inputs to 0
+            }
+            var skippedCount = 0
+            val remaining = inputs.filterNot { input ->
+                val marker = probeSrMarker(input)
+                if (marker != null) {
+                    skippedCount++
+                    logRepository.info(
+                        "ProcessingViewModel",
+                        "Skipped already-upscaled input: ${input.displayName} " +
+                            "(model=${marker.model} scale=${marker.scale}x ts=${marker.timestampSec})"
+                    )
+                    true
+                } else {
+                    false
+                }
+            }
+            return remaining to skippedCount
+        }
+
         if (resumeCheckpoint != null && resumeCheckpoint.pendingItems.isNotEmpty()) {
             val pendingImagesFromCheckpoint = resumeCheckpoint.pendingItems.mapNotNull { pendingItem ->
                 val parsedUri = runCatching { Uri.parse(pendingItem.uri) }.getOrNull()
@@ -80,10 +115,12 @@ class ProcessingRunPlanner(
                     "Checkpoint pending list is unusable, fallback to source scan"
                 )
             } else {
-                val pendingImages = pendingImagesFromCheckpoint.filterNot { input ->
+                val pendingAfterOutputReady = pendingImagesFromCheckpoint.filterNot { input ->
                     batchOutputRepository.isOutputReady(outputDirectory = outputDirectory, input = input)
                 }
+                val (pendingImages, srSkippedCount) = filterSrMarked(pendingAfterOutputReady)
 
+                // 输出已就绪与已超分跳过都不再进入本轮 run，一并计为已完成。
                 val autoRecoveredCount = pendingImagesFromCheckpoint.size - pendingImages.size
                 val baseCompleted = resumeCheckpoint.completedItems.coerceAtLeast(0)
                 val completedItems = (baseCompleted + autoRecoveredCount).coerceAtLeast(0)
@@ -150,6 +187,7 @@ class ProcessingRunPlanner(
                         pendingImages = emptyList(),
                         completedItems = totalItems,
                         totalItems = totalItems,
+                        skippedItems = srSkippedCount,
                         outputDirectory = outputDirectory,
                         failureDetails = mutableMapOf()
                     )
@@ -161,6 +199,7 @@ class ProcessingRunPlanner(
                     pendingImages = pendingImages,
                     completedItems = completedItems.coerceAtMost(totalItems),
                     totalItems = totalItems,
+                    skippedItems = srSkippedCount,
                     outputDirectory = outputDirectory,
                     failureDetails = failureDetails
                 )
@@ -172,9 +211,10 @@ class ProcessingRunPlanner(
             return null
         }
 
-        val pendingImages = inputImages.filterNot { item ->
+        val pendingAfterOutputReady = inputImages.filterNot { item ->
             batchOutputRepository.isOutputReady(outputDirectory = outputDirectory, input = item)
         }
+        val (pendingImages, srSkippedCount) = filterSrMarked(pendingAfterOutputReady)
         val totalItems = inputImages.size
         val completedItems = totalItems - pendingImages.size
         val pendingUris = pendingImages.map { it.uri.toString() }.toSet()
@@ -190,6 +230,7 @@ class ProcessingRunPlanner(
             pendingImages = pendingImages,
             completedItems = completedItems,
             totalItems = totalItems,
+            skippedItems = srSkippedCount,
             outputDirectory = outputDirectory,
             failureDetails = failureDetails
         )
@@ -206,6 +247,7 @@ class ProcessingRunPlanner(
         outputDirectoryUri: String?,
         overwriteOriginal: Boolean,
         backupOriginal: Boolean,
+        skipSrMarkedInputs: Boolean,
         createdAtEpochMs: Long,
         pendingImages: List<ResolvedImageInput>,
         failureDetails: Map<String, ProcessingFailureDetail>,
@@ -232,6 +274,7 @@ class ProcessingRunPlanner(
                 outputDirectoryUri = outputDirectoryUri,
                 overwriteOriginal = overwriteOriginal,
                 backupOriginal = backupOriginal,
+                skipSrMarkedInputs = skipSrMarkedInputs,
                 createdAtEpochMs = createdAtEpochMs,
                 updatedAtEpochMs = System.currentTimeMillis(),
                 lastErrorMessage = lastErrorMessage,

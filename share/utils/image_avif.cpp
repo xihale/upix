@@ -18,7 +18,7 @@
 #include <dlfcn.h>
 #endif
 
-namespace crossscale::avif_codec {
+namespace upix::avif_codec {
 namespace {
 
 using avifResult = int;
@@ -98,6 +98,9 @@ using FnEncoderCreate = AvifEncoder* (*)();
 using FnEncoderDestroy = void (*)(AvifEncoder*);
 using FnEncoderWrite = avifResult (*)(AvifEncoder*, const AvifImage*, AvifRWData*);
 using FnRwDataFree = void (*)(AvifRWData*);
+// Optional since 1.0: absent only on pre-release/patched builds; the XMP
+// marker is silently omitted when the symbol is missing.
+using FnImageSetMetadataXmp = avifResult (*)(AvifImage*, const uint8_t*, size_t);
 
 struct AvifApi {
     void* lib = nullptr;
@@ -118,6 +121,7 @@ struct AvifApi {
     FnEncoderDestroy encoder_destroy = nullptr;
     FnEncoderWrite encoder_write = nullptr;
     FnRwDataFree rw_data_free = nullptr;
+    FnImageSetMetadataXmp image_set_metadata_xmp = nullptr;
 
     auto decode_ready() const -> bool {
         return lib && decoder_create && decoder_destroy && decoder_read_memory &&
@@ -232,6 +236,8 @@ auto bind_symbols(LibHandle handle) -> AvifApi {
     api.encoder_destroy = reinterpret_cast<FnEncoderDestroy>(bind("avifEncoderDestroy"));
     api.encoder_write = reinterpret_cast<FnEncoderWrite>(bind("avifEncoderWrite"));
     api.rw_data_free = reinterpret_cast<FnRwDataFree>(bind("avifRWDataFree"));
+    api.image_set_metadata_xmp =
+        reinterpret_cast<FnImageSetMetadataXmp>(bind("avifImageSetMetadataXMP"));
     return api;
 }
 
@@ -442,7 +448,8 @@ auto load(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError> {
     return out;
 }
 
-auto save(const Image& image, int quality) -> expected<std::vector<uint8_t>, ImageError> {
+auto save(const Image& image, int quality, const std::string& xmp)
+    -> expected<std::vector<uint8_t>, ImageError> {
     if (image.channels() != 3 && image.channels() != 4) {
         return std::unexpected(ImageError{18, "AVIF save requires 3 or 4 channels"});
     }
@@ -466,6 +473,14 @@ auto save(const Image& image, int quality) -> expected<std::vector<uint8_t>, Ima
     );
     if (!avif_image) {
         return std::unexpected(ImageError{26, "AVIF image allocation failed"});
+    }
+
+    // The XMP payload rides along as an AVIF XMP item (encoder_write picks
+    // it up from the image). Best-effort: an older libavif without the
+    // symbol encodes unmarked.
+    if (!xmp.empty() && api.image_set_metadata_xmp) {
+        api.image_set_metadata_xmp(
+            avif_image, reinterpret_cast<const uint8_t*>(xmp.data()), xmp.size());
     }
 
     AvifRGBImage rgb{};
@@ -545,4 +560,4 @@ auto probe_api_quietly() -> const AvifApi& {
 auto avif_decode_available() -> bool { return probe_api_quietly().decode_ready(); }
 auto avif_encode_available() -> bool { return probe_api_quietly().encode_ready(); }
 
-}  // namespace crossscale::avif_codec
+}  // namespace upix::avif_codec

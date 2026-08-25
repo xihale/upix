@@ -1,4 +1,4 @@
-package com.crossscale.ui.screens
+package com.upix.ui.screens
 
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
@@ -54,35 +54,37 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.crossscale.R
-import com.crossscale.data.model.ConnectionState
-import com.crossscale.data.model.ModelInfo
-import com.crossscale.data.model.RemoteEndpoint
-import com.crossscale.data.model.RemoteModel
-import com.crossscale.data.repository.OutputImageFormat
-import com.crossscale.data.repository.PersistedQueueItemStatus
-import com.crossscale.ui.components.CrossScaleTopAppBar
-import com.crossscale.ui.components.RemoteModelsDialog
-import com.crossscale.ui.components.StageProgressOverlay
-import com.crossscale.ui.screens.home.BottomActionDock
-import com.crossscale.ui.screens.home.CheckpointSection
-import com.crossscale.ui.screens.home.DockCtaHeight
-import com.crossscale.ui.screens.home.ImageStage
-import com.crossscale.ui.screens.home.ParameterCard
-import com.crossscale.ui.screens.home.PreviewBottomSheet
-import com.crossscale.ui.screens.home.QueueBottomSheetContent
-import com.crossscale.ui.theme.EnterMotionSpec
-import com.crossscale.ui.theme.EnterSizeSpec
-import com.crossscale.ui.theme.EnterTween
-import com.crossscale.ui.theme.LocalScreenMargin
-import com.crossscale.ui.theme.MaxContentWidth
-import com.crossscale.ui.theme.Spacing
-import com.crossscale.ui.theme.ValueMono
-import com.crossscale.viewmodel.MainUiState
-import com.crossscale.viewmodel.ModelsUiState
-import com.crossscale.viewmodel.ProcessingUiState
+import com.upix.R
+import com.upix.data.model.ConnectionState
+import com.upix.data.model.ModelInfo
+import com.upix.data.model.RemoteEndpoint
+import com.upix.data.model.RemoteModel
+import com.upix.data.repository.OutputImageFormat
+import com.upix.data.repository.PersistedQueueItemStatus
+import com.upix.ui.components.UpixTopAppBar
+import com.upix.ui.components.RemoteModelsDialog
+import com.upix.ui.components.StageProgressOverlay
+import com.upix.ui.screens.home.BottomActionDock
+import com.upix.ui.screens.home.CheckpointSection
+import com.upix.ui.screens.home.DockCtaHeight
+import com.upix.ui.screens.home.ImageStage
+import com.upix.ui.screens.home.ParameterCard
+import com.upix.ui.screens.home.PreviewBottomSheet
+import com.upix.ui.screens.home.QueueBottomSheetContent
+import com.upix.ui.theme.EnterMotionSpec
+import com.upix.ui.theme.EnterSizeSpec
+import com.upix.ui.theme.EnterTween
+import com.upix.ui.theme.LocalScreenMargin
+import com.upix.ui.theme.MaxContentWidth
+import com.upix.ui.theme.Spacing
+import com.upix.ui.theme.ValueMono
+import com.upix.viewmodel.MainUiState
+import com.upix.viewmodel.ModelsUiState
+import com.upix.viewmodel.ProcessingUiState
 
 /**
  * Home「聚焦工作台」：图片舞台是唯一视觉焦点，UI 退后。
@@ -102,6 +104,7 @@ data class HomeCallbacks(
     val onToggleOverwriteOriginal: (Boolean) -> Unit,
     val onToggleBackupOriginal: (Boolean) -> Unit,
     val onToggleProcessNestedFolders: (Boolean) -> Unit,
+    val onToggleSkipSrMarkedInputs: (Boolean) -> Unit = {},
     val onSelectOutputFormat: (OutputImageFormat) -> Unit,
     val onRefreshRemoteModels: () -> Unit,
     val onDownloadRemoteModel: (RemoteModel) -> Unit,
@@ -151,6 +154,7 @@ fun HomeScreen(
         onToggleOverwriteOriginal,
         onToggleBackupOriginal,
         onToggleProcessNestedFolders,
+        onToggleSkipSrMarkedInputs,
         onSelectOutputFormat,
         onRefreshRemoteModels,
         onDownloadRemoteModel,
@@ -183,7 +187,7 @@ fun HomeScreen(
     val corruptedSources = state.corruptedInputSources
     // remember 持稳定实例：输入未变时不重建 List/String，恢复下游可跳过性。
     val selectedOutput = remember(state.selectedOutputDirectoryUri) {
-        prettyOutputPath(state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/CrossScale")
+        prettyOutputPath(state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/Upix")
     }
     val queueItems = processingUiState.queueItems
     // 倍率针对当前模型：只列出同系列（名称去掉 -xN 后缀）的倍率；
@@ -255,7 +259,7 @@ fun HomeScreen(
 
     Scaffold(
         topBar = {
-            CrossScaleTopAppBar(
+            UpixTopAppBar(
                 title = stringResource(R.string.app_name),
                 scrollBehavior = scrollBehavior,
                 actions = {
@@ -314,6 +318,7 @@ fun HomeScreen(
                 overwriteOriginal = state.overwriteOriginalImage,
                 backupOriginal = state.backupOriginalImage,
                 processNestedFolders = state.processNestedFolders,
+                skipSrMarkedInputs = state.skipSrMarkedInputs,
                 outputFormatLabel = outputFormatLabel(
                     format = state.outputImageFormat,
                     followLabel = stringResource(R.string.config_output_format_follow)
@@ -327,7 +332,8 @@ fun HomeScreen(
                 onUseDefaultOutputFolder = onUseDefaultOutputFolder,
                 onToggleOverwriteOriginal = onToggleOverwriteOriginal,
                 onToggleBackupOriginal = onToggleBackupOriginal,
-                onToggleProcessNestedFolders = onToggleProcessNestedFolders
+                onToggleProcessNestedFolders = onToggleProcessNestedFolders,
+                onToggleSkipSrMarkedInputs = onToggleSkipSrMarkedInputs
             )
 
             // 断点续传通知条：存在/消失做 fade + 纵向展开/收起。
@@ -541,7 +547,9 @@ private fun SelectSheetItem(
         trailingContent = { RadioButton(selected = selected, onClick = null) },
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
+            // clickable 自带 mergeDescendants：行内文字与 RadioButton 的选中态
+            // 合并为一个可聚焦项；role 让 TalkBack 以单选项语义播报。
+            .clickable(role = Role.RadioButton, onClick = onClick)
     )
 }
 
@@ -549,7 +557,7 @@ private fun SelectSheetItem(
 @Composable
 private fun BoxScope.StageProcessingOverlay(
     visible: Boolean,
-    task: com.crossscale.data.model.ProcessingTask?,
+    task: com.upix.data.model.ProcessingTask?,
     onCancel: () -> Unit
 ) {
     androidx.compose.animation.AnimatedVisibility(
@@ -568,7 +576,7 @@ private fun BoxScope.StageProcessingOverlay(
 @Composable
 private fun HomeConnectionStatus(
     connectionState: ConnectionState,
-    connectedEndpoint: com.crossscale.data.model.RemoteEndpoint?
+    connectedEndpoint: com.upix.data.model.RemoteEndpoint?
 ) {
     val (statusLabelRes, statusColor) = when (connectionState) {
         ConnectionState.CONNECTED -> R.string.config_mode_remote to MaterialTheme.colorScheme.primary
@@ -606,7 +614,9 @@ private fun HomeConnectionStatus(
             text = text,
             style = MaterialTheme.typography.labelMedium,
             color = statusColor,
-            maxLines = 1
+            // 顶栏空间有限：endpoint 过长时截断省略，不撑破标题区。
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
         )
     }
 }
