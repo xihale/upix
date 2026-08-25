@@ -2,7 +2,7 @@ local spirv_pack = path.join(os.scriptdir(), "core", "spirv_pack.bin")
 
 target("crossscale-core")
     set_kind("static")
-    add_rules("crossscale.host_isa")
+    add_rules("crossscale.host_isa", "crossscale.upx")
 
     add_packages("ncnn~runtime", "libwebp", "libpng", "libjpeg", "glaze", "libsodium")
     add_packages("libdeflate")
