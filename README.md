@@ -181,7 +181,10 @@ automatically:
 For zsh the command prints the `fpath=(...)` line to add to `~/.zshrc` when
 `~/.zfunc` is not on fpath yet. bash and fish files are written for both
 invocation names (`crossscale` and `crossscale-cli`); the scripts resolve the
-binary from the command line being completed, so either name works. Without
+binary from the command line being completed, so either name works. Note that
+all three shells only fire completions for commands resolvable through
+`PATH`, so install the binary somewhere on it (e.g. symlink into
+`~/.local/bin`). Without
 `--install` the script is printed to stdout for custom locations:
 
 ```bash
