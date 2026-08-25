@@ -24,6 +24,15 @@ extern "C" {
 namespace crossscale {
 
 namespace {
+    // WebPPicture writer that appends into a std::vector (WebPEncode calls it
+    // once per encoded chunk; returning 0 aborts the encode).
+    auto webp_vector_writer(const uint8_t* data, size_t size,
+                            const WebPPicture* picture) -> int {
+        auto* out = static_cast<std::vector<uint8_t>*>(picture->custom_ptr);
+        out->insert(out->end(), data, data + size);
+        return 1;
+    }
+
     auto normalize_image_format(std::string format) -> std::string {
         std::string normalized;
         normalized.reserve(format.size());
@@ -408,15 +417,30 @@ namespace {
     }
 
     auto load_webp(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError> {
-        int width, height;
-        uint8_t* rgb = WebPDecodeRGB(buffer.data(), static_cast<int>(buffer.size()), &width, &height);
-        if (!rgb) {
+        int width = 0, height = 0;
+        if (!WebPGetInfo(buffer.data(), buffer.size(), &width, &height) || !width || !height) {
+            return std::unexpected(ImageError{7, "Invalid WebP header"});
+        }
+
+        // Decoder config instead of the one-shot WebPDecodeRGB: enables
+        // multithreaded decode and decodes straight into the Image buffer
+        // (the simple API forces an extra full-size copy).
+        WebPDecoderConfig cfg;
+        if (!WebPInitDecoderConfig(&cfg)) {
+            return std::unexpected(ImageError{7, "WebP decoder init failed"});
+        }
+        cfg.options.use_threads = static_cast<int>(std::thread::hardware_concurrency());
+
+        Image img(width, height, 3);
+        cfg.output.colorspace = MODE_RGB;
+        cfg.output.is_external_memory = 1;
+        cfg.output.u.RGBA.rgba = img.data();
+        cfg.output.u.RGBA.stride = width * 3;
+        cfg.output.u.RGBA.size = static_cast<size_t>(width) * height * 3;
+
+        if (WebPDecode(buffer.data(), buffer.size(), &cfg) != VP8_STATUS_OK) {
             return std::unexpected(ImageError{7, "WebP decode failed"});
         }
-        
-        Image img(width, height, 3);
-        std::memcpy(img.data(), rgb, width * height * 3);
-        WebPFree(rgb);
         return img;
     }
 
@@ -577,22 +601,42 @@ auto Image::save_to_memory(const std::string& format, int quality) const
                 return std::unexpected(ImageError{18, "WebP save requires 3 or 4 channels"});
             }
 
-            uint8_t* out_buffer = nullptr;
-            const int stride = width_ * channels_;
-            size_t out_size = 0;
-
-            if (channels_ == 3) {
-                out_size = WebPEncodeRGB(data(), width_, height_, stride, static_cast<float>(clamped_quality), &out_buffer);
-            } else {
-                out_size = WebPEncodeRGBA(data(), width_, height_, stride, static_cast<float>(clamped_quality), &out_buffer);
+            // Picture API instead of the one-shot WebPEncodeRGB*: the simple
+            // API is single-threaded; use_threads parallelizes entropy coding
+            // across tiles like `cwebp -threads`.
+            WebPConfig cfg;
+            if (!WebPConfigInit(&cfg)) {
+                return std::unexpected(ImageError{19, "WebP encoder init failed"});
             }
+            cfg.quality = static_cast<float>(clamped_quality);
+            cfg.lossless = 0;
+            cfg.thread_level = 1;
 
-            if (out_size == 0 || out_buffer == nullptr) {
+            const int stride = width_ * channels_;
+            WebPPicture pic;
+            if (!WebPPictureInit(&pic)) {
+                return std::unexpected(ImageError{19, "WebP picture init failed"});
+            }
+            pic.width = width_;
+            pic.height = height_;
+            pic.writer = webp_vector_writer;
+
+            std::vector<uint8_t> encoded;
+            bool ok = false;
+            if (channels_ == 3) {
+                ok = WebPPictureImportRGB(&pic, data(), stride) != 0;
+            } else {
+                ok = WebPPictureImportRGBA(&pic, data(), stride) != 0;
+            }
+            if (ok) {
+                pic.custom_ptr = &encoded;
+                ok = WebPEncode(&cfg, &pic) != 0 && !encoded.empty();
+            }
+            WebPPictureFree(&pic);
+
+            if (!ok) {
                 return std::unexpected(ImageError{19, "WebP encode failed"});
             }
-
-            std::vector<uint8_t> encoded(out_buffer, out_buffer + out_size);
-            WebPFree(out_buffer);
             return encoded;
         }
 
