@@ -77,7 +77,7 @@ run_one() {
 
     # Start GPU sampler (only meaningful for gpu runs, harmless otherwise).
     if [[ "$dev" == "gpu" ]]; then
-        "$CLI" process "${cli_args[@]}" >/dev/null 2>&1 &
+        "$CLI" "${cli_args[@]}" >/dev/null 2>&1 &
         local cpid=$!
         sample_gpu_for_pid "$cpid" "$gpu_csv" &
         local spid=$!
@@ -87,7 +87,7 @@ run_one() {
         wait "$spid" 2>/dev/null || true
     else
         local t0; t0=$(date +%s.%N)
-        "$CLI" process "${cli_args[@]}" >/dev/null 2>&1 || { echo "  FAILED: $img ($dev)" >&2; return 1; }
+        "$CLI" "${cli_args[@]}" >/dev/null 2>&1 || { echo "  FAILED: $img ($dev)" >&2; return 1; }
         local t1; t1=$(date +%s.%N)
     fi
 

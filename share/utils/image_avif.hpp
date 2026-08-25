@@ -19,4 +19,10 @@ auto sniff_dimensions(const uint8_t* data, size_t size) -> std::pair<uint32_t, u
 auto load(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError>;
 auto save(const Image& image, int quality) -> expected<std::vector<uint8_t>, ImageError>;
 
+// Quiet, cached probes: does the system libavif load with usable decode /
+// encode symbols? Same acceptance rules as load()/save() but they never log,
+// so stdout stays clean (shell completions consume it). Encode implies decode.
+auto avif_decode_available() -> bool;
+auto avif_encode_available() -> bool;
+
 }  // namespace crossscale::avif_codec

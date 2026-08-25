@@ -19,6 +19,13 @@ auto main(int argc, char* argv[]) -> int {
     g_running = true;
     g_cancel_requested = false;
 
+    // Hidden dynamic-completion entry (cobra-style): the emitted shell scripts
+    // replay the line being completed into this and print its candidates.
+    // Handled before CLI11 so arbitrary words are never parsed as flags.
+    if (argc >= 2 && std::string(argv[1]) == "__complete") {
+        return cmd_complete(argc - 2, argv + 2);
+    }
+
     auto app = build_app();
 
     try {

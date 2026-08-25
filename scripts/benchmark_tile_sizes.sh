@@ -46,7 +46,7 @@ run_test() {
 
     # Run the processing command and time it
     START_TIME=$(date +%s.%N)
-    $CLI process -i "$TEST_IMAGE" -o "$output" -m "$MODEL" --tile-size $tile_size --tile-overlap $overlap 2>&1 | grep -E "Processing complete|Progress"
+    $CLI -i "$TEST_IMAGE" -o "$output" -m "$MODEL" --tile-size $tile_size --tile-overlap $overlap 2>&1 | grep -E "Processing complete|Progress"
     EXIT_CODE=$?
     END_TIME=$(date +%s.%N)
 

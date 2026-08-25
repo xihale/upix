@@ -205,6 +205,40 @@ auto missing_encoder_message() -> std::string {
     return "libavif cannot encode AVIF (no aom/svt-av1). Reinstall libavif with an encoder";
 }
 
+// Shared by load_api() (logged, for real decode/encode work) and the quiet
+// completion probes below.
+auto bind_symbols(LibHandle handle) -> AvifApi {
+    AvifApi api;
+    api.lib = handle;
+    auto bind = [&](const char* name) { return load_sym(handle, name); };
+    api.version = reinterpret_cast<FnVersion>(bind("avifVersion"));
+    api.result_to_string = reinterpret_cast<FnResultToString>(bind("avifResultToString"));
+    api.decoder_create = reinterpret_cast<FnDecoderCreate>(bind("avifDecoderCreate"));
+    api.decoder_destroy = reinterpret_cast<FnDecoderDestroy>(bind("avifDecoderDestroy"));
+    api.decoder_read_memory =
+        reinterpret_cast<FnDecoderReadMemory>(bind("avifDecoderReadMemory"));
+    api.image_create = reinterpret_cast<FnImageCreate>(bind("avifImageCreate"));
+    api.image_create_empty = reinterpret_cast<FnImageCreateEmpty>(bind("avifImageCreateEmpty"));
+    api.image_destroy = reinterpret_cast<FnImageDestroy>(bind("avifImageDestroy"));
+    api.rgb_set_defaults = reinterpret_cast<FnRgbSetDefaults>(bind("avifRGBImageSetDefaults"));
+    api.rgb_allocate_pixels =
+        reinterpret_cast<FnRgbAllocatePixels>(bind("avifRGBImageAllocatePixels"));
+    api.rgb_free_pixels = reinterpret_cast<FnRgbFreePixels>(bind("avifRGBImageFreePixels"));
+    api.yuv_to_rgb = reinterpret_cast<FnYuvToRgb>(bind("avifImageYUVToRGB"));
+    api.rgb_to_yuv = reinterpret_cast<FnRgbToYuv>(bind("avifImageRGBToYUV"));
+    api.encoder_create = reinterpret_cast<FnEncoderCreate>(bind("avifEncoderCreate"));
+    api.encoder_destroy = reinterpret_cast<FnEncoderDestroy>(bind("avifEncoderDestroy"));
+    api.encoder_write = reinterpret_cast<FnEncoderWrite>(bind("avifEncoderWrite"));
+    api.rw_data_free = reinterpret_cast<FnRwDataFree>(bind("avifRWDataFree"));
+    return api;
+}
+
+// libavif 1.x is the only accepted ABI; anything else is treated as absent.
+auto version_is_1x(const AvifApi& api) -> bool {
+    const char* version = api.version ? api.version() : "";
+    return version != nullptr && version[0] == '1' && version[1] == '.';
+}
+
 auto load_api() -> const AvifApi& {
     static std::once_flag once;
     static AvifApi api;
@@ -213,27 +247,7 @@ auto load_api() -> const AvifApi& {
         if (!handle) {
             return;
         }
-        api.lib = handle;
-        auto bind = [&](const char* name) { return load_sym(handle, name); };
-        api.version = reinterpret_cast<FnVersion>(bind("avifVersion"));
-        api.result_to_string = reinterpret_cast<FnResultToString>(bind("avifResultToString"));
-        api.decoder_create = reinterpret_cast<FnDecoderCreate>(bind("avifDecoderCreate"));
-        api.decoder_destroy = reinterpret_cast<FnDecoderDestroy>(bind("avifDecoderDestroy"));
-        api.decoder_read_memory =
-            reinterpret_cast<FnDecoderReadMemory>(bind("avifDecoderReadMemory"));
-        api.image_create = reinterpret_cast<FnImageCreate>(bind("avifImageCreate"));
-        api.image_create_empty = reinterpret_cast<FnImageCreateEmpty>(bind("avifImageCreateEmpty"));
-        api.image_destroy = reinterpret_cast<FnImageDestroy>(bind("avifImageDestroy"));
-        api.rgb_set_defaults = reinterpret_cast<FnRgbSetDefaults>(bind("avifRGBImageSetDefaults"));
-        api.rgb_allocate_pixels =
-            reinterpret_cast<FnRgbAllocatePixels>(bind("avifRGBImageAllocatePixels"));
-        api.rgb_free_pixels = reinterpret_cast<FnRgbFreePixels>(bind("avifRGBImageFreePixels"));
-        api.yuv_to_rgb = reinterpret_cast<FnYuvToRgb>(bind("avifImageYUVToRGB"));
-        api.rgb_to_yuv = reinterpret_cast<FnRgbToYuv>(bind("avifImageRGBToYUV"));
-        api.encoder_create = reinterpret_cast<FnEncoderCreate>(bind("avifEncoderCreate"));
-        api.encoder_destroy = reinterpret_cast<FnEncoderDestroy>(bind("avifEncoderDestroy"));
-        api.encoder_write = reinterpret_cast<FnEncoderWrite>(bind("avifEncoderWrite"));
-        api.rw_data_free = reinterpret_cast<FnRwDataFree>(bind("avifRWDataFree"));
+        api = bind_symbols(handle);
 
         if (!api.decode_ready()) {
             LOG_WARNING("Image", "libavif loaded but required decode symbols are missing");
@@ -241,18 +255,17 @@ auto load_api() -> const AvifApi& {
             api = AvifApi{};
             return;
         }
-        const char* version = api.version ? api.version() : "";
-        if (version == nullptr || version[0] != '1' || version[1] != '.') {
+        if (!version_is_1x(api)) {
             LOG_WARNING(
                 "Image",
                 std::string("libavif version is not 1.x (got ") +
-                    (version ? version : "unknown") + "), refusing to use it"
+                    (api.version ? api.version() : "unknown") + "), refusing to use it"
             );
             close_lib(handle);
             api = AvifApi{};
             return;
         }
-        LOG_INFO("Image", std::string("Using system libavif ") + version);
+        LOG_INFO("Image", std::string("Using system libavif ") + api.version());
     });
     return api;
 }
@@ -490,5 +503,31 @@ auto save(const Image& image, int quality) -> expected<std::vector<uint8_t>, Ima
     api.rw_data_free(&output);
     return encoded;
 }
+
+namespace {
+
+// Same acceptance rules as load_api(), minus the logging: completion queries
+// run on every TAB press and their stdout must stay pure candidate lines.
+// The handle deliberately stays open for the process lifetime, like load_api().
+auto probe_api_quietly() -> const AvifApi& {
+    static const AvifApi api = [] {
+        LibHandle handle = try_open_avif();
+        if (handle == nullptr) {
+            return AvifApi{};
+        }
+        AvifApi bound = bind_symbols(handle);
+        if (!bound.decode_ready() || !version_is_1x(bound)) {
+            close_lib(handle);
+            return AvifApi{};
+        }
+        return bound;
+    }();
+    return api;
+}
+
+}  // namespace
+
+auto avif_decode_available() -> bool { return probe_api_quietly().decode_ready(); }
+auto avif_encode_available() -> bool { return probe_api_quietly().encode_ready(); }
 
 }  // namespace crossscale::avif_codec

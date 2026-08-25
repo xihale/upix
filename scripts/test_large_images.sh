@@ -38,7 +38,7 @@ test_image() {
     echo "Testing: $label (tile=$tile_size, overlap=$overlap)" | tee -a "$LOG_FILE"
 
     local start=$(date +%s.%N)
-    $CLI process -i "$input" -o "$OUTPUT_DIR/output_${label}.png" \
+    $CLI -i "$input" -o "$OUTPUT_DIR/output_${label}.png" \
         -m "$MODEL" --tile-size "$tile_size" --tile-overlap "$overlap" --gpu
     local end=$(date +%s.%N)
 

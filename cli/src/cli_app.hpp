@@ -28,3 +28,7 @@ int cmd_perf(const args::Perf& a);
 int cmd_host(const args::Host& a);
 int cmd_daemon(const args::Daemon& a);
 int cmd_completions(const args::Completions& a);
+
+// `__complete WORDS...` — dynamic completion engine (see cmd_complete.cpp).
+// Dispatched from main() before CLI11 parsing; not part of the CLI11 tree.
+int cmd_complete(int argc, char* argv[]);

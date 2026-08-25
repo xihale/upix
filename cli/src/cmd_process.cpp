@@ -1,4 +1,5 @@
-// `crossscale process` — the main upscale path.
+// `crossscale <image>` — the main upscale path (the old explicit `process`
+// subcommand is gone; the same options live on the root verb).
 //
 // Single file: try to delegate to a warm daemon first (skips the ~490ms
 // init+load), spawning one if none is running, else init an inline engine and
@@ -143,7 +144,7 @@ int cmd_process(const args::Process& a) {
 
     if (a.input_path.empty()) {
         std::cerr << "crossscale: no input given — try `crossscale <image>` "
-                     "or `crossscale process -i <image>`\n";
+                     "or `crossscale -i <image>`\n";
         return 1;
     }
 

@@ -49,10 +49,10 @@ The native engine (`libcrossscale-native.so`) is built with xmake by a Gradle ta
 
 The first form is the common one: no verb, no flags — the output name derives
 from the input and the model that produced it (`<stem>_<model>.<ext>`, next to
-the input). The legacy long form is fully supported:
+the input). The flag form is equivalent when a script prefers it:
 
 ```bash
-./crossscale-cli process -i input.png -o output.png -m Real-ESRGANv3-anime-x2
+./crossscale-cli -i input.png -o output.png -m Real-ESRGANv3-anime-x2
 ```
 
 Use `--output-quality <1-100>` to trade file size for fidelity and `--output-format <png|jpg|jpeg|webp|avif>` to override the saved container.
@@ -71,7 +71,7 @@ Optional parameters:
 
 Single-image requests are served by a background warm-engine daemon that keeps
 the GPU context and model loaded, skipping the ~490 ms init cost per call. It
-is fully automatic: the first `process` call starts one if none is running, and
+is fully automatic: the first upscale starts one if none is running, and
 it exits by itself after 600 idle seconds (`--idle-timeout` to change, `0` to
 keep it forever). Manual control when wanted:
 
@@ -88,9 +88,9 @@ Process all images in a directory (recursively), preserving directory structure:
 ```bash
 ./crossscale-cli input_dir                     # → input_dir_<model>/ next to it
 
-# Legacy / explicit forms
-./crossscale-cli process -i input_dir -o output_dir -m Real-ESRGANv3-anime-x2 --jobs 4   # CPU parallel
-./crossscale-cli process -i input_dir -o output_dir --gpu                                # GPU sequential
+# Flag form, when preferred
+./crossscale-cli -i input_dir -o output_dir -m Real-ESRGANv3-anime-x2 --jobs 4   # CPU parallel
+./crossscale-cli -i input_dir -o output_dir --gpu                                # GPU sequential
 ```
 
 **Important GPU behavior**:
@@ -159,9 +159,18 @@ time and remembered afterwards.
 
 ### Shell Completions
 
-Completion scripts for bash, zsh, and fish (sub-commands, per-subcommand flags,
-and `-m/--model` model names from the installed models). `--install` writes
-them into the shell's user completion directory automatically:
+Completion for bash, zsh, and fish, driven dynamically by the binary itself:
+the installed scripts are thin adapters that replay the command line being
+completed into a hidden `__complete` command, which answers with candidates.
+Everything therefore stays in sync automatically — sub-commands and flags come
+from the CLI11 definitions, model names from the configured models dir, and
+input-file suggestions are filtered to the formats this binary can actually
+decode (png/jpg/jpeg/webp always, avif only where system libavif loads).
+Directories stay navigable, and `crossscale <TAB>` offers sub-commands and
+images side by side for the implicit upscale.
+
+`--install` writes them into the shell's user completion directory
+automatically:
 
 ```bash
 ./crossscale-cli completions bash --install   # ~/.local/share/bash-completion/completions/

@@ -19,7 +19,7 @@ for batch in 1 2 4 8; do
     
     # Run processing
     start=$(date +%s.%N)
-    $CLI process -i "$INPUT" -o "out_batch_${batch}.png" \
+    $CLI -i "$INPUT" -o "out_batch_${batch}.png" \
         -m "$MODEL" --gpu --batch-size $batch --tile-size 256 2>&1 | \
         grep -E "(Progress|Processing complete)" | tail -1
     end=$(date +%s.%N)

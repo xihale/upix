@@ -129,9 +129,12 @@ int run_batch(const args::Process& a) {
         }
         fs::create_directories(output_path);
 
-        // Gather image files recursively
+        // Gather image files recursively. Must mirror the decoders Image::load
+        // actually ships (share/utils/image.cpp): .bmp/.tiff used to be
+        // enumerated here but always failed at load with "Unsupported image
+        // format", so they are not tasks at all.
         std::vector<std::string> extensions = {
-            ".png", ".jpg", ".jpeg", ".webp", ".avif", ".bmp", ".tiff", ".tif"
+            ".png", ".jpg", ".jpeg", ".webp", ".avif"
         };
         std::vector<std::pair<std::string, std::string>> tasks;
         for (auto& p : fs::recursive_directory_iterator(input_path)) {

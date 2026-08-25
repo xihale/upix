@@ -196,12 +196,12 @@ while true; do
         pass_log="$(mktemp)"
         set +e
         if [[ "${TIMEOUT_SEC}" != "0" ]]; then
-            timeout --signal=TERM --kill-after=2s "${run_timeout}"s "${CLI}" process -i "${INPUT_DIR}" -o "${pass_output_dir}" -m "${MODEL}" \
+            timeout --signal=TERM --kill-after=2s "${run_timeout}"s "${CLI}" -i "${INPUT_DIR}" -o "${pass_output_dir}" -m "${MODEL}" \
                 --gpu --tile-size "${TILE_SIZE}" --tile-overlap "${TILE_OVERLAP}" --batch-size "${BATCH_SIZE}" \
                 --min-tile "${MIN_TILE}" --max-tile "${MAX_TILE}" --jobs "${JOBS}" 2>&1 | tee "${pass_log}"
             cmd_status=${PIPESTATUS[0]}
         else
-            "${CLI}" process -i "${INPUT_DIR}" -o "${pass_output_dir}" -m "${MODEL}" \
+            "${CLI}" -i "${INPUT_DIR}" -o "${pass_output_dir}" -m "${MODEL}" \
                 --gpu --tile-size "${TILE_SIZE}" --tile-overlap "${TILE_OVERLAP}" --batch-size "${BATCH_SIZE}" \
                 --min-tile "${MIN_TILE}" --max-tile "${MAX_TILE}" --jobs "${JOBS}" 2>&1 | tee "${pass_log}"
             cmd_status=${PIPESTATUS[0]}

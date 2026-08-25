@@ -33,61 +33,54 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     // Reusable validators.
     auto tile_range = CLI::Range(16, 8192);
 
-    // ── process ─────────────────────────────────────────────────────────────
+    // ── upscale (implicit root verb) ─────────────────────────────────────────
+    // Bare `crossscale img.png [out.png]` is the upscale path; a first token
+    // matching a subcommand name still wins, so only a file literally named
+    // "model"/"daemon"/... is shadowed. The old explicit `process` subcommand
+    // is gone — its options live on the root, so `crossscale in.png -m x
+    // --tile-size 256` works anywhere.
     static args::Process proc_args;
     proc_args.models_dir = default_models_dir();  // env-aware (common.cpp)
-    auto* proc = app->add_subcommand("process", "Upscale an image or directory");
-    // Each option mixes a positional name with flags, so `process img.png` and
-    // `process -i img.png` are interchangeable. Output is optional — omitted,
-    // it derives `img_<model>.png` (or `dir_<model>/` in batch mode).
-    proc->add_option("input,-i,--input", proc_args.input_path, "Input image or directory");
-    proc->add_option("output,-o,--output", proc_args.output_path,
-                     "Output path (default: derived from input + model)");
-    proc->add_option("-m,--model", proc_args.model_name, "Model name (default: first available)");
-    proc->add_option("--models", proc_args.models_dir, "Models directory")
-        ->capture_default_str();
-    auto* tile_size_opt = proc->add_option("--tile-size", proc_args.tile_size, "Tile size")
-        ->check(tile_range)->capture_default_str();
-    proc->add_option("--tile-overlap", proc_args.tile_overlap, "Tile overlap")
-        ->check(CLI::Range(0, 1024))->capture_default_str();
-    proc->add_option("--batch-size", proc_args.batch_size, "Batch size")
-        ->check(CLI::Range(1, 64))->capture_default_str();
-    proc->add_flag("--auto-tile", proc_args.auto_tile, "Auto-select tile size from GPU VRAM");
-    proc->add_option("--min-tile", proc_args.min_tile, "Minimum auto-tile size")
-        ->check(tile_range)->capture_default_str();
-    proc->add_option("--max-tile", proc_args.max_tile, "Maximum auto-tile size")
-        ->check(tile_range)->capture_default_str();
-    auto* jobs_opt = proc->add_option("-j,--jobs", proc_args.jobs,
-                                      "Parallel workers for directory mode")
-        ->check(CLI::Range(1, 1024))->capture_default_str();
-    proc->add_flag("--gpu", proc_args.use_gpu, "Force GPU for directory mode");
-    proc->add_flag("--no-daemon", proc_args.no_daemon,
-                   "Never use the warm-engine daemon (process inline)");
-    proc->add_option("--output-quality", proc_args.output_quality,
-                     "Output quality 0-100 (default: 95)")
-        ->check(CLI::Range(0, 100));
-    proc->add_option("--output-format", proc_args.output_format,
-                     "Output format (default: auto from extension)")
-        ->check(CLI::IsMember({"png", "jpg", "jpeg", "webp", "avif"}));
-    proc->add_option("--config", proc_args.config_file, "Config file path");
-    proc->callback([tile_size_opt, jobs_opt] {
-        proc_args.tile_size_explicit = tile_size_opt->count() > 0;
-        proc_args.jobs_explicit = jobs_opt != nullptr && jobs_opt->count() > 0;
-        g_exit_code = cmd_process(proc_args);
-    });
-
-    // ── implicit process ──────────────────────────────────────────────────────
-    // Bare `crossscale img.png [out.png]` (no verb) means `process`. A first
-    // token matching a subcommand name still wins, so only a file literally
-    // named "model"/"process"/... is shadowed. Shares proc_args with `process`.
-    auto* root_input = app->add_option("input", proc_args.input_path,
-                                       "Input image or directory (implies `process`)")
+    // Each option mixes a positional name with flags, so `crossscale img.png`
+    // and `crossscale -i img.png` are interchangeable. Output is optional —
+    // omitted, it derives `img_<model>.png` (or `dir_<model>/` in batch mode).
+    auto* input_opt = app->add_option("input,-i,--input", proc_args.input_path,
+                                      "Input image or directory")
                            ->expected(0, 1);
-    app->add_option("output", proc_args.output_path,
+    app->add_option("output,-o,--output", proc_args.output_path,
                     "Output path (default: derived from input + model)")
         ->expected(0, 1);
-    app->callback([root_input] {
-        if (root_input->count() > 0) {
+    app->add_option("-m,--model", proc_args.model_name, "Model name (default: first available)");
+    app->add_option("--models", proc_args.models_dir, "Models directory")
+        ->capture_default_str();
+    auto* tile_size_opt = app->add_option("--tile-size", proc_args.tile_size, "Tile size")
+        ->check(tile_range)->capture_default_str();
+    app->add_option("--tile-overlap", proc_args.tile_overlap, "Tile overlap")
+        ->check(CLI::Range(0, 1024))->capture_default_str();
+    app->add_option("--batch-size", proc_args.batch_size, "Batch size")
+        ->check(CLI::Range(1, 64))->capture_default_str();
+    app->add_flag("--auto-tile", proc_args.auto_tile, "Auto-select tile size from GPU VRAM");
+    app->add_option("--min-tile", proc_args.min_tile, "Minimum auto-tile size")
+        ->check(tile_range)->capture_default_str();
+    app->add_option("--max-tile", proc_args.max_tile, "Maximum auto-tile size")
+        ->check(tile_range)->capture_default_str();
+    auto* jobs_opt = app->add_option("-j,--jobs", proc_args.jobs,
+                                     "Parallel workers for directory mode")
+        ->check(CLI::Range(1, 1024))->capture_default_str();
+    app->add_flag("--gpu", proc_args.use_gpu, "Force GPU for directory mode");
+    app->add_flag("--no-daemon", proc_args.no_daemon,
+                  "Never use the warm-engine daemon (process inline)");
+    app->add_option("--output-quality", proc_args.output_quality,
+                    "Output quality 0-100 (default: 95)")
+        ->check(CLI::Range(0, 100));
+    app->add_option("--output-format", proc_args.output_format,
+                    "Output format (default: auto from extension)")
+        ->check(CLI::IsMember({"png", "jpg", "jpeg", "webp", "avif"}));
+    app->add_option("--config", proc_args.config_file, "Config file path");
+    app->callback([input_opt, tile_size_opt, jobs_opt] {
+        proc_args.tile_size_explicit = tile_size_opt->count() > 0;
+        proc_args.jobs_explicit = jobs_opt->count() > 0;
+        if (input_opt->count() > 0) {
             g_exit_code = cmd_process(proc_args);
         }
     });
