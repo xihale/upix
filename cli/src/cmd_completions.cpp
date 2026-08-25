@@ -34,26 +34,14 @@ _crossscale() {
     local -a lines
     mapfile -t lines < <("$1" __complete "${COMP_WORDS[@]:1}" 2>/dev/null)
     COMPREPLY=()
-    local line hinted=""
+    local line
     for line in "${lines[@]}"; do
-        # '!'-prefixed engine lines are display-only hints (e.g. a folder with
-        # no decodable images): show them, never offer them as candidates.
-        if [[ "$line" == '!'* ]]; then
-            printf '%s\n' "${line:1}" >&2
-            hinted=1
-        else
-            COMPREPLY+=("${line%%$'\t'*}")
-        fi
+        COMPREPLY+=("${line%%$'\t'*}")
     done
-    if (( ${#COMPREPLY[@]} == 0 )) && [[ -n "$hinted" ]]; then
-        # Hint but no candidates: insert nothing yet still block the `-o default`
-        # fallback — readline must not list the files we just said aren't usable.
-        COMPREPLY=("")
-    fi
 }
 # -o filenames: proper quoting/suffix for our file candidates;
 # -o default: fall back to readline's filename completion when the engine
-# returns nothing at all (free-form values like ports or tile sizes).
+# returns nothing (free-form values like ports or tile sizes).
 complete -o filenames -o default -F _crossscale crossscale crossscale-cli
 )BASH";
 
@@ -62,25 +50,17 @@ constexpr const char* ZSH = R"ZSH(#compdef crossscale crossscale-cli
 # Install: crossscale completions zsh --install
 
 _crossscale() {
-    local -a lines vals disps msgs
+    local -a lines vals disps
     lines=("${(f)$($words[1] __complete "${(@)words[2,-1]}" 2>/dev/null)}")
     local line
     for line in "${lines[@]}"; do
-        # '!'-prefixed engine lines are display-only hints (e.g. a folder with
-        # no decodable images), shown via _message instead of compadd.
-        if [[ "$line" == '!'* ]]; then
-            msgs+=("${line[2,-1]}")
-        else
-            vals+=("${line%%$'\t'*}")
-            disps+=("${line/$'\t'/ -- }")
-        fi
+        vals+=("${line%%$'\t'*}")
+        disps+=("${line/$'\t'/ -- }")
     done
     if (( ${#vals} )); then
         compadd -d disps -- "${vals[@]}"
-    elif (( ${#msgs} )); then
-        _message "${msgs[1]}"  # say "no processable images" instead of silence
     else
-        _files   # engine had nothing to say: free-form value, default to filenames
+        _files   # engine had nothing: free-form value, default to filenames
     fi
 }
 _crossscale "$@"
@@ -91,14 +71,11 @@ constexpr const char* FISH = R"FISH(# fish completion for crossscale — thin cl
 
 function __cs_complete
     set -l tokens (commandline -opc) (commandline -ct)
-    # '!'-prefixed engine lines are display-only hints (e.g. a folder with no
-    # decodable images): echo them to stderr, offer everything else. -f below
-    # keeps fish's own file completion out of the way either way.
-    command $tokens[1] __complete $tokens[2..-1] 2>/dev/null \
-        | awk '/^!/ { printf "%s\n", substr($0, 2) > "/dev/stderr"; next } { print }'
+    command $tokens[1] __complete $tokens[2..-1] 2>/dev/null
 end
 
-# One rule each; the engine owns all context.
+# One rule each; the engine owns all context. -f keeps fish's own file
+# completion out of the way (the engine emits file candidates itself).
 complete -c crossscale     -f -a '(__cs_complete)'
 complete -c crossscale-cli -f -a '(__cs_complete)'
 )FISH";
