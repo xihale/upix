@@ -11,6 +11,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <thread>
+#include <stop_token>
+#include <mdspan>
 
 namespace crossscale {
 
@@ -180,38 +182,56 @@ auto run_tiled_cpu_pipeline(
     };
 
     // Proc → blend handoff queue.
+    // condition_variable_any (not condition_variable) so the stage threads can
+    // wait with a std::stop_token and wake automatically on request_stop().
     std::deque<CompletedBatch> completed_queue;
     std::mutex completed_mutex;
-    std::condition_variable completed_cv;
+    std::condition_variable_any completed_cv;
     bool process_done = false;
     std::string process_error;
+    std::string blend_error;
 
     // --- Blend stage (blend/save thread) ---
-    std::thread blend_thread([&]() {
-        while (true) {
-            CompletedBatch completed_batch;
-            {
-                std::unique_lock<std::mutex> lock(completed_mutex);
-                completed_cv.wait(lock, [&]() {
-                    return !completed_queue.empty() || process_done;
-                });
-                if (completed_queue.empty() && process_done) {
-                    break;
+    // jthread RAII: if anything below throws on the main thread, the destructor
+    // requests stop and joins, instead of leaving an unjoined thread running
+    // during exception unwind (previously called std::terminate and killed the
+    // process). The lambda also catch-and-records so a throwing stage degrades
+    // to a reported error rather than a crash.
+    std::jthread blend_thread([&](std::stop_token stoken) {
+        try {
+            while (true) {
+                CompletedBatch completed_batch;
+                {
+                    std::unique_lock<std::mutex> lock(completed_mutex);
+                    completed_cv.wait(lock, stoken, [&]() {
+                        return !completed_queue.empty() || process_done;
+                    });
+                    if (completed_queue.empty()) {
+                        // Queue drained and producer done, or stop requested
+                        // (cancel / exceptional shutdown): either way, exit.
+                        break;
+                    }
+                    completed_batch = std::move(completed_queue.front());
+                    completed_queue.pop_front();
                 }
-                completed_batch = std::move(completed_queue.front());
-                completed_queue.pop_front();
-            }
 
-            for (size_t idx = 0; idx < completed_batch.output_buffers.size(); ++idx) {
-                const auto& region = regions[completed_batch.begin + idx];
-                processor.blend_tile(completed_batch.output_buffers[idx].data(), output_buffer.data(),
-                                     weight_buffer.data(),
-                                     output_width, output_height, channels, region, scale_factor, config.overlap);
-                progress.completed_tiles++;
-                progress.current_tile_x = region.x;
-                progress.current_tile_y = region.y;
-                if (progress_callback) progress_callback(progress);
+                for (size_t idx = 0; idx < completed_batch.output_buffers.size(); ++idx) {
+                    const auto& region = regions[completed_batch.begin + idx];
+                    processor.blend_tile(completed_batch.output_buffers[idx].data(), output_buffer.data(),
+                                         weight_buffer.data(),
+                                         output_width, output_height, channels, region, scale_factor, config.overlap);
+                    progress.completed_tiles++;
+                    progress.current_tile_x = region.x;
+                    progress.current_tile_y = region.y;
+                    if (progress_callback) progress_callback(progress);
+                }
             }
+        } catch (const std::exception& e) {
+            std::lock_guard<std::mutex> lock(completed_mutex);
+            blend_error = e.what();
+        } catch (...) {
+            std::lock_guard<std::mutex> lock(completed_mutex);
+            blend_error = "unknown exception in blend thread";
         }
     });
 
@@ -225,28 +245,40 @@ auto run_tiled_cpu_pipeline(
         constexpr size_t kReadyQueueCapacity = 2;
         std::deque<std::optional<BatchWork>> ready_queue;
         std::mutex ready_mutex;
-        std::condition_variable ready_cv;
+        std::condition_variable_any ready_cv;
         bool load_done = false;
+        std::string load_error;
 
         // --- Stage 1: Load thread (tile extraction) ---
-        std::thread load_thread([&]() {
+        // jthread + stop_token-aware wait: an exception on the main thread no
+        // longer strands this thread during unwind (jthread RAII stops+joins,
+        // and the stop token wakes the bounded-queue wait without notify_all).
+        std::jthread load_thread([&](std::stop_token stoken) {
             size_t next_idx = 0;
-            while (!cancel_flag) {
-                auto batch = build_batch(next_idx);
-                if (!batch.has_value()) {
-                    break;
-                }
-                next_idx = batch->end;
+            try {
+                while (!cancel_flag && !stoken.stop_requested()) {
+                    auto batch = build_batch(next_idx);
+                    if (!batch.has_value()) {
+                        break;
+                    }
+                    next_idx = batch->end;
 
-                {
-                    std::unique_lock<std::mutex> lock(ready_mutex);
-                    ready_cv.wait(lock, [&]() {
-                        return ready_queue.size() < kReadyQueueCapacity || cancel_flag;
-                    });
-                    if (cancel_flag) break;
-                    ready_queue.emplace_back(std::move(batch));
+                    {
+                        std::unique_lock<std::mutex> lock(ready_mutex);
+                        ready_cv.wait(lock, stoken, [&]() {
+                            return ready_queue.size() < kReadyQueueCapacity || cancel_flag;
+                        });
+                        if (cancel_flag || stoken.stop_requested()) break;
+                        ready_queue.emplace_back(std::move(batch));
+                    }
+                    ready_cv.notify_one();
                 }
-                ready_cv.notify_one();
+            } catch (const std::exception& e) {
+                std::lock_guard<std::mutex> lock(ready_mutex);
+                load_error = e.what();
+            } catch (...) {
+                std::lock_guard<std::mutex> lock(ready_mutex);
+                load_error = "unknown exception in tile-load thread";
             }
             {
                 std::lock_guard<std::mutex> lock(ready_mutex);
@@ -307,6 +339,12 @@ auto run_tiled_cpu_pipeline(
         }
         completed_cv.notify_all();
         load_thread.join();
+        {
+            std::lock_guard<std::mutex> lock(ready_mutex);
+            if (!load_error.empty() && process_error.empty()) {
+                process_error = "Tile loading failed: " + load_error;
+            }
+        }
     } else {
         // --- Two-stage pipeline: one-ahead batch prefetch | blend ---
         auto current_batch = build_batch(0);
@@ -356,6 +394,12 @@ auto run_tiled_cpu_pipeline(
     }
 
     blend_thread.join();
+    {
+        std::lock_guard<std::mutex> lock(completed_mutex);
+        if (!blend_error.empty() && process_error.empty()) {
+            process_error = "Blending failed: " + blend_error;
+        }
+    }
 
     if (!process_error.empty()) {
         return std::unexpected(TileProcessorError{1, process_error});
@@ -695,6 +739,11 @@ void TileProcessor::bicubic_scale_u8(
     float scale_x = static_cast<float>(src_w) / dst_w;
     float scale_y = static_cast<float>(src_h) / dst_h;
 
+    // 2D mdspan views over the single-channel planes: [row, col] indexing
+    // replaces manual y*width+x arithmetic in the gather/scatter kernels.
+    const auto src_plane = std::mdspan(src, static_cast<size_t>(src_h), static_cast<size_t>(src_w));
+    auto dst_plane = std::mdspan(dst, static_cast<size_t>(dst_h), static_cast<size_t>(dst_w));
+
     for (uint32_t dy = 0; dy < dst_h; ++dy) {
         float sy = (dy + 0.5f) * scale_y - 0.5f;
         int sy0 = static_cast<int>(std::floor(sy));
@@ -715,12 +764,12 @@ void TileProcessor::bicubic_scale_u8(
                     float wx = bicubic_kernel(sx - (sx0 + n));
 
                     float w = wx * wy;
-                    sum += src[cy * src_w + cx] * w;
+                    sum += src_plane[static_cast<size_t>(cy), static_cast<size_t>(cx)] * w;
                     weight_sum += w;
                 }
             }
 
-            dst[dy * dst_w + dx] = static_cast<uint8_t>(
+            dst_plane[static_cast<size_t>(dy), static_cast<size_t>(dx)] = static_cast<uint8_t>(
                 std::clamp(sum / weight_sum, 0.0f, 255.0f));
         }
     }
