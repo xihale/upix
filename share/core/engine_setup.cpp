@@ -102,12 +102,7 @@ auto setup_engine(
     if (model_name.empty()) {
         result.selected = &scanned.front();
     } else {
-        for (const auto& m : scanned) {
-            if (m.name == model_name) {
-                result.selected = &m;
-                break;
-            }
-        }
+        result.selected = ModelManager::find_model(scanned, std::string(model_name));
         if (!result.selected) {
             return std::unexpected("model not found: " + std::string(model_name));
         }

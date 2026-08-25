@@ -57,15 +57,36 @@ auto ModelManager::scan_models() -> expected<std::vector<ModelInfo>, ModelManage
     return models_;
 }
 
-auto ModelManager::get_model(const std::string& name) const -> std::optional<ModelInfo> {
+auto ModelManager::find_model(const std::vector<ModelInfo>& models,
+                              const std::string& name) -> const ModelInfo* {
     // Tolerant match: normalize both sides so "_x2" / "-x2" and case
     // differences resolve to the same entry.
     const auto key = normalize_model_name(name);
-    auto it = std::find_if(models_.begin(), models_.end(),
-        [&](const ModelInfo& m) { return normalize_model_name(m.name) == key; });
+    for (const auto& m : models) {
+        if (normalize_model_name(m.name) == key) {
+            return &m;
+        }
+    }
+    // Base-name fallback: accept "realesrgan-x4plus" for "realesrgan-x4plus-x4".
+    // Only resolve when exactly one variant matches; with several scale
+    // variants the request is ambiguous and we report not-found.
+    const ModelInfo* unique = nullptr;
+    for (const auto& m : models) {
+        const auto norm = normalize_model_name(m.name);
+        if (norm.size() > key.size() && norm.compare(0, key.size(), key) == 0
+            && norm[key.size()] == '-') {
+            if (unique != nullptr) {
+                return nullptr;  // multiple scale variants share this base name
+            }
+            unique = &m;
+        }
+    }
+    return unique;
+}
 
-    if (it != models_.end()) {
-        return *it;
+auto ModelManager::get_model(const std::string& name) const -> std::optional<ModelInfo> {
+    if (const auto* m = find_model(models_, name)) {
+        return *m;
     }
     return std::nullopt;
 }

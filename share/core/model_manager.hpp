@@ -32,6 +32,13 @@ public:
     
     auto get_model(const std::string& name) const -> std::optional<ModelInfo>;
 
+    // Tolerant lookup shared by get_model and engine_setup: case- and
+    // separator-insensitive, and a bare base name ("realesrgan-x4plus")
+    // resolves to its single scale variant ("...-x4") when unambiguous.
+    // Returns nullptr when no entry matches or the base name is ambiguous.
+    static auto find_model(const std::vector<ModelInfo>& models,
+                           const std::string& name) -> const ModelInfo*;
+
     auto models_directory() const -> const std::filesystem::path& { return models_dir_; }
     auto available_models() const -> const std::vector<ModelInfo>& { return models_; }
 
