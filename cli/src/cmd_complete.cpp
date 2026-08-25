@@ -14,9 +14,10 @@
 //     ships: png/jpg/jpeg/webp always, avif only when system libavif loads
 //     (avif_decode_available()).
 //
-// Output protocol: "candidate\tdescription" lines, plus display-only hint
-// lines starting with '!' (e.g. a folder with no decodable images) that the
-// shell adapters print instead of offering — see cmd_completions.cpp.
+// Output protocol: "candidate" or "candidate\tdescription" lines, plus
+// display-only hint lines starting with '!' (currently just "!(none)" for an
+// input completion with no decodable files here) that the shell adapters print
+// instead of offering — see cmd_completions.cpp.
 //
 // main.cpp dispatches argv[1] == "__complete" here before any CLI11 parsing.
 // The last WORD is the partial word under the cursor (may be empty). Output is
@@ -87,10 +88,10 @@ void complete_output_formats() {
 // a trailing '/' so paths stay navigable, files filtered by `exts` (null =
 // any file). A leading "~" round-trips so home-relative typing keeps working.
 //
-// When an extension-filtered completion finds nothing decodable here, a '!'
-// hint line is emitted instead of silence — the shell adapters print it as a
-// message ("no processable images here") rather than falling back to listing
-// every unrelated file in the folder.
+// When an extension-filtered completion finds nothing decodable here, an
+// '!' hint line ("(none)") is emitted instead of silence — the shell adapters
+// print it as a message rather than falling back to listing every unrelated
+// file in the folder.
 void complete_files(const std::string& typed_prefix, const std::set<std::string>* exts,
                     bool dirs_only = false) {
     std::string real = typed_prefix;
@@ -140,16 +141,12 @@ void complete_files(const std::string& typed_prefix, const std::set<std::string>
         hits.push_back({shown_dir + name + (is_dir ? "/" : ""), ""});
     }
 
-    // Filtered input completion with no matches: say what the folder lacks.
-    // Plain-path completions (output etc.) stay silent — there the shell's own
-    // filename fallback is the right answer for free-form typing.
+    // Filtered input completion with no matches: say so ("no" — same wording
+    // as `model list`) instead of letting the shell fall back to unrelated
+    // filenames. Plain-path completions (output etc.) stay silent — there the
+    // shell's own filename fallback is right for free-form typing.
     if (hits.empty() && exts != nullptr && !dirs_only) {
-        std::string ext_list;
-        for (const auto& e : image_exts()) {
-            ext_list += ext_list.empty() ? e : "/" + e;
-        }
-        emit("!" + (dir_real.empty() ? std::string() : shown_dir + " ") +
-                 "has no processable images (" + ext_list + ")");
+        emit("!(none)");
         return;
     }
 
@@ -337,7 +334,9 @@ int cmd_complete_impl(int argc, char* argv[]) {
     // catalog): no candidates rather than misleading ones.
 
     for (const Cand& c : g_out) {
-        std::cout << c.value << '\t' << c.desc << '\n';
+        std::cout << c.value;
+        if (!c.desc.empty()) std::cout << '\t' << c.desc;
+        std::cout << '\n';
     }
     return 0;
 }
