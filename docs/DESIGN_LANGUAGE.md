@@ -280,7 +280,7 @@ Base: `MaterialExpressiveTheme` + `MotionScheme.expressive()` (component springs
 | `EnterMotionSpec` | 140ms fade, decelerate | `AnimatedContent` text swaps, visibility fades |
 | `EnterSizeSpec` | 140ms | sync'd size+fade reveals |
 | `ExpandSizeSpec` | 180ms | `animateContentSize` accordions (parameter card, checkpoint details, stage 180↔320dp) |
-| `NavEnter/NavExit` | 400ms decel / 200ms accel, slide (¼ screen) + fade | navigation transitions; pop mirrors push (shared-axis directionality) |
+| `NavEnter/NavExit` | 400ms decel / 200ms accel, pure fade | navigation transitions (no slide, pop == push) |
 | `smoothProgress` | 300ms linear | determinate progress values |
 
 **Rules:**
