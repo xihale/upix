@@ -3,6 +3,7 @@ package io.upix
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import java.io.ByteArrayOutputStream
+import java.io.File
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import io.upix.nativelib.NCNNEngine
@@ -193,6 +194,7 @@ class RemoteDistributedTest {
         requireHost()
         val count = arg("count", "3").trim().toIntOrNull() ?: 3
         val side = arg("side", "256").trim().toIntOrNull() ?: 256
+        val expectedScale = { arg("scale", "2").trim().toIntOrNull() ?: 2 }
         val key = pair()
 
         fun makePngBytes(size: Int): ByteArray {
@@ -216,24 +218,55 @@ class RemoteDistributedTest {
         )
         assertTrue("openDistributedSession failed", handle != 0L)
         try {
+            // 真实照片模式：inputDir 指向设备目录，逐文件原字节上传
+            // （与 app 相同——协议传编码文件而非解码像素）。
+            data class RealInput(
+                val name: String, val bytes: ByteArray,
+                val fmt: String, val w: Int, val h: Int
+            )
+            val inputDir = arg("inputDir", "")
+            val realInputs = if (inputDir.isNotBlank()) {
+                File(inputDir).listFiles()!!
+                    .filter { it.isFile && it.extension.lowercase() in setOf("jpg", "jpeg", "png", "webp") }
+                    .sortedBy { it.name }
+                    .map { f ->
+                        val bytes = f.readBytes()
+                        val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                        RealInput(f.name, bytes,
+                            if (f.extension.lowercase() == "png") "png" else "jpg",
+                            opts.outWidth, opts.outHeight)
+                    }
+            } else emptyList()
+            assertTrue("inputDir 无可用图片", inputDir.isBlank() || realInputs.size > 0)
+            val effectiveCount = if (realInputs.size > 0) realInputs.size else count
+
             // 预取槽：read 在 PC 推理期间发生（应用内一致）。
             var pendingReadMs = 0L
-            fun primeRead(): ByteArray {
+            var currentReal: RealInput? = null
+
+            fun primeRead(index: Int): ByteArray {
                 val t0 = System.nanoTime()
-                val bytes = makePngBytes(side)
+                val bytes = if (realInputs.isNotEmpty()) {
+                    currentReal = realInputs[index]
+                    currentReal!!.bytes
+                } else {
+                    makePngBytes(side)
+                }
                 pendingReadMs = (System.nanoTime() - t0) / 1_000_000
                 return bytes
             }
 
-            var inputBytes = primeRead()
+            var nextIndex = 0
+            var inputBytes = primeRead(nextIndex++)
             var uploaded = false
 
-            fun send(bytes: ByteArray): Boolean = NCNNEngine.nativeSendDistributedTask(
+            fun send(bytes: ByteArray, fmt: String): Boolean = NCNNEngine.nativeSendDistributedTask(
                 handle = handle,
                 modelName = model(),
                 tileSize = 0,
                 tileOverlap = 8,
-                inputFormat = "png",
+                inputFormat = fmt,
                 inputImage = bytes,
                 outputFormat = "jpg",
                 outputQuality = 90,
@@ -241,9 +274,10 @@ class RemoteDistributedTest {
                 allowChunked = true
             )
 
-            for (i in 0 until count) {
+            for (i in 0 until effectiveCount) {
                 val t0 = System.nanoTime()
-                assertTrue("send #$i failed", send(inputBytes))
+                val cur = currentReal
+                assertTrue("send #$i failed", send(inputBytes, cur?.fmt ?: "png"))
                 val uploadMs = (System.nanoTime() - t0) / 1_000_000
                 uploaded = true
 
@@ -254,18 +288,37 @@ class RemoteDistributedTest {
 
                 val tPersist0 = System.nanoTime()
                 assertEncodedFormat(encoded!!, "jpg")
-                BitmapFactory.decodeByteArray(encoded, 0, encoded.size)
+                val outOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeByteArray(encoded, 0, encoded.size, outOpts)
+                var dimOk = "?"
+                if (cur != null) {
+                    // 远程输出必须恰好是输入的 scale 倍（按会话模型实际 scale）
+                    dimOk = "${outOpts.outWidth}x${outOpts.outHeight}"
+                    val expW = cur.w * expectedScale()
+                    val expH = cur.h * expectedScale()
+                    assertTrue("输出尺寸不符 (${cur.name}): ${outOpts.outWidth}x${outOpts.outHeight} want $expW x $expH",
+                        outOpts.outWidth == expW && outOpts.outHeight == expH)
+                } else {
+                    BitmapFactory.decodeByteArray(encoded, 0, encoded.size)
+                }
                 val persistMs = (System.nanoTime() - tPersist0) / 1_000_000
 
                 val total = pendingReadMs + uploadMs + waitMs + persistMs
                 android.util.Log.i(
                     "Upix",
-                    "CSREMOTE $i/$count read=$pendingReadMs upload=$uploadMs " +
-                        "wait=$waitMs persist=$persistMs total=$total bytes=${encoded.size}"
+                    "CSREMOTE $i/$effectiveCount read=$pendingReadMs upload=$uploadMs " +
+                        "wait=$waitMs persist=$persistMs total=$total bytes=${encoded.size}" +
+                        (if (cur != null) " src=${cur.name} dims=$dimOk" else "")
                 )
+                val dumpDir = arg("outDir", "")
+                if (dumpDir.isNotBlank()) {
+                    File(dumpDir).mkdirs()
+                    val nm = cur?.name ?: "synthetic-$i.png"
+                    File(dumpDir, "remote-" + nm.substringBeforeLast('.') + ".jpg").writeBytes(encoded)
+                }
 
-                if (i + 1 < count) {
-                    inputBytes = primeRead()
+                if (nextIndex < effectiveCount) {
+                    inputBytes = primeRead(nextIndex++)
                 }
             }
             check(uploaded)

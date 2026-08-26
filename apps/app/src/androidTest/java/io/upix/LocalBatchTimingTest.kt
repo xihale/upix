@@ -76,9 +76,18 @@ class LocalBatchTimingTest {
 
         try {
             session!!
-            val inputs = (0 until count()).map { i ->
-                val f = makePngFile(workDir, i, side())
-                ResolvedImageInput(android.net.Uri.fromFile(f), f.name)
+            val inputDir = arg("inputDir", "")
+            val inputs: List<ResolvedImageInput> = if (inputDir.isNotBlank()) {
+                // 真实照片模式：直接使用目录里的文件（jpg/png/webp）。
+                File(inputDir).listFiles()!!
+                    .filter { it.isFile }
+                    .sortedBy { it.name }
+                    .map { ResolvedImageInput(android.net.Uri.fromFile(it), it.name) }
+            } else {
+                (0 until count()).map { i ->
+                    val f = makePngFile(workDir, i, side())
+                    ResolvedImageInput(android.net.Uri.fromFile(f), f.name)
+                }
             }
 
             runBlocking {
