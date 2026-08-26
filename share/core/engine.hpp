@@ -100,6 +100,18 @@ public:
         return std::unexpected(EngineError{102, "u8 process path not supported"});
     }
 
+    // Diagnostic: run one whole-image inference on the loaded device and
+    // report per-blob value ranges (min/max/mean/non-finite count). Used to
+    // pinpoint the first layer that produces garbage on a misbehaving GPU.
+    virtual std::string debug_blob_scan(
+        const uint8_t* /*input*/,
+        int /*width*/,
+        int /*height*/,
+        int /*channels*/
+    ) {
+        return "debug_blob_scan not supported";
+    }
+
     // Process a batch of tiles. All tiles must have same width, height, channels.
     // inputs: vector of input data pointers (each tile: interleaved HWC float)
     // outputs: vector of output data pointers (each tile: interleaved HWC float, pre-allocated)

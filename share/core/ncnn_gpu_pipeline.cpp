@@ -40,6 +40,68 @@ namespace upix {
 #if NCNN_VULKAN
 namespace {
 
+// Raw upload, bypassing VkCompute::record_upload entirely. record_upload's
+// delivered element type is device-dependent: discrete GPUs CPU-cast fp32 to
+// fp16 (and pass u8 through), while integrated GPUs request an on-the-fly
+// device cast that ncnn cannot perform for int8 (convert_packing rejects
+// int8 -> fp16/fp32) and may silently skip for fp32 — so a pipeline bound to
+// the "wrong" type reads mismatched bits on one device class or the other
+// (the Adreno all-zero / garbage hazards). Staging the bytes ourselves with
+// the same HOST_WRITE bookkeeping record_upload uses, then record_clone()
+// to device memory (a plain vkCmdCopyBuffer with proper barriers) makes the
+// bound buffer's contents exactly what we memcpy'd, on every device.
+bool stage_raw_input(ncnn::VkCompute& cmd,
+                     ncnn::VkAllocator* staging_vkallocator,
+                     const void* bytes,
+                     size_t total_bytes,
+                     size_t elemsize,
+                     ncnn::Option& opt,
+                     ncnn::VkMat& dst,
+                     std::vector<ncnn::VkMat>& keepalive)
+{
+    // Round the staged payload up to a whole number of uint32 words: the
+    // word-addressed custom shaders read src_data[e >> 1] / [e >> 2], and a
+    // trailing partial word must stay inside both the allocation and the
+    // descriptor range. The pad bytes themselves are never consumed.
+    const size_t padded_bytes = (total_bytes + 3u) & ~size_t(3u);
+    ncnn::VkMat staged;
+    staged.create(static_cast<int>(padded_bytes / elemsize), elemsize, 1, staging_vkallocator);
+    if (staged.empty()) {
+        return false;
+    }
+    std::memcpy(staged.mapped_ptr(), bytes, total_bytes);
+    staged.allocator->flush(staged.data);
+    staged.data->access_flags = VK_ACCESS_HOST_WRITE_BIT;
+    staged.data->stage_flags = VK_PIPELINE_STAGE_HOST_BIT;
+    cmd.record_clone(staged, dst, opt);
+    keepalive.push_back(std::move(staged));
+    return !dst.empty();
+}
+
+bool stage_u8_input(ncnn::VkCompute& cmd,
+                    ncnn::VkAllocator* staging_vkallocator,
+                    const uint8_t* bytes,
+                    size_t total,
+                    ncnn::Option& opt,
+                    ncnn::VkMat& dst,
+                    std::vector<ncnn::VkMat>& keepalive)
+{
+    return stage_raw_input(cmd, staging_vkallocator, bytes, total, 1u, opt, dst, keepalive);
+}
+
+// Download plumbing for word-backed u8 outputs. record_clone only reuses a
+// wrapped CPU Mat when dims match bit-exactly, so stage through a scratch and
+// copy the logical bytes out — the copy MUST happen only after
+// submit_and_wait (downloads execute inside the submit).
+ncnn::Mat record_u8_download(ncnn::VkCompute& cmd, const ncnn::VkMat& gpu_u8,
+                             ncnn::Option& opt) {
+    const int words = static_cast<int>(gpu_u8.total());
+    ncnn::Mat tmp;
+    tmp.create(words, static_cast<size_t>(4), 1);
+    cmd.record_clone(gpu_u8, tmp, opt);
+    return tmp;
+}
+
 // Full-output GPU buffers shared by all tile pipelines: a float HWC
 // accumulator, a float weight map, optionally the u8 output staging. They
 // scale with the OUTPUT image, not the tile size — this term is what makes
@@ -139,6 +201,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             ncnn::VkMat out_gpu_hwc;
             ncnn::VkMat out_gpu_weight;
             ncnn::VkMat out_gpu_u8;
+            ncnn::Mat u8_download_scratch;
             ncnn::VkMat in_gpu_full;
             size_t region_cursor = 0;
             ProcessingProgress progress;
@@ -244,7 +307,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         for (auto& state : states) {
             state.out_gpu_hwc.create(static_cast<int>(state.out_total), 4u, blob_vkallocator);
             state.out_gpu_weight.create(static_cast<int>(state.out_total_pixels), 4u, blob_vkallocator);
-            state.out_gpu_u8.create(static_cast<int>(state.out_total), 1u, blob_vkallocator);
+            // u8 output as uint32 words: whole-word stores in the quantize
+            // kernel never cross the allocation or the descriptor range.
+            state.out_gpu_u8.create((static_cast<int>(state.out_total) + 3) / 4, 4u, blob_vkallocator);
             if (auto oom = check_vkmat_allocated(state.out_gpu_hwc, "u8 queue output accumulator")) {
                 return std::unexpected(*oom);
             }
@@ -428,6 +493,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
 
             auto perf_t_rec_start = std::chrono::steady_clock::now();
             ncnn::VkCompute cmd(vkdev_);
+            std::vector<ncnn::VkMat> u8_upload_staging;
             bool has_init_work = false;
             if (need_init_submit) {
                 has_init_work = true;
@@ -454,9 +520,11 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                     if (in_total > static_cast<size_t>(std::numeric_limits<int>::max())) {
                         return std::unexpected(EngineError{205, "Input image too large for Vulkan tile pipeline"});
                     }
-                    ncnn::Mat in_cpu_full(static_cast<int>(in_total),
-                                          const_cast<uint8_t*>(state.task->input_data), 1u);
-                    cmd.record_clone(in_cpu_full, state.in_gpu_full, opt);
+                    if (!stage_u8_input(cmd, staging_vkallocator,
+                                        state.task->input_data, in_total,
+                                        opt, state.in_gpu_full, u8_upload_staging)) {
+                        return std::unexpected(EngineError{212, "Vulkan u8 input upload failed (staging)"});
+                    }
                 }
             }
             batch_output_keepalive.clear();
@@ -500,9 +568,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                     pre_constants[8].i = (model_prepadding_ > 0) ? 1 : 0;  // border replicate
 
                     ncnn::VkMat pre_dispatcher;
-                    pre_dispatcher.w = pad_info.net_in_w;
-                    pre_dispatcher.h = pad_info.net_in_h;
-                    pre_dispatcher.c = state.task->channels;
+                    pre_dispatcher.w = (state.task->channels * static_cast<int>(in_gpu_chw.cstep) + 1) / 2;
+                    pre_dispatcher.h = 1;
+                    pre_dispatcher.c = 1;
                     cmd.record_pipeline(preproc_hwc_crop_u8_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
 
                     auto record_result = record_tile_outputs(cmd, state, region, pad_info, in_gpu_chw,
@@ -546,16 +614,16 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                     normalize_quantize_constants[1].i = state.task->channels;
 
                     ncnn::VkMat normalize_quantize_dispatcher;
-                    normalize_quantize_dispatcher.w = static_cast<int>(state.out_total_pixels);
+                    normalize_quantize_dispatcher.w =
+                        (static_cast<int>(state.out_total_pixels) * state.task->channels + 3) / 4;
                     normalize_quantize_dispatcher.h = 1;
-                    normalize_quantize_dispatcher.c = state.task->channels;
+                    normalize_quantize_dispatcher.c = 1;
                     cmd.record_pipeline(normalize_quantize_output_pipeline_.get(),
                                         normalize_quantize_bindings,
                                         normalize_quantize_constants,
                                         normalize_quantize_dispatcher);
 
-                    ncnn::Mat out_cpu(static_cast<int>(state.out_total), state.task->output_data, 1u);
-                    cmd.record_clone(state.out_gpu_u8, out_cpu, opt);
+                    state.u8_download_scratch = record_u8_download(cmd, state.out_gpu_u8, opt);
                 }
             }
 
@@ -575,6 +643,13 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                     return std::unexpected(EngineError{206, std::format("Vulkan queue init failed (error {})", submit_ret)});
                 }
                 return std::unexpected(EngineError{210, std::format("Vulkan submit failed (error {})", submit_ret)});
+            }
+            if (all_tiles_scheduled) {
+                for (auto& state : states) {
+                    std::memcpy(state.task->output_data,
+                                static_cast<const uint8_t*>(state.u8_download_scratch.data),
+                                state.out_total);
+                }
             }
             recycle_tile_inputs(inflight_tile_inputs);
             need_init_submit = false;
@@ -603,6 +678,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
 
         if (!outputs_downloaded) {
             ncnn::VkCompute cmd(vkdev_);
+            std::vector<ncnn::Mat> scratches;
             for (auto& state : states) {
                 normalize_quantize_bindings[0] = state.out_gpu_hwc;
                 normalize_quantize_bindings[1] = state.out_gpu_weight;
@@ -612,21 +688,28 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 normalize_quantize_constants[1].i = state.task->channels;
 
                 ncnn::VkMat normalize_quantize_dispatcher;
-                normalize_quantize_dispatcher.w = static_cast<int>(state.out_total_pixels);
+                normalize_quantize_dispatcher.w =
+                    (static_cast<int>(state.out_total_pixels) * state.task->channels + 3) / 4;
                 normalize_quantize_dispatcher.h = 1;
-                normalize_quantize_dispatcher.c = state.task->channels;
+                normalize_quantize_dispatcher.c = 1;
                 cmd.record_pipeline(normalize_quantize_output_pipeline_.get(),
                                     normalize_quantize_bindings,
                                     normalize_quantize_constants,
                                     normalize_quantize_dispatcher);
 
-                ncnn::Mat out_cpu(static_cast<int>(state.out_total), state.task->output_data, 1u);
-                cmd.record_clone(state.out_gpu_u8, out_cpu, opt);
+                scratches.push_back(record_u8_download(cmd, state.out_gpu_u8, opt));
             }
 
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
                 return std::unexpected(EngineError{214, std::format("Vulkan queue normalize+quantize/download failed (error {})", submit_ret)});
+            }
+            size_t si = 0;
+            for (auto& state : states) {
+                std::memcpy(state.task->output_data,
+                            static_cast<const uint8_t*>(scratches[si].data),
+                            state.out_total);
+                ++si;
             }
         }
 
@@ -817,8 +900,12 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         ncnn::VkMat in_gpu_full;
         if (use_gpu_crop) {
             ncnn::VkCompute cmd(vkdev_);
-            ncnn::Mat in_cpu_full(static_cast<int>(in_total_full), const_cast<float*>(input_data), 4u);
-            cmd.record_clone(in_cpu_full, in_gpu_full, opt);
+            std::vector<ncnn::VkMat> float_upload_staging;
+            if (!stage_raw_input(cmd, staging_vkallocator,
+                                 input_data, in_total_full * sizeof(float), 4u,
+                                 opt, in_gpu_full, float_upload_staging)) {
+                return std::unexpected(EngineError{210, "Vulkan input upload failed (staging)"});
+            }
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
                 return std::unexpected(EngineError{210, std::format("Vulkan input upload failed (error {})", submit_ret)});
@@ -999,9 +1086,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                         pre_constants[8].i = (model_prepadding_ > 0) ? 1 : 0;  // border replicate
 
                         ncnn::VkMat pre_dispatcher;
-                        pre_dispatcher.w = pad_info.net_in_w;
-                        pre_dispatcher.h = pad_info.net_in_h;
-                        pre_dispatcher.c = channels;
+                        pre_dispatcher.w = (channels * static_cast<int>(in_gpu_chw.cstep) + 1) / 2;
+                        pre_dispatcher.h = 1;
+                        pre_dispatcher.c = 1;
                         cmd.record_pipeline(preproc_hwc_crop_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
 
                         auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, batch_keepalive,
@@ -1113,11 +1200,13 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                     // Net input: blend-space tile grown by model_prepadding_.
                     const size_t net_in_total =
                         static_cast<size_t>(pad_info.net_in_w) * pad_info.net_in_h * channels;
-                    ncnn::Mat in_cpu(static_cast<int>(net_in_total),
-                                     current_batch->input_buffers[idx].data(),
-                                     4u);
                     ncnn::VkMat in_gpu_hwc;
-                    cmd.record_clone(in_cpu, in_gpu_hwc, opt);
+                    if (!stage_raw_input(cmd, staging_vkallocator,
+                                         current_batch->input_buffers[idx].data(),
+                                         net_in_total * sizeof(float), 4u,
+                                         opt, in_gpu_hwc, batch_keepalive)) {
+                        return std::unexpected(EngineError{210, "Vulkan input upload failed (staging)"});
+                    }
 
                     ncnn::VkMat in_gpu_chw;
                     in_gpu_chw.create(pad_info.net_in_w, pad_info.net_in_h, channels, in_elemsize, 1, blob_vkallocator);
@@ -1133,9 +1222,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                     pre_constants[3].i = static_cast<int>(in_gpu_chw.cstep);
 
                     ncnn::VkMat pre_dispatcher;
-                    pre_dispatcher.w = pad_info.net_in_w;
-                    pre_dispatcher.h = pad_info.net_in_h;
-                    pre_dispatcher.c = channels;
+                    pre_dispatcher.w = (channels * static_cast<int>(in_gpu_chw.cstep) + 1) / 2;
+                    pre_dispatcher.h = 1;
+                    pre_dispatcher.c = 1;
                     cmd.record_pipeline(preproc_hwc_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
                     auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, batch_keepalive,
                                                              tile_in_w, tile_in_h);
@@ -1373,8 +1462,12 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         ncnn::VkMat in_gpu_full;
         if (use_gpu_crop) {
             ncnn::VkCompute cmd(vkdev_);
-            ncnn::Mat in_cpu_full(static_cast<int>(in_total_full), const_cast<uint8_t*>(input_data), 1u);
-            cmd.record_clone(in_cpu_full, in_gpu_full, opt);
+            std::vector<ncnn::VkMat> u8_upload_staging;
+            if (!stage_u8_input(cmd, staging_vkallocator,
+                                input_data, in_total_full,
+                                opt, in_gpu_full, u8_upload_staging)) {
+                return std::unexpected(EngineError{212, "Vulkan u8 input upload failed (staging)"});
+            }
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
                 return std::unexpected(EngineError{212, std::format("Vulkan u8 input upload failed (error {})", submit_ret)});
@@ -1481,7 +1574,11 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             return {};
         };
 
-        auto record_normalize_quantize_download = [&](ncnn::VkCompute& cmd, ncnn::VkMat& out_gpu_u8) {
+        // Records quantize + download into a caller-held scratch; the host
+        // copy happens after the caller's submit_and_wait.
+        auto record_normalize_quantize_download = [&](ncnn::VkCompute& cmd,
+                                                      ncnn::VkMat& out_gpu_u8,
+                                                      ncnn::Mat& scratch) {
             std::vector<ncnn::VkMat> normalize_quantize_bindings(3);
             normalize_quantize_bindings[0] = out_gpu_hwc;
             normalize_quantize_bindings[1] = out_gpu_weight;
@@ -1492,14 +1589,14 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             normalize_quantize_constants[1].i = channels;
 
             ncnn::VkMat normalize_quantize_dispatcher;
-            normalize_quantize_dispatcher.w = static_cast<int>(out_total_pixels);
+            normalize_quantize_dispatcher.w =
+                (static_cast<int>(out_total_pixels) * channels + 3) / 4;
             normalize_quantize_dispatcher.h = 1;
-            normalize_quantize_dispatcher.c = channels;
+            normalize_quantize_dispatcher.c = 1;
             cmd.record_pipeline(normalize_quantize_output_pipeline_.get(), normalize_quantize_bindings,
                                 normalize_quantize_constants, normalize_quantize_dispatcher);
 
-            ncnn::Mat out_cpu(static_cast<int>(out_total), output_data, 1u);
-            cmd.record_clone(out_gpu_u8, out_cpu, opt);
+            scratch = record_u8_download(cmd, out_gpu_u8, opt);
         };
 
         bool output_downloaded = false;
@@ -1590,9 +1687,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                         pre_constants[8].i = (model_prepadding_ > 0) ? 1 : 0;  // border replicate
 
                         ncnn::VkMat pre_dispatcher;
-                        pre_dispatcher.w = pad_info.net_in_w;
-                        pre_dispatcher.h = pad_info.net_in_h;
-                        pre_dispatcher.c = channels;
+                        pre_dispatcher.w = (channels * static_cast<int>(in_gpu_chw.cstep) + 1) / 2;
+                        pre_dispatcher.h = 1;
+                        pre_dispatcher.c = 1;
                         cmd.record_pipeline(preproc_hwc_crop_u8_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
 
                         auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, batch_keepalive,
@@ -1604,12 +1701,13 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
 
                     const bool is_last_batch = (total_completed_tiles + chunk_size == regions.size());
                     ncnn::VkMat out_gpu_u8;
+                    ncnn::Mat u8_scratch;
                     if (is_last_batch) {
-                        out_gpu_u8.create(static_cast<int>(out_total), 1u, blob_vkallocator);
+                        out_gpu_u8.create((static_cast<int>(out_total) + 3) / 4, 4u, blob_vkallocator);
                         if (auto oom = check_vkmat_allocated(out_gpu_u8, "u8 tile download staging")) {
                             return std::unexpected(*oom);
                         }
-                        record_normalize_quantize_download(cmd, out_gpu_u8);
+                        record_normalize_quantize_download(cmd, out_gpu_u8, u8_scratch);
                     }
 
                     if (cs_perf2) p2_record_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - perf_t_rec_start2).count();
@@ -1624,6 +1722,8 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                     }
                     if (is_last_batch) {
                         output_downloaded = true;
+                        std::memcpy(output_data, static_cast<const uint8_t*>(u8_scratch.data),
+                                    out_total);
                     }
 
                     for (size_t i = pass_cursor; i < chunk_end; ++i) {
@@ -1724,11 +1824,12 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                     // Net input: blend-space tile grown by model_prepadding_.
                     const size_t net_in_total =
                         static_cast<size_t>(pad_info.net_in_w) * pad_info.net_in_h * channels;
-                    ncnn::Mat in_cpu(static_cast<int>(net_in_total),
-                                     current_batch->input_buffers[idx].data(),
-                                     1u);
                     ncnn::VkMat in_gpu_hwc;
-                    cmd.record_clone(in_cpu, in_gpu_hwc, opt);
+                    if (!stage_u8_input(cmd, staging_vkallocator,
+                                        current_batch->input_buffers[idx].data(), net_in_total,
+                                        opt, in_gpu_hwc, batch_keepalive)) {
+                        return std::unexpected(EngineError{212, "Vulkan u8 input upload failed (staging)"});
+                    }
 
                     ncnn::VkMat in_gpu_chw;
                     in_gpu_chw.create(pad_info.net_in_w, pad_info.net_in_h, channels, in_elemsize, 1, blob_vkallocator);
@@ -1744,9 +1845,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                     pre_constants[3].i = static_cast<int>(in_gpu_chw.cstep);
 
                     ncnn::VkMat pre_dispatcher;
-                    pre_dispatcher.w = pad_info.net_in_w;
-                    pre_dispatcher.h = pad_info.net_in_h;
-                    pre_dispatcher.c = channels;
+                    pre_dispatcher.w = (channels * static_cast<int>(in_gpu_chw.cstep) + 1) / 2;
+                    pre_dispatcher.h = 1;
+                    pre_dispatcher.c = 1;
                     cmd.record_pipeline(preproc_hwc_u8_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
                     auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, batch_keepalive,
                                                              tile_in_w, tile_in_h);
@@ -1756,13 +1857,14 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 }
 
                 ncnn::VkMat out_gpu_u8;
+                ncnn::Mat u8_scratch;
                 const bool is_last_batch = (current_batch->end == regions.size());
                 if (is_last_batch) {
-                    out_gpu_u8.create(static_cast<int>(out_total), 1u, blob_vkallocator);
+                    out_gpu_u8.create((static_cast<int>(out_total) + 3) / 4, 4u, blob_vkallocator);
                     if (auto oom = check_vkmat_allocated(out_gpu_u8, "u8 tile download staging")) {
                         return std::unexpected(*oom);
                     }
-                    record_normalize_quantize_download(cmd, out_gpu_u8);
+                    record_normalize_quantize_download(cmd, out_gpu_u8, u8_scratch);
                 }
 
                 int submit_ret = cmd.submit_and_wait();
@@ -1774,6 +1876,8 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 }
                 if (is_last_batch) {
                     output_downloaded = true;
+                    std::memcpy(output_data, static_cast<const uint8_t*>(u8_scratch.data),
+                                out_total);
                 }
 
                 for (size_t i = current_batch->begin; i < current_batch->end; ++i) {
@@ -1797,15 +1901,18 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         if (!output_downloaded) {
             ncnn::VkCompute cmd(vkdev_);
             ncnn::VkMat out_gpu_u8;
-            out_gpu_u8.create(static_cast<int>(out_total), 1u, blob_vkallocator);
+            out_gpu_u8.create((static_cast<int>(out_total) + 3) / 4, 4u, blob_vkallocator);
             if (auto oom = check_vkmat_allocated(out_gpu_u8, "u8 tile download staging")) {
                 return std::unexpected(*oom);
             }
-            record_normalize_quantize_download(cmd, out_gpu_u8);
+            ncnn::Mat u8_scratch;
+            record_normalize_quantize_download(cmd, out_gpu_u8, u8_scratch);
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
                 return std::unexpected(EngineError{214, std::format("Vulkan normalize+quantize/download failed (error {})", submit_ret)});
             }
+            std::memcpy(output_data, static_cast<const uint8_t*>(u8_scratch.data),
+                        out_total);
         }
 
         // ---- TEMP PERF INSTRUMENTATION print (crop-u8 hot path) ----
@@ -1886,6 +1993,276 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         }
 
         return stream;
+    }
+
+    // UPIX_KERNEL_SELFTEST=1: round-trip HWC fp32 -> CHW f16-words -> HWC
+    // through the two rewritten layout kernels on deliberately odd dims.
+    void NCNNEngineImpl::kernel_selftest() {
+        if (vkdev_ == nullptr || preproc_hwc_to_chw_ == nullptr ||
+            postproc_chw_to_hwc_ == nullptr) {
+            LOG_WARNING("Engine", "SELFTEST pipelines unavailable");
+            return;
+        }
+        constexpr int W = 5, H = 3, C = 3;
+        ncnn::VkAllocator* blob = vkdev_->acquire_blob_allocator();
+        ncnn::VkAllocator* staging = vkdev_->acquire_staging_allocator();
+        detail::VkAllocGuard guard{vkdev_, blob, staging};
+        ncnn::Option opt = net_->opt;
+        opt.blob_vkallocator = blob;
+        opt.workspace_vkallocator = blob;
+        opt.staging_vkallocator = staging;
+
+        std::vector<float> src(static_cast<size_t>(W) * H * C);
+        for (size_t i = 0; i < src.size(); ++i) {
+            src[i] = static_cast<float>(i % 251) / 251.0f;
+        }
+
+        ncnn::VkCompute cmd(vkdev_);
+        std::vector<ncnn::VkMat> keep;
+        ncnn::VkMat in_hwc;
+        stage_raw_input(cmd, staging, src.data(), src.size() * sizeof(float), 4u,
+                        opt, in_hwc, keep);
+
+        ncnn::VkMat chw;
+        chw.create(W, H, C, 2u, 1, blob);
+        std::vector<ncnn::VkMat> pb(2);
+        pb[0] = in_hwc;
+        pb[1] = chw;
+        std::vector<ncnn::vk_constant_type> pc(4);
+        pc[0].i = W; pc[1].i = H; pc[2].i = C; pc[3].i = static_cast<int>(chw.cstep);
+        ncnn::VkMat pd;
+        pd.w = (C * static_cast<int>(chw.cstep) + 1) / 2; pd.h = 1; pd.c = 1;
+        cmd.record_pipeline(preproc_hwc_to_chw_.get(), pb, pc, pd);
+
+        ncnn::VkMat out_hwc;
+        out_hwc.create(W, H, C, 4u, 1, blob);
+        std::vector<ncnn::VkMat> qb(2);
+        qb[0] = chw;
+        qb[1] = out_hwc;
+        ncnn::VkMat qd;
+        qd.w = W; qd.h = H; qd.c = C;
+        cmd.record_pipeline(postproc_chw_to_hwc_.get(), qb, pc, qd);
+
+        ncnn::Mat hwc_dl;
+        cmd.record_clone(out_hwc, hwc_dl, opt);
+        ncnn::Mat chw_dl;
+        cmd.record_clone(chw, chw_dl, opt);
+        const int rc = cmd.submit_and_wait();
+
+        int bad = 0;
+        double mx = 0.0;
+        if (rc == 0 && hwc_dl.data != nullptr && chw_dl.data != nullptr) {
+            const auto* got = static_cast<const float*>(hwc_dl.data);
+            for (int i = 0; i < W * H * C; ++i) {
+                const double d = std::fabs(static_cast<double>(got[i]) - src[i]);
+                if (d > 1.0 / 512.0) {
+                    if (bad < 6) {
+                        LOG_INFO("Engine", "SELFTEST mismatch i={} got={:.5f} want={:.5f}", i, got[i], src[i]);
+                    }
+                    ++bad;
+                }
+                mx = std::max(mx, d);
+            }
+        } else {
+            LOG_WARNING("Engine", "SELFTEST submit rc={} data null", rc);
+            bad = -1;
+        }
+        LOG_INFO("Engine",
+                 "SELFTEST roundtrip w={}x{}x{} cstep={} bad={} maxabs={:.5f} => {}",
+                 W, H, C, chw.cstep, bad, mx, bad == 0 ? "PASS" : "FAIL");
+
+        // Part 2: crop-u8 kernel with an identity window (mirror border on an
+        // exact-size window is the identity map).
+        if (preproc_hwc_crop_u8_to_chw_ == nullptr) {
+            LOG_WARNING("Engine", "SELFTEST crop-u8 pipeline unavailable");
+            return;
+        }
+        std::vector<uint8_t> src8(static_cast<size_t>(W) * H * C);
+        for (size_t i = 0; i < src8.size(); ++i) {
+            src8[i] = static_cast<uint8_t>((i * 37) % 256);
+        }
+        ncnn::VkCompute cmd2(vkdev_);
+        std::vector<ncnn::VkMat> keep2;
+        ncnn::VkMat u8_full;
+        stage_u8_input(cmd2, staging, src8.data(), src8.size(), opt, u8_full, keep2);
+        ncnn::VkMat chw2;
+        chw2.create(W, H, C, 2u, 1, blob);
+        std::vector<ncnn::VkMat> rb(2);
+        rb[0] = u8_full;
+        rb[1] = chw2;
+        std::vector<ncnn::vk_constant_type> rcst(9);
+        rcst[0].i = W; rcst[1].i = H; rcst[2].i = C;
+        rcst[3].i = 0; rcst[4].i = 0;             // tile_x/y
+        rcst[5].i = W; rcst[6].i = H;             // tile_w/h
+        rcst[7].i = static_cast<int>(chw2.cstep);
+        rcst[8].i = 0;                            // border_replicate → mirror
+        ncnn::VkMat rd;
+        rd.w = (C * static_cast<int>(chw2.cstep) + 1) / 2; rd.h = 1; rd.c = 1;
+        cmd2.record_pipeline(preproc_hwc_crop_u8_to_chw_.get(), rb, rcst, rd);
+        ncnn::Mat chw2_dl;
+        cmd2.record_clone(chw2, chw2_dl, opt);
+        const int rc2 = cmd2.submit_and_wait();
+        if (rc2 == 0 && chw2_dl.data != nullptr) {
+            const auto* w16dbg = static_cast<const uint16_t*>(chw2_dl.data);
+            std::string hex;
+            for (int i = 0; i < 8; ++i) {
+                hex += std::format("{:04x} ", w16dbg[i]);
+            }
+            LOG_INFO("Engine", "SELFTEST crop-u8 first halves: {}", hex);
+        }
+        int bad2 = -2;
+        if (rc2 == 0 && chw2_dl.data != nullptr) {
+            // create_like may resize to f16 dims — byte layout is identical.
+            bad2 = 0;
+            const auto* w16 = static_cast<const uint16_t*>(chw2_dl.data);
+            for (int c = 0; c < C && bad2 < 6; ++c) {
+                for (int off = 0; off < W * H && bad2 < 6; ++off) {
+                    const int e = c * static_cast<int>(chw2.cstep) + off;
+                    // chw2_dl is an f16-typed Mat: u16 index e IS element e.
+                    const uint32_t bits = w16[e];
+                    const uint32_t sgn = (bits >> 15) & 1u;
+                    const uint32_t exp = (bits >> 10) & 0x1Fu;
+                    const uint32_t man = bits & 0x3FFu;
+                    float v;
+                    if (exp == 0) v = std::ldexp(static_cast<float>(man), -24);
+                    else v = std::ldexp(1.0f + static_cast<float>(man) / 1024.0f,
+                                        static_cast<int>(exp) - 15);
+                    if (sgn) v = -v;
+                    const float want =
+                        static_cast<float>(src8[(static_cast<size_t>(off) * C) + c]) / 255.0f;
+                    if (std::fabs(v - want) > 2.0f / 255.0f) {
+                        LOG_INFO("Engine", "SELFTEST crop-u8 mismatch e={} got={:.5f} want={:.5f} bits={:04x}",
+                                 e, v, want, bits);
+                        ++bad2;
+                    }
+                }
+            }
+        }
+        LOG_INFO("Engine", "SELFTEST crop-u8 cstep={} => {}", chw2.cstep,
+                 bad2 == 0 ? "PASS" : "FAIL");
+
+        // Part 3: BlendTile lane-read over a synthetic f16 net-output plane.
+        if (blend_tile_pipeline_ != nullptr && normalize_quantize_output_pipeline_ != nullptr) {
+            constexpr int TW = 5, TH = 3;
+            const int cs = static_cast<int>(chw2.cstep);
+            std::vector<float> tile_vals(static_cast<size_t>(C) * cs);
+            for (int c = 0; c < C; ++c) {
+                for (int off = 0; off < TW * TH; ++off) {
+                    tile_vals[static_cast<size_t>(c) * cs + off] =
+                        static_cast<float>((c * 31 + off * 7) % 200) / 200.0f;
+                }
+            }
+            ncnn::VkCompute cmd3(vkdev_);
+            std::vector<ncnn::VkMat> keep3;
+            // Stage the f16 tile as raw words (bytes identical to an f16 Mat).
+            const size_t half_bytes = tile_vals.size() * 2;
+            std::vector<uint8_t> f16bytes(half_bytes);
+            for (size_t e = 0; e < tile_vals.size(); ++e) {
+                // float -> fp16 nearest (values are small rationals; use float bits trick)
+                const float v = tile_vals[e];
+                uint16_t h;
+                // simple conversion via rounding float bits
+                const uint32_t fb = [&] {
+                    uint32_t u;
+                    std::memcpy(&u, &v, 4);
+                    return u;
+                }();
+                const uint32_t sgn = (fb >> 16) & 0x8000u;
+                int32_t ex = static_cast<int32_t>((fb >> 23) & 0xFFu) - 127 + 15;
+                uint32_t ma = (fb >> 13) & 0x3FFu;
+                if (ex <= 0) { h = 0; } else if (ex >= 31) { h = 0x7C00; }
+                else { h = static_cast<uint16_t>(sgn | (static_cast<uint32_t>(ex) << 10) | ma); }
+                f16bytes[e * 2] = static_cast<uint8_t>(h & 0xFF);
+                f16bytes[e * 2 + 1] = static_cast<uint8_t>(h >> 8);
+            }
+            ncnn::VkMat tile_f16;
+            stage_raw_input(cmd3, staging, f16bytes.data(), half_bytes, 2u,
+                            opt, tile_f16, keep3);
+            ncnn::VkMat acc, wgt;
+            acc.create(TW, TH, C, 4u, 1, blob);
+            wgt.create(static_cast<int>(TW * TH), 4u, 1, blob);
+            // Zero the accumulators: blend accumulates with +=.
+            {
+                std::vector<ncnn::VkMat> cb(1);
+                cb[0] = acc;
+                std::vector<ncnn::vk_constant_type> cc(1);
+                cc[0].i = TW * TH * C;
+                ncnn::VkMat cd;
+                cd.w = TW * TH * C; cd.h = 1; cd.c = 1;
+                cmd3.record_pipeline(clear_output_pipeline_.get(), cb, cc, cd);
+                cb[0] = wgt;
+                cc[0].i = TW * TH;
+                cd.w = TW * TH;
+                cmd3.record_pipeline(clear_output_pipeline_.get(), cb, cc, cd);
+            }
+            std::vector<ncnn::VkMat> bb(3);
+            bb[0] = tile_f16;
+            bb[1] = acc;
+            bb[2] = wgt;
+            std::vector<ncnn::vk_constant_type> bc(13);
+            bc[0].i = TW; bc[1].i = TH; bc[2].i = C;
+            bc[3].i = TW; bc[4].i = TH;             // out_w/h
+            bc[5].i = 0;  bc[6].i = 0;              // out_x/y
+            bc[7].i = 0;                            // overlap
+            bc[8].i = TW; bc[9].i = TH;             // src full dims
+            bc[10].i = 0; bc[11].i = 0;             // src offsets
+            bc[12].i = cs;                          // src_cstep
+            ncnn::VkMat bd;
+            bd.w = TW; bd.h = TH; bd.c = C;
+            cmd3.record_pipeline(blend_tile_pipeline_.get(), bb, bc, bd);
+
+            // Part 4: normalize+quantize over the blended result.
+            ncnn::VkMat u8out;
+            u8out.create((TW * TH * C + 3) / 4, 4u, 1, blob);
+            std::vector<ncnn::VkMat> nb(3);
+            nb[0] = acc;
+            nb[1] = wgt;
+            nb[2] = u8out;
+            std::vector<ncnn::vk_constant_type> nc2(2);
+            nc2[0].i = TW * TH; nc2[1].i = C;
+            ncnn::VkMat nd;
+            nd.w = (TW * TH * C + 3) / 4; nd.h = 1; nd.c = 1;
+            cmd3.record_pipeline(normalize_quantize_output_pipeline_.get(), nb, nc2, nd);
+
+            ncnn::Mat acc_dl;
+            cmd3.record_clone(acc, acc_dl, opt);
+            ncnn::Mat u8_dl;
+            {
+                const int words = (TW * TH * C + 3) / 4;
+                u8_dl.create(words, static_cast<size_t>(4), 1);
+                cmd3.record_clone(u8out, u8_dl, opt);
+            }
+            const int rc3 = cmd3.submit_and_wait();
+
+            int badb = -3, badq = -3;
+            if (rc3 == 0 && acc_dl.data != nullptr && u8_dl.data != nullptr) {
+                badb = 0; badq = 0;
+                const auto* gota = static_cast<const float*>(acc_dl.data);
+                const auto* got8 = static_cast<const uint8_t*>(u8_dl.data);
+                for (int c = 0; c < C && (badb < 6 || badq < 6); ++c) {
+                    for (int off = 0; off < TW * TH && (badb < 6 || badq < 6); ++off) {
+                        const int di = off * C + c;
+                        const float want = tile_vals[static_cast<size_t>(c) * cs + off];
+                        if (std::fabs(gota[di] - want) > 1.0f / 512.0f) {
+                            LOG_INFO("Engine", "SELFTEST blend mismatch px={} c={} got={:.5f} want={:.5f}",
+                                     off, c, gota[di], want);
+                            ++badb;
+                        }
+                        const int eb = c * cs + off; // element index in the source plane
+                        (void)eb;
+                        const uint8_t wantb = static_cast<uint8_t>(
+                            std::lround(std::clamp(want * 255.0f, 0.0f, 255.0f)));
+                        if (got8[di] != wantb && badq < 6) {
+                            LOG_INFO("Engine", "SELFTEST quant mismatch e={} got={} want={}",
+                                     di, got8[di], wantb);
+                            ++badq;
+                        }
+                    }
+                }
+            }
+            LOG_INFO("Engine", "SELFTEST blend => {} quant => {}",
+                     badb == 0 ? "PASS" : "FAIL", badq == 0 ? "PASS" : "FAIL");
+        }
     }
 
     bool NCNNEngineImpl::init_gpu_layout_pipelines() {
@@ -2278,9 +2655,13 @@ auto NCNNEngineImpl::process_vulkan_with_gpu_layout_run(
 
         ncnn::VkCompute cmd(vkdev_);
 
-        ncnn::Mat in_cpu(static_cast<int>(in_total), const_cast<float*>(input), 4u);
+        std::vector<ncnn::VkMat> float_upload_staging;
         ncnn::VkMat in_gpu_hwc;
-        cmd.record_clone(in_cpu, in_gpu_hwc, opt);
+        if (!stage_raw_input(cmd, staging_vkallocator,
+                             input, in_total * sizeof(float), 4u,
+                             opt, in_gpu_hwc, float_upload_staging)) {
+            return std::unexpected(EngineError{14, "Vulkan input upload failed (staging)"});
+        }
 
         const size_t in_elemsize = opt.use_fp16_storage ? 2u : 4u;
         ncnn::VkMat in_gpu_chw;
@@ -2297,9 +2678,9 @@ auto NCNNEngineImpl::process_vulkan_with_gpu_layout_run(
         pre_constants[3].i = static_cast<int>(in_gpu_chw.cstep);
 
         ncnn::VkMat pre_dispatcher;
-        pre_dispatcher.w = width;
-        pre_dispatcher.h = height;
-        pre_dispatcher.c = channels;
+        pre_dispatcher.w = (channels * static_cast<int>(in_gpu_chw.cstep) + 1) / 2;
+        pre_dispatcher.h = 1;
+        pre_dispatcher.c = 1;
         cmd.record_pipeline(preproc_hwc_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
 
         if (cancel_flag) {

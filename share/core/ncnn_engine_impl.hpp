@@ -59,6 +59,8 @@ public:
     std::string model_name() const override;
     int get_scale_factor() const override;
 
+    std::string debug_blob_scan(const uint8_t* input, int width, int height, int channels) override;
+
     void set_scale_factor(int scale) override;
     void set_inference_threads(int threads) override;
     auto get_memory_info() const -> std::pair<size_t, size_t> override;
@@ -90,6 +92,7 @@ private:
         int channels = -1, size_t submit_budget = 0, size_t submit_budget_cap = 0,
         size_t submit_memory_budget_mb = 0, double avg_tile_pixels = -1.0) const -> std::string;
     bool init_gpu_layout_pipelines();
+    void kernel_selftest();
     bool init_gpu_crop_pipeline();
     bool init_gpu_tile_pipelines();
     auto process_vulkan_with_gpu_layout(const float* input, float* output, int width, int height,

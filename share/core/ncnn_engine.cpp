@@ -289,6 +289,9 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             }
             LOG_INFO("Engine", "GPU pipeline readiness snapshot: {}",
                      format_vulkan_runtime_snapshot("load_model_after_pipeline_init"));
+            if (std::getenv("UPIX_KERNEL_SELFTEST") != nullptr) {
+                kernel_selftest();
+            }
         } else {
             gpu_layout_pipeline_ready_ = false;
             gpu_layout_u8_pipeline_ready_ = false;
@@ -801,6 +804,176 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
         }
 
         return float_to_u8_checked(output_float.data(), output, out_total);
+    }
+
+    auto NCNNEngineImpl::debug_blob_scan(const uint8_t* input, int width, int height, int channels)
+        -> std::string {
+        if (!initialized_ || !model_loaded_) {
+            return "blobscan: engine or model not ready";
+        }
+        if (input == nullptr || width <= 0 || height <= 0 || channels <= 0) {
+            return "blobscan: invalid input";
+        }
+
+        // Interleaved u8 -> planar float Mat, plus the same replicate-border
+        // pre-padding process() applies, so blob shapes match production runs.
+        const size_t in_total = static_cast<size_t>(width) * height * channels;
+        const auto input_float = u8_to_float_buffer(input, in_total);
+        ncnn::Mat in(width, height, channels);
+        for (int c = 0; c < channels; ++c) {
+            float* in_channel = in.channel(c);
+            for (int h = 0; h < height; ++h) {
+                for (int w = 0; w < width; ++w) {
+                    const size_t src_idx = (static_cast<size_t>(h) * width + w) * channels + c;
+                    in_channel[static_cast<size_t>(h) * width + w] = input_float[src_idx];
+                }
+            }
+        }
+        ncnn::Mat feed = in;
+        if (model_prepadding_ > 0) {
+            const int net_w = width + 2 * model_prepadding_;
+            const int extra = (scale_factor_ == 3) ? (4 - net_w % 4) % 4 : net_w % 2;
+            ncnn::Mat bordered;
+            ncnn::copy_make_border(in, bordered, model_prepadding_, model_prepadding_,
+                                   model_prepadding_, model_prepadding_ + extra,
+                                   ncnn::BORDER_REPLICATE, 0.f);
+            feed = bordered;
+        }
+
+        // One extractor reused across blobs: ncnn caches each blob's result
+        // within an extractor, so this is one inference pass, not N.
+        ncnn::Extractor ex = net_->create_extractor();
+        ex.set_light_mode(true);
+        const int input_idx = net_->input_indexes().empty() ? -1 : net_->input_indexes()[0];
+        const int set_ret = input_idx >= 0 ? ex.input(input_idx, feed) : ex.input("data", feed);
+        if (set_ret != 0) {
+            return "blobscan: failed to set input";
+        }
+
+        std::string report;
+        bool first_bad_logged = false;
+        for (const auto& blob : net_->blobs()) {
+            ncnn::Mat m;
+            const int ret = ex.extract(blob.name.c_str(), m);
+            if (ret != 0 || m.empty()) {
+                const auto line = std::format("{} extract_failed({})", blob.name, ret);
+                LOG_WARNING("Engine", "BLOBSCAN {}", line);
+                report += line + "\n";
+                continue;
+            }
+            double mn = std::numeric_limits<double>::infinity();
+            double mx = -std::numeric_limits<double>::infinity();
+            double sum = 0;
+            size_t count = 0;
+            size_t nonfinite = 0;
+            for (int c = 0; c < m.c; ++c) {
+                const float* p = m.channel(c);
+                const size_t n = static_cast<size_t>(m.w) * m.h;
+                for (size_t i = 0; i < n; ++i) {
+                    const float v = p[i];
+                    if (!std::isfinite(v)) {
+                        nonfinite++;
+                        continue;
+                    }
+                    mn = std::min<double>(mn, v);
+                    mx = std::max<double>(mx, v);
+                    sum += v;
+                    count++;
+                }
+            }
+            const double mean = count != 0 ? sum / static_cast<double>(count) : 0.0;
+            auto line = std::format("{} {}x{}x{} min={:.4f} max={:.4f} mean={:.4f}",
+                                    blob.name, m.c, m.w, m.h, mn, mx, mean);
+            if (nonfinite != 0) {
+                line += std::format(" NONFINITE={}", nonfinite);
+                if (!first_bad_logged) {
+                    line += " <-- FIRST_BAD";
+                    first_bad_logged = true;
+                }
+            }
+            LOG_INFO("Engine", "BLOBSCAN {}", line);
+            report += line + "\n";
+        }
+        report += first_bad_logged ? "RESULT=nonfinite\n" : "RESULT=all_finite\n";
+
+        // Self-test the custom Vulkan stages the production u8/float paths
+        // wrap around ncnn: whole-image layout pipeline and the tile pipeline.
+        // The blob loop above proves ncnn inference is sane, so any garbage
+        // appearing here isolates the bug to these custom stages.
+#if NCNN_VULKAN
+        const auto stage_stats = [&](const char* stage, const float* data, size_t count) {
+            size_t nonfinite = 0;
+            double mn = std::numeric_limits<double>::infinity();
+            double mx = -std::numeric_limits<double>::infinity();
+            double sum = 0;
+            for (size_t i = 0; i < count; ++i) {
+                const float v = data[i];
+                if (!std::isfinite(v)) {
+                    nonfinite++;
+                    continue;
+                }
+                mn = std::min<double>(mn, v);
+                mx = std::max<double>(mx, v);
+                sum += v;
+            }
+            const auto line = std::format("{} min={:.4f} max={:.4f} mean={:.4f} NONFINITE={}",
+                                          stage, mn, mx, sum / static_cast<double>(count), nonfinite);
+            LOG_INFO("Engine", "BLOBSCAN {}", line);
+            report += line + "\n";
+        };
+
+        if (current_device_ == DeviceType::GPU_VULKAN && gpu_layout_pipeline_ready_) {
+            const int ow = width * scale_factor_;
+            const int oh = height * scale_factor_;
+            const size_t out_count = static_cast<size_t>(ow) * oh * channels;
+            std::vector<float> out(out_count, -777.0f);
+            const std::atomic<bool> no_cancel{false};
+            auto layout_result = process_vulkan_with_gpu_layout(
+                input_float.data(), out.data(), width, height, channels, no_cancel);
+            if (!layout_result.has_value()) {
+                const auto line = std::format("LAYOUT error: {}", layout_result.error().message);
+                LOG_WARNING("Engine", "BLOBSCAN {}", line);
+                report += line + "\n";
+            } else {
+                stage_stats("LAYOUT", out.data(), out_count);
+                size_t sentinels = 0;
+                for (size_t i = 0; i < out_count; ++i) {
+                    if (out[i] == -777.0f) sentinels++;
+                }
+                const auto line = std::format("LAYOUT sentinels={} / {}", sentinels, out_count);
+                LOG_INFO("Engine", "BLOBSCAN {}", line);
+                report += line + "\n";
+            }
+        }
+        if (current_device_ == DeviceType::GPU_VULKAN && supports_gpu_tile_pipeline()) {
+            const int ow = width * scale_factor_;
+            const int oh = height * scale_factor_;
+            const size_t out_count = static_cast<size_t>(ow) * oh * channels;
+            std::vector<float> out(out_count, 0.0f);
+            TileRegion region;
+            region.x = 0;
+            region.y = 0;
+            region.width = static_cast<uint32_t>(width);
+            region.height = static_cast<uint32_t>(height);
+            region.overlap = 0;
+            TileConfig config;
+            config.tile_size = std::min(width, 1024);
+            config.overlap = 0;
+            config.batch_size = 1;
+            const std::atomic<bool> no_cancel{false};
+            auto tile_result = process_tiles_gpu(
+                input_float.data(), out.data(), width, height, channels,
+                {region}, config, {}, no_cancel);
+            if (!tile_result.has_value()) {
+                const auto line = std::format("TILE error: {}", tile_result.error().message);
+                LOG_WARNING("Engine", "BLOBSCAN {}", line);
+                report += line + "\n";
+            } else {
+                stage_stats("TILE", out.data(), out_count);
+            }
+        }
+#endif
+        return report;
     }
 
     auto NCNNEngineImpl::process_batch(
