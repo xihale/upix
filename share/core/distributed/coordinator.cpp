@@ -27,6 +27,11 @@ namespace upix {
 // Bound PC memory instead.
 static constexpr uint64_t MAX_RAW_OUTPUT_BYTES = 512ULL * 1024 * 1024;
 
+// Idle timeout between frames of a persistent phone session: submit N+1
+// only leaves the phone after output N has been written to SAF and the
+// checkpoint saved, so the gap must tolerate file IO, not just framing.
+static constexpr int SESSION_FRAME_TIMEOUT_MS = 60 * 1000;
+
 // Human-readable byte count for logs: "6.66 MB", "512.0 KB", "723 bytes".
 static std::string format_bytes(uint64_t bytes) {
     constexpr uint64_t KB = 1024;
@@ -207,48 +212,62 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     }
 
     // Inference is serialized under engine_mutex_ (Vulkan is not concurrency-safe).
-    std::lock_guard<std::mutex> lk(engine_mutex_);
-    const int scale = engine_->get_scale_factor();
-    const int out_w = width * scale;
-    const int out_h = height * scale;
-    const size_t out_bytes_n = static_cast<size_t>(out_w) * out_h * channels;
-    if (out_w <= 0 || out_h <= 0 || out_bytes_n > MAX_RAW_OUTPUT_BYTES) {
-        return std::unexpected(CoordinatorError{3, "Invalid output dimensions"});
+    // The post-inference encode deliberately runs OUTSIDE the lock: it is pure
+    // CPU over local buffers and can take seconds on large outputs — holding
+    // the lock through it would stall other sessions' ensure_engine_ready().
+    int scale = 1;
+    int out_w = 0;
+    int out_h = 0;
+    std::vector<uint8_t> out_bytes;
+    double inf_s = 0.0;
+    std::string inference_error;
+    {
+        std::lock_guard<std::mutex> lk(engine_mutex_);
+        scale = engine_->get_scale_factor();
+        out_w = width * scale;
+        out_h = height * scale;
+        const size_t out_bytes_n = static_cast<size_t>(out_w) * out_h * channels;
+        if (out_w <= 0 || out_h <= 0 || out_bytes_n > MAX_RAW_OUTPUT_BYTES) {
+            return std::unexpected(CoordinatorError{3, "Invalid output dimensions"});
+        }
+
+        LOG_INFO("Coordinator", "Processing locally: {}x{} model={} tile={}", width, height,
+                 model_name.empty() ? loaded_model_name_ : model_name, config.tile_size);
+
+        out_bytes.resize(out_bytes_n);
+
+        TileConfig tc;
+        tc.tile_size = config.tile_size;
+        tc.overlap = config.tile_overlap;
+        tc.batch_size = 1;
+
+        // Cancellation has no external hook today (cancel_current_task was removed);
+        // keep a local flag so the engine stays interruptible if one is wired in.
+        std::atomic<bool> cancel{false};
+        const auto t_inf_start = std::chrono::steady_clock::now();
+        auto res = tile_processor_->process_image_u8(
+            image_data.data(), out_bytes.data(),
+            width, height, channels,
+            *engine_, tc,
+            [this, &progress_sink](const ProcessingProgress& p) {
+                const float frac = p.percentage() / 100.0f;
+                if (on_task_progress_) {
+                    on_task_progress_(frac);
+                }
+                if (progress_sink) {
+                    progress_sink(frac);
+                }
+            },
+            cancel,
+            /*enable_alpha_bicubic=*/true);
+        inf_s = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - t_inf_start).count();
+        if (!res) {
+            inference_error = res.error().message;
+        }
     }
-
-    LOG_INFO("Coordinator", "Processing locally: {}x{} model={} tile={}", width, height,
-             model_name.empty() ? loaded_model_name_ : model_name, config.tile_size);
-
-    std::vector<uint8_t> out_bytes(out_bytes_n);
-
-    TileConfig tc;
-    tc.tile_size = config.tile_size;
-    tc.overlap = config.tile_overlap;
-    tc.batch_size = 1;
-
-    // Cancellation has no external hook today (cancel_current_task was removed);
-    // keep a local flag so the engine stays interruptible if one is wired in.
-    std::atomic<bool> cancel{false};
-    const auto t_inf_start = std::chrono::steady_clock::now();
-    auto res = tile_processor_->process_image_u8(
-        image_data.data(), out_bytes.data(),
-        width, height, channels,
-        *engine_, tc,
-        [this, &progress_sink](const ProcessingProgress& p) {
-            const float frac = p.percentage() / 100.0f;
-            if (on_task_progress_) {
-                on_task_progress_(frac);
-            }
-            if (progress_sink) {
-                progress_sink(frac);
-            }
-        },
-        cancel,
-        /*enable_alpha_bicubic=*/true);
-    const auto t_inf_end = std::chrono::steady_clock::now();
-
-    if (!res) {
-        return std::unexpected(CoordinatorError{4, res.error().message});
+    if (!inference_error.empty()) {
+        return std::unexpected(CoordinatorError{4, inference_error});
     }
 
     // Encode before transport: a camera photo at x2 is hundreds of MB raw but
@@ -293,7 +312,6 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
                            format_bytes(encoded->size()))});
     }
 
-    const double inf_s = std::chrono::duration<double>(t_inf_end - t_inf_start).count();
     const double enc_s = std::chrono::duration<double>(t_enc_end - t_enc_start).count();
     LOG_INFO("Coordinator", "Local upscale done: inference {} + encode {} ({}x{} {} -> {})",
              format_seconds(inf_s), format_seconds(enc_s), out_w, out_h,
@@ -479,6 +497,180 @@ bool Coordinator::run_handshake(WorkerConnection& conn) {
     return true;
 }
 
+// Handle one CLIENT_SUBMIT: decode the shipped file bytes, upscale on the
+// local engine, encode the result and send CLIENT_RESPONSE (+CLIENT_DATA
+// continuations). Per-task failures (decode/engine/encode) come back as a
+// success=0 response and the session stays usable for the next submit.
+// Returns false only when the transport itself failed (or the frame was
+// malformed) — the caller must then drop the connection.
+bool Coordinator::handle_client_submit(WorkerConnection& conn, std::stop_token& st,
+                                       std::vector<uint8_t> frame_payload) {
+    // Compressed-input submit: the phone ships original file bytes; decode
+    // here so raw pixels never cross the radio.
+    if (frame_payload.size() < sizeof(ClientTaskSubmit)) {
+        LOG_ERROR("Coordinator", "Authenticated client submit payload is invalid");
+        return false;
+    }
+    const ClientTaskSubmit* task =
+        reinterpret_cast<const ClientTaskSubmit*>(frame_payload.data());
+    std::string model_name = task->model_name;
+    std::string output_format = task->output_format;
+    if (output_format.empty()) output_format = "jpg";
+    const int output_quality = task->output_quality == 0 ? 90
+        : static_cast<int>(task->output_quality);
+    const EncoderOptions encoder_opts = from_wire(task->encoder);
+    const uint32_t data_len = task->input_data_length;
+    if (data_len > MAX_NETWORK_PAYLOAD ||
+        sizeof(ClientTaskSubmit) + data_len > frame_payload.size()) {
+        LOG_ERROR("Coordinator", "Compressed client image payload truncated");
+        return false;
+    }
+    std::vector<uint8_t> compressed(
+        frame_payload.data() + sizeof(ClientTaskSubmit),
+        frame_payload.data() + sizeof(ClientTaskSubmit) + data_len);
+
+    auto decoded = Image::load_from_memory(task->input_format, compressed);
+    compressed.clear();
+    compressed.shrink_to_fit();
+    if (!decoded) {
+        LOG_ERROR("Coordinator", "Input decode failed: " + decoded.error().message);
+        ClientTaskResponse response{};
+        response.success = 0;
+        std::strncpy(response.error_message,
+                     ("input decode failed: " + decoded.error().message).c_str(),
+                     sizeof(response.error_message) - 1);
+        return send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
+                              &response, sizeof(response));
+    }
+    const int img_width = decoded->width();
+    const int img_height = decoded->height();
+    const int channels = decoded->channels();
+    std::vector<uint8_t> image_data(decoded->data(),
+                                    decoded->data() + decoded->size());
+
+    LOG_INFO(
+        "Coordinator",
+        "Received authenticated client task: {}x{} model={}",
+        img_width, img_height, model_name
+    );
+
+    ProcessingConfig config;
+    config.tile_size = static_cast<int>(task->tile_size);
+    config.tile_overlap = static_cast<int>(task->tile_overlap);
+
+    // Stream progress to the phone during the upscale. This keeps traffic
+    // flowing on the connection (so NAT/stateful firewalls cannot evict it as
+    // idle while the PC works for tens of seconds) and lets the phone show
+    // real progress. Throttled to whole-percent changes to avoid flooding a
+    // many-tile image. The progress callback runs on this same thread
+    // (process_locally is synchronous), so no locking on last_sent_pct is
+    // needed.
+    int last_sent_pct = -1;
+    // Stop requested while queued: don't start a long upscale.
+    if (st.stop_requested()) {
+        return false;
+    }
+    const auto task_start = std::chrono::steady_clock::now();
+    auto progress_sink = [&conn, &last_sent_pct, &task_start, this](float frac) {
+        const int pct = static_cast<int>(
+            std::clamp(frac, 0.0f, 1.0f) * 100.0f);
+        if (pct == last_sent_pct) {
+            return;
+        }
+        last_sent_pct = pct;
+        // Real time estimate: linear projection from observed rate
+        // (same math the CLI's ETA uses).
+        TaskProgress msg{};
+        msg.stage = 0;
+        msg.percent = static_cast<uint32_t>(pct);
+        if (pct > 0 && pct < 100) {
+            const double elapsed =
+                std::chrono::duration<double>(
+                    std::chrono::steady_clock::now() - task_start).count();
+            msg.eta_seconds = static_cast<uint32_t>(
+                elapsed / pct * (100 - pct));
+        }
+        // A failed progress send (peer gone) is non-fatal: processing
+        // continues and the terminal response send reports the error.
+        (void)send_encrypted(conn, MessageType::MSG_TASK_PROGRESS,
+                             &msg, sizeof(msg));
+    };
+
+    auto process_result = process_locally(
+        image_data,
+        static_cast<int>(img_width),
+        static_cast<int>(img_height),
+        static_cast<int>(channels),
+        model_name,
+        config,
+        output_format,
+        output_quality,
+        encoder_opts,
+        progress_sink
+    );
+
+    // Label the encode phase so the phone's UI can show
+    // "encoding..." instead of a frozen 100%.
+    if (process_result.has_value()) {
+        TaskProgress enc{};
+        enc.stage = 1;
+        (void)send_encrypted(conn, MessageType::MSG_TASK_PROGRESS,
+                             &enc, sizeof(enc));
+    }
+
+    ClientTaskResponse response{};
+    if (process_result.has_value()) {
+        response.success = 1;
+        response.result_data_length = static_cast<uint32_t>(process_result->size());
+    } else {
+        response.success = 0;
+        response.result_data_length = 0;
+        std::strncpy(response.error_message,
+                     process_result.error().message.c_str(),
+                     sizeof(response.error_message) - 1);
+    }
+
+    // Response header + result data go in one encrypted (boxed) frame,
+    // matching the way the phone opens it (session.open verifies the MAC).
+    // Encoded results above MAX_NETWORK_PAYLOAD stream as MSG_CLIENT_DATA
+    // continuation frames instead; small results stay single-frame.
+    constexpr size_t CLIENT_CHUNK_BYTES = 8u * 1024u * 1024u;
+    const auto& result_bytes = process_result.value_or(std::vector<uint8_t>{});
+    const size_t leading_bytes =
+        std::min<size_t>(result_bytes.size(), MAX_NETWORK_PAYLOAD);
+    std::vector<uint8_t> resp_payload(sizeof(ClientTaskResponse) + leading_bytes);
+    std::memcpy(resp_payload.data(), &response, sizeof(response));
+    if (!result_bytes.empty()) {
+        std::memcpy(resp_payload.data() + sizeof(ClientTaskResponse),
+                    result_bytes.data(), leading_bytes);
+    }
+    const auto t_send_start = std::chrono::steady_clock::now();
+    bool sent_ok = send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
+                                  resp_payload.data(), resp_payload.size());
+    for (size_t offset = resp_payload.size() - sizeof(ClientTaskResponse);
+         sent_ok && offset < result_bytes.size();
+         offset += CLIENT_CHUNK_BYTES) {
+        const size_t n = std::min(CLIENT_CHUNK_BYTES, result_bytes.size() - offset);
+        sent_ok = send_encrypted(conn, MessageType::MSG_CLIENT_DATA,
+                                 result_bytes.data() + offset, n);
+    }
+    const auto t_send_end = std::chrono::steady_clock::now();
+    if (!sent_ok) {
+        LOG_ERROR("Coordinator", "Failed to send authenticated client response");
+        return false;
+    }
+    if (process_result.has_value()) {
+        const double send_s =
+            std::chrono::duration<double>(t_send_end - t_send_start).count();
+        const size_t sent_bytes = process_result->size();
+        LOG_INFO("Coordinator", "Task completed: sent " + format_bytes(sent_bytes) +
+                 " in " + format_seconds(send_s));
+    } else {
+        LOG_ERROR("Coordinator", "Authenticated client task failed: " + process_result.error().message);
+    }
+    return true;
+}
+
 void Coordinator::handle_client(std::stop_token st,
                                 std::unique_ptr<TCPSocket> socket) {
     // Shutdown raced with an accepted connection: drop it immediately.
@@ -589,8 +781,9 @@ void Coordinator::handle_client(std::stop_token st,
                     LOG_INFO("Coordinator", "Peer added to TrustStore: " + req_fingerprint);
                 }
 
-                // Now read the submit frame (third frame after the request):
-                // the phone sends MSG_CLIENT_SUBMIT with the image to upscale.
+                // Now read the first session frame (third frame after the
+                // request): the phone sends MSG_CLIENT_SUBMIT with the image
+                // to upscale (or, historically, a model-library op).
                 conn.socket->set_timeout(30000);
                 auto role_frame = recv_encrypted(conn);
                 if (!role_frame) {
@@ -602,172 +795,25 @@ void Coordinator::handle_client(std::stop_token st,
                 frame_payload = std::move(role_frame->second);
             }
 
+            // ── Session frame loop ────────────────────────────────────────────
+            // CLIENT_SUBMIT keeps the connection open: the phone pipelines a
+            // whole batch over one session (handshake/pairing once) and sends
+            // submit N+1 while the PC still processes N. Model-library ops
+            // stay one-shot (handle + return). Legacy clients that close
+            // after the first response end the loop on the next recv (EOF).
+            for (;;) {
             if (frame_hdr.type == MessageType::MSG_CLIENT_SUBMIT) {
-                // Compressed-input submit: the phone ships original file
-                // bytes; decode here so raw pixels never cross the radio.
-                if (frame_payload.size() < sizeof(ClientTaskSubmit)) {
-                    LOG_ERROR("Coordinator", "Authenticated client submit payload is invalid");
+                if (!handle_client_submit(conn, st, std::move(frame_payload))) {
                     return;
                 }
-                const ClientTaskSubmit* task =
-                    reinterpret_cast<const ClientTaskSubmit*>(frame_payload.data());
-                std::string model_name = task->model_name;
-                std::string output_format = task->output_format;
-                if (output_format.empty()) output_format = "jpg";
-                const int output_quality = task->output_quality == 0 ? 90
-                    : static_cast<int>(task->output_quality);
-                const EncoderOptions encoder_opts = from_wire(task->encoder);
-                const uint32_t data_len = task->input_data_length;
-                if (data_len > MAX_NETWORK_PAYLOAD ||
-                    sizeof(ClientTaskSubmit) + data_len > frame_payload.size()) {
-                    LOG_ERROR("Coordinator", "Compressed client image payload truncated");
-                    return;
+                conn.socket->set_timeout(SESSION_FRAME_TIMEOUT_MS);
+                auto next_frame = recv_encrypted(conn);
+                if (!next_frame) {
+                    return;  // clean close, idle timeout, or transport failure
                 }
-                std::vector<uint8_t> compressed(
-                    frame_payload.data() + sizeof(ClientTaskSubmit),
-                    frame_payload.data() + sizeof(ClientTaskSubmit) + data_len);
-
-                auto decoded = Image::load_from_memory(task->input_format, compressed);
-                compressed.clear();
-                compressed.shrink_to_fit();
-                if (!decoded) {
-                    LOG_ERROR("Coordinator", "Input decode failed: " + decoded.error().message);
-                    ClientTaskResponse response{};
-                    response.success = 0;
-                    std::strncpy(response.error_message,
-                                 ("input decode failed: " + decoded.error().message).c_str(),
-                                 sizeof(response.error_message) - 1);
-                    send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
-                                   &response, sizeof(response));
-                    return;
-                }
-                const int img_width = decoded->width();
-                const int img_height = decoded->height();
-                const int channels = decoded->channels();
-                std::vector<uint8_t> image_data(decoded->data(),
-                                                decoded->data() + decoded->size());
-
-                LOG_INFO(
-                    "Coordinator",
-                    "Received authenticated client task: {}x{} model={}",
-                    img_width, img_height, model_name
-                );
-
-                ProcessingConfig config;
-                config.tile_size = static_cast<int>(task->tile_size);
-                config.tile_overlap = static_cast<int>(task->tile_overlap);
-
-                // Stream progress to the phone during the upscale. This
-                // keeps traffic flowing on the connection (so NAT/stateful
-                // firewalls cannot evict it as idle while the PC works for tens
-                // of seconds) and lets the phone show real progress. Throttled to
-                // whole-percent changes to avoid flooding a many-tile image. The
-                // progress callback runs on this same thread (process_locally is
-                // synchronous), so no locking on last_sent_pct is needed.
-                int last_sent_pct = -1;
-                // Stop requested while queued: don't start a long upscale.
-                if (st.stop_requested()) {
-                    return;
-                }
-                const auto task_start = std::chrono::steady_clock::now();
-                auto progress_sink = [&conn, &last_sent_pct, &task_start, this](float frac) {
-                    const int pct = static_cast<int>(
-                        std::clamp(frac, 0.0f, 1.0f) * 100.0f);
-                    if (pct == last_sent_pct) {
-                        return;
-                    }
-                    last_sent_pct = pct;
-                    // Real time estimate: linear projection from observed rate
-                    // (same math the CLI's ETA uses).
-                    TaskProgress msg{};
-                    msg.stage = 0;
-                    msg.percent = static_cast<uint32_t>(pct);
-                    if (pct > 0 && pct < 100) {
-                        const double elapsed =
-                            std::chrono::duration<double>(
-                                std::chrono::steady_clock::now() - task_start).count();
-                        msg.eta_seconds = static_cast<uint32_t>(
-                            elapsed / pct * (100 - pct));
-                    }
-                    // A failed progress send (peer gone) is non-fatal: processing
-                    // continues and the terminal response send reports the error.
-                    (void)send_encrypted(conn, MessageType::MSG_TASK_PROGRESS,
-                                         &msg, sizeof(msg));
-                };
-
-                auto process_result = process_locally(
-                    image_data,
-                    static_cast<int>(img_width),
-                    static_cast<int>(img_height),
-                    static_cast<int>(channels),
-                    model_name,
-                    config,
-                    output_format,
-                    output_quality,
-                    encoder_opts,
-                    progress_sink
-                );
-
-                // Label the encode phase so the phone's UI can show
-                // "encoding..." instead of a frozen 100%.
-                if (process_result.has_value()) {
-                    TaskProgress enc{};
-                    enc.stage = 1;
-                    (void)send_encrypted(conn, MessageType::MSG_TASK_PROGRESS,
-                                         &enc, sizeof(enc));
-                }
-
-                ClientTaskResponse response{};
-                if (process_result.has_value()) {
-                    response.success = 1;
-                    response.result_data_length = static_cast<uint32_t>(process_result->size());
-                } else {
-                    response.success = 0;
-                    response.result_data_length = 0;
-                    std::strncpy(response.error_message,
-                                 process_result.error().message.c_str(),
-                                 sizeof(response.error_message) - 1);
-                }
-
-                // Response header + result data go in one encrypted (boxed) frame,
-                // matching the way the phone opens it (session.open verifies the MAC).
-                // Encoded results above MAX_NETWORK_PAYLOAD stream as MSG_CLIENT_DATA
-                // continuation frames instead; small results stay single-frame.
-                constexpr size_t CLIENT_CHUNK_BYTES = 8u * 1024u * 1024u;
-                const auto& result_bytes = process_result.value_or(std::vector<uint8_t>{});
-                const size_t leading_bytes =
-                    std::min<size_t>(result_bytes.size(), MAX_NETWORK_PAYLOAD);
-                std::vector<uint8_t> resp_payload(sizeof(ClientTaskResponse) + leading_bytes);
-                std::memcpy(resp_payload.data(), &response, sizeof(response));
-                if (!result_bytes.empty()) {
-                    std::memcpy(resp_payload.data() + sizeof(ClientTaskResponse),
-                                result_bytes.data(), leading_bytes);
-                }
-                const auto t_send_start = std::chrono::steady_clock::now();
-                bool sent_ok = send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
-                                              resp_payload.data(), resp_payload.size());
-                for (size_t offset = resp_payload.size() - sizeof(ClientTaskResponse);
-                     sent_ok && offset < result_bytes.size();
-                     offset += CLIENT_CHUNK_BYTES) {
-                    const size_t n = std::min(CLIENT_CHUNK_BYTES, result_bytes.size() - offset);
-                    sent_ok = send_encrypted(conn, MessageType::MSG_CLIENT_DATA,
-                                             result_bytes.data() + offset, n);
-                }
-                const auto t_send_end = std::chrono::steady_clock::now();
-                if (!sent_ok) {
-                    LOG_ERROR("Coordinator", "Failed to send authenticated client response");
-                    return;
-                }
-                if (process_result.has_value()) {
-                    const double send_s =
-                        std::chrono::duration<double>(t_send_end - t_send_start).count();
-                    const size_t sent_bytes = process_result->size();
-                    LOG_INFO("Coordinator", "Task completed: sent " + format_bytes(sent_bytes) +
-                             " in " + format_seconds(send_s));
-                } else {
-                    LOG_ERROR("Coordinator", "Authenticated client task failed: " + process_result.error().message);
-                }
-                return;
+                frame_hdr = std::move(next_frame->first);
+                frame_payload = std::move(next_frame->second);
+                continue;
             } else if (frame_hdr.type == MessageType::MSG_MODEL_LIST_REQUEST) {
                 conn.socket->set_timeout(120);
                 handle_model_list(conn);
@@ -781,8 +827,13 @@ void Coordinator::handle_client(std::stop_token st,
                 handle_model_download(conn, frame_hdr, frame_payload);
                 return;
             } else {
-                // Unknown second frame; already drained via recv_encrypted.
+                LOG_WARNING("Coordinator", "Peer " + conn.device_id +
+                    " sent an unexpected session frame (type " +
+                    std::to_string(static_cast<unsigned>(frame_hdr.type)) +
+                    "); dropping");
+                return;
             }
+            }  // session frame loop
         }
     }
     // Any other first message (no handshake, no recognized type) → drop silently.

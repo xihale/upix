@@ -80,7 +80,8 @@ internal fun countFailedQueueItems(queueItems: List<ProcessingQueueItemSummary>)
 /**
  * 处理队列 sheet：头部（标题/统计 + 官方 IconButton 家族动作）+ 列表。
  * 列表项 = M3 [ListItem] 承载内容，外层 [SwipeToDismissBox] 左滑移除；
- * 状态用容器色胶囊表达；运行中条目底部走官方不确定进度条。
+ * 状态用容器色胶囊表达；运行中条目底部进度条优先精确（实时任务进度），
+ * 无进度时回退不确定样式。
  */
 @Composable
 internal fun QueueBottomSheetContent(
@@ -200,10 +201,19 @@ internal fun QueueBottomSheetContent(
                 verticalArrangement = Arrangement.spacedBy(Spacing.sm)
             ) {
                 itemsIndexed(items = queueItems, key = { _, item -> item.id }) { index, queueItem ->
+                    // 运行中条目接上当前任务的实时进度（远程含 PC 百分比透传）；
+                    // 非运行/无进度（如本地推理尚未回报）回退不确定样式。
+                    val runningFraction = processingUiState.task
+                        ?.takeIf {
+                            processingUiState.isProcessing &&
+                                queueItem.status == PersistedQueueItemStatus.RUNNING
+                        }
+                        ?.progress
                     DismissibleQueueItem(
                         index = index,
                         queueItem = queueItem,
                         isProcessing = processingUiState.isProcessing,
+                        runningProgress = runningFraction,
                         modifier = Modifier.animateItem(),
                         onCancelProcessing = onCancelProcessing,
                         onRetryQueuedBatch = onRetryQueuedBatch,
@@ -249,6 +259,7 @@ private fun DismissibleQueueItem(
     index: Int,
     queueItem: ProcessingQueueItemSummary,
     isProcessing: Boolean,
+    runningProgress: Float?,
     modifier: Modifier = Modifier,
     onCancelProcessing: () -> Unit,
     onRetryQueuedBatch: (String) -> Unit,
@@ -297,6 +308,7 @@ private fun DismissibleQueueItem(
             index = index,
             queueItem = queueItem,
             isProcessing = isProcessing,
+            runningProgress = runningProgress,
             onCancelProcessing = onCancelProcessing,
             onRetryQueuedBatch = onRetryQueuedBatch,
             onRetryQueuedBatchFailedOnly = onRetryQueuedBatchFailedOnly,
@@ -311,6 +323,7 @@ private fun QueueItemCard(
     index: Int,
     queueItem: ProcessingQueueItemSummary,
     isProcessing: Boolean,
+    runningProgress: Float?,
     onCancelProcessing: () -> Unit,
     onRetryQueuedBatch: (String) -> Unit,
     onRetryQueuedBatchFailedOnly: (String) -> Unit,
@@ -434,17 +447,28 @@ private fun QueueItemCard(
                 }
             }
 
-            // 运行中条目底部的不确定进度条：出现/收起做 fade + 纵向展开，不跳变。
+            // 运行中条目底部进度条：有实时进度（远程 PC 百分比透传）走精确
+            // 进度，否则回退不确定样式；出现/收起做 fade + 纵向展开。
             AnimatedVisibility(
                 visible = isRunning,
                 enter = fadeIn(EnterMotionSpec) + expandVertically(EnterSizeSpec),
                 exit = shrinkVertically(EnterSizeSpec) + fadeOut(EnterMotionSpec)
             ) {
-                LinearProgressIndicator(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(2.dp)
-                )
+                val fraction = runningProgress
+                if (fraction != null) {
+                    LinearProgressIndicator(
+                        progress = { fraction.coerceIn(0.0f, 1.0f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp)
+                    )
+                } else {
+                    LinearProgressIndicator(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(2.dp)
+                    )
+                }
             }
         }
     }

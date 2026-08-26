@@ -21,9 +21,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import io.upix.R
 import io.upix.data.model.ProcessingStatus
 import io.upix.data.model.ProcessingTask
+import io.upix.data.model.RemoteItemPhase
 import io.upix.ui.theme.Spacing
 import io.upix.ui.theme.smoothProgress
 import io.upix.ui.theme.valueStyleFor
+import kotlin.math.roundToInt
 
 /**
  * 舞台遮罩进度：处理中覆盖在图片舞台之上。
@@ -75,6 +77,36 @@ fun StageProgressOverlay(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+            // 远程阶段行：PC 流式进度（百分比/ETA/编码），本地模式不显示。
+            if (task.status == ProcessingStatus.RUNNING && task.distributedMode) {
+                val phaseText = when (task.remotePhase) {
+                    RemoteItemPhase.UPLOADING ->
+                        stringResource(R.string.processing_remote_phase_uploading)
+                    RemoteItemPhase.INFERENCE -> {
+                        val percent = task.remoteItemProgress?.let { (it * 100).roundToInt() }
+                        val eta = task.remoteItemEtaSeconds ?: 0
+                        when {
+                            percent == null ->
+                                stringResource(R.string.processing_remote_phase_uploading)
+                            eta > 0 -> stringResource(
+                                R.string.processing_remote_phase_inference_eta, percent, eta
+                            )
+                            else ->
+                                stringResource(R.string.processing_remote_phase_inference, percent)
+                        }
+                    }
+                    RemoteItemPhase.ENCODING ->
+                        stringResource(R.string.processing_remote_phase_encoding)
+                    null -> null
+                }
+                phaseText?.let { text ->
+                    Text(
+                        text = text,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
             }
             task.currentItemName?.let { itemName ->
                 // 文件/模型名属机器值：ASCII 走 ValueMono，含 CJK 回退系统字阶（§2.1/§2.2）。

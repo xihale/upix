@@ -161,7 +161,7 @@ auto_tile_size=true 时：
 | 组 | 消息 | 说明 |
 |----|------|------|
 | 加密握手 | `KEY_HELLO 0x0007`（明文）/ `AUTH_PROOF 0x0008` / `AUTH_RESPONSE 0x0004` | X25519+Ed25519 握手，之后全帧加密 |
-| 一次性提交 | `CLIENT_SUBMIT 0x0500` / `CLIENT_RESPONSE 0x0501` / `TASK_PROGRESS 0x0502` / `CLIENT_DATA 0x0503` | 手机→PC 提交整图；TASK_PROGRESS 为 PC→手机流式进度（兼防 NAT 空闲踢线）；CLIENT_DATA 为 >100MB 结果续帧 |
+| 任务提交 | `CLIENT_SUBMIT 0x0500` / `CLIENT_RESPONSE 0x0501` / `TASK_PROGRESS 0x0502` / `CLIENT_DATA 0x0503` | 手机→PC 提交整图（会话内可多次）；TASK_PROGRESS 为 PC→手机流式进度（兼防 NAT 空闲踢线），手机端透传进 UI；CLIENT_DATA 为 >100MB 结果续帧 |
 | 配对 | `CLIENT_CONNECT_REQUEST 0x0700` / `CLIENT_CONNECT_RESPONSE 0x0701` | 批准位 + 信任位 + AVIF 能力位 |
 | 共享模型库 | `MODEL_LIST/UPLOAD/DOWNLOAD 0x0510-0x0515` | 手机浏览/上传/拉取 PC 上的模型 |
 | 本地 daemon | `SERVE_REQUEST/RESPONSE/DATA/PROGRESS 0x0601-0x0604` | Unix domain socket，独立号段 |
@@ -203,13 +203,23 @@ auto_tile_size=true 时：
 - 接收 `MSG_CLIENT_SUBMIT`（请求头 + 压缩的图像文件字节，原始像素不上无线电）；
 - 用本地引擎跑完整超分（`engine_setup` 初始化 + `TileProcessor.process_image_u8`）；
 - 处理中持续回发 `MSG_TASK_PROGRESS`，完成后回 `MSG_CLIENT_RESPONSE`（+ 必要时
-  `MSG_CLIENT_DATA` 续帧）；编解码失败以 per-task 错误回传，不摔连接。
-- 顺带响应模型共享请求（列出/接收/下发模型）。
+  `MSG_CLIENT_DATA` 续帧）；编解码失败以 per-task 错误回传，不摔连接；
+- **会话循环**：响应后连接保持打开，继续收下一张 `CLIENT_SUBMIT`（帧间空闲超时
+  60s）。握手/配对每连接只发生一次，整批任务复用同一条 TCP；旧版一次性客户端
+  发完即关，循环读到 EOF 自然退出。推理互斥仅覆盖 `process_locally` 的推理段，
+  输出编码在锁外进行；
+- 顺带响应模型共享请求（列出/接收/下发模型，仍为一次性操作）。
 
 ### 3.4 客户端侧（无独立 CLI 子命令）
 
-分布式提交由 Android app 经 JNI 发起（见 §5.2）。每操作一次独立 TCP 连接：
-握手 → 配对 → 单个操作帧 → 收结果 → 关连接。超时：连接 10s、I/O 60s。
+分布式提交由 Android app 经 JNI 发起（见 §5.2）。**图像批处理走持久会话**：
+`nativeOpenDistributedSession`（TCP 连接 + 握手 + 配对，每批一次）→ 每张图
+`nativeSendDistributedTask`（上传）+ `nativeReceiveDistributedResult`（收结果，
+TASK_PROGRESS 经回调透传进 UI）→ 批末 `nativeCloseDistributedSession`。
+批内为深度 1 流水线：上传 N+1 与 PC 推理 N 重叠、手机写盘/SAF 提交 N 与 PC
+解码/推理 N+1 重叠，下一张原图字节在等结果时后台预取。模型共享等其他操作仍为
+一次性独立 TCP 连接（握手 → 配对 → 单操作帧 → 收结果 → 关连接）。
+超时：连接 10s、I/O 60s。传输失败自动重开会话重发一次（容忍 PC 重启）。
 
 ---
 
@@ -407,11 +417,12 @@ cmd_process → 探测 daemon → 连 Unix socket
 
 **远程卸载（Android → PC）**：
 ```
-UI → NativeImageProcessingRepository → NCNNEngine.nativeProcessImageDistributed (JNI)
-  → TCP connect → KEY_HELLO ×2（ECDH+transcript 签名）→ 加密 AUTH_PROOF/AUTH_RESPONSE
-  → CONNECT_REQUEST/RESPONSE（配对批准 + AVIF 能力位）
-  → CLIENT_SUBMIT（请求头+压缩图字节）
-  → 收 TASK_PROGRESS* → CLIENT_RESPONSE(+CLIENT_DATA*) → 解码存盘
+UI → NativeImageProcessingRepository → CoordinatorClient（持久会话 + 深度 1 流水线）
+  → nativeOpenDistributedSession (JNI: TCP + KEY_HELLO ×2 + AUTH + CONNECT 配对，每批一次)
+  → 每张图: nativeSendDistributedTask（CLIENT_SUBMIT 上传）
+            nativeReceiveDistributedResult（收 TASK_PROGRESS* → 回调进 UI → CLIENT_RESPONSE(+DATA*)）
+            [上传 N+1 → 写盘 N，与 PC 处理重叠]
+  → 批末 nativeCloseDistributedSession
 ```
 
 **Android 连接/模型共享（NativeWorker）**：
@@ -419,7 +430,7 @@ UI → NativeImageProcessingRepository → NCNNEngine.nativeProcessImageDistribu
 DeviceViewModel → CoordinatorClient → NativeWorker.nativeRequestConnection
   (JNI: 握手+配对，TOFU 返回学到的 PC 公钥/指纹)
   → nativeListPCModels / nativeUploadModelToPC / nativeDownloadModelFromPC
-  （每个操作独立连接：握手+配对+单操作帧）
+  （模型共享为一次性连接：握手+配对+单操作帧）
 ```
 
 ---

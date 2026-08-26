@@ -10,16 +10,20 @@ import io.upix.data.repository.ResolvedImageInput
 import io.upix.data.repository.decodeEncodedImageBounds
 import io.upix.data.repository.isAvifName
 import io.upix.data.repository.readEncodedBytes
-import io.upix.data.repository.outputFormatFor
 import io.upix.nativelib.NCNNEngine
 import io.upix.nativelib.NativeCapabilities
 import io.upix.nativelib.PeerCapabilities
 import io.upix.nativelib.NativeWorker
 import java.io.File
 import java.io.FileOutputStream
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 
 class CoordinatorClient(
     context: Context,
@@ -223,13 +227,143 @@ class CoordinatorClient(
         runCatching { NCNNEngine.nativeGetLastError() }.getOrNull()?.trim().orEmpty()
             .ifBlank { "传输失败" }
 
-    fun processInputRemotely(
+    // ── 远程处理：持久会话 + 深度 1 流水线 ──────────────────────────────
+    // 一个批次只做一次握手/配对（nativeOpenDistributedSession），之后每张图
+    // send（上传）→ receive（收结果+进度）→ persist（写盘）三段拆开：
+    // 上传 N+1 与 PC 推理 N 重叠，写盘 N 与 PC 解码/推理 N+1 重叠。
+
+    /** 持久会话句柄（0=未打开）。RunEngine 的单循环串行访问，无并发。 */
+    @Volatile
+    private var nativeSessionHandle: Long = 0L
+
+    // 单槽预取缓存：等当前图结果时后台读下一张原图字节（与 PC 推理重叠）。
+    private val prefetchScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var prefetchJob: Job? = null
+
+    private data class PrefetchedInput(val uri: Uri, val bytes: ByteArray, val format: String)
+
+    @Volatile
+    private var prefetched: PrefetchedInput? = null
+
+    /** 后台预读下一张图的原始编码字节；beginRemoteTask 命中即免同步读。 */
+    fun prefetchRemoteInput(input: ResolvedImageInput) {
+        if (prefetched?.uri == input.uri) {
+            return
+        }
+        val target = input.uri
+        val displayName = input.displayName
+        prefetchJob?.cancel()
+        prefetchJob = prefetchScope.launch {
+            val read = readEncodedBytes(
+                resolver = appContext.contentResolver,
+                uri = target,
+                displayName = displayName
+            ) { message ->
+                logRepository.error("CoordinatorClient", message)
+            } ?: return@launch
+            prefetched = PrefetchedInput(target, read.first, read.second)
+        }
+    }
+
+    /** 一张已上传、等待结果的远程任务（数据由 beginRemoteTask 快照持有）。 */
+    inner class RemoteTask internal constructor(
+        internal val input: ResolvedImageInput,
+        private val inputBounds: Pair<Int, Int>,
+        private val inputFormat: String,
+        private val inputBytes: ByteArray,
+        private val outputFormat: String,
+        private val settings: EncoderSettings,
+        private val modelName: String,
+        private val tileSize: Int,
+        private val tileOverlap: Int
+    ) {
+        /**
+         * 阻塞等待 PC 结果；进度帧通过 [onProgress] 流出（stage 0=推理
+         * percent/eta，1=编码）。PC 侧任务失败（"Distributed task failed:"）
+         * 保持会话与端点；传输层失败则关闭会话并清空端点。
+         */
+        fun awaitResult(
+            onProgress: (stage: Int, percent: Int, etaSeconds: Int) -> Unit
+        ): Result<ByteArray> {
+            val handle = nativeSessionHandle
+            if (handle == 0L) {
+                return Result.failure(IllegalStateException("Distributed session is closed"))
+            }
+            val encodedOutput = try {
+                NCNNEngine.nativeReceiveDistributedResult(
+                    handle,
+                    NCNNEngine.DistributedProgressListener(onProgress)
+                )
+            } catch (e: UnsatisfiedLinkError) {
+                logRepository.error("CoordinatorClient", "Native bridge unavailable: ${e.message}")
+                null
+            }
+            if (encodedOutput == null || encodedOutput.isEmpty()) {
+                val reason = runCatching { NCNNEngine.nativeGetLastError() }
+                    .getOrNull()
+                    ?.trim()
+                    .orEmpty()
+                val taskRejected = reason.startsWith("Distributed task failed:")
+                if (!taskRejected) {
+                    closeSession()
+                    connectedEndpoint?.let { clearEndpoint(it) }
+                }
+                val pcReason = reason.removePrefix("Distributed task failed: ").trim()
+                val message = when {
+                    taskRejected && pcReason.isNotBlank() ->
+                        if (pcReason.contains("avif", ignoreCase = true)) {
+                            "$pcReason（远端 AVIF 需要 PC 安装 libavif，如 pacman -S libavif）"
+                        } else {
+                            "PC 任务失败：$pcReason"
+                        }
+                    reason.isNotBlank() -> "PC 不可达：$reason"
+                    else -> "PC 不可达"
+                }
+                logRepository.error("CoordinatorClient", message)
+                return Result.failure(IllegalStateException(message))
+            }
+            return Result.success(encodedOutput)
+        }
+
+        /** 把 PC 返回的编码字节写盘并组装结果（纯本地 IO，可与其他事并行）。 */
+        fun persist(encodedOutput: ByteArray, outputFile: File): Result<NativeProcessResult> {
+            val outputBounds = decodeEncodedImageBounds(encodedOutput)
+                ?: return Result.failure(IllegalStateException("Distributed output is not decodable"))
+            val writeResult = writeOutputBytes(outputFile, encodedOutput)
+            if (writeResult.isFailure) {
+                return Result.failure(
+                    writeResult.exceptionOrNull()
+                        ?: IllegalStateException("Failed to persist distributed output")
+                )
+            }
+            logRepository.info(
+                "CoordinatorClient",
+                "Remote processed ${input.displayName} -> ${outputFile.absolutePath}"
+            )
+            return Result.success(
+                NativeProcessResult(
+                    outputFile = outputFile,
+                    inputWidth = inputBounds.first,
+                    inputHeight = inputBounds.second,
+                    outputWidth = outputBounds.first,
+                    outputHeight = outputBounds.second,
+                )
+            )
+        }
+    }
+
+    /**
+     * 读字节（命中预取则直接用）→ 校验 → 确保/复用会话 → 上传（CLIENT_SUBMIT）。
+     * 传输失败时重开会话重发一次（容忍 PC 重启/旧版 PC 用完即关），再失败
+     * 才视为掉线（清端点）。
+     */
+    fun beginRemoteTask(
         input: ResolvedImageInput,
         modelName: String,
         tileSize: Int,
         tileOverlap: Int,
-        outputFile: File
-    ): Result<NativeProcessResult> {
+        outputFormat: String
+    ): Result<RemoteTask> {
         val endpoint = connectedEndpoint
             ?: return Result.failure(IllegalStateException("No connected coordinator endpoint"))
 
@@ -245,15 +379,21 @@ class CoordinatorClient(
         // Ship the ORIGINAL encoded bytes; the PC decodes them. A 12 MP photo
         // uploads as ~4 MB of JPEG instead of ~36 MB of raw RGB, and the
         // phone never holds a full-size pixel buffer for distributed jobs.
-        val (inputBytes, inputFormat) = readEncodedBytes(
-            resolver = appContext.contentResolver,
-            uri = input.uri,
-            displayName = input.displayName
-        ) { message ->
-            logRepository.error("CoordinatorClient", message)
-        } ?: return Result.failure(
-            IllegalStateException("Failed to read image input: ${input.displayName}")
-        )
+        val cached = prefetched
+        prefetched = null
+        val (inputBytes, inputFormat) = if (cached != null && cached.uri == input.uri) {
+            cached.bytes to cached.format
+        } else {
+            readEncodedBytes(
+                resolver = appContext.contentResolver,
+                uri = input.uri,
+                displayName = input.displayName
+            ) { message ->
+                logRepository.error("CoordinatorClient", message)
+            } ?: return Result.failure(
+                IllegalStateException("Failed to read image input: ${input.displayName}")
+            )
+        }
 
         // Header-only bounds read: no full decode, keeps the phone thin.
         val inputBounds = decodeEncodedImageBounds(inputBytes)
@@ -261,81 +401,99 @@ class CoordinatorClient(
                 IllegalStateException("Input is not a decodable image: ${input.displayName}")
             )
 
-        val outputFormat = outputFormatFor(outputFile)
         val settings = encoderSettings
-        val startedAt = System.currentTimeMillis()
-        val encodedOutput = NCNNEngine.nativeProcessImageDistributed(
-            host = endpoint.host,
-            port = endpoint.port,
-            peerPubKeyB64 = endpoint.peerPubKeyB64,
-            modelName = modelName,
-            tileSize = tileSize.coerceAtLeast(MIN_TILE_SIZE),
-            tileOverlap = tileOverlap.coerceAtLeast(0),
+        val normalizedTileSize = tileSize.coerceAtLeast(MIN_TILE_SIZE)
+        val normalizedOverlap = tileOverlap.coerceAtLeast(0)
+        val task = RemoteTask(
+            input = input,
+            inputBounds = inputBounds,
             inputFormat = inputFormat,
-            inputImage = inputBytes,
+            inputBytes = inputBytes,
             outputFormat = outputFormat,
-            outputQuality = settings.normalizedQuality,
-            encoderOptionsJson = settings.toNativeJson()
+            settings = settings,
+            modelName = modelName,
+            tileSize = normalizedTileSize,
+            tileOverlap = normalizedOverlap
         )
 
-        // null/empty output has two distinct causes:
-        //  - "Distributed task failed: <pc message>" — the PC answered with a
-        //    structured rejection (e.g. it can't decode/encode AVIF). The link
-        //    and the PC are healthy: KEEP the endpoint and surface the real
-        //    reason instead of masquerading as a network failure.
-        //  - anything else (truncation, timeout, handshake) — treat as before:
-        //    drop the endpoint so the UI flips to DISCONNECTED.
-        if (encodedOutput == null || encodedOutput.isEmpty()) {
-            val reason = runCatching { NCNNEngine.nativeGetLastError() }
-                .getOrNull()
-                ?.trim()
-                .orEmpty()
-            val taskRejected = reason.startsWith("Distributed task failed:")
-            if (!taskRejected) {
-                clearEndpoint(endpoint)
+        val send: (Long) -> Boolean = { handle ->
+            try {
+                NCNNEngine.nativeSendDistributedTask(
+                    handle,
+                    modelName,
+                    normalizedTileSize,
+                    normalizedOverlap,
+                    inputFormat,
+                    inputBytes,
+                    outputFormat,
+                    settings.normalizedQuality,
+                    settings.toNativeJson()
+                )
+            } catch (e: UnsatisfiedLinkError) {
+                logRepository.error("CoordinatorClient", "Native bridge unavailable: ${e.message}")
+                false
             }
-            val pcReason = reason.removePrefix("Distributed task failed: ").trim()
-            val message = when {
-                taskRejected && pcReason.isNotBlank() ->
-                    if (pcReason.contains("avif", ignoreCase = true)) {
-                        "$pcReason（远端 AVIF 需要 PC 安装 libavif，如 pacman -S libavif）"
-                    } else {
-                        "PC 任务失败：$pcReason"
-                    }
-                reason.isNotBlank() -> "PC 不可达：$reason"
-                else -> "PC 不可达"
-            }
+        }
+
+        if (nativeSessionHandle == 0L && !openSession(endpoint)) {
+            return Result.failure(IllegalStateException("PC 不可达：${lastNativeError()}"))
+        }
+        if (send(nativeSessionHandle)) {
+            return Result.success(task)
+        }
+        // 传输层失败：PC 可能重启（或是不支持会话循环的旧版）。重开一次再发。
+        closeSession()
+        if (!openSession(endpoint) || !send(nativeSessionHandle)) {
+            val reason = lastNativeError()
+            closeSession()
+            clearEndpoint(endpoint)
+            val message = if (reason.isNotBlank()) "PC 不可达：$reason" else "PC 不可达"
             logRepository.error("CoordinatorClient", message)
             return Result.failure(IllegalStateException(message))
         }
+        return Result.success(task)
+    }
 
-        val outputBounds = decodeOutputBounds(encodedOutput)
-            ?: return Result.failure(IllegalStateException("Distributed output is not decodable"))
+    /** 批次结束时关闭会话并丢弃预取（RunEngine 的 finally 调用）。 */
+    fun endRemoteSession() {
+        prefetchJob?.cancel()
+        prefetchJob = null
+        prefetched = null
+        closeSession()
+    }
 
-        val writeResult = writeOutputBytes(outputFile, encodedOutput)
-        if (writeResult.isFailure) {
-            // Local FS failure — keep the endpoint (PC is fine).
-            return Result.failure(
-                writeResult.exceptionOrNull()
-                    ?: IllegalStateException("Failed to persist distributed output")
+    private fun openSession(endpoint: ConnectedEndpoint): Boolean {
+        nativeSessionHandle = try {
+            NCNNEngine.nativeOpenDistributedSession(
+                endpoint.host,
+                endpoint.port,
+                endpoint.peerPubKeyB64
             )
+        } catch (e: UnsatisfiedLinkError) {
+            logRepository.error("CoordinatorClient", "Native bridge unavailable: ${e.message}")
+            0L
+        } catch (e: Exception) {
+            logRepository.error("CoordinatorClient", "Session open failed: ${e.message}")
+            0L
         }
+        if (nativeSessionHandle == 0L) {
+            return false
+        }
+        // CONNECT_RESPONSE 携带的 AVIF 能力位在这条连接上重新学到一次。
+        PeerCapabilities.refresh()
+        return true
+    }
 
-        val elapsedMs = System.currentTimeMillis() - startedAt
-        logRepository.info(
-            "CoordinatorClient",
-            "Remote processed ${input.displayName} in ${elapsedMs}ms via ${endpoint.host}:${endpoint.port}"
-        )
-
-        return Result.success(
-            NativeProcessResult(
-                outputFile = outputFile,
-                inputWidth = inputBounds.first,
-                inputHeight = inputBounds.second,
-                outputWidth = outputBounds.first,
-                outputHeight = outputBounds.second,
-            )
-        )
+    private fun closeSession() {
+        val handle = nativeSessionHandle
+        nativeSessionHandle = 0L
+        if (handle != 0L) {
+            try {
+                NCNNEngine.nativeCloseDistributedSession(handle)
+            } catch (e: Throwable) {
+                logRepository.warning("CoordinatorClient", "Session close failed: ${e.message}")
+            }
+        }
     }
 
     fun disconnectIfMatches(host: String, port: Int): Boolean {
@@ -352,14 +510,13 @@ class CoordinatorClient(
     }
 
     private fun clearEndpoint(endpoint: ConnectedEndpoint) {
+        // 端点失效：挂在其上的持久会话一并关闭。
+        closeSession()
+        prefetched = null
         connectedEndpoint = null
         _connected.value = false
         PeerCapabilities.reset()
         logRepository.info("CoordinatorClient", "Disconnected from ${endpoint.host}:${endpoint.port}")
-    }
-
-    private fun decodeOutputBounds(encodedBytes: ByteArray): Pair<Int, Int>? {
-        return decodeEncodedImageBounds(encodedBytes)
     }
 
     private fun writeOutputBytes(file: File, encodedBytes: ByteArray): Result<Unit> {

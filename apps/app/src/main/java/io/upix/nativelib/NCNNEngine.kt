@@ -26,10 +26,30 @@ object NCNNEngine {
         outputQuality: Int,
         encoderOptionsJson: String
     ): ByteArray?
-    external fun nativeProcessImageDistributed(
+    /**
+     * PC 任务进度回调（PC→手机流式 TASK_PROGRESS）。[stage] 0=推理中（此时
+     * [percent]/[etaSeconds] 有效），1=推理完成、PC 正在编码结果。
+     */
+    fun interface DistributedProgressListener {
+        fun onProgress(stage: Int, percent: Int, etaSeconds: Int)
+    }
+
+    /**
+     * 打开持久分布式会话：TCP 连接 + ECDH 握手 + 配对，整批任务只做一次。
+     * 返回句柄（0=失败，详情走 [nativeGetLastError]）。
+     */
+    external fun nativeOpenDistributedSession(
         host: String,
         port: Int,
-        peerPubKeyB64: String,
+        peerPubKeyB64: String
+    ): Long
+
+    /**
+     * 在打开的会话上上传一张图（seal + 发送 CLIENT_SUBMIT）。与接收拆分，
+     * 调用方可在 PC 还在算第 N 张时先把第 N+1 张推上去。
+     */
+    external fun nativeSendDistributedTask(
+        handle: Long,
         modelName: String,
         tileSize: Int,
         tileOverlap: Int,
@@ -38,7 +58,20 @@ object NCNNEngine {
         outputFormat: String,
         outputQuality: Int,
         encoderOptionsJson: String
+    ): Boolean
+
+    /**
+     * 阻塞等待当前任务结果，期间把 PC 的进度帧转发给 [progressListener]
+     * （可空）。返回编码后的输出字节；null=失败（nativeGetLastError，
+     * "Distributed task failed:" 前缀表示 PC 侧任务错误、会话仍可用）。
+     */
+    external fun nativeReceiveDistributedResult(
+        handle: Long,
+        progressListener: DistributedProgressListener?
     ): ByteArray?
+
+    /** 关闭并释放会话句柄；0 与重复关闭安全。 */
+    external fun nativeCloseDistributedSession(handle: Long)
 
     /**
      * Decodes an encoded image buffer (AVIF path; used when the platform

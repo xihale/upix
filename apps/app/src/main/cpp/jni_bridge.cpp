@@ -10,6 +10,7 @@
 #include <ctime>
 #include <exception>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -525,6 +526,170 @@ auto resolve_endpoint_params(
 
 }  // namespace
 
+// ── Persistent distributed session (phone → PC) ─────────────────────────────
+// One ECDH handshake + pairing per batch; every image then travels over the
+// same TCP connection (the PC coordinator serves repeated CLIENT_SUBMITs in a
+// session loop). Splitting send/receive lets the caller upload image N+1
+// while the PC still processes N, and persist output N in between.
+namespace {
+
+struct DistributedSession {
+    upix::TCPSocket socket;
+    std::optional<upix::EncryptedSession> session;
+};
+
+// Sealed submit payload = ClientTaskSubmit struct + input + 24B nonce + 16B
+// MAC on top of the raw file bytes; the PC rejects frames whose payload
+// exceeds MAX_NETWORK_PAYLOAD. Keep the input under the wire budget so a
+// near-100MB image cannot slip past this side and die as a silent server
+// disconnect (the old one-shot path admitted it and then failed opaquely).
+constexpr size_t MAX_SUBMIT_INPUT_BYTES =
+    static_cast<size_t>(upix::MAX_NETWORK_PAYLOAD) - sizeof(upix::ClientTaskSubmit) - 64;
+
+// Seal + send one CLIENT_SUBMIT frame: struct + original file bytes.
+auto send_distributed_submit(
+    upix::TCPSocket& socket,
+    upix::EncryptedSession& session,
+    const std::string& model_name,
+    int tile_size,
+    int tile_overlap,
+    const std::string& input_format,
+    const uint8_t* input_data,
+    size_t input_len,
+    const std::string& output_format,
+    int output_quality,
+    const upix::EncoderOptions& encoder_opts
+) -> bool {
+    if (input_len == 0 || input_len > MAX_SUBMIT_INPUT_BYTES) {
+        set_jni_last_error("Distributed processing input size is invalid");
+        return false;
+    }
+    upix::ClientTaskSubmit submit_request{};
+    std::strncpy(submit_request.model_name, model_name.c_str(),
+                 sizeof(submit_request.model_name) - 1);
+    std::strncpy(submit_request.input_format, input_format.c_str(),
+                 sizeof(submit_request.input_format) - 1);
+    std::strncpy(submit_request.output_format, output_format.c_str(),
+                 sizeof(submit_request.output_format) - 1);
+    submit_request.tile_size = static_cast<uint32_t>(std::max(tile_size, 16));
+    submit_request.tile_overlap = static_cast<uint32_t>(std::max(tile_overlap, 0));
+    submit_request.output_quality = static_cast<uint32_t>(std::clamp(output_quality, 1, 100));
+    submit_request.encoder = to_wire(encoder_opts);
+    submit_request.input_data_length = static_cast<uint32_t>(input_len);
+
+    std::vector<uint8_t> plaintext(sizeof(submit_request) + input_len);
+    std::memcpy(plaintext.data(), &submit_request, sizeof(submit_request));
+    std::memcpy(plaintext.data() + sizeof(submit_request), input_data, input_len);
+
+    upix::MessageHeader submit_header{};
+    submit_header.type = upix::MessageType::MSG_CLIENT_SUBMIT;
+    submit_header.payload_length = static_cast<uint32_t>(plaintext.size());
+    auto submit_wire = session.seal(submit_header, plaintext.data());
+    if (!socket.send_all(submit_wire.data(), submit_wire.size()).has_value()) {
+        set_jni_last_error("Distributed submit send failed");
+        return false;
+    }
+    return true;
+}
+
+// Drain MSG_TASK_PROGRESS frames (each forwarded to progress_cb) until the
+// terminal MSG_CLIENT_RESPONSE (+ MSG_CLIENT_DATA continuations) assembles
+// the full encoded result. Returns the result bytes without the
+// ClientTaskResponse header, or nullopt (thread-local error set).
+auto receive_distributed_result(
+    upix::TCPSocket& socket,
+    upix::EncryptedSession& session,
+    const std::function<void(uint32_t stage, uint32_t percent, uint32_t eta)>& progress_cb
+) -> std::optional<std::vector<uint8_t>> {
+    std::vector<uint8_t> result_payload;
+    size_t expected_total = 0;
+    bool have_response = false;
+    while (true) {
+        std::string frame_error;
+        auto frame = recv_encrypted_frame(socket, session, frame_error);
+        if (!frame) {
+            set_jni_last_error("Distributed " + frame_error);
+            return std::nullopt;
+        }
+        if (frame->first.type == upix::MessageType::MSG_TASK_PROGRESS &&
+            frame->second.size() >= sizeof(upix::TaskProgress)) {
+            upix::TaskProgress prog{};
+            std::memcpy(&prog, frame->second.data(), sizeof(prog));
+            if (progress_cb) {
+                progress_cb(prog.stage, prog.percent, prog.eta_seconds);
+            } else if (prog.stage == 0) {
+                LOGI("PC progress: %u%%, ETA %us", prog.percent, prog.eta_seconds);
+            }
+            continue;  // progress update; drain and wait for the result
+        }
+        if (frame->first.type == upix::MessageType::MSG_CLIENT_DATA) {
+            if (!have_response) {
+                set_jni_last_error("Distributed result data arrived before the response header");
+                return std::nullopt;
+            }
+            // One reserve per result: the total is declared by the response
+            // header, so growing chunk-by-chunk with reallocation is waste.
+            if (expected_total > result_payload.capacity()) {
+                result_payload.reserve(expected_total);
+            }
+            result_payload.insert(result_payload.end(),
+                                  frame->second.begin(), frame->second.end());
+            if (result_payload.size() > MAX_TOTAL_RESULT_BYTES) {
+                set_jni_last_error("Distributed result exceeds the total size limit");
+                return std::nullopt;
+            }
+            if (result_payload.size() >= expected_total) {
+                break;
+            }
+            continue;
+        }
+        if (frame->first.type != upix::MessageType::MSG_CLIENT_RESPONSE) {
+            set_jni_last_error("Distributed response frame type is invalid");
+            return std::nullopt;
+        }
+        have_response = true;
+        result_payload = std::move(frame->second);
+        if (result_payload.size() < sizeof(upix::ClientTaskResponse)) {
+            set_jni_last_error("Distributed response payload is truncated");
+            return std::nullopt;
+        }
+        const auto* hdr = reinterpret_cast<const upix::ClientTaskResponse*>(
+            result_payload.data());
+        expected_total = sizeof(upix::ClientTaskResponse) + hdr->result_data_length;
+        if (expected_total > MAX_TOTAL_RESULT_BYTES) {
+            set_jni_last_error("Distributed result exceeds the total size limit");
+            return std::nullopt;
+        }
+        if (result_payload.size() >= expected_total) {
+            break;  // single-frame result (the common case)
+        }
+    }
+    const auto* task_response = reinterpret_cast<const upix::ClientTaskResponse*>(
+        result_payload.data());
+    if (task_response->success == 0) {
+        set_jni_last_error("Distributed task failed: " +
+                           std::string(task_response->error_message));
+        return std::nullopt;
+    }
+    // result_data_length is only trusted as a byte count to wait for; the
+    // truncation check validates it against bytes actually received, so no
+    // allocation ever happens from a claimed length.
+    const size_t resp_hdr_size = sizeof(upix::ClientTaskResponse);
+    if (resp_hdr_size + task_response->result_data_length > result_payload.size()) {
+        set_jni_last_error("Distributed result payload truncated");
+        return std::nullopt;
+    }
+    if (task_response->result_data_length > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
+        set_jni_last_error("Distributed result is too large for a Java byte array");
+        return std::nullopt;
+    }
+    result_payload.erase(result_payload.begin(),
+                         result_payload.begin() + static_cast<long>(resp_hdr_size));
+    return result_payload;
+}
+
+}  // namespace
+
 extern "C" {
 
 JNIEXPORT jlong JNICALL
@@ -949,13 +1114,108 @@ Java_io_upix_nativelib_NCNNEngine_nativeProcessImage(
     }
 }
 
-JNIEXPORT jbyteArray JNICALL
-Java_io_upix_nativelib_NCNNEngine_nativeProcessImageDistributed(
+// Open a persistent encrypted session to the PC: TCP connect + ECDH+Ed25519
+// handshake + CONNECT_REQUEST/RESPONSE pairing, once per batch. Returns an
+// opaque handle (0 on failure; details via nativeGetLastError).
+JNIEXPORT jlong JNICALL
+Java_io_upix_nativelib_NCNNEngine_nativeOpenDistributedSession(
     JNIEnv* env,
     jobject thiz,
     jstring host,
     jint port,
-    jstring peer_pubkey_b64,
+    jstring peer_pubkey_b64
+) {
+    (void)thiz;
+    try {
+        if (host == nullptr || peer_pubkey_b64 == nullptr ||
+            port <= 0 || port > std::numeric_limits<uint16_t>::max()) {
+            set_jni_last_error("Distributed session parameters are invalid");
+            return 0;
+        }
+
+        const char* host_chars = env->GetStringUTFChars(host, nullptr);
+        const char* peer_pk_chars = env->GetStringUTFChars(peer_pubkey_b64, nullptr);
+        if (host_chars == nullptr || peer_pk_chars == nullptr) {
+            if (host_chars != nullptr) {
+                env->ReleaseStringUTFChars(host, host_chars);
+            }
+            if (peer_pk_chars != nullptr) {
+                env->ReleaseStringUTFChars(peer_pubkey_b64, peer_pk_chars);
+            }
+            set_jni_last_error("Failed to read distributed session strings from Java");
+            return 0;
+        }
+        const std::string host_str(host_chars);
+        const std::string peer_pubkey_b64_str(peer_pk_chars);
+        env->ReleaseStringUTFChars(host, host_chars);
+        env->ReleaseStringUTFChars(peer_pubkey_b64, peer_pk_chars);
+
+        auto peer_pk_bytes = upix::base64_decode(peer_pubkey_b64_str);
+        if (!peer_pk_bytes || peer_pk_bytes->size() != 32) {
+            set_jni_last_error("invalid peer identity pubkey (expected 32-byte base64)");
+            return 0;
+        }
+        std::array<uint8_t, 32> peer_pk{};
+        std::memcpy(peer_pk.data(), peer_pk_bytes->data(), 32);
+
+        auto identity = identity_snapshot();
+        if (!identity) {
+            set_jni_last_error("identity not loaded; call loadIdentity first");
+            return 0;
+        }
+
+        auto* session_state = new DistributedSession();
+        if (!session_state->socket.connect_with_timeout(
+                host_str, static_cast<uint16_t>(port), CONNECT_TIMEOUT_MS)) {
+            delete session_state;
+            set_jni_last_error("Distributed connect failed (timeout or unreachable): " +
+                               host_str + ":" + std::to_string(port));
+            return 0;
+        }
+        session_state->socket.set_timeout(IO_TIMEOUT_MS);
+
+        std::string handshake_error;
+        auto session = run_client_handshake(
+            session_state->socket, peer_pk, *identity, handshake_error);
+        if (!session.has_value()) {
+            session_state->socket.close();
+            delete session_state;
+            set_jni_last_error("Distributed handshake failed: " + handshake_error);
+            return 0;
+        }
+
+        // Pairing gate right after the handshake, mirroring the one-shot flow:
+        // trusted peers auto-approve; first-time peers block on the PC's
+        // interactive approval. Only after approval may submits travel.
+        const std::string own_fp = upix::fingerprint(identity->public_key());
+        std::string pairing_error;
+        if (!perform_connect_request(
+                session_state->socket, *session, "Upix-Android", own_fp, pairing_error)) {
+            session_state->socket.close();
+            delete session_state;
+            set_jni_last_error("Distributed pairing failed: " + pairing_error);
+            return 0;
+        }
+
+        session_state->session = std::move(*session);
+        return reinterpret_cast<jlong>(session_state);
+    } catch (const std::exception& exception) {
+        set_jni_last_error(std::string("nativeOpenDistributedSession failed: ") + exception.what());
+        return 0;
+    } catch (...) {
+        set_jni_last_error("nativeOpenDistributedSession failed: unknown native error");
+        return 0;
+    }
+}
+
+// Upload one image on an open session (seal + send CLIENT_SUBMIT). Split from
+// receive so the caller can push image N+1 while the PC still works on N.
+// Returns false on failure (details via nativeGetLastError).
+JNIEXPORT jboolean JNICALL
+Java_io_upix_nativelib_NCNNEngine_nativeSendDistributedTask(
+    JNIEnv* env,
+    jobject thiz,
+    jlong handle,
     jstring model_name,
     jint tile_size,
     jint tile_overlap,
@@ -967,29 +1227,22 @@ Java_io_upix_nativelib_NCNNEngine_nativeProcessImageDistributed(
 ) {
     (void)thiz;
     try {
-        if (host == nullptr || peer_pubkey_b64 == nullptr || model_name == nullptr || input_image == nullptr ||
-            input_format == nullptr) {
-            set_jni_last_error("Distributed processing parameters are incomplete");
-            return nullptr;
+        if (handle == 0 || model_name == nullptr || input_format == nullptr ||
+            input_image == nullptr) {
+            set_jni_last_error("Distributed task parameters are incomplete");
+            return JNI_FALSE;
         }
-        if (port <= 0 || port > std::numeric_limits<uint16_t>::max()) {
-            set_jni_last_error("Distributed processing port is invalid");
-            return nullptr;
+        auto* session_state = reinterpret_cast<DistributedSession*>(handle);
+        if (!session_state->session.has_value()) {
+            set_jni_last_error("Distributed session is closed");
+            return JNI_FALSE;
         }
 
-        const char* host_chars = env->GetStringUTFChars(host, nullptr);
-        const char* peer_pk_chars = env->GetStringUTFChars(peer_pubkey_b64, nullptr);
         const char* model_chars = env->GetStringUTFChars(model_name, nullptr);
         const char* in_format_chars = env->GetStringUTFChars(input_format, nullptr);
-        const char* format_chars = output_format == nullptr ? nullptr : env->GetStringUTFChars(output_format, nullptr);
-
-        if (host_chars == nullptr || peer_pk_chars == nullptr || model_chars == nullptr || in_format_chars == nullptr) {
-            if (host_chars != nullptr) {
-                env->ReleaseStringUTFChars(host, host_chars);
-            }
-            if (peer_pk_chars != nullptr) {
-                env->ReleaseStringUTFChars(peer_pubkey_b64, peer_pk_chars);
-            }
+        const char* format_chars =
+            output_format == nullptr ? nullptr : env->GetStringUTFChars(output_format, nullptr);
+        if (model_chars == nullptr || in_format_chars == nullptr) {
             if (model_chars != nullptr) {
                 env->ReleaseStringUTFChars(model_name, model_chars);
             }
@@ -999,12 +1252,9 @@ Java_io_upix_nativelib_NCNNEngine_nativeProcessImageDistributed(
             if (format_chars != nullptr) {
                 env->ReleaseStringUTFChars(output_format, format_chars);
             }
-            set_jni_last_error("Failed to read distributed processing strings from Java");
-            return nullptr;
+            set_jni_last_error("Failed to read distributed task strings from Java");
+            return JNI_FALSE;
         }
-
-        const std::string host_str(host_chars);
-        const std::string peer_pubkey_b64_str(peer_pk_chars);
         const std::string model_str(model_chars);
         const std::string input_format_str(in_format_chars);
         std::string output_format_str = "jpg";
@@ -1014,212 +1264,129 @@ Java_io_upix_nativelib_NCNNEngine_nativeProcessImageDistributed(
         if (!is_supported_output_format(output_format_str)) {
             output_format_str = "jpg";
         }
-        const int normalized_quality = std::clamp(static_cast<int>(output_quality), 1, 100);
-
-        env->ReleaseStringUTFChars(host, host_chars);
-        env->ReleaseStringUTFChars(peer_pubkey_b64, peer_pk_chars);
         env->ReleaseStringUTFChars(model_name, model_chars);
+        env->ReleaseStringUTFChars(input_format, in_format_chars);
         if (format_chars != nullptr) {
             env->ReleaseStringUTFChars(output_format, format_chars);
         }
-        env->ReleaseStringUTFChars(input_format, in_format_chars);
 
         const jsize input_size = env->GetArrayLength(input_image);
-        if (input_size <= 0 || static_cast<int64_t>(input_size) > MAX_PAYLOAD_LENGTH) {
-            set_jni_last_error("Distributed processing input size is invalid");
-            return nullptr;
+        if (input_size <= 0) {
+            set_jni_last_error("Distributed task input size is invalid");
+            return JNI_FALSE;
         }
-
         std::vector<uint8_t> input_bytes(static_cast<size_t>(input_size));
         env->GetByteArrayRegion(
-            input_image,
-            0,
-            input_size,
-            reinterpret_cast<jbyte*>(input_bytes.data())
-        );
+            input_image, 0, input_size,
+            reinterpret_cast<jbyte*>(input_bytes.data()));
 
-        // Decode peer identity pubkey (base64 from mDNS TXT or QR).
-        auto peer_pk_bytes = upix::base64_decode(peer_pubkey_b64_str);
-        if (!peer_pk_bytes || peer_pk_bytes->size() != 32) {
-            set_jni_last_error("invalid peer identity pubkey (expected 32-byte base64)");
+        const bool sent = send_distributed_submit(
+            session_state->socket,
+            *session_state->session,
+            model_str,
+            tile_size,
+            tile_overlap,
+            input_format_str,
+            input_bytes.data(),
+            input_bytes.size(),
+            output_format_str,
+            static_cast<int>(output_quality),
+            parse_encoder_options(env, encoder_options_json));
+        return sent ? JNI_TRUE : JNI_FALSE;
+    } catch (const std::exception& exception) {
+        set_jni_last_error(std::string("nativeSendDistributedTask failed: ") + exception.what());
+        return JNI_FALSE;
+    } catch (...) {
+        set_jni_last_error("nativeSendDistributedTask failed: unknown native error");
+        return JNI_FALSE;
+    }
+}
+
+// Block until the current task's result arrives, streaming TASK_PROGRESS
+// updates to `progressListener` (io.upix.nativelib.DistributedProgressListener,
+// nullable). Returns the encoded output bytes, or null on failure (details
+// via nativeGetLastError; an error starting with "Distributed task failed:"
+// marks a PC-side task error — the session itself stays usable).
+JNIEXPORT jbyteArray JNICALL
+Java_io_upix_nativelib_NCNNEngine_nativeReceiveDistributedResult(
+    JNIEnv* env,
+    jobject thiz,
+    jlong handle,
+    jobject progress_listener
+) {
+    (void)thiz;
+    try {
+        if (handle == 0) {
+            set_jni_last_error("Distributed session handle is invalid");
             return nullptr;
         }
-        std::array<uint8_t, 32> peer_pk{};
-        std::memcpy(peer_pk.data(), peer_pk_bytes->data(), 32);
-        auto identity = identity_snapshot();
-        if (!identity) {
-            set_jni_last_error("identity not loaded; call loadIdentity first");
-            return nullptr;
-        }
-
-        upix::TCPSocket socket;
-        if (!socket.connect_with_timeout(host_str, static_cast<uint16_t>(port), CONNECT_TIMEOUT_MS)) {
-            set_jni_last_error("Distributed connect failed (timeout or unreachable): " +
-                               host_str + ":" + std::to_string(port));
-            return nullptr;
-        }
-        socket.set_timeout(IO_TIMEOUT_MS);
-
-        std::string handshake_error;
-        auto session = run_client_handshake(socket, peer_pk, *identity, handshake_error);
-        if (!session.has_value()) {
-            set_jni_last_error("Distributed handshake failed: " + handshake_error);
-            return nullptr;
-        }
-
-        // 握手成功后立即进行 CONNECT_REQUEST/RESPONSE 配对。PC 协调器在握手后会读取
-        // 下一个加密帧并预期它是 CONNECT_REQUEST(可信 peer 自动批准, 首次 peer 阻塞
-        // 在 stdin [y/n])。批准后 PC 才接受角色帧(MSG_CLIENT_SUBMIT)。
-        const std::string own_fp = upix::fingerprint(identity->public_key());
-        std::string pairing_error;
-        if (!perform_connect_request(
-                socket, *session, "Upix-Android", own_fp, pairing_error)) {
-            set_jni_last_error("Distributed pairing failed: " + pairing_error);
-            return nullptr;
-        }
-
-        // Pack ClientTaskSubmit struct + compressed input bytes contiguously
-        // into one plaintext payload, then seal into a single encrypted frame.
-        // The phone ships the ORIGINAL file bytes; the PC decodes them, so raw
-        // pixels never cross the radio (a 12 MP photo uploads as ~4 MB of JPEG,
-        // not ~36 MB of RGB).
-        upix::ClientTaskSubmit submit_request{};
-        std::strncpy(submit_request.model_name, model_str.c_str(), sizeof(submit_request.model_name) - 1);
-        std::strncpy(submit_request.input_format, input_format_str.c_str(),
-                     sizeof(submit_request.input_format) - 1);
-        std::strncpy(submit_request.output_format, output_format_str.c_str(),
-                     sizeof(submit_request.output_format) - 1);
-        submit_request.tile_size = static_cast<uint32_t>(std::max(tile_size, 16));
-        submit_request.tile_overlap = static_cast<uint32_t>(std::max(tile_overlap, 0));
-        submit_request.output_quality = static_cast<uint32_t>(normalized_quality);
-        submit_request.encoder = to_wire(parse_encoder_options(env, encoder_options_json));
-        submit_request.input_data_length = static_cast<uint32_t>(input_bytes.size());
-
-        std::vector<uint8_t> plaintext(sizeof(submit_request) + input_bytes.size());
-        std::memcpy(plaintext.data(), &submit_request, sizeof(submit_request));
-        std::memcpy(plaintext.data() + sizeof(submit_request), input_bytes.data(), input_bytes.size());
-
-        upix::MessageHeader submit_header{};
-        submit_header.type = upix::MessageType::MSG_CLIENT_SUBMIT;
-        submit_header.payload_length = static_cast<uint32_t>(plaintext.size());
-        auto submit_wire = session->seal(submit_header, plaintext.data());
-        if (!socket.send_all(submit_wire.data(), submit_wire.size()).has_value()) {
-            set_jni_last_error("Distributed submit send failed");
+        auto* session_state = reinterpret_cast<DistributedSession*>(handle);
+        if (!session_state->session.has_value()) {
+            set_jni_last_error("Distributed session is closed");
             return nullptr;
         }
 
-        // Receive frames until the full result is assembled. The PC streams
-        // MSG_TASK_PROGRESS frames while it upscales, then sends the terminal
-        // MSG_CLIENT_RESPONSE ([ClientTaskResponse struct][leading result bytes]).
-        // Results larger than 100 MB continue in MSG_CLIENT_DATA chunks; keep
-        // reading until the byte count promised by result_data_length arrives.
-        std::vector<uint8_t> result_payload;
-        size_t expected_total = 0;
-        bool have_response = false;
-        while (true) {
-            std::string frame_error;
-            auto frame = recv_encrypted_frame(socket, *session, frame_error);
-            if (!frame) {
-                set_jni_last_error("Distributed " + frame_error);
-                return nullptr;
-            }
-            if (frame->first.type == upix::MessageType::MSG_TASK_PROGRESS &&
-                frame->second.size() >= sizeof(upix::TaskProgress)) {
-                upix::TaskProgress prog{};
-                std::memcpy(&prog, frame->second.data(), sizeof(prog));
-                if (prog.stage == 0) {
-                    // Surfaced via logcat for now; the UI can subscribe later.
-                    LOGI("PC progress: %u%%, ETA %us",
-                         prog.percent, prog.eta_seconds);
-                } else {
-                    LOGI("PC inference done, encoding result");
-                }
-                continue;  // progress update; drain and wait for the result
-            }
-            if (frame->first.type == upix::MessageType::MSG_CLIENT_DATA) {
-                if (!have_response) {
-                    set_jni_last_error("Distributed result data arrived before the response header");
-                    return nullptr;
-                }
-                result_payload.insert(result_payload.end(),
-                                      frame->second.begin(), frame->second.end());
-                if (result_payload.size() > MAX_TOTAL_RESULT_BYTES) {
-                    set_jni_last_error("Distributed result exceeds the total size limit");
-                    return nullptr;
-                }
-                if (result_payload.size() >= expected_total) {
-                    break;
-                }
-                continue;
-            }
-            if (frame->first.type != upix::MessageType::MSG_CLIENT_RESPONSE) {
-                set_jni_last_error("Distributed response frame type is invalid");
-                return nullptr;
-            }
-            have_response = true;
-            result_payload = std::move(frame->second);
-            if (result_payload.size() < sizeof(upix::ClientTaskResponse)) {
-                set_jni_last_error("Distributed response payload is truncated");
-                return nullptr;
-            }
-            const auto* hdr = reinterpret_cast<const upix::ClientTaskResponse*>(result_payload.data());
-            expected_total = sizeof(upix::ClientTaskResponse) + hdr->result_data_length;
-            if (expected_total > MAX_TOTAL_RESULT_BYTES) {
-                set_jni_last_error("Distributed result exceeds the total size limit");
-                return nullptr;
-            }
-            if (result_payload.size() >= expected_total) {
-                break;  // single-frame result (the common case)
+        std::function<void(uint32_t, uint32_t, uint32_t)> progress_cb;
+        if (progress_listener != nullptr) {
+            jclass listener_class = env->GetObjectClass(progress_listener);
+            jmethodID on_progress = listener_class != nullptr
+                ? env->GetMethodID(listener_class, "onProgress", "(III)V")
+                : nullptr;
+            if (on_progress != nullptr) {
+                // The listener is only invoked during this call, on this
+                // thread, so the local reference is safe without a global.
+                progress_cb = [env, progress_listener, on_progress](
+                                  uint32_t stage, uint32_t percent, uint32_t eta) {
+                    env->CallVoidMethod(
+                        progress_listener, on_progress,
+                        static_cast<jint>(stage), static_cast<jint>(percent),
+                        static_cast<jint>(eta));
+                };
             }
         }
-        if (result_payload.size() < sizeof(upix::ClientTaskResponse)) {
-            set_jni_last_error("Distributed response payload is truncated");
-            return nullptr;
-        }
 
-        const auto* task_response = reinterpret_cast<const upix::ClientTaskResponse*>(result_payload.data());
-        if (task_response->success == 0) {
-            set_jni_last_error("Distributed task failed: " + std::string(task_response->error_message));
-            return nullptr;
+        auto result = receive_distributed_result(
+            session_state->socket, *session_state->session, progress_cb);
+        if (!result.has_value()) {
+            return nullptr;  // error already in the thread-local slot
         }
-
-        // result_data_length is only trusted as a byte count to wait for; the
-        // truncation check below validates it against bytes actually received, so
-        // no allocation ever happens from a claimed length.
-        // The result image bytes follow the ClientTaskResponse struct in result_payload.
-        const size_t resp_hdr_size = sizeof(upix::ClientTaskResponse);
-        if (resp_hdr_size + task_response->result_data_length > result_payload.size()) {
-            set_jni_last_error("Distributed result payload truncated");
-            return nullptr;
-        }
-        // The PC encodes the upscaled result in the requested format before
-        // transport (raw RGB doesn't scale — a camera photo at x2 is hundreds of
-        // MB). Forward the encoded bytes straight to Kotlin; its
-        // decodeOutputBounds()/writeOutputBytes() handle them.
-        const size_t result_len = task_response->result_data_length;
-        if (result_len > static_cast<size_t>(std::numeric_limits<jsize>::max())) {
-            set_jni_last_error("Distributed result is too large for a Java byte array");
-            return nullptr;
-        }
-        jbyteArray encoded_array = env->NewByteArray(static_cast<jsize>(result_len));
+        jbyteArray encoded_array =
+            env->NewByteArray(static_cast<jsize>(result->size()));
         if (encoded_array == nullptr) {
             set_jni_last_error("Distributed output allocation failed");
             return nullptr;
         }
         env->SetByteArrayRegion(
-            encoded_array, 0, static_cast<jsize>(result_len),
-            reinterpret_cast<const jbyte*>(result_payload.data() + resp_hdr_size));
-
+            encoded_array, 0, static_cast<jsize>(result->size()),
+            reinterpret_cast<const jbyte*>(result->data()));
         set_jni_last_error("");
         return encoded_array;
     } catch (const std::exception& exception) {
-        set_jni_last_error(std::string("nativeProcessImageDistributed failed: ") + exception.what());
+        set_jni_last_error(std::string("nativeReceiveDistributedResult failed: ") + exception.what());
         return nullptr;
     } catch (...) {
-        set_jni_last_error("nativeProcessImageDistributed failed: unknown native error");
+        set_jni_last_error("nativeReceiveDistributedResult failed: unknown native error");
         return nullptr;
     }
 }
+
+// Close + free a session handle. Safe on 0 and on already-closed handles.
+JNIEXPORT void JNICALL
+Java_io_upix_nativelib_NCNNEngine_nativeCloseDistributedSession(
+    JNIEnv* env,
+    jobject thiz,
+    jlong handle
+) {
+    (void)env;
+    (void)thiz;
+    if (handle == 0) {
+        return;
+    }
+    auto* session_state = reinterpret_cast<DistributedSession*>(handle);
+    session_state->socket.close();
+    delete session_state;
+}
+
 
 JNIEXPORT jint JNICALL
 Java_io_upix_nativelib_NCNNEngine_nativeGetScaleFactor(

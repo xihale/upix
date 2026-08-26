@@ -3,16 +3,19 @@ package io.upix.viewmodel
 import io.upix.R
 import io.upix.data.model.ProcessingStatus
 import io.upix.data.model.ProcessingTask
+import io.upix.data.model.RemoteItemPhase
 import io.upix.data.repository.BatchOutputStore
 import io.upix.data.repository.ImageProcessingSession
 import io.upix.data.repository.ImageProcessingStore
 import io.upix.data.repository.LogRepository
 import io.upix.data.repository.ModelProvider
+import io.upix.data.repository.NativeProcessResult
 import io.upix.data.repository.OutputImageFormat
 import io.upix.data.repository.ProcessingCheckpoint
 import io.upix.data.repository.ProcessingCheckpointStore
 import io.upix.data.repository.ProcessingFailureDetail
 import io.upix.data.repository.ResolvedImageInput
+import io.upix.data.repository.outputFormatFor
 import io.upix.network.CoordinatorClient
 import io.upix.nativelib.NativeCapabilities
 import io.upix.nativelib.PeerCapabilities
@@ -318,6 +321,11 @@ internal class ProcessingRunEngine(
             // aborts the batch with an error instead of silently falling back.
             val remoteRouting = effectiveDistributedMode
             var processingSession: ImageProcessingSession? = null
+            // 远程深度 1 流水线状态：send-ahead 的下一张任务 + 其失败原因。
+            // remoteInFlight == null 且 remoteSendAheadError != null 时，循环
+            // 在下一迭代把该错误按当前图失败上报并终止批次。
+            var remoteInFlight: CoordinatorClient.RemoteTask? = null
+            var remoteSendAheadError: Exception? = null
 
             // Persists a checkpoint reflecting the run's current progress. The
             // run-invariant fields are captured here; the mutable progress
@@ -398,7 +406,33 @@ internal class ProcessingRunEngine(
                     }
                 }
 
-                for (item in runImages) {
+                // 远程模式先把第一张上传（握手/配对在这条会话上只发生一次），
+                // 之后的循环里每轮：收结果 → 上传下一张 → 写盘当前张。
+                if (remoteRouting) {
+                    remoteInFlight = withContext(ioDispatcher) {
+                        val first = runImages.first()
+                        val firstOutputFile = batchOutputRepository.outputFileFor(
+                            outputDirectory = outputDirectory,
+                            input = first
+                        )
+                        val begun = coordinatorClient!!.beginRemoteTask(
+                            input = first,
+                            modelName = modelName,
+                            tileSize = DISTRIBUTED_TILE_SIZE,
+                            tileOverlap = DISTRIBUTED_TILE_OVERLAP,
+                            outputFormat = outputFormatFor(firstOutputFile)
+                        )
+                        if (begun.isFailure) {
+                            remoteSendAheadError = begun.exceptionOrNull() as? Exception
+                                ?: IllegalStateException(begun.exceptionOrNull()?.message)
+                            null
+                        } else {
+                            begun.getOrThrow()
+                        }
+                    }
+                }
+
+                for ((itemIndex, item) in runImages.withIndex()) {
                     if (!isActive) {
                         return@launchRun
                     }
@@ -409,6 +443,9 @@ internal class ProcessingRunEngine(
                             task = currentTask.copy(
                                 currentItemName = item.displayName,
                                 pendingItems = pendingByUri.size,
+                                remotePhase = null,
+                                remoteItemProgress = null,
+                                remoteItemEtaSeconds = null,
                                 progress = planner.progressOf(successfulCount, totalItems)
                             )
                         )
@@ -424,14 +461,81 @@ internal class ProcessingRunEngine(
                     // 远程路径是阻塞文件读 + 阻塞 JNI 网络，归 IO 调度器；
                     // 本地路径是 CPU 密集的 JNI 推理，保持在 defaultDispatcher。
                     val result = if (remoteRouting) {
-                        withContext(ioDispatcher) {
-                            coordinatorClient!!.processInputRemotely(
-                                input = item,
-                                modelName = modelName,
-                                tileSize = DISTRIBUTED_TILE_SIZE,
-                                tileOverlap = DISTRIBUTED_TILE_OVERLAP,
-                                outputFile = outputFile
+                        val flight = remoteInFlight
+                        if (flight == null) {
+                            // send-ahead 已在上轮失败：按当前图失败上报并终止批次。
+                            Result.failure<NativeProcessResult>(
+                                remoteSendAheadError
+                                    ?: IllegalStateException("Remote upload failed")
                             )
+                        } else {
+                            withContext(ioDispatcher) {
+                                // 预取下一张原图字节，与 PC 处理当前张重叠。
+                                runImages.getOrNull(itemIndex + 1)?.let { next ->
+                                    coordinatorClient!!.prefetchRemoteInput(next)
+                                }
+                                val fetchResult = flight.awaitResult { stage, percent, eta ->
+                                    viewModel.updateUiState { state ->
+                                        val currentTask = state.task
+                                            ?: return@updateUiState state
+                                        val phase: RemoteItemPhase
+                                        val itemFraction: Float
+                                        if (stage == 1) {
+                                            phase = RemoteItemPhase.ENCODING
+                                            itemFraction = 1.0f
+                                        } else {
+                                            phase = RemoteItemPhase.INFERENCE
+                                            itemFraction = (percent / 100.0f)
+                                                .coerceIn(0.0f, 1.0f)
+                                        }
+                                        state.copy(
+                                            task = currentTask.copy(
+                                                remotePhase = phase,
+                                                remoteItemProgress = itemFraction,
+                                                remoteItemEtaSeconds =
+                                                    if (stage == 0 && eta > 0) eta else null,
+                                                progress = combinedRemoteProgress(
+                                                    successfulCount, totalItems, itemFraction
+                                                )
+                                            )
+                                        )
+                                    }
+                                }
+                                // 先上传下一张、再写盘当前张：PC 在手机提交 SAF 的
+                                // 整段时间里可以解码并推理下一张（深度 1 流水线）。
+                                val nextIndex = itemIndex + 1
+                                remoteInFlight = if (nextIndex < runImages.size) {
+                                    val next = runImages[nextIndex]
+                                    val nextOutputFile = batchOutputRepository.outputFileFor(
+                                        outputDirectory = outputDirectory,
+                                        input = next
+                                    )
+                                    val begun = coordinatorClient!!.beginRemoteTask(
+                                        input = next,
+                                        modelName = modelName,
+                                        tileSize = DISTRIBUTED_TILE_SIZE,
+                                        tileOverlap = DISTRIBUTED_TILE_OVERLAP,
+                                        outputFormat = outputFormatFor(nextOutputFile)
+                                    )
+                                    if (begun.isFailure) {
+                                        remoteSendAheadError =
+                                            begun.exceptionOrNull() as? Exception
+                                                ?: IllegalStateException(
+                                                    begun.exceptionOrNull()?.message
+                                                )
+                                        null
+                                    } else {
+                                        remoteSendAheadError = null
+                                        begun.getOrThrow()
+                                    }
+                                } else {
+                                    null
+                                }
+                                fetchResult.fold(
+                                    onSuccess = { encoded -> flight.persist(encoded, outputFile) },
+                                    onFailure = { Result.failure(it) }
+                                )
+                            }
                         }
                     } else {
                         withContext(defaultDispatcher) {
@@ -470,7 +574,10 @@ internal class ProcessingRunEngine(
                                     pendingItems = pendingByUri.size,
                                     failedItems = orderedFailures.size,
                                     failureDetails = orderedFailures,
-                                    lastErrorMessage = lastError
+                                    lastErrorMessage = lastError,
+                                    remotePhase = null,
+                                    remoteItemProgress = null,
+                                    remoteItemEtaSeconds = null
                                 )
                             )
                         }
@@ -567,7 +674,10 @@ internal class ProcessingRunEngine(
                                 pendingItems = pendingByUri.size,
                                 failedItems = orderedFailures.size,
                                 failureDetails = orderedFailures,
-                                lastErrorMessage = lastError
+                                lastErrorMessage = lastError,
+                                remotePhase = null,
+                                remoteItemProgress = null,
+                                remoteItemEtaSeconds = null
                             )
                         )
                     }
@@ -609,7 +719,10 @@ internal class ProcessingRunEngine(
                                 failedItems = 0,
                                 failureDetails = emptyList(),
                                 currentItemName = null,
-                                lastErrorMessage = null
+                                lastErrorMessage = null,
+                                remotePhase = null,
+                                remoteItemProgress = null,
+                                remoteItemEtaSeconds = null
                             ),
                             isProcessing = false
                         )
@@ -637,7 +750,10 @@ internal class ProcessingRunEngine(
                                 failureDetails = orderedFailures,
                                 progress = planner.progressOf(successfulCount, totalItems),
                                 currentItemName = null,
-                                lastErrorMessage = if (hasFailedPending) lastError else null
+                                lastErrorMessage = if (hasFailedPending) lastError else null,
+                                remotePhase = null,
+                                remoteItemProgress = null,
+                                remoteItemEtaSeconds = null
                             ),
                             isProcessing = false
                         )
@@ -679,7 +795,10 @@ internal class ProcessingRunEngine(
                                 failedItems = orderedFailures.size,
                                 failureDetails = orderedFailures,
                                 progress = planner.progressOf(successfulCount, totalItems),
-                                lastErrorMessage = errorMessage
+                                lastErrorMessage = errorMessage,
+                                remotePhase = null,
+                                remoteItemProgress = null,
+                                remoteItemEtaSeconds = null
                             ),
                             isProcessing = false
                         )
@@ -690,13 +809,19 @@ internal class ProcessingRunEngine(
                 )
             } finally {
                 processingSession?.close()
+                if (remoteRouting) {
+                    coordinatorClient?.endRemoteSession()
+                }
                 if (viewModel.currentUiState().isProcessing) {
                     viewModel.updateUiState { state ->
                         val currentTask = state.task ?: return@updateUiState state
                         state.copy(
                             task = currentTask.copy(
                                 currentItemName = null,
-                                pendingItems = (currentTask.totalItems - currentTask.completedItems).coerceAtLeast(0)
+                                pendingItems = (currentTask.totalItems - currentTask.completedItems).coerceAtLeast(0),
+                                remotePhase = null,
+                                remoteItemProgress = null,
+                                remoteItemEtaSeconds = null
                             ),
                             isProcessing = false
                         )
@@ -705,6 +830,19 @@ internal class ProcessingRunEngine(
             }
         }
         return true
+    }
+
+    /** 整批进度 = 已完成张数占比 + 当前图进行中的占比（远程百分比透传用）。 */
+    private fun combinedRemoteProgress(
+        completedItems: Int,
+        totalItems: Int,
+        itemFraction: Float
+    ): Float {
+        val base = planner.progressOf(completedItems, totalItems)
+        if (totalItems <= 0) {
+            return base
+        }
+        return (base + itemFraction / totalItems).coerceIn(0.0f, 1.0f)
     }
 
     companion object {

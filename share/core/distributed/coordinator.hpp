@@ -32,10 +32,12 @@ struct CoordinatorError {
     std::string message;
 };
 
-// Per-connection state for an authenticated phone client. The phone runs the
-// one-shot submit flow: handshake → CONNECT_REQUEST/RESPONSE → CLIENT_SUBMIT →
-// CLIENT_RESPONSE → close. Each image opens a fresh connection that re-handshakes
-// using the persisted peer key (strict MITM); the PC auto-approves trusted peers.
+// Per-connection state for an authenticated phone client. The phone runs a
+// persistent-session submit flow: handshake → CONNECT_REQUEST/RESPONSE →
+// (CLIENT_SUBMIT → CLIENT_RESPONSE)* → close. One connection serves a whole
+// batch; the handshake/pairing happens once per session, not per image
+// (legacy one-shot clients that close after the first response also work —
+// the session loop simply sees EOF).
 struct WorkerConnection {
     std::unique_ptr<TCPSocket> socket;
     std::string device_id;
@@ -114,6 +116,13 @@ private:
     // Runs on its own jthread; `st` is checked at phase boundaries so a
     // shutdown request drops the connection instead of serving it.
     void handle_client(std::stop_token st, std::unique_ptr<TCPSocket> socket);
+
+    // Handle one CLIENT_SUBMIT frame: decode input, upscale, encode, send
+    // CLIENT_RESPONSE (+CLIENT_DATA continuations). Per-task failures are
+    // reported in the response without killing the connection; returns false
+    // only when the transport itself failed (caller must drop the session).
+    bool handle_client_submit(WorkerConnection& conn, std::stop_token& st,
+                              std::vector<uint8_t> frame_payload);
 
     // Run the server side of the ECDH+signature handshake on conn. On success
     // conn.session is active and conn.peer_* are populated; returns false on

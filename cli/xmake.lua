@@ -58,6 +58,16 @@ target("test_protocol")
     add_files("$(projectdir)/cli/tests/test_protocol.cpp")
     set_targetdir("$(projectdir)/cli/build")
 
+target("test_distributed_session")
+    set_kind("binary")
+    add_deps("upix-core")
+    add_packages("ncnn~runtime", "glaze", "libsodium", "libwebp", "libpng", "libjpeg", "libdeflate")
+    if is_plat("linux", "bsd") then
+        add_syslinks("dl")
+    end
+    add_files("$(projectdir)/cli/tests/test_distributed_session.cpp")
+    set_targetdir("$(projectdir)/cli/build")
+
 target("test_image_avif")
     set_kind("binary")
     add_deps("upix-core")
