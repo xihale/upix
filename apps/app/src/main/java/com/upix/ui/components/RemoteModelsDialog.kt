@@ -1,9 +1,11 @@
 package com.upix.ui.components
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -21,6 +23,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
 import com.upix.R
 import com.upix.data.model.RemoteModel
@@ -55,9 +58,13 @@ fun RemoteModelsDialog(
                 Text(stringResource(R.string.models_remote_title))
                 // 加载中不再用 spinner 整个替换刷新钮（避免同一位置控件跳变）：
                 // 刷新钮常驻、加载时禁用，忙碌指示器并列展示在左侧。
+                // 忙碌指示器占位常驻（不可见时也保留 20dp 槽位），
+                // 避免加载开始/结束时标题行高度跳变。
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (isLoading) {
-                        BusyIndicator()
+                    Box(modifier = Modifier.size(20.dp)) {
+                        if (isLoading) {
+                            BusyIndicator()
+                        }
                     }
                     IconButton(onClick = onRefresh, enabled = !isLoading) {
                         Icon(
@@ -89,7 +96,11 @@ fun RemoteModelsDialog(
                     )
 
                     else -> LazyColumn(
-                        modifier = Modifier.fillMaxWidth(),
+                        // 限高 + 保底高度：列表很长时对话框不会撑到接近全屏，
+                        // 加载完成前后内容区高度稳定，弹出不再出现二次跳变。
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(min = 160.dp, max = 360.dp),
                         verticalArrangement = Arrangement.spacedBy(Spacing.sm)
                     ) {
                         items(items = remoteModels, key = { it.name }) { model ->
