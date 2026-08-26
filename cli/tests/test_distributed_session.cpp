@@ -25,7 +25,9 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <optional>
+#include <random>
 #include <string>
 #include <thread>
 #include <unistd.h>
@@ -144,6 +146,19 @@ auto send_sealed(TCPSocket& sock, EncryptedSession& session, MessageType type,
     return sock.send_all(wire.data(), wire.size()).has_value();
 }
 
+auto make_task(const std::vector<uint8_t>& image_bytes, const char* model_name,
+               const char* input_format, uint32_t tile_size) -> ClientTaskSubmit {
+    ClientTaskSubmit task{};
+    std::strncpy(task.model_name, model_name, sizeof(task.model_name) - 1);
+    std::strncpy(task.input_format, input_format, sizeof(task.input_format) - 1);
+    std::strncpy(task.output_format, "jpg", sizeof(task.output_format) - 1);
+    task.tile_size = tile_size;
+    task.tile_overlap = 8;
+    task.output_quality = 90;
+    task.input_data_length = static_cast<uint32_t>(image_bytes.size());
+    return task;
+}
+
 auto recv_sealed(TCPSocket& sock, EncryptedSession& session)
     -> std::optional<std::pair<MessageHeader, std::vector<uint8_t>>> {
     std::vector<uint8_t> hdr(Protocol::HEADER_SIZE);
@@ -165,16 +180,9 @@ auto recv_sealed(TCPSocket& sock, EncryptedSession& session)
 // result payload, or nullopt on transport/protocol failure.
 auto submit_and_await(TCPSocket& sock, EncryptedSession& session,
                       const std::vector<uint8_t>& png_bytes, const char* model_name,
-                      uint32_t tile_size = 64)
+                      uint32_t tile_size = 64, const char* input_format = "png")
     -> std::optional<std::pair<ClientTaskResponse, std::vector<uint8_t>>> {
-    ClientTaskSubmit task{};
-    std::strncpy(task.model_name, model_name, sizeof(task.model_name) - 1);
-    std::strncpy(task.input_format, "png", sizeof(task.input_format) - 1);
-    std::strncpy(task.output_format, "png", sizeof(task.output_format) - 1);
-    task.tile_size = tile_size;
-    task.tile_overlap = 8;
-    task.output_quality = 90;
-    task.input_data_length = static_cast<uint32_t>(png_bytes.size());
+    ClientTaskSubmit task = make_task(png_bytes, model_name, input_format, tile_size);
 
     std::vector<uint8_t> payload(sizeof(task) + png_bytes.size());
     std::memcpy(payload.data(), &task, sizeof(task));
@@ -209,8 +217,186 @@ auto submit_and_await(TCPSocket& sock, EncryptedSession& session,
     }
     ClientTaskResponse resp{};
     std::memcpy(&resp, result.data(), sizeof(resp));
-    result.erase(result.begin(), result.begin() + sizeof(ClientTaskResponse));
+    result.erase(result.begin(), result.begin() + sizeof(resp));
     return std::make_pair(resp, std::move(result));
+}
+
+// Drain frames after a submit until the terminal MSG_CLIENT_RESPONSE (+
+// CLIENT_DATA continuations) assembles the full result. `on_progress` runs
+// for every streamed progress frame — the cancel tests use it to fire
+// MSG_TASK_CANCEL mid-task. Returns like submit_and_await.
+auto drain_until_response(
+    TCPSocket& sock, EncryptedSession& session,
+    const std::function<void(const TaskProgress&)>& on_progress)
+    -> std::optional<std::pair<ClientTaskResponse, std::vector<uint8_t>>> {
+    std::vector<uint8_t> result;
+    bool have_response = false;
+    size_t expected_total = 0;
+    while (true) {
+        auto frame = recv_sealed(sock, session);
+        if (!frame) return std::nullopt;
+        if (frame->first.type == MessageType::MSG_TASK_PROGRESS) {
+            if (frame->second.size() >= sizeof(TaskProgress) && on_progress) {
+                TaskProgress prog{};
+                std::memcpy(&prog, frame->second.data(), sizeof(prog));
+                on_progress(prog);
+            }
+            continue;
+        }
+        if (frame->first.type == MessageType::MSG_CLIENT_DATA) {
+            if (!have_response) return std::nullopt;
+            result.insert(result.end(), frame->second.begin(), frame->second.end());
+            if (result.size() >= expected_total) break;
+            continue;
+        }
+        if (frame->first.type != MessageType::MSG_CLIENT_RESPONSE) return std::nullopt;
+        have_response = true;
+        result = std::move(frame->second);
+        if (result.size() < sizeof(ClientTaskResponse)) return std::nullopt;
+        const auto* hdr = reinterpret_cast<const ClientTaskResponse*>(result.data());
+        expected_total = sizeof(ClientTaskResponse) + hdr->result_data_length;
+        if (result.size() >= expected_total) break;
+    }
+    ClientTaskResponse resp{};
+    std::memcpy(&resp, result.data(), sizeof(resp));
+    result.erase(result.begin(), result.begin() + sizeof(resp));
+    return std::make_pair(resp, std::move(result));
+}
+
+// Deterministic noise image (shared by the big-input tests). Seeded, so the
+// JPEG bytes — and therefore the inference inputs — are identical on every
+// run and across machines.
+auto make_noise_jpeg(int width, int height, int jpeg_quality)
+    -> std::vector<uint8_t> {
+    std::mt19937 rng(0x53534358U);
+    Image img(width, height, 3);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            uint8_t* px = img.data() + (static_cast<size_t>(y) * width + x) * 3;
+            px[0] = static_cast<uint8_t>(rng());
+            px[1] = static_cast<uint8_t>(rng());
+            px[2] = static_cast<uint8_t>(rng());
+        }
+    }
+    auto saved = img.save_to_memory("jpg", jpeg_quality, "", {});
+    CHECK(saved.has_value());
+    return std::move(*saved);
+}
+
+// Equivalence of two encoded outputs: identical pixels (via full decode) and
+// identical encoded size. Raw byte-equality is not usable across submits —
+// each output embeds the SR-marker XMP cs:ts wall-clock timestamp, so two
+// submits a second apart differ in those bytes alone.
+auto outputs_equivalent(const std::vector<uint8_t>& a, const std::vector<uint8_t>& b)
+    -> bool {
+    if (a.size() != b.size()) {
+        return false;
+    }
+    if (a == b) {
+        return true;  // fast path (same second or non-image formats)
+    }
+    auto da = Image::load_from_memory("jpg", a);
+    if (!da.has_value()) {
+        da = Image::load_from_memory("png", a);
+    }
+    auto db = Image::load_from_memory("jpg", b);
+    if (!db.has_value()) {
+        db = Image::load_from_memory("png", b);
+    }
+    if (!da.has_value() || !db.has_value()) {
+        return false;
+    }
+    if (da->width() != db->width() || da->height() != db->height() ||
+        da->channels() != db->channels() || da->size() != db->size()) {
+        return false;
+    }
+    return std::memcmp(da->data(), db->data(), da->size()) == 0;
+}
+
+// New-format chunked submit: struct-only CLIENT_SUBMIT frame followed by the
+// input bytes as MSG_CLIENT_DATA continuation frames (mirrors the phone's
+// send_distributed_submit for >4MB inputs). `chunk_bytes` is adjustable so
+// the test can force multi-chunk reassembly on small inputs.
+auto submit_chunked_and_await(
+    TCPSocket& sock, EncryptedSession& session,
+    const std::vector<uint8_t>& image_bytes, const char* model_name,
+    const char* input_format, uint32_t tile_size,
+    size_t chunk_bytes = CLIENT_DATA_CHUNK_BYTES)
+    -> std::optional<std::pair<ClientTaskResponse, std::vector<uint8_t>>> {
+    ClientTaskSubmit task = make_task(image_bytes, model_name, input_format, tile_size);
+    if (!send_sealed(sock, session, MessageType::MSG_CLIENT_SUBMIT,
+                     &task, sizeof(task))) {
+        return std::nullopt;
+    }
+    for (size_t off = 0; off < image_bytes.size(); off += chunk_bytes) {
+        const size_t n = std::min(chunk_bytes, image_bytes.size() - off);
+        if (!send_sealed(sock, session, MessageType::MSG_CLIENT_DATA,
+                         image_bytes.data() + off, n)) {
+            return std::nullopt;
+        }
+    }
+    return drain_until_response(sock, session, nullptr);
+}
+
+// ── Peak-RSS probes (/proc/self/status VmHWM) for the memory regression
+//    check of chunked vs single-frame submits. clear_refs(5) resets the
+//    high-water mark to the current RSS so each path gets an independent
+//    measurement within one process.
+auto peak_rss_kb() -> long {
+    std::ifstream status("/proc/self/status");
+    std::string key;
+    long value = 0;
+    std::string unit;
+    while (status >> key) {
+        if (key == "VmHWM:") {
+            status >> value >> unit;
+            return value;
+        }
+        status.ignore(4096, '\n');
+    }
+    return -1;
+}
+
+auto reset_peak_rss() -> bool {
+    std::ofstream clear_refs("/proc/self/clear_refs", std::ios::trunc);
+    clear_refs << "5\n";
+    return clear_refs.good();
+}
+
+// Connect + handshake + pairing gate on a fresh socket (several tests open a
+// second connection to the same coordinator).
+auto connect_and_pair(TCPSocket& sock, uint16_t port,
+                      const IdentityKey& server_identity,
+                      const IdentityKey& client_identity)
+    -> std::optional<EncryptedSession> {
+    if (!sock.connect_with_timeout("127.0.0.1", port, 5000)) {
+        return std::nullopt;
+    }
+    sock.set_timeout(120000);
+    auto session = client_handshake(sock, server_identity, client_identity);
+    if (!session.has_value()) {
+        return std::nullopt;
+    }
+    ClientConnectRequest creq{};
+    std::strncpy(creq.device_name, "loopback-test", sizeof(creq.device_name) - 1);
+    const auto fp = fingerprint(client_identity.public_key());
+    std::strncpy(creq.fingerprint, fp.c_str(), sizeof(creq.fingerprint) - 1);
+    creq.fingerprint[sizeof(creq.fingerprint) - 1] = '\0';
+    if (!send_sealed(sock, *session, MessageType::MSG_CLIENT_CONNECT_REQUEST,
+                     &creq, sizeof(creq))) {
+        return std::nullopt;
+    }
+    auto frame = recv_sealed(sock, *session);
+    if (!frame || frame->first.type != MessageType::MSG_CLIENT_CONNECT_RESPONSE ||
+        frame->second.size() < sizeof(ClientConnectResponse)) {
+        return std::nullopt;
+    }
+    const auto* cresp = reinterpret_cast<const ClientConnectResponse*>(
+        frame->second.data());
+    if (cresp->approved != 1) {
+        return std::nullopt;
+    }
+    return session;
 }
 
 }  // namespace
@@ -330,6 +516,77 @@ int main() {
     CHECK(fourth->first.success == 0);
     std::printf("OK submit #4 after decode failure still answered\n");
 
+    // ── Stray MSG_TASK_CANCEL with no task in flight: must be ignored, the
+    //    session stays usable (a cancel can race the response on the wire —
+    //    the PC already answered, the phone already moved on). ─────────────
+    {
+        const uint8_t empty = 0;
+        CHECK(send_sealed(sock, session, MessageType::MSG_TASK_CANCEL,
+                          &empty, 0));
+        auto fifth = submit_and_await(sock, session, png_bytes, "no-such-model");
+        CHECK(fifth.has_value());
+        CHECK(fifth->first.success == 0);
+        std::printf("OK stray CANCEL (no task running) ignored; session usable\n");
+    }
+
+    // ── Chunked submit (new format): struct-only frame + MSG_CLIENT_DATA
+    //    continuations. Without a model the task fails per-task (engine not
+    //    ready) — which is exactly the path that must keep the session alive. ──
+    {
+        ClientTaskSubmit task = make_task(png_bytes, "no-such-model", "png", 64);
+        CHECK(send_sealed(sock, session, MessageType::MSG_CLIENT_SUBMIT,
+                          &task, sizeof(task)));
+        const size_t chunk = png_bytes.size() / 3 + 1;
+        for (size_t off = 0; off < png_bytes.size(); off += chunk) {
+            const size_t n = std::min(chunk, png_bytes.size() - off);
+            CHECK(send_sealed(sock, session, MessageType::MSG_CLIENT_DATA,
+                              png_bytes.data() + off, n));
+        }
+        auto chunked = drain_until_response(sock, session, nullptr);
+        CHECK(chunked.has_value());
+        CHECK(chunked->first.success == 0);
+        CHECK(chunked->first.result_data_length == 0);
+        std::printf("OK chunked submit answered on-session (failure: %s)\n",
+                    chunked->first.error_message);
+
+        // Mixed formats on one session: legacy single frame still works after
+        // a chunked one.
+        auto legacy_after = submit_and_await(sock, session, png_bytes, "no-such-model");
+        CHECK(legacy_after.has_value());
+        CHECK(legacy_after->first.success == 0);
+        std::printf("OK legacy single-frame submit after a chunked one\n");
+    }
+
+    // ── Malformed chunked submit: struct promises N bytes but a non-DATA
+    //    frame arrives instead. Must be a per-task error (session alive), so
+    //    a version-mismatched phone can fall back to the legacy format. ────
+    {
+        ClientTaskSubmit task{};
+        std::strncpy(task.model_name, "no-such-model", sizeof(task.model_name) - 1);
+        std::strncpy(task.input_format, "png", sizeof(task.input_format) - 1);
+        task.tile_size = 64;
+        task.tile_overlap = 8;
+        task.output_quality = 90;
+        task.input_data_length = 4096;  // promise bytes we never send
+        CHECK(send_sealed(sock, session, MessageType::MSG_CLIENT_SUBMIT,
+                          &task, sizeof(task)));
+        // A submit frame where the PC expects a DATA chunk.
+        CHECK(send_sealed(sock, session, MessageType::MSG_CLIENT_SUBMIT,
+                          &task, sizeof(task)));
+        auto broken = drain_until_response(sock, session, nullptr);
+        CHECK(broken.has_value());
+        CHECK(broken->first.success == 0);
+        const std::string err = broken->first.error_message;
+        CHECK(err.find("interrupted") != std::string::npos ||
+              err.find("CLIENT_DATA") != std::string::npos);
+        std::printf("OK malformed chunked submit rejected per-task: %s\n", err.c_str());
+
+        auto recovered = submit_and_await(sock, session, png_bytes, "no-such-model");
+        CHECK(recovered.has_value());
+        CHECK(recovered->first.success == 0);
+        std::printf("OK session usable after a malformed chunked submit\n");
+    }
+
     sock.close();
     coordinator.stop();
 
@@ -382,9 +639,14 @@ int main() {
         auto real_second = submit_and_await(rsock, *rsession, png_bytes, model_name_env);
         CHECK(real_second.has_value());
         CHECK(real_second->first.success == 1);
-        CHECK(real_first->second == real_second->second);
+        // Byte-equality of two submits is NOT a sound invariant: every output
+        // embeds the SR-marker XMP with a wall-clock cs:ts (second
+        // granularity), so submits landing in different seconds differ in
+        // exactly those bytes. Compare the decoded pixels (and the encoded
+        // size) instead — deterministic for a deterministic pipeline.
+        CHECK(outputs_equivalent(real_first->second, real_second->second));
         std::printf("OK real-model path (%s): two submits on one session, %zu-byte "
-                    "identical results\n", model_name_env, real_first->second.size());
+                    "pixel-identical results\n", model_name_env, real_first->second.size());
 
         // ── tile_size=0 (remote auto): the PC must resolve it itself. The
         //    PC log line "Auto-selected tile size ... for remote task" goes
@@ -418,9 +680,184 @@ int main() {
         auto auto_second = submit_and_await(rsock, *rsession, png_bytes, model_name_env, 0);
         CHECK(auto_second.has_value());
         CHECK(auto_second->first.success == 1);
-        CHECK(auto_first->second == auto_second->second);
-        std::printf("OK tile_size=0 auto path: two 0-submits byte-identical "
+        CHECK(outputs_equivalent(auto_first->second, auto_second->second));
+        std::printf("OK tile_size=0 auto path: two 0-submits pixel-identical "
                     "(probe cache picked the same tile)\n");
+
+        // ── Protocol-level task cancel. Submit a multi-second task, shoot
+        //    MSG_TASK_CANCEL at the first progress tick, and require:
+        //      (a) a prompt success=0 / "canceled" answer (not a timeout),
+        //      (b) the session stays usable afterwards. ────────────────────
+        {
+            const auto big = make_noise_jpeg(2600, 2000, 98);
+            ClientTaskSubmit task = make_task(big, model_name_env, "jpg", 0);
+            std::vector<uint8_t> payload(sizeof(task) + big.size());
+            std::memcpy(payload.data(), &task, sizeof(task));
+            std::memcpy(payload.data() + sizeof(task), big.data(), big.size());
+            CHECK(send_sealed(rsock, *rsession, MessageType::MSG_CLIENT_SUBMIT,
+                              payload.data(), payload.size()));
+
+            bool cancel_sent = false;
+            auto t_cancel = std::chrono::steady_clock::now();
+            auto canceled = drain_until_response(
+                rsock, *rsession,
+                [&](const TaskProgress& p) {
+                    if (!cancel_sent && p.stage == 0 && p.percent > 0) {
+                        const uint8_t empty = 0;
+                        CHECK(send_sealed(rsock, *rsession,
+                                          MessageType::MSG_TASK_CANCEL,
+                                          &empty, 0));
+                        cancel_sent = true;
+                        t_cancel = std::chrono::steady_clock::now();
+                    }
+                });
+            CHECK(canceled.has_value());
+            CHECK(cancel_sent);
+            CHECK(canceled->first.success == 0);
+            CHECK(std::string(canceled->first.error_message).find("canceled") !=
+                  std::string::npos);
+            const double cancel_s = std::chrono::duration<double>(
+                std::chrono::steady_clock::now() - t_cancel).count();
+            CHECK(cancel_s < 60.0);
+            std::printf("OK MSG_TASK_CANCEL answered '%s' after %.2f s\n",
+                        canceled->first.error_message, cancel_s);
+
+            // Session reuse after the cancel: the very next submit must
+            // still succeed on the same connection.
+            auto after = submit_and_await(rsock, *rsession, png_bytes,
+                                          model_name_env);
+            CHECK(after.has_value());
+            CHECK(after->first.success == 1);
+            std::printf("OK session still serves submits after a cancel\n");
+        }
+
+        // ── Dead connection mid-task: the PC must ABORT the task (not run
+        //    it to completion). Open a second connection, submit the same
+        //    slow input, drop the socket at the first progress tick, and
+        //    watch the coordinator log for the abort line. ────────────────
+        {
+            TCPSocket dsock;
+            auto dsession = connect_and_pair(dsock, real_port, server_identity,
+                                             client_identity);
+            CHECK(dsession.has_value());
+
+            const auto big = make_noise_jpeg(2600, 2000, 98);
+            ClientTaskSubmit task = make_task(big, model_name_env, "jpg", 0);
+            std::vector<uint8_t> payload(sizeof(task) + big.size());
+            std::memcpy(payload.data(), &task, sizeof(task));
+            std::memcpy(payload.data() + sizeof(task), big.data(), big.size());
+            CHECK(send_sealed(dsock, *dsession, MessageType::MSG_CLIENT_SUBMIT,
+                              payload.data(), payload.size()));
+
+            // Wait for the first real progress tick, then pull the plug.
+            bool dropped = false;
+            while (!dropped) {
+                auto frame = recv_sealed(dsock, *dsession);
+                CHECK(frame.has_value());
+                CHECK(frame->first.type == MessageType::MSG_TASK_PROGRESS);
+                if (frame->second.size() >= sizeof(TaskProgress)) {
+                    TaskProgress prog{};
+                    std::memcpy(&prog, frame->second.data(), sizeof(prog));
+                    if (prog.stage == 0 && prog.percent > 0) {
+                        dsock.close();
+                        dropped = true;
+                    }
+                }
+            }
+            CHECK(dropped);
+
+            // The coordinator runs in-process; its log goes to stdout.
+            // Redirect stdout to a file, then poll the file for BOTH lines:
+            // the handler noticing the dead peer, and — the one that matters
+            // for "PC stops computing" — the worker actually exiting
+            // inference after the cancel.
+            const auto cap_path = dir / "disconnect_capture.log";
+            std::fflush(stdout);
+            const int saved_stdout = ::dup(STDOUT_FILENO);
+            CHECK(saved_stdout >= 0);
+            CHECK(std::freopen(cap_path.c_str(), "w", stdout) != nullptr);
+            bool aborted = false;
+            auto t_drop = std::chrono::steady_clock::now();
+            double abort_s = 0.0;
+            for (int i = 0; i < 480 && !aborted; ++i) {  // ≤ 120 s
+                std::fflush(stdout);
+                std::ifstream in(cap_path);
+                std::string line;
+                while (std::getline(in, line)) {
+                    if (line.find("inference stopped after cancel") !=
+                        std::string::npos) {
+                        aborted = true;
+                        abort_s = std::chrono::duration<double>(
+                            std::chrono::steady_clock::now() - t_drop).count();
+                        break;
+                    }
+                }
+                if (!aborted) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+                }
+            }
+            std::fflush(stdout);
+            ::dup2(saved_stdout, STDOUT_FILENO);
+            ::close(saved_stdout);
+            CHECK(aborted);
+            std::printf("OK dead-connection mid-task: PC inference stopped after "
+                        "%.2f s (handler noticed at first poll tick)\n", abort_s);
+
+            // The surviving session must still work (engine freed, no
+            // cross-connection cancel bleed).
+            auto after = submit_and_await(rsock, *rsession, png_bytes,
+                                          model_name_env);
+            CHECK(after.has_value());
+            CHECK(after->first.success == 1);
+            std::printf("OK other session unaffected by the dropped one\n");
+        }
+
+        // ── Big input, chunked vs single-frame upload. The same noise JPEG
+        //    (8-20MB) is submitted through both wire formats; the real model
+        //    must produce equivalent outputs (identical decoded pixels), and
+        //    the process peak RSS must be LOWER on the chunked path — that
+        //    is the whole point of chunking: neither side ever materializes
+        //    full plaintext+wire copies of the input simultaneously. ───────
+        {
+            const auto big = make_noise_jpeg(2600, 2000, 100);
+            constexpr uint64_t MB = 1024ull * 1024ull;
+            CHECK(big.size() >= 8 * MB);
+            CHECK(big.size() <= 20 * MB);
+            std::printf("big-input test: %.2f MB noise JPEG\n",
+                        static_cast<double>(big.size()) / MB);
+
+            const bool can_measure = reset_peak_rss();
+            auto via_chunks = submit_chunked_and_await(
+                rsock, *rsession, big, model_name_env, "jpg", 0);
+            CHECK(via_chunks.has_value());
+            CHECK(via_chunks->first.success == 1);
+            const long peak_chunked = can_measure ? peak_rss_kb() : -1;
+
+            if (can_measure) {
+                CHECK(reset_peak_rss());
+            }
+            auto via_single = submit_and_await(rsock, *rsession, big,
+                                               model_name_env, 0, "jpg");
+            CHECK(via_single.has_value());
+            CHECK(via_single->first.success == 1);
+            const long peak_single = can_measure ? peak_rss_kb() : -1;
+
+            CHECK(outputs_equivalent(via_chunks->second, via_single->second));
+            std::printf("OK big input: chunked and single-frame outputs equivalent "
+                        "(%zu vs %zu bytes)\n",
+                        via_chunks->second.size(), via_single->second.size());
+
+            if (can_measure && peak_chunked > 0 && peak_single > 0) {
+                const double c = static_cast<double>(peak_chunked) / 1024.0;
+                const double s = static_cast<double>(peak_single) / 1024.0;
+                std::printf("peak RSS: chunked %.1f MB vs single-frame %.1f MB "
+                            "(saved %.1f MB)\n", c, s, s - c);
+                CHECK(peak_chunked < peak_single);
+            } else {
+                std::printf("peak RSS probe unavailable; skipping the "
+                            "chunked<singe assertion\n");
+            }
+        }
 
         rsock.close();
         real.stop();
