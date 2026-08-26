@@ -447,8 +447,11 @@ int run_batch(const args::Process& a) {
         };
 
         // GPU directory mode defaults to VRAM-sized multi-engine concurrency
-        // (decided inside that branch, where engine #0 reports the budget);
-        // an explicit -j 1 still pins the pipelined single-engine path.
+        // (decided inside that branch, where engine #0 reports the budget)
+        // with the same prepare/SR/save pipeline stages as -j 1, just N
+        // engines in the SR stage; an explicit -j 1 still pins the
+        // single-engine variant of that pipeline, and CPU jobs<=1 keeps the
+        // plain serial loop.
         const bool single_engine_mode =
             jobs <= 1 && !(use_gpu && !jobs_explicit && tasks.size() > 1);
         if (single_engine_mode) {
@@ -794,37 +797,187 @@ int run_batch(const args::Process& a) {
                     LOG_INFO("Engine", "Auto-selected tile size: {}", tile_size);
                 }
 
-                std::atomic<size_t> next_task{0};
-                std::atomic<size_t> success_count{0};
-                std::vector<std::thread> workers;
-                workers.reserve(worker_count);
+                // Pipelined stage structure — the same prepare/SR/save shape
+                // as the -j1 path above, with the SR stage widened to N
+                // engines. Decode and encode run on their own thread pools
+                // so they no longer stall an engine's GPU between images:
+                // prepare workers read+decode into the prepared queue, each
+                // engine thread only runs SR, save workers encode+write.
+                size_t kSaveWorkers = 2;
+                if (unsigned int hw_threads = std::thread::hardware_concurrency(); hw_threads > 0) {
+                    kSaveWorkers = std::clamp(static_cast<size_t>(hw_threads / 8), static_cast<size_t>(2), static_cast<size_t>(4));
+                }
+                size_t kPrepareWorkers = 2;
+                if (unsigned int hw_threads = std::thread::hardware_concurrency(); hw_threads > 0) {
+                    kPrepareWorkers = std::clamp(static_cast<size_t>(hw_threads / 4), static_cast<size_t>(2), static_cast<size_t>(6));
+                }
+                const size_t prepared_queue_limit = std::max(static_cast<size_t>(4), kPrepareWorkers * 2);
+                const size_t processed_queue_limit = std::max(static_cast<size_t>(2), kSaveWorkers * 2);
+                // Byte caps on top of the count limits (same rationale and
+                // same values as the -j1 pipeline): a directory of huge
+                // images makes each queued frame worth hundreds of MB, so a
+                // count-only bound can pin several GB of decoded inputs /
+                // full outputs ahead of the engines and the encoders. A
+                // queue always accepts its first item, so one oversized
+                // image that alone exceeds the cap still flows.
+                constexpr size_t kPreparedQueueByteCap = 768u << 20;
+                constexpr size_t kProcessedQueueByteCap = 1024u << 20;
+                size_t prepared_queue_bytes = 0;
+                size_t processed_queue_bytes = 0;
+                std::deque<PreparedTask> prepared_queue;
+                std::deque<ProcessedTask> processed_queue;
+                std::mutex prepared_mutex;
+                std::mutex processed_mutex;
+                std::condition_variable prepared_cv;
+                std::condition_variable processed_cv;
+                constexpr auto kCancelPoll = std::chrono::milliseconds(50);
+                bool prepare_done = false;
+                bool process_done = false;
+                std::atomic<size_t> save_success_count{0};
+                std::atomic<size_t> active_preparers{kPrepareWorkers};
+                std::atomic<size_t> active_engines{gpu_engines.size()};
 
-                for (size_t i = 0; i < worker_count; ++i) {
-                    workers.emplace_back([&, i]() {
-                        auto& eng = *gpu_engines[i];
+                std::atomic<size_t> next_prepare{0};
+                std::vector<std::thread> prepare_threads;
+                prepare_threads.reserve(kPrepareWorkers);
+                for (size_t i = 0; i < kPrepareWorkers; ++i) {
+                    prepare_threads.emplace_back([&]() {
                         while (true) {
-                            size_t idx = next_task.fetch_add(1);
+                            if (g_cancel_requested.load()) {
+                                break;
+                            }
+                            size_t idx = next_prepare.fetch_add(1);
                             if (idx >= tasks.size()) {
                                 break;
                             }
-                            if (process_one(tasks[idx].first, tasks[idx].second, eng) == TaskResult::Success) {
-                                success_count.fetch_add(1);
+                            const auto& task = tasks[idx];
+                            auto prepared = prepare_task(task.first, task.second);
+                            if (prepared.status != PrepareStatus::Ok) {
+                                // Skip (already logged + counted) or load
+                                // failure (error logged) — never enqueued.
+                                continue;
+                            }
+                            const size_t task_bytes = prepared.task.value().pixel_bytes;
+                            std::unique_lock<std::mutex> lock(prepared_mutex);
+                            while ((prepared_queue.size() >= prepared_queue_limit ||
+                                    (prepared_queue_bytes > 0 &&
+                                     prepared_queue_bytes + task_bytes > kPreparedQueueByteCap)) &&
+                                   !g_cancel_requested.load()) {
+                                prepared_cv.wait_for(lock, kCancelPoll);
+                            }
+                            if (g_cancel_requested.load()) {
+                                break;
+                            }
+                            prepared_queue_bytes += task_bytes;
+                            prepared_queue.emplace_back(std::move(prepared.task.value()));
+                            lock.unlock();
+                            prepared_cv.notify_one();
+                        }
+                        if (active_preparers.fetch_sub(1) == 1) {
+                            std::lock_guard<std::mutex> lock(prepared_mutex);
+                            prepare_done = true;
+                            prepared_cv.notify_all();
+                        }
+                    });
+                }
+
+                std::vector<std::thread> engine_threads;
+                engine_threads.reserve(worker_count);
+                for (size_t i = 0; i < worker_count; ++i) {
+                    engine_threads.emplace_back([&, i]() {
+                        upix::Engine& eng = *gpu_engines[i];
+                        while (true) {
+                            std::optional<PreparedTask> prepared;
+                            {
+                                std::unique_lock<std::mutex> lock(prepared_mutex);
+                                while (prepared_queue.empty() && !prepare_done && !g_cancel_requested.load()) {
+                                    prepared_cv.wait_for(lock, kCancelPoll);
+                                }
+                                if ((prepared_queue.empty() && prepare_done) || g_cancel_requested.load()) {
+                                    break;
+                                }
+                                prepared_queue_bytes -= prepared_queue.front().pixel_bytes;
+                                prepared = std::move(prepared_queue.front());
+                                prepared_queue.pop_front();
+                            }
+                            prepared_cv.notify_all();
+
+                            auto processed = infer_prepared_task(std::move(prepared.value()), eng);
+                            if (!processed.has_value()) {
+                                continue;
+                            }
+
+                            const size_t task_bytes = processed.value().pixel_bytes;
+                            {
+                                std::unique_lock<std::mutex> lock(processed_mutex);
+                                while ((processed_queue.size() >= processed_queue_limit ||
+                                        (processed_queue_bytes > 0 &&
+                                         processed_queue_bytes + task_bytes > kProcessedQueueByteCap)) &&
+                                       !g_cancel_requested.load()) {
+                                    processed_cv.wait_for(lock, kCancelPoll);
+                                }
+                                if (g_cancel_requested.load()) {
+                                    break;
+                                }
+                                processed_queue_bytes += task_bytes;
+                                processed_queue.emplace_back(std::move(processed.value()));
+                                lock.unlock();
+                                processed_cv.notify_one();
+                            }
+                        }
+                        if (active_engines.fetch_sub(1) == 1) {
+                            std::lock_guard<std::mutex> lock(processed_mutex);
+                            process_done = true;
+                            processed_cv.notify_all();
+                            prepared_cv.notify_all();
+                        }
+                    });
+                }
+
+                std::vector<std::thread> save_threads;
+                save_threads.reserve(kSaveWorkers);
+                for (size_t i = 0; i < kSaveWorkers; ++i) {
+                    save_threads.emplace_back([&]() {
+                        while (true) {
+                            std::optional<ProcessedTask> processed;
+                            {
+                                std::unique_lock<std::mutex> lock(processed_mutex);
+                                while (processed_queue.empty() && !process_done && !g_cancel_requested.load()) {
+                                    processed_cv.wait_for(lock, kCancelPoll);
+                                }
+                                if ((processed_queue.empty() && process_done) || g_cancel_requested.load()) {
+                                    break;
+                                }
+                                processed_queue_bytes -= processed_queue.front().pixel_bytes;
+                                processed = std::move(processed_queue.front());
+                                processed_queue.pop_front();
+                            }
+                            processed_cv.notify_one();
+
+                            if (save_processed_task(std::move(processed.value()))) {
+                                save_success_count.fetch_add(1);
                             }
                         }
                     });
                 }
 
-                for (auto& w : workers) {
-                    w.join();
+                for (auto& prepare_thread : prepare_threads) {
+                    prepare_thread.join();
+                }
+                for (auto& engine_thread : engine_threads) {
+                    engine_thread.join();
+                }
+                for (auto& save_thread : save_threads) {
+                    save_thread.join();
                 }
 
                 const size_t skipped = skip_count.load();
                 LOG_INFO("CLI", "Processing summary: {}/{} succeeded{}",
-                         success_count.load(), tasks.size(),
+                         save_success_count.load(), tasks.size(),
                          skipped > 0 ? std::format(", {} skipped (already super-resolved)",
                                                    skipped)
                                      : std::string{});
-                return success_count.load() + skipped == tasks.size() ? 0 : 1;
+                return save_success_count.load() + skipped == tasks.size() ? 0 : 1;
             } else {
                 // CPU EnginePool: fixed worker pool pulling tasks via an atomic
                 // index (same shape as the GPU jobs>1 branch). One std::async

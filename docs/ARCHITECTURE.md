@@ -259,7 +259,7 @@ TCP）。二者共享的是协议帧格式与 TileProcessor。
 | `cli_app.cpp` | 273 | CLI11 命令树（所有子命令的选项/校验/回调） |
 | `args.hpp` / `common.{hpp,cpp}` | — | 参数 struct；模型目录解析（`$UPIX_MODELS_DIR` > `$XDG_DATA_HOME/upix/models`）、输出命名、日志装配等共用逻辑 |
 | `cmd_process.cpp` | 558 | 单图超分（daemon 委托 + 内联路径） |
-| `process_batch.cpp` | 895 | 目录模式批处理（CPU EnginePool / GPU 单引擎流水线） |
+| `process_batch.cpp` | 1048 | 目录模式批处理（CPU EnginePool / GPU 多引擎 prepare→SR→save 流水线） |
 | `cmd_model.cpp` + `model_downloader.{hpp,cpp}` | — | 模型列表/导入 + release 清单解析与下载（libcurl） |
 | `cmd_host.cpp` / `cmd_daemon.cpp` | — | 连接卡（IP/QR/指纹）+ coordinator 生命周期；daemon 控制 |
 | `cmd_complete.cpp` / `cmd_completions.cpp` | — | cobra 风格动态补全引擎；三 shell 薄适配脚本输出/安装 |
@@ -395,8 +395,9 @@ before_build 注册只有第一个生效）负责两件事：Android 配置下 p
 
 ### 已知限制
 
-1. **Vulkan 进程级单例**：同一进程内引擎加载/推理必须互斥串行（ncnn 约束），GPU 目录
-   模式单引擎顺序处理，`--jobs` 仅 CPU 有效。
+1. **Vulkan 进程级单例**：同一进程内引擎/模型加载互斥串行（ncnn 约束，推理本身可多
+   引擎并发）；GPU 目录模式按 VRAM 准入最多 4 引擎，prepare→SR→save 三段流水线，
+   解码/编码不占引擎线程。
 2. **serve daemon 不加密**：本机 AF_UNIX，无 EncryptedSession；仅 Linux/macOS。
 3. **一对一配对**：一个 coordinator 服务一台手机的会话模型；多手机同时提交各自独立
    连接可行，但没有多机协同调度（历史 worker 集群已删，见 §1 注记）。
