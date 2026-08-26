@@ -94,6 +94,19 @@ target("test_sr_marker")
     add_files("$(projectdir)/cli/tests/test_sr_marker.cpp")
     set_targetdir("$(projectdir)/cli/build")
 
+target("test_exif")
+    set_kind("binary")
+    add_deps("upix-core")
+    add_packages("libwebp", "libpng", "libjpeg", "libdeflate")
+    if has_config("avif-encoder") or has_config("avif-decoder") then
+        add_packages("libavif")
+    end
+    if is_plat("linux", "bsd") then
+        add_syslinks("dl")
+    end
+    add_files("$(projectdir)/cli/tests/test_exif.cpp")
+    set_targetdir("$(projectdir)/cli/build")
+
 target("test_gpu_precision")
     set_kind("binary")
     add_packages("ncnn~runtime")

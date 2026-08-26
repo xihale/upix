@@ -859,6 +859,81 @@ int main() {
             }
         }
 
+        // ── EXIF orientation=6 (portrait JPEG): the PC must bake the
+        //    rotation in after decode, so the same stored 64x48 frame comes
+        //    back as width/height swapped relative to the EXIF-free JPEG of
+        //    identical pixels. Asserted on the decoded output dimensions.
+        auto exif_jpeg_dims = [&]() -> std::pair<int, int> {
+            // 64x48 landscape stored, tagged orientation 6 (rotate 90° CW).
+            std::vector<uint8_t> jpeg_bytes;
+            {
+                Image img(64, 48, 3);
+                for (int y = 0; y < 48; ++y) {
+                    for (int x = 0; x < 64; ++x) {
+                        uint8_t* px = img.data() + (static_cast<size_t>(y) * 64 + x) * 3;
+                        px[0] = static_cast<uint8_t>(x * 4);
+                        px[1] = static_cast<uint8_t>(y * 5);
+                        px[2] = 0x80;
+                    }
+                }
+                auto saved = img.save_to_memory("jpg", 90);
+                CHECK(saved.has_value());
+                jpeg_bytes = std::move(*saved);
+            }
+            // APP1 "Exif\0\0" with an IFD0 holding only Orientation=6,
+            // spliced after the SOI (same shape as test_exif's builder).
+            const uint8_t app1[] = {
+                0xFF, 0xE1, 0x00, 0x22,
+                'E', 'x', 'i', 'f', 0, 0,
+                'I', 'I', 0x2A, 0x00, 0x08, 0x00, 0x00, 0x00,
+                0x01, 0x00,
+                0x12, 0x01, 0x03, 0x00, 0x01, 0x00, 0x00, 0x00,
+                0x06, 0x00, 0x00, 0x00,
+                0x00, 0x00, 0x00, 0x00,
+            };
+            std::vector<uint8_t> tagged;
+            tagged.reserve(jpeg_bytes.size() + sizeof(app1));
+            const auto* jb = jpeg_bytes.data();
+            tagged.insert(tagged.end(), jb, jb + 2);
+            tagged.insert(tagged.end(), app1, app1 + sizeof(app1));
+            tagged.insert(tagged.end(), jb + 2, jb + jpeg_bytes.size());
+
+            auto out = submit_and_await(rsock, *rsession, tagged, model_name_env,
+                                        64, "jpg");
+            CHECK(out.has_value());
+            CHECK(out->first.success == 1);
+            auto decoded = Image::load_from_memory("png", out->second);
+            CHECK(decoded.has_value());
+            return {decoded->width(), decoded->height()};
+        }();
+        // Baseline: the same JPEG pixels without the EXIF tag.
+        {
+            Image img(64, 48, 3);
+            for (int y = 0; y < 48; ++y) {
+                for (int x = 0; x < 64; ++x) {
+                    uint8_t* px = img.data() + (static_cast<size_t>(y) * 64 + x) * 3;
+                    px[0] = static_cast<uint8_t>(x * 4);
+                    px[1] = static_cast<uint8_t>(y * 5);
+                    px[2] = 0x80;
+                }
+            }
+            auto saved = img.save_to_memory("jpg", 90);
+            CHECK(saved.has_value());
+            auto out = submit_and_await(rsock, *rsession, *saved, model_name_env,
+                                        64, "jpg");
+            CHECK(out.has_value());
+            CHECK(out->first.success == 1);
+            auto decoded = Image::load_from_memory("png", out->second);
+            CHECK(decoded.has_value());
+            CHECK(decoded->width() > decoded->height());  // landscape base
+            CHECK(exif_jpeg_dims.first == decoded->height());
+            CHECK(exif_jpeg_dims.second == decoded->width());
+            std::printf("OK orientation=6 remote path: output %dx%d vs baseline "
+                        "%dx%d (width/height swapped)\n",
+                        exif_jpeg_dims.first, exif_jpeg_dims.second,
+                        decoded->width(), decoded->height());
+        }
+
         rsock.close();
         real.stop();
     }

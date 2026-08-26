@@ -380,7 +380,7 @@ UI → ProcessingViewModel → NativeImageProcessingRepository
 | `upix-native` | `apps/xmake.lua` | Android shared；编 `jni_bridge.cpp` + 链 `upix-core`；`after_build` 把 .so 及依赖包 .so 拷入 `app/src/main/jniLibs/<abi>/`（含 NDK `libc++_shared.so`） |
 | `upix-perf` | `tools/xmake.lua` | 独立探针二进制（target 名 `upix-perf-tool`，basename 还原为 `upix-perf`），链接 `share/perf/` 的 `upix-perf` 静态库 |
 | `dump-spirv` | `tools/xmake.lua` | host-only，链 glslang 变体 ncnn，离线生成 `spirv_pack.bin`；默认不构建 |
-| `test_*` ×6 | `cli/xmake.lua` | test_crypto / test_protocol / test_image_avif / test_sr_marker / test_gpu_precision / test_model_downloader |
+| `test_*` ×7 | `cli/xmake.lua` | test_crypto / test_protocol / test_image_avif / test_sr_marker / test_exif / test_gpu_precision / test_model_downloader |
 
 **SPIR-V pack 生成链**：`share/xmake.lua` 的 `before_build` 钩子（唯一钩子——多个
 before_build 注册只有第一个生效）负责两件事：Android 配置下 pack 缺失时，用隔离的
