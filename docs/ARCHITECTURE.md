@@ -223,7 +223,11 @@ auto_tile_size=true 时：
   手机端三处 min 约束（Kotlin/jni/协议）均放行 0 且仅 0 例外；
 - 用本地引擎跑完整超分（`engine_setup` 初始化 + `TileProcessor.process_image_u8`）；
 - 处理中持续回发 `MSG_TASK_PROGRESS`，完成后回 `MSG_CLIENT_RESPONSE`（+ 必要时
-  `MSG_CLIENT_DATA` 续帧）；编解码失败以 per-task 错误回传，不摔连接；
+  `MSG_CLIENT_DATA` 续帧）；编解码失败以 per-task 错误回传，不摔连接。
+  进度帧不由 worker 直接发送：worker 只把最新 {pct,eta} 写进
+  `ClientTaskRun` 原子槽，handler 轮询线程每 tick 至多发一帧——直接发送曾与
+  轮询读在共享 io_mutex 上锁车队化，实测每帧 ~10s、推理放大 1900×；
+  （io_mutex 现已拆分为收/发两把锁，见 上游"StreamSocket 拆分收发两把锁"提交 StreamSocket）
 - **任务级取消**：每个 CLIENT_SUBMIT 的解码/推理/编码/应答跑在该连接自己的工作
   线程上，handler 线程以 ~200ms 短超时轮询继续收帧（`recv_encrypted_poll`：仅对
   首字节限时，帧一旦开始就用整段超时收完，轮询绝不弃半帧；收向超时经
@@ -262,8 +266,9 @@ TASK_PROGRESS 经回调透传进 UI）→ 批末 `nativeCloseDistributedSession`
 `CoordinatorClient.cancelRemoteTask` → `nativeCancelDistributedTask` 置会话级
 cancel 原子（线程安全、非阻塞）。阻塞中的 `nativeReceiveDistributedResult` 以
 ~200ms 轮询接收（首字节限时、整帧收完不弃半帧），发现置位后**由接收线程自己**
-发出 `MSG_TASK_CANCEL`——`StreamSocket` 单一递归 io_mutex 使"receive 阻塞期间
-跨线程 send"必然卡死，而轮询间隙锁被释放，自己发帧无竞争。随后继续收 PC 的
+发出 `MSG_TASK_CANCEL`——轮询接收在间隙释放 rx 锁，自己发帧无竞争
+（`StreamSocket` 已拆分 tx/rx 两把锁；旧的单 io_mutex 会让发送排队等满一个
+200ms 轮询窗，曾被测出响应下发 11-23s/546KB）。随后继续收 PC 的
 "canceled" 终止应答（上限 90s；旧 PC 不认识 CANCEL 会摔线，报
 "Distributed task canceled (connection lost)"），Kotlin 侧将取消映射为
 `CancellationException`（不算失败、不清已配对端点），批次 finally 关会话收尾。
