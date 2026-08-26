@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.ActivityResultLauncher
@@ -54,9 +55,15 @@ internal class InputSelectionController(
     internal lateinit var pickOutputFolderLauncher: ActivityResultLauncher<Uri?>
     internal lateinit var pickModelFilesLauncher: ActivityResultLauncher<Array<String>>
     internal lateinit var requestWritePermissionLauncher: ActivityResultLauncher<String>
+    internal lateinit var requestNotificationPermissionLauncher: ActivityResultLauncher<String>
 
     var mainUiState: MainUiState = MainUiState()
         internal set
+
+    // API 33+ 通知权限只在每个会话问一次（拒绝也照常启动队列：前台服务与
+    // WakeLock 不依赖该权限，仅通知可见性受影响）。
+    private var notificationPermissionAsked = false
+    private var pendingNotificationQueueStartBatchId: String? = null
 
     fun pickImages() {
         pickMultipleImagesLauncher.launch(
@@ -230,6 +237,41 @@ internal class InputSelectionController(
     }
 
     fun startQueueWithWritePermissionCheck(preferredBatchId: String?) {
+        // 前置：API 33+ 先补一次通知权限（拒绝不阻断，服务照常保活）。
+        if (needsNotificationPermissionRequest()) {
+            notificationPermissionAsked = true
+            pendingNotificationQueueStartBatchId = preferredBatchId
+            requestNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        startQueueWithWritePermissionCheckInternal(preferredBatchId)
+    }
+
+    private fun needsNotificationPermissionRequest(): Boolean {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || notificationPermissionAsked) {
+            return false
+        }
+        return ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS
+        ) != PackageManager.PERMISSION_GRANTED
+    }
+
+    internal fun onNotificationPermissionResult(granted: Boolean) {
+        logRepository.info(
+            "UpixApp",
+            if (granted) {
+                "Notification permission granted"
+            } else {
+                "Notification permission denied; foreground service continues without visible notifications"
+            }
+        )
+        val pendingBatchId = pendingNotificationQueueStartBatchId
+        pendingNotificationQueueStartBatchId = null
+        startQueueWithWritePermissionCheckInternal(pendingBatchId)
+    }
+
+    private fun startQueueWithWritePermissionCheckInternal(preferredBatchId: String?) {
         if (needsLegacyWritePermission().not()) {
             processingViewModel.startBatchQueue(preferredBatchId)
         } else {
@@ -317,6 +359,12 @@ internal fun rememberInputSelection(
         contract = ActivityResultContracts.RequestPermission()
     ) { granted ->
         controller.onWritePermissionResult(granted)
+    }
+
+    controller.requestNotificationPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        controller.onNotificationPermissionResult(granted)
     }
 
     return controller

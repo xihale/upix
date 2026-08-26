@@ -8,6 +8,7 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import io.upix.AppContainer
 import io.upix.data.model.ProcessingStatus
+import io.upix.data.model.RemoteItemPhase
 import io.upix.data.repository.BatchOutputStore
 import io.upix.data.repository.ImageProcessingStore
 import io.upix.data.repository.InputSourceResolver
@@ -21,6 +22,9 @@ import io.upix.data.repository.SrMarkerInfo
 import io.upix.data.repository.canRetryFailedOnly
 import io.upix.data.repository.probeSrMarker
 import io.upix.network.CoordinatorClient
+import io.upix.service.ForegroundCompletionSnapshot
+import io.upix.service.ForegroundProgressSnapshot
+import io.upix.service.ProcessingForegroundCoordinator
 import io.upix.util.StringProvider
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
@@ -59,7 +63,9 @@ class ProcessingViewModel(
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
     private val defaultDispatcher: CoroutineDispatcher = Dispatchers.Default,
     private val stringProvider: StringProvider,
-    private val probeSrMarker: (ResolvedImageInput) -> SrMarkerInfo?
+    private val probeSrMarker: (ResolvedImageInput) -> SrMarkerInfo?,
+    // 前台保活协调器（AppContainer 单例）：null = 不驱动前台服务（单测注入 null）。
+    private val foregroundCoordinator: ProcessingForegroundCoordinator? = null
 ) : ViewModel() {
     private val _uiState = MutableStateFlow(ProcessingUiState())
     val uiState: StateFlow<ProcessingUiState> = _uiState.asStateFlow()
@@ -170,6 +176,72 @@ class ProcessingViewModel(
                             }
                         }
                 }
+        }
+
+        // 前台保活投影：把 uiState 压成协调器需要的进度快照（远端百分比取整
+        // 让 data class 相等去重高频透传），并在任务从 RUNNING 翻到终态时发
+        // 一条完成事件，由 ProcessingKeepAliveService 渲染前台/完成通知。
+        val coordinator = foregroundCoordinator
+        if (coordinator != null) {
+            viewModelScope.launch {
+                var observedTaskId: String? = null
+                var observedStatus: ProcessingStatus? = null
+                var completionId = 0L
+                uiState.collect { state ->
+                    val task = state.task
+                    coordinator.onProgress(
+                        ForegroundProgressSnapshot(
+                            active = state.isProcessing || state.isQueueRunning,
+                            runningTaskId = task?.id,
+                            modelName = task?.modelName,
+                            completedItems = task?.completedItems ?: 0,
+                            totalItems = task?.totalItems ?: 0,
+                            currentItemName = task?.currentItemName,
+                            remoteMode = task?.distributedMode == true,
+                            remoteInferencePercent = if (
+                                task?.remotePhase == RemoteItemPhase.INFERENCE
+                            ) {
+                                ((task.remoteItemProgress ?: 0.0f) * 100.0f)
+                                    .toInt()
+                                    .coerceIn(0, 100)
+                            } else {
+                                null
+                            },
+                            remoteEtaSeconds = if (task?.remotePhase == RemoteItemPhase.INFERENCE) {
+                                task.remoteItemEtaSeconds
+                            } else {
+                                null
+                            }
+                        )
+                    )
+                    val status = task?.status
+                    // 只对本会话内观察过的任务发终态通知（collector 首个值恒为
+                    // 空 task：uiState 不跨进程存活，不会重放旧终态）。
+                    val isTerminal = status == ProcessingStatus.COMPLETED ||
+                        status == ProcessingStatus.FAILED ||
+                        status == ProcessingStatus.CANCELED
+                    if (task != null && isTerminal && observedTaskId == task.id &&
+                        observedStatus == ProcessingStatus.RUNNING
+                    ) {
+                        completionId += 1
+                        coordinator.emitCompletion(
+                            ForegroundCompletionSnapshot(
+                                id = completionId,
+                                taskId = task.id,
+                                completed = status == ProcessingStatus.COMPLETED,
+                                canceled = status == ProcessingStatus.CANCELED,
+                                completedItems = task.completedItems,
+                                totalItems = task.totalItems,
+                                failedItems = task.failedItems,
+                                outputDirectory = task.outputDirectory ?: task.outputDirectoryUri,
+                                errorMessage = task.lastErrorMessage
+                            )
+                        )
+                    }
+                    observedTaskId = task?.id
+                    observedStatus = status
+                }
+            }
         }
     }
 
@@ -573,7 +645,8 @@ class ProcessingViewModel(
                         ) { message ->
                             container.logRepository.warning("ProcessingViewModel", message)
                         }
-                    }
+                    },
+                    foregroundCoordinator = container.processingForegroundCoordinator
                 )
             }
         }

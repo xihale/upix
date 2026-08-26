@@ -269,4 +269,17 @@
     <string name="queue_item_failed">批次失败</string>
     <string name="queue_cannot_start_batch">无法启动该批次</string>
     <string name="queue_no_failed_to_retry">没有可重试的失败项</string>
+
+    <!-- 前台保活服务通知（FGS dataSync + 批次完成/失败/取消提醒） -->
+    <string name="notification_channel_processing_name">超分处理</string>
+    <string name="notification_channel_processing_description">批处理进行中的前台保活与完成提醒</string>
+    <string name="notification_processing_title">正在超分（%1$s）</string>
+    <string name="notification_processing_counts">已处理 %1$d/%2$d</string>
+    <string name="notification_processing_current">当前：%1$s</string>
+    <string name="notification_completed_title">批次已完成</string>
+    <string name="notification_completed_content">已处理 %1$d 张 · 保存到 %2$s</string>
+    <string name="notification_failed_title">批次失败</string>
+    <string name="notification_failed_content">已完成 %1$d/%2$d：%3$s</string>
+    <string name="notification_canceled_title">批次已取消</string>
+    <string name="notification_canceled_content">已完成 %1$d/%2$d，可从断点继续</string>
 </resources>

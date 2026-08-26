@@ -342,6 +342,8 @@ io/upix/
 ├── viewmodel/                Main / Device / Models + Processing 五件套
 │                              （ViewModel + Mappers + UiModels + QueueController + RunEngine + RunPlanner）
 ├── data/                     model/（数据类）· repository/（17 个仓库）· thumbnails/
+├── service/                  ProcessingKeepAliveService（前台保活 FGS dataSync）
+│                              + ProcessingForegroundCoordinator（进度共享总线，AppContainer 单例）
 ├── network/                  CoordinatorClient（调 JNI）· JoinInvite（连接卡解析）
 ├── nativelib/                NCNNEngine.kt（单例 object：本地推理+分布式提交）
 │                              NativeWorker.kt（实例类：连接/模型共享等长驻会话操作）
@@ -354,7 +356,12 @@ io/upix/
 图发给 PC。
 
 **批处理健壮性**：队列持久化、checkpoint 断点续传、failed-only 重试、备份恢复、
-OOM 预检与降级、原子写、Zip Slip 防护、payload 上限、双探针输出校验。
+OOM 预检与降级、原子写、Zip Slip 防护、payload 上限、双探针输出校验、
+前台保活+通知（`service/`：处理期间前台服务 dataSync + PARTIAL_WAKE_LOCK——锁屏/
+切后台进程不被冻结、WiFi 传输不中断；前台通知低频显示批次进度与 PC 推理百分比，
+批次终态各发一条完成/失败/取消通知；批次间不重启服务，active=false 或用户划掉
+最近任务时自停并释放 WakeLock。服务不承载处理逻辑——run 仍在 viewModelScope，
+经 ProcessingForegroundCoordinator 共享 StateFlow 单向驱动）。
 
 **Android 本地超分调用链**：
 ```

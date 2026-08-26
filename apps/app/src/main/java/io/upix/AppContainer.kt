@@ -13,6 +13,7 @@ import io.upix.data.repository.PairingRepository
 import io.upix.data.repository.ProcessingCheckpointRepository
 import io.upix.data.repository.ProcessingQueueRepository
 import io.upix.network.CoordinatorClient
+import io.upix.service.ProcessingForegroundCoordinator
 import io.upix.util.StringProvider
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
@@ -38,4 +39,8 @@ class AppContainer(context: Context) {
     val processingQueueRepository = ProcessingQueueRepository(appContext, logRepository, ioDispatcher)
     val nativeImageProcessingRepository = NativeImageProcessingRepository(appContext, logRepository)
     val coordinatorClient = CoordinatorClient(appContext, logRepository)
+
+    // 批处理前台保活协调器：ProcessingViewModel 推进度进来，
+    // ProcessingKeepAliveService 收集同一 StateFlow 渲染通知（见 service/ 包）。
+    val processingForegroundCoordinator = ProcessingForegroundCoordinator(appContext)
 }
