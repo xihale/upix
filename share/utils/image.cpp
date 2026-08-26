@@ -767,4 +767,103 @@ auto Image::save_to_memory(const std::string& format, int quality,
     }
 }
 
+// ── Channel planar conversion (shared: CLI inputs + coordinator tasks) ──────
+auto convert_image_channels(const Image& source, int target_channels)
+    -> expected<Image, ImageError> {
+    const int src_channels = source.channels();
+    if (src_channels < 1 || src_channels > 4 || target_channels < 1 ||
+        target_channels > 4) {
+        return std::unexpected(ImageError{30, "unsupported channel count"});
+    }
+
+    Image converted(source.width(), source.height(), target_channels);
+    const size_t pixel_count =
+        static_cast<size_t>(source.width()) * source.height();
+    const uint8_t* src = source.data();
+    uint8_t* dst = converted.data();
+
+    for (size_t i = 0; i < pixel_count; ++i) {
+        const uint8_t* src_px = src + i * static_cast<size_t>(src_channels);
+        uint8_t r = 0;
+        uint8_t g = 0;
+        uint8_t b = 0;
+        uint8_t a = 255;
+
+        switch (src_channels) {
+            case 1:
+                r = g = b = src_px[0];
+                break;
+            case 2:
+                r = g = b = src_px[0];
+                a = src_px[1];
+                break;
+            case 3:
+                r = src_px[0];
+                g = src_px[1];
+                b = src_px[2];
+                break;
+            case 4:
+                r = src_px[0];
+                g = src_px[1];
+                b = src_px[2];
+                a = src_px[3];
+                break;
+            default:
+                return std::unexpected(ImageError{31, "bad channel count"});
+        }
+
+        const uint8_t gray = static_cast<uint8_t>(
+            (77u * static_cast<unsigned int>(r) +
+             150u * static_cast<unsigned int>(g) +
+             29u * static_cast<unsigned int>(b) +
+             128u) >> 8
+        );
+
+        uint8_t* dst_px = dst + i * static_cast<size_t>(target_channels);
+        switch (target_channels) {
+            case 1:
+                dst_px[0] = gray;
+                break;
+            case 2:
+                dst_px[0] = gray;
+                dst_px[1] = a;
+                break;
+            case 3:
+                // Dropping alpha copies RGB straight through (historical CLI
+                // behavior kept byte-identical on re-runs).
+                dst_px[0] = r;
+                dst_px[1] = g;
+                dst_px[2] = b;
+                break;
+            case 4:
+                dst_px[0] = r;
+                dst_px[1] = g;
+                dst_px[2] = b;
+                dst_px[3] = a;
+                break;
+        }
+    }
+    return converted;
+}
+
+auto normalize_image_channels(Image& image, int expected_channels,
+                              std::string_view what) -> bool {
+    if (expected_channels <= 0 || image.channels() == expected_channels) {
+        return true;
+    }
+    auto converted = convert_image_channels(image, expected_channels);
+    if (!converted.has_value()) {
+        LOG_ERROR("Engine",
+                  "Input channel count {} incompatible with model input "
+                  "channels {}: {}",
+                  image.channels(), expected_channels, what);
+        return false;
+    }
+    LOG_INFO("Engine",
+             "converted input channels {} -> {} for {}",
+             image.channels(), expected_channels, what);
+    image = std::move(converted.value());
+    return image.channels() == expected_channels;
+}
+
 } // namespace upix

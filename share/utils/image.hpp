@@ -80,4 +80,16 @@ private:
     int channels_ = 3;  // Default RGB
 };
 
+// Channel-planar conversion: gray(±alpha) ↔ RGB(±alpha), alpha composited
+// onto black only when actually dropping it. Returns nullopt for unsupported
+// channel counts (outside 1..4 on either side).
+auto convert_image_channels(const Image& source, int target_channels)
+    -> expected<Image, ImageError>;
+
+// Normalize [image] to the model's declared input channel count in place.
+// Same-count inputs pass through untouched; failures keep [image] intact and
+// return false with a logged reason. `what` names the image in log lines.
+auto normalize_image_channels(Image& image, int expected_channels,
+                              std::string_view what) -> bool;
+
 } // namespace upix

@@ -797,6 +797,22 @@ void Coordinator::run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
             reply_error("input decode failed: " + decoded.error().message);
             return;
         }
+        // Model input channels win over what the encoder shipped: RGBA
+        // screenshots / gray PNGs must reach the engine as the model's
+        // expected planar layout or the GPU tile pipeline fails with a
+        // shape mismatch (historical gap — the CLI always normalized).
+        int expected_channels = 0;
+        {
+            std::lock_guard<std::mutex> lk(models_mutex_);
+            if (auto task_model = model_manager_.get_model(model_name)) {
+                expected_channels = task_model->input_channels;
+            }
+        }
+        if (!upix::normalize_image_channels(*decoded, expected_channels,
+                                            "remote task")) {
+            reply_error("channel conversion failed");
+            return;
+        }
         int img_width = decoded->width();
         int img_height = decoded->height();
         const int channels = decoded->channels();
