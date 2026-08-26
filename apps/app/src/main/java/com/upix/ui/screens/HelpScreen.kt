@@ -58,8 +58,7 @@ fun HelpScreen() {
                 .padding(top = Spacing.md, bottom = Spacing.xxl),
             verticalArrangement = Arrangement.spacedBy(Spacing.sm)
         ) {
-            SectionHeader(text = stringResource(R.string.help_section_steps))
-
+            // 页面标题由顶栏承载，页内不再放 Header，直接进入步骤列表。
             // 步骤行之间不额外留白：行内底部留白即步间距，
             // 连接线可穿越留白与下一徽章视觉连续。
             Column {

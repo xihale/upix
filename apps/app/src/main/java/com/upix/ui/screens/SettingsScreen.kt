@@ -251,22 +251,9 @@ private fun SettingsListDetailPane(
                     if (detail == null) {
                         SettingsDetailEmpty()
                     } else {
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            SectionHeader(
-                                text = stringResource(detail.titleRes),
-                                modifier = Modifier.padding(
-                                    start = LocalScreenMargin.current,
-                                    top = Spacing.md,
-                                    end = LocalScreenMargin.current
-                                )
-                            )
-                            Box(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .fillMaxWidth()
-                            ) {
-                                detailPaneContent(detail)
-                            }
+                        // 页面标题由顶栏/导航承载，pane 内不再重复 Header。
+                        Box(modifier = Modifier.fillMaxSize()) {
+                            detailPaneContent(detail)
                         }
                     }
                 }
