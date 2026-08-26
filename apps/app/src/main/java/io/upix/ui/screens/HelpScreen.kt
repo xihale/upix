@@ -1,4 +1,4 @@
-package com.upix.ui.screens
+package io.upix.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -25,11 +25,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import com.upix.R
-import com.upix.ui.components.SectionHeader
-import com.upix.ui.theme.LocalScreenMargin
-import com.upix.ui.theme.MaxContentWidth
-import com.upix.ui.theme.Spacing
+import io.upix.R
+import io.upix.ui.components.SectionHeader
+import io.upix.ui.theme.LocalScreenMargin
+import io.upix.ui.theme.MaxContentWidth
+import io.upix.ui.theme.Spacing
 
 /** 步骤圆形徽章直径。 */
 private val StepBadgeSize = 32.dp
@@ -58,7 +58,7 @@ fun HelpScreen() {
                 .padding(top = Spacing.md, bottom = Spacing.xxl),
             verticalArrangement = Arrangement.spacedBy(Spacing.sm)
         ) {
-            // 页面标题由顶栏承载，页内不再放 Header，直接进入步骤列表。
+            SectionHeader(text = stringResource(R.string.help_section_steps))
             // 步骤行之间不额外留白：行内底部留白即步间距，
             // 连接线可穿越留白与下一徽章视觉连续。
             Column {

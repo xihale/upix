@@ -1,4 +1,4 @@
-package com.upix.ui.screens
+package io.upix.ui.screens
 
 import android.content.Intent
 import androidx.activity.compose.BackHandler
@@ -57,15 +57,15 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import com.upix.R
-import com.upix.data.repository.EncoderSettings
-import com.upix.ui.components.UpixTopAppBar
-import com.upix.ui.components.SectionHeader
-import com.upix.ui.theme.EnterMotionSpec
-import com.upix.ui.theme.LocalScreenMargin
-import com.upix.ui.theme.MaxContentWidth
-import com.upix.ui.theme.Spacing
-import com.upix.ui.theme.pressable
+import io.upix.R
+import io.upix.data.repository.EncoderSettings
+import io.upix.ui.components.UpixTopAppBar
+import io.upix.ui.components.SectionHeader
+import io.upix.ui.theme.EnterMotionSpec
+import io.upix.ui.theme.LocalScreenMargin
+import io.upix.ui.theme.MaxContentWidth
+import io.upix.ui.theme.Spacing
+import io.upix.ui.theme.pressable
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -251,9 +251,22 @@ private fun SettingsListDetailPane(
                     if (detail == null) {
                         SettingsDetailEmpty()
                     } else {
-                        // 页面标题由顶栏/导航承载，pane 内不再重复 Header。
-                        Box(modifier = Modifier.fillMaxSize()) {
-                            detailPaneContent(detail)
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            SectionHeader(
+                                text = stringResource(detail.titleRes),
+                                modifier = Modifier.padding(
+                                    start = LocalScreenMargin.current,
+                                    top = Spacing.md,
+                                    end = LocalScreenMargin.current
+                                )
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .fillMaxWidth()
+                            ) {
+                                detailPaneContent(detail)
+                            }
                         }
                     }
                 }
@@ -261,11 +274,14 @@ private fun SettingsListDetailPane(
         }
     } else {
         // medium 单 pane 阶段：list/detail 整页互切，同样纯 fade。
+        // 注意把外层 modifier（含 Scaffold 的 innerPadding）传进来，
+        // 否则列表会顶到状态栏/顶栏底下（遮挡首项）。
         AnimatedContent(
             targetState = currentDetail,
             transitionSpec = {
                 fadeIn(EnterMotionSpec) togetherWith fadeOut(EnterMotionSpec)
             },
+            modifier = modifier,
             label = "settingsPageFade"
         ) { detail ->
             if (detail == null) {
