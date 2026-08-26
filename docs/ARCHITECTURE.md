@@ -214,6 +214,9 @@ auto_tile_size=true 时：
   明文的全量拷贝永不同时存在（峰值 ≈ 总长 + 2×8MB）。分块流被非 DATA 帧
   打断时以 per-task 错误应答（"chunked submit interrupted"），会话保持可用，
   旧手机可无缝续用；
+- **EXIF 竖拍自动旋转**：JPEG 解码后按 EXIF orientation（`utils/exif`，1-8）把旋转烘焙进
+  像素再送推理（等同 PIL exif_transpose / libvips autorotate），与手机本地路径行为一致；
+  无 EXIF / 非 JPEG 输入零行为变化（仅一次头部扫描）；
 - **远程 tile 尺寸 0=auto**：手机默认提交 `tile_size=0`，PC 在 `process_locally` 里用
   `TileSizeOptimizer` 实测选优（探针按 model+设备+尺寸桶进程级缓存，每模型只付一次
   ~秒级测量；CLI 的 `--auto-tile` 同一缓存），失败兜底 `get_recommended_tile_size`；
@@ -312,12 +315,16 @@ TCP）。二者共享的是协议帧格式与 TileProcessor。
 PNG iTXt / JPEG APP1 / WebP XMP chunk / AVIF mdat 四格式同一份探测代码）。CLI/Android
 回喂带标记的图默认跳过（防止反复放大），`-f`/`--force` 强制重处理。
 
+**PC 端解码 autorotate**：单图/目录/daemon/远程四条 PC 解码路径统一在解码后按 JPEG EXIF
+orientation（`share/utils/exif`）烘焙旋转再送推理；输出从像素重编码，天然不带 EXIF（拍摄
+日期/GPS 等元数据随输出丢失是既有行为）。
+
 **单机 process 调用链**：
 ```
 main → cmd_process → ModelManager.scan_models() 选模型
      → create_ncnn_engine() → initialize(GPU 优先) → load_model()
      → [auto-tile] TileSizeOptimizer.find_optimal_tile_size()
-     → Image::load → normalize_channels_for_model
+     → Image::load → EXIF autorotate → normalize_channels_for_model
      → TileProcessor.process_image_u8 → Engine 推理 → blend_tile
      → sr_marker 注入 → Image::save(quality, format, EncoderOptions)
 ```

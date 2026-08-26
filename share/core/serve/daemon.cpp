@@ -8,6 +8,7 @@
 #include "core/tile_types.hpp"
 #include "core/distributed/protocol.hpp"
 #include "utils/image.hpp"
+#include "utils/exif.hpp"
 #include "utils/logger.hpp"
 #include "utils/unix_socket.hpp"
 
@@ -196,7 +197,20 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
 
     // ── 3. Full hot-path pipeline: read → decode → upscale → encode → write.
     // The client never touches image bytes; its own footprint stays near zero.
-    auto img_res = Image::load(input_path);
+    // Bytes are read once and shared by the EXIF orientation sniff and the
+    // decode (same split as Image::load): portrait JPEGs are baked upright
+    // right after decode, matching the inline and remote paths.
+    auto raw = Image::load_raw(input_path);
+    if (!raw) {
+        send_serve_error(*sock, ("load failed: " + raw.error().message).c_str());
+        return;
+    }
+    const int exif_orientation =
+        exif::parse_jpeg_exif_orientation(raw->data(), raw->size());
+    auto img_res = Image::load_from_memory(
+        std::filesystem::path(input_path).extension().string(), *raw);
+    raw->clear();
+    raw->shrink_to_fit();
     if (!img_res) {
         send_serve_error(*sock, ("load failed: " + img_res.error().message).c_str());
         return;
@@ -205,6 +219,10 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     if (image.size() == 0) {
         send_serve_error(*sock, "decoded image is empty");
         return;
+    }
+    if (exif_orientation != 1 &&
+        exif::autorotate_image(image, exif_orientation)) {
+        LOG_INFO("Daemon", "applied EXIF orientation {}", exif_orientation);
     }
 
     int out_w = 0, out_h = 0;

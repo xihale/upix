@@ -4,6 +4,7 @@
 #include "core/engine_setup.hpp"
 #include "utils/image.hpp"
 #include "utils/image_avif.hpp"
+#include "utils/exif.hpp"
 #include "utils/logger.hpp"
 #include "utils/network.hpp"
 #include "utils/crypto.hpp"
@@ -783,6 +784,12 @@ void Coordinator::run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
             reply_error("canceled");
             return;
         }
+        // Sniff EXIF orientation from the encoded bytes before they are freed:
+        // portrait JPEGs (orientation 5-8) decode unrotated, and the bake-in
+        // below keeps the remote path upright like the phone's local path.
+        const int exif_orientation =
+            exif::parse_jpeg_exif_orientation(compressed_input.data(),
+                                              compressed_input.size());
         auto decoded = Image::load_from_memory(task.input_format, compressed_input);
         compressed_input.clear();
         compressed_input.shrink_to_fit();
@@ -790,11 +797,16 @@ void Coordinator::run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
             reply_error("input decode failed: " + decoded.error().message);
             return;
         }
-        const int img_width = decoded->width();
-        const int img_height = decoded->height();
+        int img_width = decoded->width();
+        int img_height = decoded->height();
         const int channels = decoded->channels();
         std::vector<uint8_t> image_data(decoded->data(),
                                         decoded->data() + decoded->size());
+        if (exif_orientation != 1 &&
+            exif::apply_exif_orientation_u8(image_data, img_width, img_height,
+                                            channels, exif_orientation)) {
+            LOG_INFO("Coordinator", "applied EXIF orientation {}", exif_orientation);
+        }
 
         LOG_INFO("Coordinator", "Received authenticated client task: {}x{} model={}",
                  img_width, img_height, model_name);

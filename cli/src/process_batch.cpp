@@ -33,6 +33,7 @@
 #include "common.hpp"
 #include "utils/image.hpp"
 #include "utils/image_avif.hpp"
+#include "utils/exif.hpp"
 #include "utils/logger.hpp"
 #include "utils/sr_marker.hpp"
 #include "utils/unix_socket.hpp"
@@ -305,6 +306,16 @@ int run_batch(const args::Process& a) {
             prepared.in_path = in_path;
             prepared.out_path = out_path;
             prepared.input_image = std::move(img_res.value());
+
+            // Portrait JPEGs: bake the EXIF orientation in right after
+            // decode (same rule as the single-image and remote paths).
+            const int exif_orientation = upix::exif::parse_jpeg_exif_orientation(
+                raw.value().data(), raw.value().size());
+            if (exif_orientation != 1 &&
+                upix::exif::autorotate_image(prepared.input_image, exif_orientation)) {
+                LOG_INFO("Task", "applied EXIF orientation {} for {}",
+                         exif_orientation, in_path);
+            }
 
             if (!normalize_channels_for_model(prepared.input_image, model_input_channels, in_path)) {
                 return {PrepareStatus::Failed, std::nullopt};

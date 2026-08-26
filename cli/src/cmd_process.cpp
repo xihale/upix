@@ -36,6 +36,7 @@
 #include "cli_app.hpp"
 #include "common.hpp"
 #include "utils/image.hpp"
+#include "utils/exif.hpp"
 #include "utils/logger.hpp"
 #include "utils/sr_marker.hpp"
 #include "utils/unix_socket.hpp"
@@ -378,6 +379,17 @@ int cmd_process(const args::Process& a) {
     }
 
     auto& image = image_result.value();
+
+    // Portrait JPEGs: bake the EXIF orientation transform into the decoded
+    // pixels so the upscale runs on the upright frame (mirrors the remote
+    // path and the batch path). Non-JPEG / no-EXIF inputs are untouched.
+    const int exif_orientation = upix::exif::parse_jpeg_exif_orientation(
+        input_bytes.data(), input_bytes.size());
+    if (exif_orientation != 1 &&
+        upix::exif::autorotate_image(image, exif_orientation)) {
+        LOG_INFO("Engine", "applied EXIF orientation {}", exif_orientation);
+    }
+
     LOG_INFO("Engine", "Image loaded: {}x{} ({} channels)",
              image.width(), image.height(), image.channels());
 
