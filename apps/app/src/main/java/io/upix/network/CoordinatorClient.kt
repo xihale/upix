@@ -16,6 +16,7 @@ import io.upix.nativelib.PeerCapabilities
 import io.upix.nativelib.NativeWorker
 import java.io.File
 import java.io.FileOutputStream
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -281,6 +282,10 @@ class CoordinatorClient(
          * 阻塞等待 PC 结果；进度帧通过 [onProgress] 流出（stage 0=推理
          * percent/eta，1=编码）。PC 侧任务失败（"Distributed task failed:"）
          * 保持会话与端点；传输层失败则关闭会话并清空端点。
+         *
+         * 取消（[cancelRemoteTask] 已请求）：以 CancellationException 抛出，
+         * 而不是按普通失败处理——用户主动取消不应把当前图记为失败，也不应
+         * 清掉已配对端点。会话视情况关闭（旧 PC 会摔线），端点保留。
          */
         fun awaitResult(
             onProgress: (stage: Int, percent: Int, etaSeconds: Int) -> Unit
@@ -303,7 +308,18 @@ class CoordinatorClient(
                     .getOrNull()
                     ?.trim()
                     .orEmpty()
+                // 用户取消路径：native 层报 "Distributed task canceled..."，或
+                // PC 对 CANCEL 的终止应答 error="canceled"。两者都不算失败。
+                if (reason.startsWith("Distributed task canceled")) {
+                    closeSession()
+                    throw CancellationException("已取消（PC 已停止计算）")
+                }
                 val taskRejected = reason.startsWith("Distributed task failed:")
+                if (taskRejected &&
+                    reason.removePrefix("Distributed task failed:").trim() == "canceled"
+                ) {
+                    throw CancellationException("已取消（PC 已停止计算）")
+                }
                 if (!taskRejected) {
                     closeSession()
                     connectedEndpoint?.let { clearEndpoint(it) }
@@ -464,6 +480,24 @@ class CoordinatorClient(
         prefetchJob = null
         prefetched = null
         closeSession()
+    }
+
+    /**
+     * 请求取消在途的远程任务（取消按钮接线）：向会话发 MSG_TASK_CANCEL 的
+     * 请求标志。阻塞中的 awaitResult 会在一个轮询周期内发出取消帧，并在 PC
+     * 停止推理、回出 "canceled" 终止应答后以 CancellationException 返回。
+     * 无会话/无在途任务时为空操作（下一次上传会清掉标志）。
+     */
+    fun cancelRemoteTask() {
+        val handle = nativeSessionHandle
+        if (handle == 0L) {
+            return
+        }
+        try {
+            NCNNEngine.nativeCancelDistributedTask(handle)
+        } catch (e: Throwable) {
+            logRepository.warning("CoordinatorClient", "Remote task cancel failed: ${e.message}")
+        }
     }
 
     private fun openSession(endpoint: ConnectedEndpoint): Boolean {

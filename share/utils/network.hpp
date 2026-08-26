@@ -47,6 +47,15 @@ public:
     // Set timeout (milliseconds)
     void set_timeout(int timeout_ms);
 
+    // Set ONLY the receive (SO_RCVTIMEO) timeout, leaving the send timeout
+    // untouched. Used by the receive-poll loops that multiplex one connection
+    // between a reader thread and a sender thread: the reader polls with a
+    // short timeout so it can re-check its wake flags between frames, while
+    // concurrent response sends keep the generous full timeout for large
+    // transfers (shrinking SO_SNDTIMEO would abort big sends on a peer that
+    // merely stalled for a moment).
+    void set_recv_timeout(int timeout_ms);
+
     // Close connection
     void close();
 

@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <memory>
+#include <utility>
 #include <vector>
 #include <functional>
 #include <atomic>
@@ -82,6 +83,9 @@ public:
     // Upscale a submitted image on the PC's local engine. `image_data` is raw
     // u8 pixels (width*height*channels). Replaces the old multi-worker
     // distribute_task — the PC does all the work itself now.
+    // `cancel_flag` (optional) is wired straight into TileProcessor: setting
+    // it aborts inference at the next tile boundary (returns error "canceled"
+    // semantics are the caller's business — the flag is only read here).
     auto process_locally(
         const std::vector<uint8_t>& image_data,
         int width,
@@ -92,7 +96,8 @@ public:
         const std::string& output_format,
         int output_quality,
         const EncoderOptions& encoder_opts = {},
-        std::function<void(float)> progress_sink = nullptr
+        std::function<void(float)> progress_sink = nullptr,
+        const std::atomic<bool>* cancel_flag = nullptr
     ) -> expected<std::vector<uint8_t>, CoordinatorError>;
 
     auto& on_task_progress() { return on_task_progress_; }
@@ -117,12 +122,44 @@ private:
     // shutdown request drops the connection instead of serving it.
     void handle_client(std::stop_token st, std::unique_ptr<TCPSocket> socket);
 
+    // Shared state between the connection handler thread (frame reader) and
+    // the per-task worker thread it spawns:
+    //   cancel           — set by MSG_TASK_CANCEL, a dead connection (the
+    //                      handler's polled read fails, or the worker's
+    //                      progress send fails) or coordinator stop(); the
+    //                      worker aborts inference at the next tile boundary.
+    //   connection_lost  — the transport failed mid-task (diagnostics only).
+    //   done             — the worker finished its terminal response send.
+    struct ClientTaskRun {
+        std::atomic<bool> cancel{false};
+        std::atomic<bool> connection_lost{false};
+        std::atomic<bool> done{false};
+    };
+
     // Handle one CLIENT_SUBMIT frame: decode input, upscale, encode, send
-    // CLIENT_RESPONSE (+CLIENT_DATA continuations). Per-task failures are
-    // reported in the response without killing the connection; returns false
-    // only when the transport itself failed (caller must drop the session).
+    // CLIENT_RESPONSE (+CLIENT_DATA continuations). The heavy work runs on a
+    // per-task worker thread so this (handler) thread stays free to read
+    // frames — that is what makes MSG_TASK_CANCEL reachable while inference
+    // is in flight. This function blocks until the worker finished (joining
+    // it) and returns:
+    //   false            — transport failed / malformed submit; drop session.
+    //   true + early_frame — a frame that arrived while the worker was
+    //                      finishing (e.g. the next CLIENT_SUBMIT) and must
+    //                      be processed by the session loop as-is.
+    //   true, no frame   — loop back to a normal blocking read.
+    // Per-task failures are reported inside the response without killing the
+    // connection.
     bool handle_client_submit(WorkerConnection& conn, std::stop_token& st,
-                              std::vector<uint8_t> frame_payload);
+                              std::vector<uint8_t> frame_payload,
+                              std::optional<std::pair<MessageHeader, std::vector<uint8_t>>>& early_frame);
+
+    // Worker body of one CLIENT_SUBMIT (runs on its own std::thread):
+    // decode → process_locally (cancel-aware) → terminal response. All
+    // mid-task sends (progress, response, DATA continuations) happen here, on
+    // this thread, so they never race the handler's reads.
+    void run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
+                         std::vector<uint8_t> compressed_input,
+                         ClientTaskRun& run);
 
     // Run the server side of the ECDH+signature handshake on conn. On success
     // conn.session is active and conn.peer_* are populated; returns false on
@@ -140,6 +177,17 @@ private:
                         const void* payload, size_t len) -> bool;
     auto recv_encrypted(WorkerConnection& conn)
         -> std::optional<std::pair<MessageHeader, std::vector<uint8_t>>>;
+
+    // Polled variant of recv_encrypted for the in-task frame loop: waits at
+    // most `poll_ms` for the FIRST byte of a frame, then (once bytes are in)
+    // finishes the frame with the full session timeout so a poll tick can
+    // never abandon a partially received frame while the peer is alive.
+    //   Frame   — out holds the decrypted frame
+    //   Timeout — nothing arrived within poll_ms (no bytes consumed)
+    //   Error   — transport/protocol failure (drop the connection)
+    enum class FramePoll { Frame, Timeout, Error };
+    FramePoll recv_encrypted_poll(WorkerConnection& conn, int poll_ms,
+                                  std::optional<std::pair<MessageHeader, std::vector<uint8_t>>>& out);
 
     // ── Shared model library ops (phone↔PC) ─────────────────────────────────
     // Each handles one authenticated role frame and sends the reply. All guard

@@ -225,6 +225,16 @@ void TCPSocket::set_timeout(int timeout_ms) {
     setsockopt(socket_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 }
 
+void TCPSocket::set_recv_timeout(int timeout_ms) {
+    if (socket_ < 0) return;
+
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+
+    setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
+
 void TCPSocket::close() {
     close_fd();
 }

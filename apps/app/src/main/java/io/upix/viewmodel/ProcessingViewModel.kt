@@ -525,6 +525,9 @@ class ProcessingViewModel(
         // 只取消不清引用：job 由该 run 自己的 finally（校验代际后）清理。
         // 取消期间 isProcessingJobActive() 仍为 true，新 run 不会与收尾交错。
         processingJob?.cancel()
+        // 远程在途任务：单取消协程解不开阻塞的 JNI 接收。发协议级取消
+        // （MSG_TASK_CANCEL），PC 立即停算，接收线程随后以"已取消"返回。
+        coordinatorClient?.cancelRemoteTask()
         _uiState.update { state ->
             val currentTask = state.task ?: return@update state.copy(isProcessing = false)
             state.copy(

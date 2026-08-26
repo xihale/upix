@@ -33,6 +33,13 @@ static constexpr uint64_t MAX_RAW_OUTPUT_BYTES = 512ULL * 1024 * 1024;
 // checkpoint saved, so the gap must tolerate file IO, not just framing.
 static constexpr int SESSION_FRAME_TIMEOUT_MS = 60 * 1000;
 
+// While a task runs on its worker thread, the connection handler polls for
+// new frames with this receive timeout instead of blocking for the full
+// session timeout — a MSG_TASK_CANCEL (or a dead peer, or a stop() request)
+// is then noticed within one tick, and the io lock is released between
+// polls so the worker's progress/response sends can interleave.
+static constexpr int TASK_FRAME_POLL_MS = 200;
+
 // Human-readable byte count for logs: "6.66 MB", "512.0 KB", "723 bytes".
 static std::string format_bytes(uint64_t bytes) {
     constexpr uint64_t KB = 1024;
@@ -205,11 +212,19 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
                                   const std::string& output_format,
                                   int output_quality,
                                   const EncoderOptions& encoder_opts,
-                                  std::function<void(float)> progress_sink)
+                                  std::function<void(float)> progress_sink,
+                                  const std::atomic<bool>* cancel_flag)
     -> expected<std::vector<uint8_t>, CoordinatorError> {
+
+    const auto canceled = [cancel_flag] {
+        return cancel_flag != nullptr && cancel_flag->load(std::memory_order_relaxed);
+    };
 
     if (!ensure_engine_ready(model_name)) {
         return std::unexpected(CoordinatorError{2, "Engine/model not ready: " + model_name});
+    }
+    if (canceled()) {
+        return std::unexpected(CoordinatorError{7, "canceled"});
     }
 
     // Inference is serialized under engine_mutex_ (Vulkan is not concurrency-safe).
@@ -224,6 +239,12 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     std::string inference_error;
     {
         std::lock_guard<std::mutex> lk(engine_mutex_);
+        // Re-check after the (possibly long) engine lock wait: another
+        // connection's task may have run while this one queued behind it,
+        // and the cancel may have landed during that wait.
+        if (canceled()) {
+            return std::unexpected(CoordinatorError{7, "canceled"});
+        }
         scale = engine_->get_scale_factor();
         out_w = width * scale;
         out_h = height * scale;
@@ -266,9 +287,12 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
         tc.overlap = config.tile_overlap;
         tc.batch_size = 1;
 
-        // Cancellation has no external hook today (cancel_current_task was removed);
-        // keep a local flag so the engine stays interruptible if one is wired in.
-        std::atomic<bool> cancel{false};
+        // Cancellation is wired to the per-task atomic owned by the
+        // connection handler (MSG_TASK_CANCEL / dead peer / stop()).
+        // TileProcessor checks it between tiles, so a cancel costs at most
+        // one tile of wasted inference instead of a whole image.
+        std::atomic<bool> local_cancel{false};
+        const std::atomic<bool>& cancel = cancel_flag != nullptr ? *cancel_flag : local_cancel;
         const auto t_inf_start = std::chrono::steady_clock::now();
         auto res = tile_processor_->process_image_u8(
             image_data.data(), out_bytes.data(),
@@ -293,6 +317,11 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     }
     if (!inference_error.empty()) {
         return std::unexpected(CoordinatorError{4, inference_error});
+    }
+    // Canceled between the last tile and the encode: skip the (multi-second,
+    // un-interruptible) output encode — nobody is waiting for the bytes.
+    if (canceled()) {
+        return std::unexpected(CoordinatorError{7, "canceled"});
     }
 
     // Encode before transport: a camera photo at x2 is hundreds of MB raw but
@@ -401,6 +430,52 @@ auto Coordinator::recv_encrypted(WorkerConnection& conn)
         if (!pay_recv.has_value()) return std::nullopt;
     }
     return conn.session.open(wire.data(), wire.size());
+}
+
+auto Coordinator::recv_encrypted_poll(WorkerConnection& conn, int poll_ms,
+                                      std::optional<std::pair<MessageHeader, std::vector<uint8_t>>>& out)
+    -> FramePoll {
+    out.reset();
+    if (!conn.session.active()) return FramePoll::Error;
+    // Poll window for the first byte only; once any byte of the header is in,
+    // the rest of the frame is read with the full session timeout (a poll
+    // tick must never abandon a partially received frame while the peer is
+    // merely slow — that would corrupt the stream framing).
+    conn.socket->set_recv_timeout(poll_ms);
+    std::vector<uint8_t> hdr_buf(Protocol::HEADER_SIZE);
+    size_t got = 0;
+    while (got < Protocol::HEADER_SIZE) {
+        // Single-shot receive() per call: the io lock is taken and released
+        // around each call, so the task worker's sends interleave cleanly.
+        auto chunk = conn.socket->receive(hdr_buf.data() + got,
+                                          Protocol::HEADER_SIZE - got);
+        if (!chunk.has_value()) {
+            const int code = chunk.error().code;
+            if (got == 0 && (code == EAGAIN || code == EWOULDBLOCK)) {
+                return FramePoll::Timeout;
+            }
+            return FramePoll::Error;
+        }
+        got += chunk.value();
+        if (got > 0) {
+            conn.socket->set_recv_timeout(SESSION_FRAME_TIMEOUT_MS);
+        }
+    }
+    auto parsed = Protocol::parse_header(hdr_buf);
+    if (!parsed || parsed->payload_length > MAX_NETWORK_PAYLOAD) {
+        return FramePoll::Error;
+    }
+    std::vector<uint8_t> wire(Protocol::HEADER_SIZE + parsed->payload_length);
+    std::memcpy(wire.data(), hdr_buf.data(), Protocol::HEADER_SIZE);
+    if (parsed->payload_length > 0) {
+        auto pay_recv = conn.socket->receive_all(wire.data() + Protocol::HEADER_SIZE,
+                                                 parsed->payload_length);
+        if (!pay_recv.has_value()) return FramePoll::Error;
+    }
+    auto opened = conn.session.open(wire.data(), wire.size());
+    if (!opened) return FramePoll::Error;
+    out = std::move(opened);
+    return FramePoll::Frame;
 }
 
 // Server side of the ECDH+signature handshake. `first_hdr_buf` already holds
@@ -522,29 +597,34 @@ bool Coordinator::run_handshake(WorkerConnection& conn) {
     return true;
 }
 
-// Handle one CLIENT_SUBMIT: decode the shipped file bytes, upscale on the
-// local engine, encode the result and send CLIENT_RESPONSE (+CLIENT_DATA
-// continuations). Per-task failures (decode/engine/encode) come back as a
-// success=0 response and the session stays usable for the next submit.
-// Returns false only when the transport itself failed (or the frame was
-// malformed) — the caller must then drop the connection.
-bool Coordinator::handle_client_submit(WorkerConnection& conn, std::stop_token& st,
-                                       std::vector<uint8_t> frame_payload) {
+// Handle one CLIENT_SUBMIT. The submit frame is parsed here (still on the
+// connection handler thread), then the whole task — decode, upscale, encode,
+// response send — runs on a per-task worker thread while THIS thread keeps
+// reading frames with a short poll timeout. That split is what makes the
+// task interruptible: MSG_TASK_CANCEL (or a dying connection, or stop())
+// observed here flips the task's cancel atomic, and inference aborts at the
+// next tile boundary instead of running to completion for a peer that will
+// never read the result.
+//
+// This function returns only after joining the worker, so the caller's
+// session loop stays single-task-per-connection. Returns:
+//   false  — transport failure / malformed submit; drop the connection.
+//   true   — session stays usable; `early_frame` may hold a frame that
+//            arrived while the worker was finishing (the next submit).
+bool Coordinator::handle_client_submit(
+    WorkerConnection& conn, std::stop_token& st,
+    std::vector<uint8_t> frame_payload,
+    std::optional<std::pair<MessageHeader, std::vector<uint8_t>>>& early_frame) {
+    early_frame.reset();
     // Compressed-input submit: the phone ships original file bytes; decode
-    // here so raw pixels never cross the radio.
+    // happens on the worker so raw pixels never cross the radio.
     if (frame_payload.size() < sizeof(ClientTaskSubmit)) {
         LOG_ERROR("Coordinator", "Authenticated client submit payload is invalid");
         return false;
     }
-    const ClientTaskSubmit* task =
-        reinterpret_cast<const ClientTaskSubmit*>(frame_payload.data());
-    std::string model_name = task->model_name;
-    std::string output_format = task->output_format;
-    if (output_format.empty()) output_format = "jpg";
-    const int output_quality = task->output_quality == 0 ? 90
-        : static_cast<int>(task->output_quality);
-    const EncoderOptions encoder_opts = from_wire(task->encoder);
-    const uint32_t data_len = task->input_data_length;
+    ClientTaskSubmit task{};
+    std::memcpy(&task, frame_payload.data(), sizeof(task));
+    const uint32_t data_len = task.input_data_length;
     if (data_len > MAX_NETWORK_PAYLOAD ||
         sizeof(ClientTaskSubmit) + data_len > frame_payload.size()) {
         LOG_ERROR("Coordinator", "Compressed client image payload truncated");
@@ -554,146 +634,247 @@ bool Coordinator::handle_client_submit(WorkerConnection& conn, std::stop_token& 
         frame_payload.data() + sizeof(ClientTaskSubmit),
         frame_payload.data() + sizeof(ClientTaskSubmit) + data_len);
 
-    auto decoded = Image::load_from_memory(task->input_format, compressed);
-    compressed.clear();
-    compressed.shrink_to_fit();
-    if (!decoded) {
-        LOG_ERROR("Coordinator", "Input decode failed: " + decoded.error().message);
-        ClientTaskResponse response{};
-        response.success = 0;
-        std::strncpy(response.error_message,
-                     ("input decode failed: " + decoded.error().message).c_str(),
-                     sizeof(response.error_message) - 1);
-        return send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
-                              &response, sizeof(response));
-    }
-    const int img_width = decoded->width();
-    const int img_height = decoded->height();
-    const int channels = decoded->channels();
-    std::vector<uint8_t> image_data(decoded->data(),
-                                    decoded->data() + decoded->size());
-
-    LOG_INFO(
-        "Coordinator",
-        "Received authenticated client task: {}x{} model={}",
-        img_width, img_height, model_name
-    );
-
-    ProcessingConfig config;
-    config.tile_size = static_cast<int>(task->tile_size);
-    config.tile_overlap = static_cast<int>(task->tile_overlap);
-
-    // Stream progress to the phone during the upscale. This keeps traffic
-    // flowing on the connection (so NAT/stateful firewalls cannot evict it as
-    // idle while the PC works for tens of seconds) and lets the phone show
-    // real progress. Throttled to whole-percent changes to avoid flooding a
-    // many-tile image. The progress callback runs on this same thread
-    // (process_locally is synchronous), so no locking on last_sent_pct is
-    // needed.
-    int last_sent_pct = -1;
-    // Stop requested while queued: don't start a long upscale.
+    // Stop requested while queued: don't even start the worker.
     if (st.stop_requested()) {
         return false;
     }
-    const auto task_start = std::chrono::steady_clock::now();
-    auto progress_sink = [&conn, &last_sent_pct, &task_start, this](float frac) {
-        const int pct = static_cast<int>(
-            std::clamp(frac, 0.0f, 1.0f) * 100.0f);
-        if (pct == last_sent_pct) {
+
+    ClientTaskRun run;
+    std::thread worker([this, &conn, task = std::move(task),
+                        input = std::move(compressed), &run]() mutable {
+        run_client_task(conn, task, std::move(input), run);
+    });
+
+    // ── In-task frame loop ──────────────────────────────────────────────────
+    // Poll-read frames until the worker posted its terminal response. Only
+    // MSG_TASK_CANCEL is expected mid-task; anything else is stashed as the
+    // next session frame (the phone pipelines submit N+1 right after
+    // receiving response N, which can race this loop by microseconds).
+    bool transport_ok = true;
+    for (;;) {
+        if (run.done.load()) {
+            break;
+        }
+        if (st.stop_requested()) {
+            run.cancel.store(true);
+        }
+        std::optional<std::pair<MessageHeader, std::vector<uint8_t>>> frame;
+        const auto poll = recv_encrypted_poll(conn, TASK_FRAME_POLL_MS, frame);
+        if (poll == FramePoll::Timeout) {
+            continue;
+        }
+        if (poll == FramePoll::Error) {
+            // Dead/reset connection: treat as cancel so the worker stops
+            // burning GPU on a task nobody will read, then fall through to
+            // the join (the worker's response send fails and it exits).
+            run.cancel.store(true);
+            run.connection_lost.store(true);
+            transport_ok = false;
+            LOG_WARNING("Coordinator", "Connection lost while task was running; canceling task");
+            break;
+        }
+        if (frame->first.type == MessageType::MSG_TASK_CANCEL) {
+            run.cancel.store(true);
+            LOG_INFO("Coordinator", "Task cancel requested by peer " + conn.device_id);
+            continue;
+        }
+        if (early_frame.has_value()) {
+            // Two non-cancel frames before the worker finished: protocol
+            // violation (the phone must wait for the response).
+            LOG_WARNING("Coordinator", "Peer " + conn.device_id +
+                " sent an unexpected mid-task frame; dropping");
+            run.cancel.store(true);
+            transport_ok = false;
+            break;
+        }
+        early_frame = std::move(frame);
+    }
+    worker.join();
+    // Leave the receive side in a defined state for the session loop (the
+    // last poll may have left the short poll timeout armed).
+    conn.socket->set_timeout(SESSION_FRAME_TIMEOUT_MS);
+    return transport_ok;
+}
+
+// Worker body of one CLIENT_SUBMIT: decode → process_locally → terminal
+// response (+DATA continuations). Every mid-task send happens on this thread,
+// so the handler's polled reads never contend with a half-written frame.
+void Coordinator::run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
+                                  std::vector<uint8_t> compressed_input,
+                                  ClientTaskRun& run) {
+    const auto canceled = [&run] {
+        return run.cancel.load(std::memory_order_relaxed);
+    };
+    // Per-task error reply that keeps the session alive for the next submit.
+    const auto reply_error = [&](const std::string& message) {
+        ClientTaskResponse response{};
+        response.success = 0;
+        std::strncpy(response.error_message, message.c_str(),
+                     sizeof(response.error_message) - 1);
+        (void)send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
+                             &response, sizeof(response));
+        LOG_ERROR("Coordinator", "Client task failed: " + message);
+    };
+    // Ensure done is set even if anything below throws unexpectedly.
+    struct DoneGuard {
+        ClientTaskRun& run;
+        ~DoneGuard() { run.done.store(true); }
+    } done_guard{run};
+
+    try {
+        std::string model_name = task.model_name;
+        std::string output_format = task.output_format;
+        if (output_format.empty()) output_format = "jpg";
+        const int output_quality = task.output_quality == 0 ? 90
+            : static_cast<int>(task.output_quality);
+        const EncoderOptions encoder_opts = from_wire(task.encoder);
+
+        // Cancel raced the upload/parse: don't even decode.
+        if (canceled()) {
+            reply_error("canceled");
             return;
         }
-        last_sent_pct = pct;
-        // Real time estimate: linear projection from observed rate
-        // (same math the CLI's ETA uses).
-        TaskProgress msg{};
-        msg.stage = 0;
-        msg.percent = static_cast<uint32_t>(pct);
-        if (pct > 0 && pct < 100) {
-            const double elapsed =
-                std::chrono::duration<double>(
-                    std::chrono::steady_clock::now() - task_start).count();
-            msg.eta_seconds = static_cast<uint32_t>(
-                elapsed / pct * (100 - pct));
+        auto decoded = Image::load_from_memory(task.input_format, compressed_input);
+        compressed_input.clear();
+        compressed_input.shrink_to_fit();
+        if (!decoded) {
+            reply_error("input decode failed: " + decoded.error().message);
+            return;
         }
-        // A failed progress send (peer gone) is non-fatal: processing
-        // continues and the terminal response send reports the error.
-        (void)send_encrypted(conn, MessageType::MSG_TASK_PROGRESS,
-                             &msg, sizeof(msg));
-    };
+        const int img_width = decoded->width();
+        const int img_height = decoded->height();
+        const int channels = decoded->channels();
+        std::vector<uint8_t> image_data(decoded->data(),
+                                        decoded->data() + decoded->size());
 
-    auto process_result = process_locally(
-        image_data,
-        static_cast<int>(img_width),
-        static_cast<int>(img_height),
-        static_cast<int>(channels),
-        model_name,
-        config,
-        output_format,
-        output_quality,
-        encoder_opts,
-        progress_sink
-    );
+        LOG_INFO("Coordinator", "Received authenticated client task: {}x{} model={}",
+                 img_width, img_height, model_name);
 
-    // Label the encode phase so the phone's UI can show
-    // "encoding..." instead of a frozen 100%.
-    if (process_result.has_value()) {
-        TaskProgress enc{};
-        enc.stage = 1;
-        (void)send_encrypted(conn, MessageType::MSG_TASK_PROGRESS,
-                             &enc, sizeof(enc));
-    }
+        ProcessingConfig config;
+        config.tile_size = static_cast<int>(task.tile_size);
+        config.tile_overlap = static_cast<int>(task.tile_overlap);
 
-    ClientTaskResponse response{};
-    if (process_result.has_value()) {
-        response.success = 1;
-        response.result_data_length = static_cast<uint32_t>(process_result->size());
-    } else {
-        response.success = 0;
-        response.result_data_length = 0;
-        std::strncpy(response.error_message,
-                     process_result.error().message.c_str(),
-                     sizeof(response.error_message) - 1);
-    }
+        // Stream progress to the phone during the upscale (NAT keepalive +
+        // real progress for the UI), throttled to whole-percent changes.
+        // The callback runs on this worker thread, so last_sent_pct needs no
+        // locking. A failed send means the peer is gone: flag cancel so the
+        // remaining tiles are skipped — the PC must not keep computing for a
+        // connection that cannot receive the result anymore.
+        int last_sent_pct = -1;
+        const auto task_start = std::chrono::steady_clock::now();
+        auto progress_sink = [&conn, &last_sent_pct, &task_start, &run, this](float frac) {
+            const int pct = static_cast<int>(
+                std::clamp(frac, 0.0f, 1.0f) * 100.0f);
+            if (pct == last_sent_pct) {
+                return;
+            }
+            last_sent_pct = pct;
+            // Real time estimate: linear projection from observed rate
+            // (same math the CLI's ETA uses).
+            TaskProgress msg{};
+            msg.stage = 0;
+            msg.percent = static_cast<uint32_t>(pct);
+            if (pct > 0 && pct < 100) {
+                const double elapsed =
+                    std::chrono::duration<double>(
+                        std::chrono::steady_clock::now() - task_start).count();
+                msg.eta_seconds = static_cast<uint32_t>(
+                    elapsed / pct * (100 - pct));
+            }
+            if (!send_encrypted(conn, MessageType::MSG_TASK_PROGRESS,
+                                &msg, sizeof(msg))) {
+                LOG_WARNING("Coordinator",
+                            "Progress send failed (peer gone); canceling task");
+                run.connection_lost.store(true);
+                run.cancel.store(true);
+            }
+        };
 
-    // Response header + result data go in one encrypted (boxed) frame,
-    // matching the way the phone opens it (session.open verifies the MAC).
-    // Encoded results above MAX_NETWORK_PAYLOAD stream as MSG_CLIENT_DATA
-    // continuation frames instead; small results stay single-frame.
-    constexpr size_t CLIENT_CHUNK_BYTES = 8u * 1024u * 1024u;
-    const auto& result_bytes = process_result.value_or(std::vector<uint8_t>{});
-    const size_t leading_bytes =
-        std::min<size_t>(result_bytes.size(), MAX_NETWORK_PAYLOAD);
-    std::vector<uint8_t> resp_payload(sizeof(ClientTaskResponse) + leading_bytes);
-    std::memcpy(resp_payload.data(), &response, sizeof(response));
-    if (!result_bytes.empty()) {
-        std::memcpy(resp_payload.data() + sizeof(ClientTaskResponse),
-                    result_bytes.data(), leading_bytes);
+        auto process_result = process_locally(
+            image_data,
+            static_cast<int>(img_width),
+            static_cast<int>(img_height),
+            static_cast<int>(channels),
+            model_name,
+            config,
+            output_format,
+            output_quality,
+            encoder_opts,
+            progress_sink,
+            &run.cancel
+        );
+        // Whatever the engine reported, a cancel-flagged task answers
+        // "canceled" — that is the string the phone keys its cancel path on.
+        if (!process_result.has_value() && canceled()) {
+            process_result = std::unexpected(CoordinatorError{7, "canceled"});
+            LOG_INFO("Coordinator", "Task aborted: inference stopped after cancel");
+        }
+
+        // Label the encode phase so the phone's UI can show
+        // "encoding..." instead of a frozen 100%.
+        if (process_result.has_value()) {
+            TaskProgress enc{};
+            enc.stage = 1;
+            (void)send_encrypted(conn, MessageType::MSG_TASK_PROGRESS,
+                                 &enc, sizeof(enc));
+        }
+
+        ClientTaskResponse response{};
+        if (process_result.has_value()) {
+            response.success = 1;
+            response.result_data_length = static_cast<uint32_t>(process_result->size());
+        } else {
+            response.success = 0;
+            response.result_data_length = 0;
+            std::strncpy(response.error_message,
+                         process_result.error().message.c_str(),
+                         sizeof(response.error_message) - 1);
+        }
+
+        // Response header + result data go in one encrypted (boxed) frame,
+        // matching the way the phone opens it (session.open verifies the MAC).
+        // Encoded results above MAX_NETWORK_PAYLOAD stream as MSG_CLIENT_DATA
+        // continuation frames instead; small results stay single-frame.
+        constexpr size_t CLIENT_CHUNK_BYTES = 8u * 1024u * 1024u;
+        const auto& result_bytes = process_result.value_or(std::vector<uint8_t>{});
+        const size_t leading_bytes =
+            std::min<size_t>(result_bytes.size(), MAX_NETWORK_PAYLOAD);
+        std::vector<uint8_t> resp_payload(sizeof(ClientTaskResponse) + leading_bytes);
+        std::memcpy(resp_payload.data(), &response, sizeof(response));
+        if (!result_bytes.empty()) {
+            std::memcpy(resp_payload.data() + sizeof(ClientTaskResponse),
+                        result_bytes.data(), leading_bytes);
+        }
+        const auto t_send_start = std::chrono::steady_clock::now();
+        bool sent_ok = send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
+                                      resp_payload.data(), resp_payload.size());
+        for (size_t offset = resp_payload.size() - sizeof(ClientTaskResponse);
+             sent_ok && offset < result_bytes.size();
+             offset += CLIENT_CHUNK_BYTES) {
+            const size_t n = std::min(CLIENT_CHUNK_BYTES, result_bytes.size() - offset);
+            sent_ok = send_encrypted(conn, MessageType::MSG_CLIENT_DATA,
+                                     result_bytes.data() + offset, n);
+        }
+        const auto t_send_end = std::chrono::steady_clock::now();
+        if (!sent_ok) {
+            LOG_ERROR("Coordinator", "Failed to send authenticated client response");
+            return;
+        }
+        if (process_result.has_value()) {
+            const double send_s =
+                std::chrono::duration<double>(t_send_end - t_send_start).count();
+            const size_t sent_bytes = process_result->size();
+            LOG_INFO("Coordinator", "Task completed: sent " + format_bytes(sent_bytes) +
+                     " in " + format_seconds(send_s));
+        } else {
+            LOG_ERROR("Coordinator", "Authenticated client task failed: " +
+                     process_result.error().message);
+        }
+    } catch (const std::exception& e) {
+        reply_error(std::string("internal task error: ") + e.what());
+    } catch (...) {
+        reply_error("internal task error: unknown");
     }
-    const auto t_send_start = std::chrono::steady_clock::now();
-    bool sent_ok = send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
-                                  resp_payload.data(), resp_payload.size());
-    for (size_t offset = resp_payload.size() - sizeof(ClientTaskResponse);
-         sent_ok && offset < result_bytes.size();
-         offset += CLIENT_CHUNK_BYTES) {
-        const size_t n = std::min(CLIENT_CHUNK_BYTES, result_bytes.size() - offset);
-        sent_ok = send_encrypted(conn, MessageType::MSG_CLIENT_DATA,
-                                 result_bytes.data() + offset, n);
-    }
-    const auto t_send_end = std::chrono::steady_clock::now();
-    if (!sent_ok) {
-        LOG_ERROR("Coordinator", "Failed to send authenticated client response");
-        return false;
-    }
-    if (process_result.has_value()) {
-        const double send_s =
-            std::chrono::duration<double>(t_send_end - t_send_start).count();
-        const size_t sent_bytes = process_result->size();
-        LOG_INFO("Coordinator", "Task completed: sent " + format_bytes(sent_bytes) +
-                 " in " + format_seconds(send_s));
-    } else {
-        LOG_ERROR("Coordinator", "Authenticated client task failed: " + process_result.error().message);
-    }
-    return true;
 }
 
 void Coordinator::handle_client(std::stop_token st,
@@ -828,13 +1009,35 @@ void Coordinator::handle_client(std::stop_token st,
             // after the first response end the loop on the next recv (EOF).
             for (;;) {
             if (frame_hdr.type == MessageType::MSG_CLIENT_SUBMIT) {
-                if (!handle_client_submit(conn, st, std::move(frame_payload))) {
+                std::optional<std::pair<MessageHeader, std::vector<uint8_t>>> early;
+                if (!handle_client_submit(conn, st, std::move(frame_payload), early)) {
                     return;
+                }
+                if (early.has_value()) {
+                    // The next submit raced the worker's final send and was
+                    // captured by the in-task poll loop.
+                    frame_hdr = std::move(early->first);
+                    frame_payload = std::move(early->second);
+                    continue;
                 }
                 conn.socket->set_timeout(SESSION_FRAME_TIMEOUT_MS);
                 auto next_frame = recv_encrypted(conn);
                 if (!next_frame) {
                     return;  // clean close, idle timeout, or transport failure
+                }
+                frame_hdr = std::move(next_frame->first);
+                frame_payload = std::move(next_frame->second);
+                continue;
+            } else if (frame_hdr.type == MessageType::MSG_TASK_CANCEL) {
+                // A cancel whose task already completed (the response beat the
+                // cancel to the phone, which then sent it anyway): no task is
+                // running — ignore and keep the session usable.
+                LOG_INFO("Coordinator", "Stray task cancel from peer " +
+                         conn.device_id + " (no task running); ignored");
+                conn.socket->set_timeout(SESSION_FRAME_TIMEOUT_MS);
+                auto next_frame = recv_encrypted(conn);
+                if (!next_frame) {
+                    return;
                 }
                 frame_hdr = std::move(next_frame->first);
                 frame_payload = std::move(next_frame->second);

@@ -168,7 +168,7 @@ auto_tile_size=true 时：
 | 组 | 消息 | 说明 |
 |----|------|------|
 | 加密握手 | `KEY_HELLO 0x0007`（明文）/ `AUTH_PROOF 0x0008` / `AUTH_RESPONSE 0x0004` | X25519+Ed25519 握手，之后全帧加密 |
-| 任务提交 | `CLIENT_SUBMIT 0x0500` / `CLIENT_RESPONSE 0x0501` / `TASK_PROGRESS 0x0502` / `CLIENT_DATA 0x0503` | 手机→PC 提交整图（会话内可多次）；TASK_PROGRESS 为 PC→手机流式进度（兼防 NAT 空闲踢线），手机端透传进 UI；CLIENT_DATA 为 >100MB 结果续帧 |
+| 任务提交 | `CLIENT_SUBMIT 0x0500` / `CLIENT_RESPONSE 0x0501` / `TASK_PROGRESS 0x0502` / `CLIENT_DATA 0x0503` / `TASK_CANCEL 0x0504` | 手机→PC 提交整图（会话内可多次）；TASK_PROGRESS 为 PC→手机流式进度（兼防 NAT 空闲踢线），手机端透传进 UI；CLIENT_DATA 为 >100MB 结果续帧；TASK_CANCEL（手机→PC，空载荷）中止当前在途任务——PC 在下一个 tile 边界停算并以 success=0/error="canceled" 应答，会话保持可用（响应已发出后才到达的迟到 CANCEL 被容忍忽略） |
 | 配对 | `CLIENT_CONNECT_REQUEST 0x0700` / `CLIENT_CONNECT_RESPONSE 0x0701` | 批准位 + 信任位 + AVIF 能力位 |
 | 共享模型库 | `MODEL_LIST/UPLOAD/DOWNLOAD 0x0510-0x0515` | 手机浏览/上传/拉取 PC 上的模型 |
 | 本地 daemon | `SERVE_REQUEST/RESPONSE/DATA/PROGRESS 0x0601-0x0604` | Unix domain socket，独立号段 |
@@ -215,6 +215,16 @@ auto_tile_size=true 时：
 - 用本地引擎跑完整超分（`engine_setup` 初始化 + `TileProcessor.process_image_u8`）；
 - 处理中持续回发 `MSG_TASK_PROGRESS`，完成后回 `MSG_CLIENT_RESPONSE`（+ 必要时
   `MSG_CLIENT_DATA` 续帧）；编解码失败以 per-task 错误回传，不摔连接；
+- **任务级取消**：每个 CLIENT_SUBMIT 的解码/推理/编码/应答跑在该连接自己的工作
+  线程上，handler 线程以 ~200ms 短超时轮询继续收帧（`recv_encrypted_poll`：仅对
+  首字节限时，帧一旦开始就用整段超时收完，轮询绝不弃半帧；收向超时经
+  `TCPSocket::set_recv_timeout` 单独调小，发送超时不受影响）。收到
+  `MSG_TASK_CANCEL`、轮询发现连接死亡、进度帧发送失败或 coordinator stop() 时置
+  每任务 `std::atomic<bool>` cancel——`process_locally` 在入口/引擎锁后/编码前
+  检查，`TileProcessor` 逐 tile 检查，取消代价 ≤ 1 个 tile 的白算，任务以
+  success=0/"canceled" 应答且会话可继续服务下一张（多连接各自的任务互不影响，
+  cancel 原子按任务隔离）。工作线程由 handler 在返回前 join，stop() 沿
+  client_threads_ → handler → worker 链路确定性回收；
 - **会话循环**：响应后连接保持打开，继续收下一张 `CLIENT_SUBMIT`（帧间空闲超时
   60s）。握手/配对每连接只发生一次，整批任务复用同一条 TCP；旧版一次性客户端
   发完即关，循环读到 EOF 自然退出。推理互斥仅覆盖 `process_locally` 的推理段，
@@ -231,6 +241,16 @@ TASK_PROGRESS 经回调透传进 UI）→ 批末 `nativeCloseDistributedSession`
 解码/推理 N+1 重叠，下一张原图字节在等结果时后台预取。模型共享等其他操作仍为
 一次性独立 TCP 连接（握手 → 配对 → 单操作帧 → 收结果 → 关连接）。
 超时：连接 10s、I/O 60s。传输失败自动重开会话重发一次（容忍 PC 重启）。
+
+**取消**：`ProcessingViewModel.cancelProcessing` 取消协程之外，还会经
+`CoordinatorClient.cancelRemoteTask` → `nativeCancelDistributedTask` 置会话级
+cancel 原子（线程安全、非阻塞）。阻塞中的 `nativeReceiveDistributedResult` 以
+~200ms 轮询接收（首字节限时、整帧收完不弃半帧），发现置位后**由接收线程自己**
+发出 `MSG_TASK_CANCEL`——`StreamSocket` 单一递归 io_mutex 使"receive 阻塞期间
+跨线程 send"必然卡死，而轮询间隙锁被释放，自己发帧无竞争。随后继续收 PC 的
+"canceled" 终止应答（上限 90s；旧 PC 不认识 CANCEL 会摔线，报
+"Distributed task canceled (connection lost)"），Kotlin 侧将取消映射为
+`CancellationException`（不算失败、不清已配对端点），批次 finally 关会话收尾。
 
 ---
 
@@ -435,6 +455,9 @@ UI → NativeImageProcessingRepository → CoordinatorClient（持久会话 + �
             nativeReceiveDistributedResult（收 TASK_PROGRESS* → 回调进 UI → CLIENT_RESPONSE(+DATA*)）
             [上传 N+1 → 写盘 N，与 PC 处理重叠]
   → 批末 nativeCloseDistributedSession
+取消: cancelProcessing → job.cancel + cancelRemoteTask → nativeCancelDistributedTask(置原子)
+  → 接收轮询发现 → 接收线程发 TASK_CANCEL → PC 工作线程停算(tile 边界) → "canceled" 应答
+  → awaitResult 抛 CancellationException → run 协程按取消收尾（存 checkpoint、关会话）
 ```
 
 **Android 连接/模型共享（NativeWorker）**：

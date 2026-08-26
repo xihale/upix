@@ -64,11 +64,21 @@ object NCNNEngine {
      * 阻塞等待当前任务结果，期间把 PC 的进度帧转发给 [progressListener]
      * （可空）。返回编码后的输出字节；null=失败（nativeGetLastError，
      * "Distributed task failed:" 前缀表示 PC 侧任务错误、会话仍可用）。
+     * 内部以 ~200ms 轮询接收：[nativeCancelDistributedTask] 置位后，接收线程
+     * 自己向 PC 发 MSG_TASK_CANCEL，并在 PC 回出终止响应（"canceled"）后尽快
+     * 返回 "Distributed task canceled..." 错误。
      */
     external fun nativeReceiveDistributedResult(
         handle: Long,
         progressListener: DistributedProgressListener?
     ): ByteArray?
+
+    /**
+     * 请求取消该会话上在途的远程任务（线程安全、非阻塞）：仅置取消标志，
+     * 由阻塞中的 [nativeReceiveDistributedResult] 在一个轮询周期内发出
+     * MSG_TASK_CANCEL 并尽快以"已取消"返回。无在途任务时为空操作。
+     */
+    external fun nativeCancelDistributedTask(handle: Long): Boolean
 
     /** 关闭并释放会话句柄；0 与重复关闭安全。 */
     external fun nativeCloseDistributedSession(handle: Long)

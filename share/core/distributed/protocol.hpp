@@ -38,6 +38,12 @@ enum class MessageType : uint16_t {
     // encoded result exceeds MAX_NETWORK_PAYLOAD. Results at or below the cap
     // stay in the single RESPONSE frame.
     MSG_CLIENT_DATA = 0x0503,
+    // phone→PC, empty payload: abort the task that is currently running on
+    // this session. Valid only while a CLIENT_SUBMIT is being processed (a
+    // stray cancel after the response was sent is tolerated and ignored).
+    // The PC stops inference at the next tile boundary and answers the task
+    // with success=0 / error "canceled"; the session itself stays usable.
+    MSG_TASK_CANCEL = 0x0504,
 
     // Pairing: phone→PC request immediately after the ECDH handshake; PC→phone
     // reply (gated on interactive approval the first time, auto-approved once

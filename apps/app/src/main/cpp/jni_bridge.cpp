@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <ctime>
 #include <exception>
@@ -403,6 +404,70 @@ auto recv_encrypted_frame(
     return std::move(*opened);
 }
 
+// Polled variant of recv_encrypted_frame for the distributed receive loop:
+// waits at most poll_ms for the FIRST byte of a frame (timed_out=true, no
+// bytes consumed), then finishes the frame with the full I/O timeout so a
+// poll tick can never abandon a partially received frame while the PC is
+// merely slow. Uses single-shot receive() per call so the socket's io lock
+// is released between calls (room for the loop's own CANCEL send).
+auto recv_encrypted_frame_poll(
+    upix::TCPSocket& socket,
+    upix::EncryptedSession& session,
+    int poll_ms,
+    std::string& error_msg,
+    bool& timed_out
+) -> std::optional<std::pair<upix::MessageHeader, std::vector<uint8_t>>> {
+    error_msg.clear();
+    timed_out = false;
+    socket.set_recv_timeout(poll_ms);
+    std::vector<uint8_t> hdr_buf(upix::Protocol::HEADER_SIZE);
+    size_t got = 0;
+    while (got < upix::Protocol::HEADER_SIZE) {
+        auto chunk = socket.receive(hdr_buf.data() + got,
+                                    upix::Protocol::HEADER_SIZE - got);
+        if (!chunk.has_value()) {
+            const int code = chunk.error().code;
+            if (got == 0 && (code == EAGAIN || code == EWOULDBLOCK)) {
+                timed_out = true;
+                return std::nullopt;
+            }
+            error_msg = "response header receive failed";
+            return std::nullopt;
+        }
+        got += chunk.value();
+        if (got > 0) {
+            // Bytes are in: finish this frame patiently, not on the poll
+            // clock.
+            socket.set_recv_timeout(IO_TIMEOUT_MS);
+        }
+    }
+    auto parsed = upix::Protocol::parse_header(hdr_buf);
+    if (!parsed) {
+        error_msg = "response header is invalid";
+        return std::nullopt;
+    }
+    if (parsed->payload_length > MAX_PAYLOAD_LENGTH) {
+        error_msg = "response payload too large: " +
+                    std::to_string(parsed->payload_length) + " bytes";
+        return std::nullopt;
+    }
+    std::vector<uint8_t> wire(upix::Protocol::HEADER_SIZE + parsed->payload_length);
+    std::memcpy(wire.data(), hdr_buf.data(), upix::Protocol::HEADER_SIZE);
+    if (parsed->payload_length > 0) {
+        if (!socket.receive_all(wire.data() + upix::Protocol::HEADER_SIZE,
+                                parsed->payload_length).has_value()) {
+            error_msg = "response payload receive failed";
+            return std::nullopt;
+        }
+    }
+    auto opened = session.open(wire.data(), wire.size());
+    if (!opened) {
+        error_msg = "response MAC failed";
+        return std::nullopt;
+    }
+    return std::move(*opened);
+}
+
 }  // namespace
 
 // ── Shared model library ops (phone↔PC) ─────────────────────────────────────
@@ -536,7 +601,30 @@ namespace {
 struct DistributedSession {
     upix::TCPSocket socket;
     std::optional<upix::EncryptedSession> session;
+    // Cross-thread task cancel. cancel_requested is set from ANY thread
+    // (nativeCancelDistributedTask, e.g. the main thread when the user hits
+    // cancel); the blocking receive loop polls it between frames and sends
+    // the MSG_TASK_CANCEL frame ITSELF from the receiving thread. That keeps
+    // the send on the socket's io owner-of-the-moment: the socket lock is
+    // only held during individual receive calls (each bounded by the short
+    // poll timeout), so there is always a gap for the loop's own send — a
+    // naive "another thread sends while receive is blocked" design would
+    // deadlock on StreamSocket's single recursive io_mutex.
+    std::atomic<bool> cancel_requested{false};
+    // Set once the CANCEL frame went out for the current task; the loop then
+    // keeps draining until the PC's terminal "canceled" response (or a
+    // bounded deadline) instead of treating poll timeouts as PC-gone.
+    std::atomic<bool> cancel_sent{false};
 };
+
+// Receive-side poll cadence while a task is in flight: how often the blocked
+// nativeReceiveDistributedResult re-checks cancel_requested. Also the upper
+// bound for how long a cancel takes to reach the wire.
+constexpr int RECEIVE_POLL_MS = 200;
+// After MSG_TASK_CANCEL was sent, keep waiting this long for the terminal
+// "canceled" response: the PC aborts at the next tile boundary, which for
+// huge tiles / contended GPUs can be several seconds, but never minutes.
+constexpr int CANCEL_DRAIN_TIMEOUT_MS = 90 * 1000;
 
 // Sealed submit payload = ClientTaskSubmit struct + input + 24B nonce + 16B
 // MAC on top of the raw file bytes; the PC rejects frames whose payload
@@ -597,20 +685,70 @@ auto send_distributed_submit(
 
 // Drain MSG_TASK_PROGRESS frames (each forwarded to progress_cb) until the
 // terminal MSG_CLIENT_RESPONSE (+ MSG_CLIENT_DATA continuations) assembles
-// the full encoded result. Returns the result bytes without the
-// ClientTaskResponse header, or nullopt (thread-local error set).
+// the full encoded result. Runs as a poll loop (RECEIVE_POLL_MS) instead of
+// a blocking receive so a cross-thread nativeCancelDistributedTask is
+// honored within one tick: the loop then sends MSG_TASK_CANCEL itself and
+// keeps draining for the PC's "canceled" response. Returns the result bytes
+// without the ClientTaskResponse header, or nullopt (thread-local error
+// set). Cancel-related failures report "Distributed task canceled..." so the
+// Kotlin layer can distinguish them from both task errors and PC-gone.
 auto receive_distributed_result(
-    upix::TCPSocket& socket,
-    upix::EncryptedSession& session,
+    DistributedSession& session_state,
     const std::function<void(uint32_t stage, uint32_t percent, uint32_t eta)>& progress_cb
 ) -> std::optional<std::vector<uint8_t>> {
+    upix::TCPSocket& socket = session_state.socket;
+    upix::EncryptedSession& session = *session_state.session;
+
+    // Leave the receive timeout in its normal (long) state on every exit.
+    struct RecvTimeoutGuard {
+        upix::TCPSocket& socket;
+        ~RecvTimeoutGuard() { socket.set_recv_timeout(IO_TIMEOUT_MS); }
+    } timeout_guard{socket};
+
     std::vector<uint8_t> result_payload;
     size_t expected_total = 0;
     bool have_response = false;
+    auto cancel_deadline = std::chrono::steady_clock::time_point::max();
     while (true) {
+        // Honor a cross-thread cancel request: send the CANCEL frame from
+        // THIS thread (the only thread that can safely interleave a send
+        // with the polled receive), then keep waiting for the terminal
+        // response so the session is left in a clean state.
+        if (session_state.cancel_requested.load() &&
+            !session_state.cancel_sent.exchange(true)) {
+            upix::MessageHeader cancel_hdr{};
+            cancel_hdr.type = upix::MessageType::MSG_TASK_CANCEL;
+            cancel_hdr.payload_length = 0;
+            const uint8_t empty = 0;
+            auto wire = session.seal(cancel_hdr, &empty);
+            if (!socket.send_all(wire.data(), wire.size()).has_value()) {
+                set_jni_last_error("Distributed task canceled (connection lost)");
+                return std::nullopt;
+            }
+            LOGI("Sent MSG_TASK_CANCEL; waiting for the PC to abort the task");
+            cancel_deadline = std::chrono::steady_clock::now() +
+                std::chrono::milliseconds(CANCEL_DRAIN_TIMEOUT_MS);
+        }
         std::string frame_error;
-        auto frame = recv_encrypted_frame(socket, session, frame_error);
+        bool timed_out = false;
+        auto frame = recv_encrypted_frame_poll(
+            socket, session, RECEIVE_POLL_MS, frame_error, timed_out);
         if (!frame) {
+            if (timed_out) {
+                if (std::chrono::steady_clock::now() >= cancel_deadline) {
+                    set_jni_last_error(
+                        "Distributed task canceled (no response from PC)");
+                    return std::nullopt;
+                }
+                continue;  // ordinary poll tick / still draining after cancel
+            }
+            if (session_state.cancel_sent.load()) {
+                // Old PC (no CANCEL support) dropped the connection, or the
+                // link died right after we canceled: the user asked for a
+                // cancel, not a PC failure.
+                set_jni_last_error("Distributed task canceled (connection lost)");
+                return std::nullopt;
+            }
             set_jni_last_error("Distributed " + frame_error);
             return std::nullopt;
         }
@@ -1283,6 +1421,14 @@ Java_io_upix_nativelib_NCNNEngine_nativeSendDistributedTask(
             input_image, 0, input_size,
             reinterpret_cast<jbyte*>(input_bytes.data()));
 
+        // New task on this session: a stale cancel flag from a previous
+        // (aborted) batch must not leak into this receive loop. If a cancel
+        // lands between this reset and the receive, the loop still honors
+        // it — the CANCEL frame then follows the submit, and the PC aborts
+        // the task it just received.
+        session_state->cancel_requested.store(false);
+        session_state->cancel_sent.store(false);
+
         const bool sent = send_distributed_submit(
             session_state->socket,
             *session_state->session,
@@ -1348,8 +1494,7 @@ Java_io_upix_nativelib_NCNNEngine_nativeReceiveDistributedResult(
             }
         }
 
-        auto result = receive_distributed_result(
-            session_state->socket, *session_state->session, progress_cb);
+        auto result = receive_distributed_result(*session_state, progress_cb);
         if (!result.has_value()) {
             return nullptr;  // error already in the thread-local slot
         }
@@ -1371,6 +1516,32 @@ Java_io_upix_nativelib_NCNNEngine_nativeReceiveDistributedResult(
         set_jni_last_error("nativeReceiveDistributedResult failed: unknown native error");
         return nullptr;
     }
+}
+
+// Request cancellation of the task currently in flight on this session.
+// Thread-safe and non-blocking: it only flips the per-session cancel flag;
+// the blocking nativeReceiveDistributedResult (on its IO thread) notices
+// within one poll tick (RECEIVE_POLL_MS), sends MSG_TASK_CANCEL itself, and
+// returns promptly with a "Distributed task canceled..." error once the PC's
+// terminal response (or the drain deadline) arrives. No-op when no task is
+// in flight — the flag is reset by the next nativeSendDistributedTask.
+JNIEXPORT jboolean JNICALL
+Java_io_upix_nativelib_NCNNEngine_nativeCancelDistributedTask(
+    JNIEnv* env,
+    jobject thiz,
+    jlong handle
+) {
+    (void)env;
+    (void)thiz;
+    if (handle == 0) {
+        return JNI_TRUE;  // no open session: nothing in flight
+    }
+    auto* session_state = reinterpret_cast<DistributedSession*>(handle);
+    if (!session_state->session.has_value()) {
+        return JNI_TRUE;
+    }
+    session_state->cancel_requested.store(true);
+    return JNI_TRUE;
 }
 
 // Close + free a session handle. Safe on 0 and on already-closed handles.
