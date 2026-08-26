@@ -1316,9 +1316,17 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                                  name_sv.find("Imagination") != std::string_view::npos;
         const bool is_mobile_gpu = is_adreno || is_mali || is_powervr;
 
-        // VRAM-aware tile size selection (adapted from RealSR-NCNN-Android)
+        // VRAM-aware tile size selection (adapted from RealSR-NCNN-Android).
+        // The desktop tiers bias large: at tile=200 the overlap strip wastes
+        // ~15% of the GPU's compute on pixels a neighbour also produces
+        // ((200² - 184²)/200²); at 384 that redundancy halves and the measured
+        // batch wall time drops accordingly. The working-set guard below still
+        // shrinks the size whenever the per-tile feature maps exceed 1/8 of
+        // the heap budget, so small / busy GPUs keep the conservative tiers.
         int tilesize;
-        if (heap_budget_mb > 2800) {
+        if (heap_budget_mb > 6000 && !is_mobile_gpu) {
+            tilesize = 384;
+        } else if (heap_budget_mb > 2800) {
             tilesize = is_mobile_gpu ? 160 : 200;
         } else if (heap_budget_mb > 1600) {
             tilesize = is_mobile_gpu ? 128 : 160;
