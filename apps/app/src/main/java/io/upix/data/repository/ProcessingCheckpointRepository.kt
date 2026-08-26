@@ -1,4 +1,4 @@
-package com.upix.data.repository
+package io.upix.data.repository
 
 import android.content.Context
 import java.io.File

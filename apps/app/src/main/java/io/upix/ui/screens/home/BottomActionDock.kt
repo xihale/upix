@@ -1,4 +1,4 @@
-package com.upix.ui.screens.home
+package io.upix.ui.screens.home
 
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
@@ -33,10 +33,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import com.upix.R
-import com.upix.ui.theme.EnterMotionSpec
-import com.upix.ui.theme.Spacing
-import com.upix.ui.theme.pressScale
+import io.upix.R
+import io.upix.ui.theme.EnterMotionSpec
+import io.upix.ui.theme.Spacing
+import io.upix.ui.theme.pressScale
 import androidx.compose.foundation.layout.Spacer
 
 /**

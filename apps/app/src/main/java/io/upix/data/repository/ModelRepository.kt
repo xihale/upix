@@ -1,12 +1,12 @@
-package com.upix.data.repository
+package io.upix.data.repository
 
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
 import android.provider.OpenableColumns
-import com.upix.R
-import com.upix.data.model.ModelInfo
-import com.upix.data.model.ModelImportResult
+import io.upix.R
+import io.upix.data.model.ModelInfo
+import io.upix.data.model.ModelImportResult
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.IOException

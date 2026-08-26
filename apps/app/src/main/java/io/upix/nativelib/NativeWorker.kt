@@ -1,10 +1,10 @@
-package com.upix.nativelib
+package io.upix.nativelib
 
 /**
  * Coordinator-side JNI facade (connection handshake + identity load).
  *
  * The externals must stay on this class: the C++ bridge exports them as
- * Java_com_upix_nativelib_NativeWorker_* symbols.
+ * Java_io_upix_nativelib_NativeWorker_* symbols.
  */
 object NativeWorker {
     init {

@@ -1,4 +1,4 @@
-package com.upix.data.repository
+package io.upix.data.repository
 
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals

@@ -1,4 +1,4 @@
-package com.upix.ui.components
+package io.upix.ui.components
 
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -22,8 +22,8 @@ import androidx.navigation.NavDestination
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavController
 import androidx.navigation.compose.currentBackStackEntryAsState
-import com.upix.ui.navigation.AppScreen
-import com.upix.ui.theme.Spacing
+import io.upix.ui.navigation.AppScreen
+import io.upix.ui.theme.Spacing
 
 /**
  * MD3 adaptive 导航：compact 用 NavigationBar（见 [BottomNavigationBar]），
@@ -125,7 +125,7 @@ fun AppNavigationDrawer(
                 ) {
                     Spacer(modifier = Modifier.height(28.dp))
                     Text(
-                        text = stringResource(com.upix.R.string.app_name),
+                        text = stringResource(io.upix.R.string.app_name),
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

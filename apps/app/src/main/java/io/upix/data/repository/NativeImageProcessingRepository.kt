@@ -1,11 +1,11 @@
-package com.upix.data.repository
+package io.upix.data.repository
 
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import com.upix.R
-import com.upix.nativelib.NCNNEngine
-import com.upix.nativelib.NativeCapabilities
+import io.upix.R
+import io.upix.nativelib.NCNNEngine
+import io.upix.nativelib.NativeCapabilities
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException

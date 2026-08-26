@@ -1,7 +1,7 @@
-package com.upix.data.repository
+package io.upix.data.repository
 
-import com.upix.data.model.ConnectionState
-import com.upix.data.model.RemoteEndpoint
+import io.upix.data.model.ConnectionState
+import io.upix.data.model.RemoteEndpoint
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -11,10 +11,10 @@ import kotlinx.coroutines.flow.asStateFlow
  *
  * The multi-node device list, local-device-as-worker concepts and mDNS
  * discovery state are gone. This is now the reactive backbone for
- * [com.upix.viewmodel.DeviceViewModel] and the mode indicator.
+ * [io.upix.viewmodel.DeviceViewModel] and the mode indicator.
  *
  * The authoritative "are we connected" boolean remains
- * [com.upix.network.CoordinatorClient.isConnected]; this repository only
+ * [io.upix.network.CoordinatorClient.isConnected]; this repository only
  * mirrors that state reactively for UI observation.
  */
 class DeviceRepository(

@@ -1,6 +1,6 @@
-package com.upix.data.repository
+package io.upix.data.repository
 
-import com.upix.data.model.RemoteModel
+import io.upix.data.model.RemoteModel
 import com.sun.net.httpserver.HttpServer
 import java.io.File
 import java.io.IOException

@@ -1,15 +1,15 @@
-package com.upix.viewmodel
+package io.upix.viewmodel
 
-import com.upix.R
-import com.upix.data.model.ProcessingStatus
-import com.upix.data.repository.InputSourceResolver
-import com.upix.data.repository.LogRepository
-import com.upix.data.repository.PersistedQueueItemStatus
-import com.upix.data.repository.ProcessingCheckpoint
-import com.upix.data.repository.ProcessingCheckpointStore
-import com.upix.data.repository.canRetryFailedOnly
-import com.upix.network.CoordinatorClient
-import com.upix.util.StringProvider
+import io.upix.R
+import io.upix.data.model.ProcessingStatus
+import io.upix.data.repository.InputSourceResolver
+import io.upix.data.repository.LogRepository
+import io.upix.data.repository.PersistedQueueItemStatus
+import io.upix.data.repository.ProcessingCheckpoint
+import io.upix.data.repository.ProcessingCheckpointStore
+import io.upix.data.repository.canRetryFailedOnly
+import io.upix.network.CoordinatorClient
+import io.upix.util.StringProvider
 import java.util.UUID
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope

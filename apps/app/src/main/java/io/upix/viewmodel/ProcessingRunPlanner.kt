@@ -1,16 +1,16 @@
-package com.upix.viewmodel
+package io.upix.viewmodel
 
 import android.net.Uri
-import com.upix.data.model.ModelInfo
-import com.upix.data.repository.BatchOutputStore
-import com.upix.data.repository.InputSourceResolver
-import com.upix.data.repository.LogRepository
-import com.upix.data.repository.ProcessingCheckpoint
-import com.upix.data.repository.ProcessingCheckpointStore
-import com.upix.data.repository.ProcessingFailureDetail
-import com.upix.data.repository.ProcessingPendingItem
-import com.upix.data.repository.ResolvedImageInput
-import com.upix.data.repository.SrMarkerInfo
+import io.upix.data.model.ModelInfo
+import io.upix.data.repository.BatchOutputStore
+import io.upix.data.repository.InputSourceResolver
+import io.upix.data.repository.LogRepository
+import io.upix.data.repository.ProcessingCheckpoint
+import io.upix.data.repository.ProcessingCheckpointStore
+import io.upix.data.repository.ProcessingFailureDetail
+import io.upix.data.repository.ProcessingPendingItem
+import io.upix.data.repository.ResolvedImageInput
+import io.upix.data.repository.SrMarkerInfo
 
 // Run planning and checkpoint bookkeeping extracted from ProcessingViewModel.
 // The planner owns no state: every function is a computation over its arguments

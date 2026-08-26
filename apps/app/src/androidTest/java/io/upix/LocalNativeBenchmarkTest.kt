@@ -1,8 +1,8 @@
-package com.upix
+package io.upix
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.upix.nativelib.NCNNEngine
+import io.upix.nativelib.NCNNEngine
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -19,8 +19,8 @@ import java.security.MessageDigest
  *
  *   adb shell am instrument -w \
  *     -e sizes 512,1024,2048 -e iters 3 -e device both -e format png \
- *     -e class com.upix.LocalNativeBenchmarkTest \
- *     com.upix.test/androidx.test.runner.AndroidJUnitRunner
+ *     -e class io.upix.LocalNativeBenchmarkTest \
+ *     io.upix.test/androidx.test.runner.AndroidJUnitRunner
  *
  * Output lines (grep 'CSBENCH' logcat):
  *   CSBENCH init <gpu|cpu> ms=<t>

@@ -1,4 +1,4 @@
-package com.upix.viewmodel
+package io.upix.viewmodel
 
 import androidx.compose.runtime.Immutable
 import androidx.lifecycle.ViewModel
@@ -6,13 +6,13 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import com.upix.AppContainer
-import com.upix.R
-import com.upix.data.model.RemoteModel
-import com.upix.data.repository.LogRepository
-import com.upix.data.repository.ModelProvider
-import com.upix.data.repository.ModelReleaseRepository
-import com.upix.util.StringProvider
+import io.upix.AppContainer
+import io.upix.R
+import io.upix.data.model.RemoteModel
+import io.upix.data.repository.LogRepository
+import io.upix.data.repository.ModelProvider
+import io.upix.data.repository.ModelReleaseRepository
+import io.upix.util.StringProvider
 import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job

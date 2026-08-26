@@ -1,4 +1,4 @@
-package com.upix.ui.components
+package io.upix.ui.components
 
 import android.widget.Toast
 import androidx.compose.foundation.combinedClickable
@@ -30,11 +30,11 @@ import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
-import com.upix.R
-import com.upix.data.model.LogEntry
-import com.upix.data.model.LogLevel
-import com.upix.ui.theme.LogMonoStyle
-import com.upix.ui.theme.Spacing
+import io.upix.R
+import io.upix.data.model.LogEntry
+import io.upix.data.model.LogLevel
+import io.upix.ui.theme.LogMonoStyle
+import io.upix.ui.theme.Spacing
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 

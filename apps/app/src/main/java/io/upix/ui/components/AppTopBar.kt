@@ -1,4 +1,4 @@
-package com.upix.ui.components
+package io.upix.ui.components
 
 import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Box
@@ -21,8 +21,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
-import com.upix.R
-import com.upix.ui.theme.MaxContentWidth
+import io.upix.R
+import io.upix.ui.theme.MaxContentWidth
 
 /**
  * MD3 Small TopAppBar：主 tab 屏统一顶栏容器。

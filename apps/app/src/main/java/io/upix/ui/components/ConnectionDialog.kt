@@ -1,4 +1,4 @@
-package com.upix.ui.components
+package io.upix.ui.components
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -12,8 +12,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
-import com.upix.R
-import com.upix.ui.theme.Spacing
+import io.upix.R
+import io.upix.ui.theme.Spacing
 
 @Composable
 fun ConnectionDialog(

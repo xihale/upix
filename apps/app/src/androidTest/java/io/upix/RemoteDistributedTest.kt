@@ -1,12 +1,12 @@
-package com.upix
+package io.upix
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import java.io.ByteArrayOutputStream
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.upix.nativelib.NCNNEngine
-import com.upix.nativelib.NativeWorker
+import io.upix.nativelib.NCNNEngine
+import io.upix.nativelib.NativeWorker
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.FixMethodOrder
@@ -24,8 +24,8 @@ import org.junit.runners.MethodSorters
  * passed as instrumentation arguments, e.g. via am instrument:
  *   adb shell am instrument -w \
  *     -e host 192.168.1.10 -e port 9530 -e model Real-ESRGANv3-anime-x2 \
- *     -e class com.upix.RemoteDistributedTest \
- *     com.upix.test/androidx.test.runner.AndroidJUnitRunner
+ *     -e class io.upix.RemoteDistributedTest \
+ *     io.upix.test/androidx.test.runner.AndroidJUnitRunner
  *
  * Orchestration: run the `am instrument` command above directly (see
  * scripts/android_test.sh for the general build/unit/smoke harness).
@@ -145,7 +145,7 @@ class RemoteDistributedTest {
         var outWidth = opts.outWidth
         var outHeight = opts.outHeight
         if (outWidth <= 0 && format == "avif") {
-            val ispe = com.upix.data.repository.AvifFormat.sniffDimensions(encoded)
+            val ispe = io.upix.data.repository.AvifFormat.sniffDimensions(encoded)
             outWidth = ispe?.first ?: 0
             outHeight = ispe?.second ?: 0
         }

@@ -1,11 +1,11 @@
-package com.upix.viewmodel
+package io.upix.viewmodel
 
-import com.upix.R
-import com.upix.data.repository.PersistedQueueItem
-import com.upix.data.repository.ProcessingCheckpoint
-import com.upix.data.repository.ProcessingQueueSnapshot
-import com.upix.data.repository.failedPendingCount
-import com.upix.util.StringProvider
+import io.upix.R
+import io.upix.data.repository.PersistedQueueItem
+import io.upix.data.repository.ProcessingCheckpoint
+import io.upix.data.repository.ProcessingQueueSnapshot
+import io.upix.data.repository.failedPendingCount
+import io.upix.util.StringProvider
 
 // Pure mappers extracted from ProcessingViewModel. No state, no I/O.
 // internal = visible to the :app module only (UI/data layers do not call these).

@@ -1,4 +1,4 @@
-package com.upix.ui.scanner
+package io.upix.ui.scanner
 
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.BinaryBitmap

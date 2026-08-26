@@ -1,4 +1,4 @@
-package com.upix.ui.theme
+package io.upix.ui.theme
 
 import android.app.Activity
 import android.os.Build

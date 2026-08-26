@@ -1,4 +1,4 @@
-package com.upix.ui.navigation
+package io.upix.ui.navigation
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -6,7 +6,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import com.upix.data.model.ProcessingStatus
+import io.upix.data.model.ProcessingStatus
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -19,31 +19,31 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
-import com.upix.AppContainer
-import com.upix.clearBatchQueue
-import com.upix.openQueuedBatchOutput
-import com.upix.removeQueuedBatch
-import com.upix.restoreBackup
-import com.upix.startProcessing
-import com.upix.ui.input.rememberInputSelection
-import com.upix.ui.components.SecondaryScreenScaffold
-import com.upix.ui.screens.ConnectionScreen
-import com.upix.ui.screens.EncoderSettingsPane
-import com.upix.ui.screens.HelpScreen
-import com.upix.ui.screens.HomeCallbacks
-import com.upix.ui.screens.HomeScreen
-import com.upix.ui.screens.LogsScreen
-import com.upix.ui.screens.ModelsScreen
-import com.upix.ui.screens.SettingsDetail
-import com.upix.ui.screens.SettingsScreen
-import com.upix.ui.theme.NavEnterTransition
-import com.upix.ui.theme.NavExitTransition
-import com.upix.ui.theme.NavPopEnterTransition
-import com.upix.ui.theme.NavPopExitTransition
-import com.upix.viewmodel.DeviceViewModel
-import com.upix.viewmodel.MainViewModel
-import com.upix.viewmodel.ModelsViewModel
-import com.upix.viewmodel.ProcessingViewModel
+import io.upix.AppContainer
+import io.upix.clearBatchQueue
+import io.upix.openQueuedBatchOutput
+import io.upix.removeQueuedBatch
+import io.upix.restoreBackup
+import io.upix.startProcessing
+import io.upix.ui.input.rememberInputSelection
+import io.upix.ui.components.SecondaryScreenScaffold
+import io.upix.ui.screens.ConnectionScreen
+import io.upix.ui.screens.EncoderSettingsPane
+import io.upix.ui.screens.HelpScreen
+import io.upix.ui.screens.HomeCallbacks
+import io.upix.ui.screens.HomeScreen
+import io.upix.ui.screens.LogsScreen
+import io.upix.ui.screens.ModelsScreen
+import io.upix.ui.screens.SettingsDetail
+import io.upix.ui.screens.SettingsScreen
+import io.upix.ui.theme.NavEnterTransition
+import io.upix.ui.theme.NavExitTransition
+import io.upix.ui.theme.NavPopEnterTransition
+import io.upix.ui.theme.NavPopExitTransition
+import io.upix.viewmodel.DeviceViewModel
+import io.upix.viewmodel.MainViewModel
+import io.upix.viewmodel.ModelsViewModel
+import io.upix.viewmodel.ProcessingViewModel
 
 /**
  * 导航图自行解析三个 ViewModel（与 UpixApp 同一 Activity 级

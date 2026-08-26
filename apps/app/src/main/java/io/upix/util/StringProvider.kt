@@ -1,4 +1,4 @@
-package com.upix.util
+package io.upix.util
 
 import androidx.annotation.StringRes
 

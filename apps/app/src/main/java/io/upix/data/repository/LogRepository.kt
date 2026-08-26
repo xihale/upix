@@ -1,8 +1,8 @@
-package com.upix.data.repository
+package io.upix.data.repository
 
 import android.util.Log
-import com.upix.data.model.LogEntry
-import com.upix.data.model.LogLevel
+import io.upix.data.model.LogEntry
+import io.upix.data.model.LogLevel
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.flow.MutableStateFlow

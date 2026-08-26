@@ -1,4 +1,4 @@
-package com.upix.nativelib
+package io.upix.nativelib
 
 object NCNNEngine {
     init {

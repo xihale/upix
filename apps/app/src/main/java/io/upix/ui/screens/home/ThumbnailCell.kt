@@ -1,4 +1,4 @@
-package com.upix.ui.screens.home
+package io.upix.ui.screens.home
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -15,8 +15,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.Dp
-import com.upix.data.thumbnails.decodeQueueThumbnailWithLimit
-import com.upix.ui.theme.pressable
+import io.upix.data.thumbnails.decodeQueueThumbnailWithLimit
+import io.upix.ui.theme.pressable
 
 /**
  * 队列缩略图单元：HeroArea 缩略行瓦片与队列 sheet 列表头图共用。

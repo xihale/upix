@@ -1,4 +1,4 @@
-package com.upix.ui.screens.home
+package io.upix.ui.screens.home
 
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
@@ -57,17 +57,17 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.upix.R
-import com.upix.data.repository.InputSourceSpec
-import com.upix.data.repository.PersistedQueueItemStatus
-import com.upix.ui.theme.EnterMotionSpec
-import com.upix.ui.theme.EnterSizeSpec
-import com.upix.ui.theme.Spacing
-import com.upix.ui.theme.ValueMono
-import com.upix.ui.theme.pressable
-import com.upix.ui.theme.valueStyleFor
-import com.upix.viewmodel.ProcessingQueueItemSummary
-import com.upix.viewmodel.ProcessingUiState
+import io.upix.R
+import io.upix.data.repository.InputSourceSpec
+import io.upix.data.repository.PersistedQueueItemStatus
+import io.upix.ui.theme.EnterMotionSpec
+import io.upix.ui.theme.EnterSizeSpec
+import io.upix.ui.theme.Spacing
+import io.upix.ui.theme.ValueMono
+import io.upix.ui.theme.pressable
+import io.upix.ui.theme.valueStyleFor
+import io.upix.viewmodel.ProcessingQueueItemSummary
+import io.upix.viewmodel.ProcessingUiState
 
 internal fun countPendingQueueItems(queueItems: List<ProcessingQueueItemSummary>): Int {
     return queueItems.count { item -> item.status == PersistedQueueItemStatus.PENDING }

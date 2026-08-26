@@ -1,4 +1,4 @@
-package com.upix
+package io.upix
 
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
@@ -14,13 +14,13 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.rememberNavController
-import com.upix.ui.components.AdaptiveNavigationRail
-import com.upix.ui.components.AppNavigationDrawer
-import com.upix.ui.components.BottomNavigationBar
-import com.upix.ui.navigation.UpixNavigation
-import com.upix.ui.scanner.ScannerMode
-import com.upix.ui.theme.LocalScreenMargin
-import com.upix.ui.theme.Spacing
+import io.upix.ui.components.AdaptiveNavigationRail
+import io.upix.ui.components.AppNavigationDrawer
+import io.upix.ui.components.BottomNavigationBar
+import io.upix.ui.navigation.UpixNavigation
+import io.upix.ui.scanner.ScannerMode
+import io.upix.ui.theme.LocalScreenMargin
+import io.upix.ui.theme.Spacing
 
 /** MD3 adaptive 断点（dp）：medium=600、expanded=840。 */
 private const val MediumWidthBreakpointDp = 600

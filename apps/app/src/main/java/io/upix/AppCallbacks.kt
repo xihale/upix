@@ -1,14 +1,14 @@
-package com.upix
+package io.upix
 
 import android.content.Context
 import android.widget.Toast
-import com.upix.data.repository.LogRepository
-import com.upix.data.repository.PersistedQueueItemStatus
-import com.upix.util.openImageOutput
-import com.upix.viewmodel.MainUiState
-import com.upix.viewmodel.MainViewModel
-import com.upix.viewmodel.ProcessingUiState
-import com.upix.viewmodel.ProcessingViewModel
+import io.upix.data.repository.LogRepository
+import io.upix.data.repository.PersistedQueueItemStatus
+import io.upix.util.openImageOutput
+import io.upix.viewmodel.MainUiState
+import io.upix.viewmodel.MainViewModel
+import io.upix.viewmodel.ProcessingUiState
+import io.upix.viewmodel.ProcessingViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch

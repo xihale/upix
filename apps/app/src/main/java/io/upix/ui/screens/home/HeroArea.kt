@@ -1,4 +1,4 @@
-package com.upix.ui.screens.home
+package io.upix.ui.screens.home
 
 import android.net.Uri
 import androidx.compose.animation.animateContentSize
@@ -73,12 +73,12 @@ import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import com.upix.R
-import com.upix.data.thumbnails.decodeQueueThumbnailWithLimit
-import com.upix.ui.theme.ExpandSizeSpec
-import com.upix.ui.theme.Spacing
-import com.upix.ui.theme.ValueMono
-import com.upix.ui.theme.pressable
+import io.upix.R
+import io.upix.data.thumbnails.decodeQueueThumbnailWithLimit
+import io.upix.ui.theme.ExpandSizeSpec
+import io.upix.ui.theme.Spacing
+import io.upix.ui.theme.ValueMono
+import io.upix.ui.theme.pressable
 import kotlin.math.abs
 
 // 320dp 舞台 / 全屏预览 sheet 的解码目标：默认 192px 缩略图在放大 3-5 倍后

@@ -1,8 +1,8 @@
-package com.upix.data.repository
+package io.upix.data.repository
 
 import android.net.Uri
-import com.upix.data.model.ModelImportResult
-import com.upix.data.model.ModelInfo
+import io.upix.data.model.ModelImportResult
+import io.upix.data.model.ModelInfo
 import java.io.File
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.serialization.SerialName

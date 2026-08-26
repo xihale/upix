@@ -1,4 +1,4 @@
-package com.upix.network
+package io.upix.network
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull

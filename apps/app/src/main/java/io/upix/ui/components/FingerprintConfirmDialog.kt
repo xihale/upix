@@ -1,4 +1,4 @@
-package com.upix.ui.components
+package io.upix.ui.components
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -12,9 +12,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
-import com.upix.R
-import com.upix.ui.theme.Spacing
-import com.upix.ui.theme.ValueMono
+import io.upix.R
+import io.upix.ui.theme.Spacing
+import io.upix.ui.theme.ValueMono
 
 /**
  * TOFU 首次连接: 展示从握手学到的 PC 指纹(16 字符大写 hex), 让用户与 PC 终端

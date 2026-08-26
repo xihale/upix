@@ -1,4 +1,4 @@
-package com.upix.util
+package io.upix.util
 
 import android.content.Context
 import android.content.Intent
@@ -6,7 +6,7 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
 import androidx.core.content.FileProvider
-import com.upix.data.repository.LogRepository
+import io.upix.data.repository.LogRepository
 import java.io.File
 
 /**

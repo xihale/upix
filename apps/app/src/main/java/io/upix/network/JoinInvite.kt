@@ -1,4 +1,4 @@
-package com.upix.network
+package io.upix.network
 
 import java.net.URI
 import java.net.URLDecoder

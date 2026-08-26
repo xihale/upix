@@ -1,7 +1,7 @@
-package com.upix.data.model
+package io.upix.data.model
 
 import androidx.compose.runtime.Immutable
-import com.upix.data.repository.ProcessingFailureDetail
+import io.upix.data.repository.ProcessingFailureDetail
 
 enum class ProcessingStatus {
     IDLE,

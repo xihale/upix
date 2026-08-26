@@ -1,4 +1,4 @@
-package com.upix.ui.navigation
+package io.upix.ui.navigation
 
 import androidx.annotation.StringRes
 import androidx.compose.material.icons.Icons
@@ -13,7 +13,7 @@ import androidx.compose.material.icons.outlined.ModelTraining
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.ui.graphics.vector.ImageVector
-import com.upix.R
+import io.upix.R
 
 sealed class AppScreen(
     val route: String,

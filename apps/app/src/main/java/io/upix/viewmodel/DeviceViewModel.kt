@@ -1,4 +1,4 @@
-package com.upix.viewmodel
+package io.upix.viewmodel
 
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
@@ -7,17 +7,17 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
-import com.upix.AppContainer
-import com.upix.R
-import com.upix.data.model.ConnectionState
-import com.upix.data.model.RemoteEndpoint
-import com.upix.data.repository.DeviceRepository
-import com.upix.data.repository.LogRepository
-import com.upix.data.repository.PairingRepository
-import com.upix.data.repository.TrustedPC
-import com.upix.network.CoordinatorClient
-import com.upix.network.JoinInviteParser
-import com.upix.util.StringProvider
+import io.upix.AppContainer
+import io.upix.R
+import io.upix.data.model.ConnectionState
+import io.upix.data.model.RemoteEndpoint
+import io.upix.data.repository.DeviceRepository
+import io.upix.data.repository.LogRepository
+import io.upix.data.repository.PairingRepository
+import io.upix.data.repository.TrustedPC
+import io.upix.network.CoordinatorClient
+import io.upix.network.JoinInviteParser
+import io.upix.util.StringProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted

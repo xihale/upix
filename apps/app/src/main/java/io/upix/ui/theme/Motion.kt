@@ -1,4 +1,4 @@
-package com.upix.ui.theme
+package io.upix.ui.theme
 
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition

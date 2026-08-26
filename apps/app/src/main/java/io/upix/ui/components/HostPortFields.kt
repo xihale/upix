@@ -1,4 +1,4 @@
-package com.upix.ui.components
+package io.upix.ui.components
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue

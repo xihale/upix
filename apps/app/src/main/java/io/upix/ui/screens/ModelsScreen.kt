@@ -1,4 +1,4 @@
-package com.upix.ui.screens
+package io.upix.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -41,15 +41,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import com.upix.R
-import com.upix.data.model.ModelInfo
-import com.upix.data.model.ModelLibraryEntry
-import com.upix.data.model.RemoteModel
-import com.upix.ui.components.ModelCard
-import com.upix.ui.components.RemoteModelsDialog
-import com.upix.ui.theme.LocalScreenMargin
-import com.upix.ui.theme.Spacing
-import com.upix.viewmodel.ModelsUiState
+import io.upix.R
+import io.upix.data.model.ModelInfo
+import io.upix.data.model.ModelLibraryEntry
+import io.upix.data.model.RemoteModel
+import io.upix.ui.components.ModelCard
+import io.upix.ui.components.RemoteModelsDialog
+import io.upix.ui.theme.LocalScreenMargin
+import io.upix.ui.theme.Spacing
+import io.upix.viewmodel.ModelsUiState
 
 /** 模型卡单列最小宽度：compact 手机必然单列，宽屏 detail pane 自动升为多列。 */
 private val ModelColumnMinWidth = 320.dp

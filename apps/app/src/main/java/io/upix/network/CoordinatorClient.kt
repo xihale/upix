@@ -1,20 +1,20 @@
-package com.upix.network
+package io.upix.network
 
 import android.content.Context
 import android.net.Uri
-import com.upix.data.model.PcModel
-import com.upix.data.repository.EncoderSettings
-import com.upix.data.repository.LogRepository
-import com.upix.data.repository.NativeProcessResult
-import com.upix.data.repository.ResolvedImageInput
-import com.upix.data.repository.decodeEncodedImageBounds
-import com.upix.data.repository.isAvifName
-import com.upix.data.repository.readEncodedBytes
-import com.upix.data.repository.outputFormatFor
-import com.upix.nativelib.NCNNEngine
-import com.upix.nativelib.NativeCapabilities
-import com.upix.nativelib.PeerCapabilities
-import com.upix.nativelib.NativeWorker
+import io.upix.data.model.PcModel
+import io.upix.data.repository.EncoderSettings
+import io.upix.data.repository.LogRepository
+import io.upix.data.repository.NativeProcessResult
+import io.upix.data.repository.ResolvedImageInput
+import io.upix.data.repository.decodeEncodedImageBounds
+import io.upix.data.repository.isAvifName
+import io.upix.data.repository.readEncodedBytes
+import io.upix.data.repository.outputFormatFor
+import io.upix.nativelib.NCNNEngine
+import io.upix.nativelib.NativeCapabilities
+import io.upix.nativelib.PeerCapabilities
+import io.upix.nativelib.NativeWorker
 import java.io.File
 import java.io.FileOutputStream
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -177,7 +177,7 @@ class CoordinatorClient(
     }
 
     /** 上传本地模型到 PC 模型库。未连接返回失败。 */
-    fun uploadModelToPC(model: com.upix.data.model.ModelInfo): kotlin.Result<Unit> = withEndpoint(
+    fun uploadModelToPC(model: io.upix.data.model.ModelInfo): kotlin.Result<Unit> = withEndpoint(
         onMissing = { kotlin.Result.failure(IllegalStateException("未连接 PC")) }
     ) { host, port, pubkey ->
         if (NativeWorker.nativeUploadModelToPC(

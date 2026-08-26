@@ -1,4 +1,4 @@
-package com.upix.data.repository
+package io.upix.data.repository
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse

@@ -1,4 +1,4 @@
-package com.upix.data.repository
+package io.upix.data.repository
 
 internal fun ProcessingCheckpoint.pendingUriSet(): Set<String> {
     return pendingItems

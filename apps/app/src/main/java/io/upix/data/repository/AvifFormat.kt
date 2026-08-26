@@ -1,4 +1,4 @@
-package com.upix.data.repository
+package io.upix.data.repository
 
 /**
  * ISOBMFF helpers for AVIF. Used when BitmapFactory cannot decode the

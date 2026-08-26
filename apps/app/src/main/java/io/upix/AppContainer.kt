@@ -1,19 +1,19 @@
-package com.upix
+package io.upix
 
 import android.content.Context
-import com.upix.data.repository.AppSettingsRepository
-import com.upix.data.repository.BatchOutputRepository
-import com.upix.data.repository.DeviceRepository
-import com.upix.data.repository.InputSourceRepository
-import com.upix.data.repository.LogRepository
-import com.upix.data.repository.ModelReleaseRepository
-import com.upix.data.repository.ModelRepository
-import com.upix.data.repository.NativeImageProcessingRepository
-import com.upix.data.repository.PairingRepository
-import com.upix.data.repository.ProcessingCheckpointRepository
-import com.upix.data.repository.ProcessingQueueRepository
-import com.upix.network.CoordinatorClient
-import com.upix.util.StringProvider
+import io.upix.data.repository.AppSettingsRepository
+import io.upix.data.repository.BatchOutputRepository
+import io.upix.data.repository.DeviceRepository
+import io.upix.data.repository.InputSourceRepository
+import io.upix.data.repository.LogRepository
+import io.upix.data.repository.ModelReleaseRepository
+import io.upix.data.repository.ModelRepository
+import io.upix.data.repository.NativeImageProcessingRepository
+import io.upix.data.repository.PairingRepository
+import io.upix.data.repository.ProcessingCheckpointRepository
+import io.upix.data.repository.ProcessingQueueRepository
+import io.upix.network.CoordinatorClient
+import io.upix.util.StringProvider
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 

@@ -23,7 +23,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APK="${APPS_DIR}/app/build/outputs/apk/debug/app-debug.apk"
-PACKAGE="com.upix"
+PACKAGE="io.upix"
 ACTIVITY="${PACKAGE}/.MainActivity"
 SMOKE_SECONDS="${SMOKE_SECONDS:-20}"
 RUN_LINT="${RUN_LINT:-0}"

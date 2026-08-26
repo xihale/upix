@@ -1,4 +1,4 @@
-package com.upix.ui.screens
+package io.upix.ui.screens
 
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
@@ -58,33 +58,33 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.upix.R
-import com.upix.data.model.ConnectionState
-import com.upix.data.model.ModelInfo
-import com.upix.data.model.RemoteEndpoint
-import com.upix.data.model.RemoteModel
-import com.upix.data.repository.OutputImageFormat
-import com.upix.data.repository.PersistedQueueItemStatus
-import com.upix.ui.components.UpixTopAppBar
-import com.upix.ui.components.RemoteModelsDialog
-import com.upix.ui.components.StageProgressOverlay
-import com.upix.ui.screens.home.BottomActionDock
-import com.upix.ui.screens.home.CheckpointSection
-import com.upix.ui.screens.home.DockCtaHeight
-import com.upix.ui.screens.home.ImageStage
-import com.upix.ui.screens.home.ParameterCard
-import com.upix.ui.screens.home.PreviewBottomSheet
-import com.upix.ui.screens.home.QueueBottomSheetContent
-import com.upix.ui.theme.EnterMotionSpec
-import com.upix.ui.theme.EnterSizeSpec
-import com.upix.ui.theme.EnterTween
-import com.upix.ui.theme.LocalScreenMargin
-import com.upix.ui.theme.MaxContentWidth
-import com.upix.ui.theme.Spacing
-import com.upix.ui.theme.ValueMono
-import com.upix.viewmodel.MainUiState
-import com.upix.viewmodel.ModelsUiState
-import com.upix.viewmodel.ProcessingUiState
+import io.upix.R
+import io.upix.data.model.ConnectionState
+import io.upix.data.model.ModelInfo
+import io.upix.data.model.RemoteEndpoint
+import io.upix.data.model.RemoteModel
+import io.upix.data.repository.OutputImageFormat
+import io.upix.data.repository.PersistedQueueItemStatus
+import io.upix.ui.components.UpixTopAppBar
+import io.upix.ui.components.RemoteModelsDialog
+import io.upix.ui.components.StageProgressOverlay
+import io.upix.ui.screens.home.BottomActionDock
+import io.upix.ui.screens.home.CheckpointSection
+import io.upix.ui.screens.home.DockCtaHeight
+import io.upix.ui.screens.home.ImageStage
+import io.upix.ui.screens.home.ParameterCard
+import io.upix.ui.screens.home.PreviewBottomSheet
+import io.upix.ui.screens.home.QueueBottomSheetContent
+import io.upix.ui.theme.EnterMotionSpec
+import io.upix.ui.theme.EnterSizeSpec
+import io.upix.ui.theme.EnterTween
+import io.upix.ui.theme.LocalScreenMargin
+import io.upix.ui.theme.MaxContentWidth
+import io.upix.ui.theme.Spacing
+import io.upix.ui.theme.ValueMono
+import io.upix.viewmodel.MainUiState
+import io.upix.viewmodel.ModelsUiState
+import io.upix.viewmodel.ProcessingUiState
 
 /**
  * Home「聚焦工作台」：图片舞台是唯一视觉焦点，UI 退后。
@@ -563,7 +563,7 @@ private fun SelectSheetItem(
 @Composable
 private fun BoxScope.StageProcessingOverlay(
     visible: Boolean,
-    task: com.upix.data.model.ProcessingTask?,
+    task: io.upix.data.model.ProcessingTask?,
     onCancel: () -> Unit
 ) {
     androidx.compose.animation.AnimatedVisibility(
@@ -582,7 +582,7 @@ private fun BoxScope.StageProcessingOverlay(
 @Composable
 private fun HomeConnectionStatus(
     connectionState: ConnectionState,
-    connectedEndpoint: com.upix.data.model.RemoteEndpoint?
+    connectedEndpoint: io.upix.data.model.RemoteEndpoint?
 ) {
     val (statusLabelRes, statusColor) = when (connectionState) {
         ConnectionState.CONNECTED -> R.string.config_mode_remote to MaterialTheme.colorScheme.primary

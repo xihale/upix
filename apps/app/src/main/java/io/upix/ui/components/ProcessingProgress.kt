@@ -1,4 +1,4 @@
-package com.upix.ui.components
+package io.upix.ui.components
 
 import androidx.annotation.StringRes
 import androidx.compose.foundation.background
@@ -18,12 +18,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
-import com.upix.R
-import com.upix.data.model.ProcessingStatus
-import com.upix.data.model.ProcessingTask
-import com.upix.ui.theme.Spacing
-import com.upix.ui.theme.smoothProgress
-import com.upix.ui.theme.valueStyleFor
+import io.upix.R
+import io.upix.data.model.ProcessingStatus
+import io.upix.data.model.ProcessingTask
+import io.upix.ui.theme.Spacing
+import io.upix.ui.theme.smoothProgress
+import io.upix.ui.theme.valueStyleFor
 
 /**
  * 舞台遮罩进度：处理中覆盖在图片舞台之上。

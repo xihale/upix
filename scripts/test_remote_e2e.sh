@@ -26,7 +26,7 @@ CLI_BIN="$ROOT/build/linux/x86_64/release/upix-cli"
 [ -x "$CLI_BIN" ] || CLI_BIN="$CLI_DIR/build/linux/x86_64/release/upix-cli"
 APP_APK="$APPS_DIR/app/build/outputs/apk/debug/app-debug.apk"
 TEST_APK="$APPS_DIR/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"
-PACKAGE="com.upix"
+PACKAGE="io.upix"
 TEST_RUNNER="$PACKAGE.test/androidx.test.runner.AndroidJUnitRunner"
 PORT="${PORT:-9530}"
 MODEL="${CS_MODEL:-Real-ESRGANv3-anime-x2}"
@@ -129,7 +129,7 @@ ok "coordinator ready"
 phase "Run RemoteDistributedTest on device (host=$HOST port=$PORT model=$MODEL)"
 OUT="$(adb shell am instrument -w \
   -e host "$HOST" -e port "$PORT" -e model "$MODEL" \
-  -e class com.upix.RemoteDistributedTest \
+  -e class io.upix.RemoteDistributedTest \
   "$TEST_RUNNER" 2>&1)"
 echo "$OUT" | sed 's/^/    /'
 

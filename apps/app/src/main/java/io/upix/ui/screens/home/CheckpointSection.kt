@@ -1,4 +1,4 @@
-package com.upix.ui.screens.home
+package io.upix.ui.screens.home
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.layout.Arrangement
@@ -32,13 +32,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.upix.R
-import com.upix.ui.theme.ExpandSizeSpec
-import com.upix.ui.theme.Spacing
-import com.upix.ui.theme.ValueMono
-import com.upix.ui.theme.valueStyleFor
-import com.upix.viewmodel.ProcessingCheckpointSummary
-import com.upix.viewmodel.ProcessingUiState
+import io.upix.R
+import io.upix.ui.theme.ExpandSizeSpec
+import io.upix.ui.theme.Spacing
+import io.upix.ui.theme.ValueMono
+import io.upix.ui.theme.valueStyleFor
+import io.upix.viewmodel.ProcessingCheckpointSummary
+import io.upix.viewmodel.ProcessingUiState
 
 /**
  * 断点续传小卡：仅当存在 checkpoint 时渲染。

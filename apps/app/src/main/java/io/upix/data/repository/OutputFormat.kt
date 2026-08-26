@@ -1,4 +1,4 @@
-package com.upix.data.repository
+package io.upix.data.repository
 
 internal const val DEFAULT_OUTPUT_FORMAT = "png"
 internal const val AVIF_OUTPUT_FORMAT = "avif"

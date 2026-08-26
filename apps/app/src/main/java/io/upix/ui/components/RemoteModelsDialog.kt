@@ -1,4 +1,4 @@
-package com.upix.ui.components
+package io.upix.ui.components
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,10 +25,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.res.stringResource
-import com.upix.R
-import com.upix.data.model.RemoteModel
-import com.upix.ui.theme.Spacing
-import com.upix.viewmodel.RemoteModelDownloadState
+import io.upix.R
+import io.upix.data.model.RemoteModel
+import io.upix.ui.theme.Spacing
+import io.upix.viewmodel.RemoteModelDownloadState
 
 /**
  * 远程模型下载对话框：列出 GitHub "models" release 中的模型，

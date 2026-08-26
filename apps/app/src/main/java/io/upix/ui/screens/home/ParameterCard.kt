@@ -1,4 +1,4 @@
-package com.upix.ui.screens.home
+package io.upix.ui.screens.home
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
@@ -55,14 +55,14 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.upix.R
-import com.upix.data.model.ModelInfo
-import com.upix.ui.theme.EnterMotionSpec
-import com.upix.ui.theme.ExpandSizeSpec
-import com.upix.ui.theme.Spacing
-import com.upix.ui.theme.ValueMono
-import com.upix.ui.theme.pressable
-import com.upix.ui.theme.valueStyleFor
+import io.upix.R
+import io.upix.data.model.ModelInfo
+import io.upix.ui.theme.EnterMotionSpec
+import io.upix.ui.theme.ExpandSizeSpec
+import io.upix.ui.theme.Spacing
+import io.upix.ui.theme.ValueMono
+import io.upix.ui.theme.pressable
+import io.upix.ui.theme.valueStyleFor
 
 /**
  * 参数卡：一张容器内聚合所有任务配置。

@@ -7,11 +7,11 @@ plugins {
 }
 
 android {
-    namespace = "com.upix"
+    namespace = "io.upix"
     compileSdk = libs.versions.compileSdk.get().toInt()
 
     defaultConfig {
-        applicationId = "com.upix"
+        applicationId = "io.upix"
         minSdk = libs.versions.minSdk.get().toInt()
         targetSdk = libs.versions.targetSdk.get().toInt()
         // Android release channel — independent of the CLI version (root

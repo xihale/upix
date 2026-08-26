@@ -1,4 +1,4 @@
-package com.upix.data.repository
+package io.upix.data.repository
 
 import android.content.ContentResolver
 import android.graphics.Bitmap
@@ -7,8 +7,8 @@ import android.graphics.Matrix
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.exifinterface.media.ExifInterface
-import com.upix.nativelib.NCNNEngine
-import com.upix.nativelib.NativeCapabilities
+import io.upix.nativelib.NCNNEngine
+import io.upix.nativelib.NativeCapabilities
 import java.io.File
 import java.io.IOException
 import java.io.InputStream

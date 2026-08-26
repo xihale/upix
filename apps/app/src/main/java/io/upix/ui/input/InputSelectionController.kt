@@ -1,4 +1,4 @@
-package com.upix.ui.input
+package io.upix.ui.input
 
 import android.Manifest
 import android.content.Context
@@ -17,15 +17,15 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
-import com.upix.R
-import com.upix.data.model.ModelImportResult
-import com.upix.data.repository.LogRepository
-import com.upix.util.isImageSourceDecodable
-import com.upix.util.needsLegacyWritePermission
-import com.upix.util.persistUriPermission
-import com.upix.viewmodel.MainUiState
-import com.upix.viewmodel.MainViewModel
-import com.upix.viewmodel.ProcessingViewModel
+import io.upix.R
+import io.upix.data.model.ModelImportResult
+import io.upix.data.repository.LogRepository
+import io.upix.util.isImageSourceDecodable
+import io.upix.util.needsLegacyWritePermission
+import io.upix.util.persistUriPermission
+import io.upix.viewmodel.MainUiState
+import io.upix.viewmodel.MainViewModel
+import io.upix.viewmodel.ProcessingViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch

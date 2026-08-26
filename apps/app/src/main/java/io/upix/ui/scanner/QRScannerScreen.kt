@@ -1,4 +1,4 @@
-package com.upix.ui.scanner
+package io.upix.ui.scanner
 
 import android.Manifest
 import android.app.Activity
@@ -72,8 +72,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.upix.R
-import com.upix.ui.theme.Spacing
+import io.upix.R
+import io.upix.ui.theme.Spacing
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 

@@ -1,10 +1,10 @@
-package com.upix
+package io.upix
 
 import android.graphics.BitmapFactory
 import android.system.Os
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import com.upix.nativelib.NCNNEngine
+import io.upix.nativelib.NCNNEngine
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
@@ -17,8 +17,8 @@ import java.security.MessageDigest
  *
  *   adb shell am instrument -w \
  *     -e model cugan -e sizes 96,192 -e env "UPIX_GPU_TILE_SIZE=512" \
- *     -e class com.upix.GpuProbeDiagTest \
- *     com.upix.test/androidx.test.runner.AndroidJUnitRunner
+ *     -e class io.upix.GpuProbeDiagTest \
+ *     io.upix.test/androidx.test.runner.AndroidJUnitRunner
  *
  * Lines under tag "Upix" prefix "CSDIAG":
  *   CSDIAG models <param paths found>

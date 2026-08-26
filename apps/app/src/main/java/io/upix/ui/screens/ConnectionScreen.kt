@@ -1,4 +1,4 @@
-package com.upix.ui.screens
+package io.upix.ui.screens
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,18 +41,18 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.upix.R
-import com.upix.data.model.ConnectionState
-import com.upix.data.model.RemoteEndpoint
-import com.upix.ui.components.ConnectionDialog
-import com.upix.ui.components.UpixTopAppBar
-import com.upix.ui.components.FingerprintConfirmDialog
-import com.upix.ui.scanner.QRScannerScreen
-import com.upix.ui.theme.LocalScreenMargin
-import com.upix.ui.theme.MaxContentWidth
-import com.upix.ui.theme.Spacing
-import com.upix.ui.theme.ValueMono
-import com.upix.viewmodel.DeviceUiState
+import io.upix.R
+import io.upix.data.model.ConnectionState
+import io.upix.data.model.RemoteEndpoint
+import io.upix.ui.components.ConnectionDialog
+import io.upix.ui.components.UpixTopAppBar
+import io.upix.ui.components.FingerprintConfirmDialog
+import io.upix.ui.scanner.QRScannerScreen
+import io.upix.ui.theme.LocalScreenMargin
+import io.upix.ui.theme.MaxContentWidth
+import io.upix.ui.theme.Spacing
+import io.upix.ui.theme.ValueMono
+import io.upix.viewmodel.DeviceUiState
 
 /**
  * 连接屏（严格 1:1 手机↔PC）：单一状态卡承载全部状态——状态徽标（唯一强调色点）+

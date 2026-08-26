@@ -4,7 +4,7 @@
 # in release builds.
 
 # Keep the names of every class containing JNI native methods. This covers
-# NativeWorker and NCNNEngine: the Java_com_upix_nativelib_* exports in
+# NativeWorker and NCNNEngine: the Java_io_upix_nativelib_* exports in
 # jni_bridge.cpp resolve classes and methods by name. Their non-native
 # members are only referenced from Kotlin, which R8 traces statically
 # (jni_bridge.cpp reflects into nothing but java/lang/String).
@@ -12,8 +12,8 @@
     native <methods>;
 }
 
-# kotlinx.serialization (official template, com.upix substituted). The
-# @Serializable DTOs live in com.upix.data.repository (queue/checkpoint);
+# kotlinx.serialization (official template, io.upix substituted). The
+# @Serializable DTOs live in io.upix.data.repository (queue/checkpoint);
 # kotlinx-serialization also ships these as R8 consumer rules — kept here
 # as a belt-and-suspenders safety net.
 -keepattributes *Annotation*, InnerClasses
@@ -26,11 +26,11 @@
     kotlinx.serialization.KSerializer serializer(...);
 }
 
--keep,includedescriptorclasses class com.upix.**$$serializer { *; }
--keepclassmembers class com.upix.** {
+-keep,includedescriptorclasses class io.upix.**$$serializer { *; }
+-keepclassmembers class io.upix.** {
     *** Companion;
 }
--keepclasseswithmembers class com.upix.** {
+-keepclasseswithmembers class io.upix.** {
     kotlinx.serialization.KSerializer serializer(...);
 }
 

@@ -1,4 +1,4 @@
-package com.upix.viewmodel
+package io.upix.viewmodel
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi

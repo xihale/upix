@@ -1,4 +1,4 @@
-package com.upix.ui.screens
+package io.upix.ui.screens
 
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
@@ -37,13 +37,13 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
-import com.upix.R
-import com.upix.data.model.LogEntry
-import com.upix.data.model.LogLevel
-import com.upix.ui.components.LogViewer
-import com.upix.ui.theme.LocalScreenMargin
-import com.upix.ui.theme.Spacing
-import com.upix.ui.theme.ValueMono
+import io.upix.R
+import io.upix.data.model.LogEntry
+import io.upix.data.model.LogLevel
+import io.upix.ui.components.LogViewer
+import io.upix.ui.theme.LocalScreenMargin
+import io.upix.ui.theme.Spacing
+import io.upix.ui.theme.ValueMono
 
 /**
  * 日志屏：单列三段式——搜索框、筛选/工具行、日志面板。

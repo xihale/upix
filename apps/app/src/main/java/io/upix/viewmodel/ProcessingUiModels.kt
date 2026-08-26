@@ -1,11 +1,11 @@
-package com.upix.viewmodel
+package io.upix.viewmodel
 
 import androidx.compose.runtime.Immutable
-import com.upix.data.model.ProcessingTask
-import com.upix.data.repository.BatchOutputDirectory
-import com.upix.data.repository.PersistedQueueItemStatus
-import com.upix.data.repository.ProcessingFailureDetail
-import com.upix.data.repository.ResolvedImageInput
+import io.upix.data.model.ProcessingTask
+import io.upix.data.repository.BatchOutputDirectory
+import io.upix.data.repository.PersistedQueueItemStatus
+import io.upix.data.repository.ProcessingFailureDetail
+import io.upix.data.repository.ResolvedImageInput
 
 // List fields are treated as immutable by convention (never mutated after
 // construction), which keeps these states skippable for Compose.

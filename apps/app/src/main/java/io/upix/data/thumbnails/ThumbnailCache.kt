@@ -1,4 +1,4 @@
-package com.upix.data.thumbnails
+package io.upix.data.thumbnails
 
 import android.util.LruCache
 import androidx.compose.ui.graphics.ImageBitmap

@@ -1,6 +1,6 @@
 # Upix Design Language
 
-**Status:** Normative spec for the Compose UI (`apps/app/src/main/java/com/upix/ui/**`).
+**Status:** Normative spec for the Compose UI (`apps/app/src/main/java/io/upix/ui/**`).
 **Aesthetic:** 简洁 · natural · 大方 · elegant — Apple-style restraint on a Material 3 expressive-lite base. Generous whitespace, fewer borders, one accent, zero decorative noise.
 **Constraints:** Pure Compose Material3 (`material3:1.5.0-alpha17`) + `material-icons-extended`. No new dependencies. Every number below is copy-paste ready.
 
@@ -396,9 +396,9 @@ Ordered, each independently compilable:
 
 Quick CI-able greps (all must return empty):
 ```bash
-grep -rn "Color(0x" apps/app/src/main/java/com/upix/ui --include="*.kt" | grep -v "/theme/"
-grep -rn "RoundedCornerShape(" apps/app/src/main/java/com/upix/ui --include="*.kt"
-grep -rn "shadowElevation\|defaultElevation\|tonalElevation" apps/app/src/main/java/com/upix/ui --include="*.kt"
+grep -rn "Color(0x" apps/app/src/main/java/io/upix/ui --include="*.kt" | grep -v "/theme/"
+grep -rn "RoundedCornerShape(" apps/app/src/main/java/io/upix/ui --include="*.kt"
+grep -rn "shadowElevation\|defaultElevation\|tonalElevation" apps/app/src/main/java/io/upix/ui --include="*.kt"
 ```
 
 ---

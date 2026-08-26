@@ -1,4 +1,4 @@
-package com.upix.ui.components
+package io.upix.ui.components
 
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -7,8 +7,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import com.upix.ui.theme.SectionLabelStyle
-import com.upix.ui.theme.Spacing
+import io.upix.ui.theme.SectionLabelStyle
+import io.upix.ui.theme.Spacing
 
 /**
  * 统一分区标题：SectionLabelStyle（labelLarge + 宽字距，主题层定义）+

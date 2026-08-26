@@ -1,4 +1,4 @@
-package com.upix.ui.components
+package io.upix.ui.components
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -22,10 +22,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import com.upix.R
-import com.upix.data.model.ModelLibraryEntry
-import com.upix.ui.theme.Spacing
-import com.upix.ui.theme.valueStyleFor
+import io.upix.R
+import io.upix.data.model.ModelLibraryEntry
+import io.upix.ui.theme.Spacing
+import io.upix.ui.theme.valueStyleFor
 
 /**
  * 模型库卡：名称 + 双端存在徽标（手机/电脑）+ 规格行走 §2.1 机值槽（`valueStyleFor` →

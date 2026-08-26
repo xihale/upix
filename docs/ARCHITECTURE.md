@@ -238,7 +238,7 @@ main → cmd_process → ModelManager.scan_models() 选模型
 **架构：Jetpack Compose + MVVM + 单 Activity + 手写 DI**。
 
 ```
-com/upix/
+io/upix/
 ├── UpixApplication.kt   持有 AppContainer
 ├── MainActivity.kt            唯一 Activity
 ├── UpixApp.kt           顶层 Composable + NavHost 宿主

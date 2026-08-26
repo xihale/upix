@@ -528,7 +528,7 @@ auto resolve_endpoint_params(
 extern "C" {
 
 JNIEXPORT jlong JNICALL
-Java_com_upix_nativelib_NCNNEngine_nativeInit(
+Java_io_upix_nativelib_NCNNEngine_nativeInit(
     JNIEnv* env,
     jobject thiz,
     jint device_type
@@ -570,7 +570,7 @@ Java_com_upix_nativelib_NCNNEngine_nativeInit(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_upix_nativelib_NCNNEngine_nativeLoadModel(
+Java_io_upix_nativelib_NCNNEngine_nativeLoadModel(
     JNIEnv* env,
     jobject thiz,
     jlong engine_ptr,
@@ -622,7 +622,7 @@ Java_com_upix_nativelib_NCNNEngine_nativeLoadModel(
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_upix_nativelib_NCNNEngine_nativeGetLastError(
+Java_io_upix_nativelib_NCNNEngine_nativeGetLastError(
     JNIEnv* env,
     jobject thiz
 ) {
@@ -643,7 +643,7 @@ Java_com_upix_nativelib_NCNNEngine_nativeGetLastError(
 // input is not one of our outputs (or is unreadable — callers treat that as
 // "process normally").
 JNIEXPORT jstring JNICALL
-Java_com_upix_nativelib_NCNNEngine_nativeProbeSrMarker(
+Java_io_upix_nativelib_NCNNEngine_nativeProbeSrMarker(
     JNIEnv* env,
     jobject thiz,
     jbyteArray encoded_image
@@ -672,7 +672,7 @@ Java_com_upix_nativelib_NCNNEngine_nativeProbeSrMarker(
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_upix_nativelib_NCNNEngine_nativeCapabilities(JNIEnv* env, jobject thiz) {
+Java_io_upix_nativelib_NCNNEngine_nativeCapabilities(JNIEnv* env, jobject thiz) {
     (void)thiz;
     // Comma-separated build capabilities; the Kotlin layer uses these to gate
     // AVIF output/input availability (compile-time optional codecs, root
@@ -694,7 +694,7 @@ Java_com_upix_nativelib_NCNNEngine_nativeCapabilities(JNIEnv* env, jobject thiz)
 // pairing handshake (CONNECT_RESPONSE). Same comma-token format as
 // nativeCapabilities(); empty = unknown / nothing learned yet.
 JNIEXPORT jstring JNICALL
-Java_com_upix_nativelib_NCNNEngine_nativePeerCapabilities(JNIEnv* env, jobject thiz) {
+Java_io_upix_nativelib_NCNNEngine_nativePeerCapabilities(JNIEnv* env, jobject thiz) {
     (void)thiz;
     std::string caps;
     if (g_peer_avif_decode.load()) {
@@ -714,7 +714,7 @@ Java_com_upix_nativelib_NCNNEngine_nativePeerCapabilities(JNIEnv* env, jobject t
 // The Kotlin input path only routes here when the platform decoder failed
 // (AVIF below API 31) — the native AVIF decoder is a compile-time option.
 JNIEXPORT jbyteArray JNICALL
-Java_com_upix_nativelib_NCNNEngine_nativeDecodeImage(
+Java_io_upix_nativelib_NCNNEngine_nativeDecodeImage(
     JNIEnv* env,
     jobject thiz,
     jbyteArray encoded,
@@ -762,7 +762,7 @@ Java_com_upix_nativelib_NCNNEngine_nativeDecodeImage(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_com_upix_nativelib_NCNNEngine_nativeProcessImage(
+Java_io_upix_nativelib_NCNNEngine_nativeProcessImage(
     JNIEnv* env,
     jobject thiz,
     jlong engine_ptr,
@@ -950,7 +950,7 @@ Java_com_upix_nativelib_NCNNEngine_nativeProcessImage(
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_com_upix_nativelib_NCNNEngine_nativeProcessImageDistributed(
+Java_io_upix_nativelib_NCNNEngine_nativeProcessImageDistributed(
     JNIEnv* env,
     jobject thiz,
     jstring host,
@@ -1222,7 +1222,7 @@ Java_com_upix_nativelib_NCNNEngine_nativeProcessImageDistributed(
 }
 
 JNIEXPORT jint JNICALL
-Java_com_upix_nativelib_NCNNEngine_nativeGetScaleFactor(
+Java_io_upix_nativelib_NCNNEngine_nativeGetScaleFactor(
     JNIEnv* env,
     jobject thiz,
     jlong engine_ptr
@@ -1244,7 +1244,7 @@ Java_com_upix_nativelib_NCNNEngine_nativeGetScaleFactor(
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_upix_nativelib_NCNNEngine_nativeDebugBlobScan(
+Java_io_upix_nativelib_NCNNEngine_nativeDebugBlobScan(
     JNIEnv* env,
     jobject thiz,
     jlong engine_ptr,
@@ -1293,7 +1293,7 @@ Java_com_upix_nativelib_NCNNEngine_nativeDebugBlobScan(
 // stdout — Android discards both. Point fd 1 and fd 2 at one file so all of
 // it becomes retrievable on-device.
 JNIEXPORT jboolean JNICALL
-Java_com_upix_nativelib_NCNNEngine_nativeRedirectStderr(
+Java_io_upix_nativelib_NCNNEngine_nativeRedirectStderr(
     JNIEnv* env,
     jobject thiz,
     jstring path
@@ -1315,7 +1315,7 @@ Java_com_upix_nativelib_NCNNEngine_nativeRedirectStderr(
 }
 
 JNIEXPORT void JNICALL
-Java_com_upix_nativelib_NCNNEngine_nativeRelease(
+Java_io_upix_nativelib_NCNNEngine_nativeRelease(
     JNIEnv* env,
     jobject thiz,
     jlong engine_ptr
@@ -1336,7 +1336,7 @@ Java_com_upix_nativelib_NCNNEngine_nativeRelease(
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_upix_nativelib_NativeWorker_nativeRequestConnection(
+Java_io_upix_nativelib_NativeWorker_nativeRequestConnection(
     JNIEnv* env,
     jobject thiz,
     jstring host,
@@ -1450,7 +1450,7 @@ Java_com_upix_nativelib_NativeWorker_nativeRequestConnection(
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_upix_nativelib_NativeWorker_nativeListPCModels(
+Java_io_upix_nativelib_NativeWorker_nativeListPCModels(
     JNIEnv* env,
     jobject thiz,
     jstring host,
@@ -1527,7 +1527,7 @@ Java_com_upix_nativelib_NativeWorker_nativeListPCModels(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_upix_nativelib_NativeWorker_nativeUploadModelToPC(
+Java_io_upix_nativelib_NativeWorker_nativeUploadModelToPC(
     JNIEnv* env,
     jobject thiz,
     jstring host,
@@ -1687,7 +1687,7 @@ Java_com_upix_nativelib_NativeWorker_nativeUploadModelToPC(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_upix_nativelib_NativeWorker_nativeDownloadModelFromPC(
+Java_io_upix_nativelib_NativeWorker_nativeDownloadModelFromPC(
     JNIEnv* env,
     jobject thiz,
     jstring host,
@@ -1806,7 +1806,7 @@ Java_com_upix_nativelib_NativeWorker_nativeDownloadModelFromPC(
 }
 
 JNIEXPORT jboolean JNICALL
-Java_com_upix_nativelib_NativeWorker_nativeLoadIdentity(
+Java_io_upix_nativelib_NativeWorker_nativeLoadIdentity(
     JNIEnv* env,
     jobject thiz,
     jstring identity_path

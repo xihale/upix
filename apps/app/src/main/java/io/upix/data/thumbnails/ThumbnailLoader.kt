@@ -1,4 +1,4 @@
-package com.upix.data.thumbnails
+package io.upix.data.thumbnails
 
 import android.content.Context
 import android.graphics.Bitmap
@@ -7,9 +7,9 @@ import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import com.upix.data.repository.InputSourceSpec
-import com.upix.data.repository.applyExifRotation
-import com.upix.data.repository.readExifOrientationDegrees
+import io.upix.data.repository.InputSourceSpec
+import io.upix.data.repository.applyExifRotation
+import io.upix.data.repository.readExifOrientationDegrees
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext

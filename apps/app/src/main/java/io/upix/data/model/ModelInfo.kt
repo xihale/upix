@@ -1,4 +1,4 @@
-package com.upix.data.model
+package io.upix.data.model
 
 import androidx.compose.runtime.Immutable
 
