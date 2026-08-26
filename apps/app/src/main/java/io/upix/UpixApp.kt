@@ -51,14 +51,20 @@ fun UpixApp(container: AppContainer) {
     CompositionLocalProvider(
         LocalScreenMargin provides if (isMedium) Spacing.xxl else Spacing.lg
     ) {
-        when {
+        if (scannerActive) {
+            // 扫码全屏：compact/medium/expanded 一律不挂 bottomBar/rail/drawer，
+            // 相机页自管系统栏沉浸。也不锁方向——平板上 requestOrientation 会
+            // 触发 MIUI letterbox 反复重建。
+            UpixNavigation(
+                container = container,
+                navController = navController,
+                modifier = Modifier.fillMaxSize()
+            )
+        } else when {
             // compact：底部导航栏。
             !isMedium -> Scaffold(
                 bottomBar = {
-                    // 扫码模式为全屏相机体验，底部导航栏直接隐藏（无过渡动画）。
-                    if (!scannerActive) {
-                        BottomNavigationBar(navController = navController)
-                    }
+                    BottomNavigationBar(navController = navController)
                 },
                 // 各屏自带 Scaffold + TopAppBar：statusBars 由顶栏消费，
                 // 底部由 bottomBar(NavigationBar) 占位，这里不再叠加系统栏 insets。
@@ -73,9 +79,7 @@ fun UpixApp(container: AppContainer) {
 
             // medium：侧边导航栏。
             !isExpanded -> Row(modifier = Modifier.fillMaxSize()) {
-                if (!scannerActive) {
-                    AdaptiveNavigationRail(navController = navController)
-                }
+                AdaptiveNavigationRail(navController = navController)
                 UpixNavigation(
                     container = container,
                     navController = navController,

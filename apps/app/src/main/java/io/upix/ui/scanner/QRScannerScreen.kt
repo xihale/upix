@@ -3,7 +3,6 @@ package io.upix.ui.scanner
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
-import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
@@ -137,12 +136,10 @@ fun QRScannerScreen(
 
     DisposableEffect(Unit) {
         ScannerMode.enter()
-        // 扫码锁定竖屏：旋转会重建 Activity 导致"退出"，且横屏下 rail/drawer
-        // 会挤在画面左侧。退出时恢复系统跟随。
-        val activity = context as? Activity
-        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+        // 不在此处锁定方向：平板/MIUI 上 requestOrientation 会触发 letterbox
+        // 信箱化并在横竖窗间反复重建；改为 ScannerMode 让宿主 shell 隐藏全部
+        // 导航组件，扫码页在任意方向都是全屏。
         onDispose {
-            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             ScannerMode.exit()
             cameraExecutor.shutdown()
         }
