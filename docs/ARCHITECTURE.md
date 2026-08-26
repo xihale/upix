@@ -118,6 +118,13 @@ storage，数学全 fp32——Adreno/Mali 残差块会溢出 fp16 范围）与 *
 - **三段流水线**（Load 线程切块提取 → 主线程 Proc 调 `engine.process_batch` → Save
   线程融合），两个有界队列 + `condition_variable` 同步，CPU 提取/融合与 GPU 推理重叠。
 - GPU 快速路径：引擎支持时整图直接交给 `process_tiles_gpu_u8_queue`。
+- GPU chunk 提交/执行重叠（`ncnn_gpu_pipeline.cpp` u8 主路径）：ncnn 20260113 的
+  VkCompute 只有 `submit_and_wait`（无 fence submit），故用一个专职提交线程承担阻塞
+  等待 + 两个交替 VkCompute 双缓冲 chunk——CPU 录制 chunk N+1 时 chunk N 在 GPU 执行；
+  chunk 的 tile 输入/输出/下载 staging 一律等 fence 信号后才回收，跨 chunk 的
+  WAR/WAW 依赖 ncnn 每 SSBO binding 的 barrier（首个同步域覆盖先前提交）+ 单线程
+  FIFO 提交保序。UPIX_PIPELINE_TIMER 显示 p2_submit 等待占比与总耗时双降
+  （实测目录模式 SR 段 −11%）。
 - `blend_tile`：重叠区二次衰减权重（`w*w`）+ 归一化，消除接缝。
 - `extract_tile_u8`：逐 tile 转 float，避免整图 float 拷贝。
 

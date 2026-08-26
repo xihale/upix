@@ -24,9 +24,12 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstring>
+#include <deque>
 #include <format>
 #include <cstdlib>
+#include <future>
 #include <limits>
 #include <mdspan>
 #include <mutex>
@@ -1637,7 +1640,146 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             const size_t heap_budget_mb = static_cast<size_t>(vkdev_->get_heap_budget());
             const size_t max_tiles_per_submit = (heap_budget_mb > 2000) ? 64 : 16;
 
+            // ---- Chunk submit/execute overlap --------------------------------
+            // submit_and_wait() blocks the recording thread until the GPU has
+            // finished the whole chunk, so the GPU idles whenever the CPU
+            // records the next chunk (4-5% of the pipeline wall time, see the
+            // UPIX_PIPELINE_TIMER p2_record_ms/p2_submit_ms split). ncnn
+            // 20260113's VkCompute offers no fence-based submit (public API:
+            // submit_and_wait()/reset() only; the command buffer and fence
+            // are private), so instead the blocking half of submit_and_wait
+            // moves to a dedicated submit thread and two alternating
+            // VkCompute objects double-buffer the chunks: the CPU records
+            // chunk N+1 while chunk N executes on the GPU.
+            //
+            // Safety rules this structure must preserve:
+            //  * ncnn does not reference-track VkBufferMemory — every VkMat a
+            //    recorded command buffer touches (tile inputs, tile outputs,
+            //    download staging) stays alive in the slot's keepalive until
+            //    the chunk's fence has signalled, and is only recycled /
+            //    reset afterwards (never while in flight).
+            //  * Only the main thread mutates the blob/staging allocators
+            //    (record, reset, keepalive recycle); the submit thread runs
+            //    submit_and_wait() only, which touches neither. Vulkan-wise
+            //    each VkCompute owns its private command pool/buffer/fence,
+            //    and the queue is handed out by ncnn's mutex-guarded
+            //    acquire_queue/reclaim_queue.
+            //  * Submits stay strictly ordered (single submit thread, FIFO
+            //    queue), so cross-chunk WAR hazards on the shared full-image
+            //    buffers keep the submission-order dependency they rely on.
+            //  * Double buffering holds one extra chunk of tile in/out
+            //    buffers (~77MB at 64 x 200px tiles, fp16) on top of the
+            //    existing budget; intermediates keep being recycled within
+            //    a chunk's recording as before.
+            struct ChunkSlot {
+                std::unique_ptr<ncnn::VkCompute> cmd;
+                std::vector<ncnn::VkMat> keepalive;
+                const std::vector<size_t>* indices = nullptr;  // pass_indices[p], stable
+                size_t chunk_begin = 0;
+                size_t chunk_end = 0;
+                bool pending = false;
+                bool pending_is_last = false;
+                ncnn::Mat pending_scratch;
+                std::future<int> pending_future;
+            };
+            ChunkSlot slots[2];
+
+            struct SubmitJob {
+                ncnn::VkCompute* cmd;
+                std::promise<int> result;
+            };
+            std::mutex submit_mutex;
+            std::condition_variable submit_cv;
+            std::deque<SubmitJob> submit_jobs;
+            bool submit_stop = false;
+            std::thread submit_thread([&] {
+                while (true) {
+                    SubmitJob job{nullptr, {}};
+                    {
+                        std::unique_lock<std::mutex> lock(submit_mutex);
+                        submit_cv.wait(lock, [&] { return submit_stop || !submit_jobs.empty(); });
+                        if (submit_jobs.empty()) {
+                            return;  // stop requested and queue drained
+                        }
+                        job = std::move(submit_jobs.front());
+                        submit_jobs.pop_front();
+                    }
+                    job.result.set_value(job.cmd->submit_and_wait());
+                }
+            });
+            struct SubmitThreadGuard {
+                std::thread& thread;
+                std::mutex& mutex;
+                std::condition_variable& cv;
+                bool& stop;
+                ~SubmitThreadGuard() {
+                    {
+                        std::lock_guard<std::mutex> lock(mutex);
+                        stop = true;
+                    }
+                    cv.notify_all();
+                    thread.join();
+                }
+            } submit_thread_guard{submit_thread, submit_mutex, submit_cv, submit_stop};
+
+            // Completion-ordered tile count (progress bookkeeping); the
+            // record-side count below drives the is_last_batch decision.
             size_t total_completed_tiles = 0;
+            size_t tiles_recorded = 0;
+            size_t chunk_counter = 0;
+
+            // Wait for the chunk recorded into slot `s` two iterations ago,
+            // then do its post-completion work (output copy, progress,
+            // keepalive recycle, command reset) on the main thread.
+            auto flush_slot = [&](size_t s) -> expected<void, EngineError> {
+                ChunkSlot& slot = slots[s];
+                if (!slot.pending) {
+                    return {};
+                }
+                const auto p2_wait_start = std::chrono::steady_clock::now();
+                const int submit_ret = slot.pending_future.get();
+                if (cs_perf2) {
+                    p2_submit_ms += std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - p2_wait_start).count();
+                    p2_submits++;
+                }
+                slot.pending = false;
+                if (submit_ret != 0) {
+                    if (slot.pending_is_last) {
+                        return std::unexpected(EngineError{214, std::format("Vulkan normalize+quantize/download failed (error {})", submit_ret)});
+                    }
+                    return std::unexpected(EngineError{210, std::format("Vulkan submit failed (error {})", submit_ret)});
+                }
+                if (slot.pending_is_last) {
+                    output_downloaded = true;
+                    std::memcpy(output_data, static_cast<const uint8_t*>(slot.pending_scratch.data),
+                                out_total);
+                }
+
+                for (size_t i = slot.chunk_begin; i < slot.chunk_end; ++i) {
+                    size_t r_idx = (*slot.indices)[i];
+                    const auto& region = regions[r_idx];
+                    progress.completed_tiles++;
+                    progress.current_tile_x = region.x;
+                    progress.current_tile_y = region.y;
+                    if (progress_callback) {
+                        progress_callback(progress);
+                    }
+                }
+                total_completed_tiles += slot.chunk_end - slot.chunk_begin;
+
+                // Fence signalled — the chunk's buffers may be recycled now.
+                slot.keepalive.clear();
+                slot.pending_scratch = ncnn::Mat();
+                if (slot.cmd) {
+                    int reset_ret = slot.cmd->reset();
+                    if (reset_ret != 0) {
+                        return std::unexpected(EngineError{210, std::format("Vulkan command buffer reset failed (error {})", reset_ret)});
+                    }
+                }
+                return {};
+            };
+
             for (int pass_id = 0; pass_id < 4; ++pass_id) {
                 const auto& p_indices = pass_indices[pass_id];
                 if (p_indices.empty()) continue;
@@ -1648,13 +1790,28 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                         return std::unexpected(EngineError{3, "Processing cancelled"});
                     }
 
+                    // Reusing this slot means its previous chunk (recorded
+                    // two chunks ago) must be complete first.
+                    const size_t slot_idx = chunk_counter & 1;
+                    chunk_counter++;
+                    if (auto flushed = flush_slot(slot_idx); !flushed.has_value()) {
+                        return std::unexpected(flushed.error());
+                    }
+                    ChunkSlot& slot = slots[slot_idx];
+                    if (!slot.cmd) {
+                        slot.cmd = std::make_unique<ncnn::VkCompute>(vkdev_);
+                    }
+                    ncnn::VkCompute& cmd = *slot.cmd;
+
                     auto perf_t_rec_start2 = std::chrono::steady_clock::now();
                     size_t chunk_end = std::min(p_indices.size(), pass_cursor + max_tiles_per_submit);
                     size_t chunk_size = chunk_end - pass_cursor;
 
-                    ncnn::VkCompute cmd(vkdev_);
-                    std::vector<ncnn::VkMat> batch_keepalive;
-                    batch_keepalive.reserve(chunk_size * 2);
+                    slot.indices = &p_indices;
+                    slot.chunk_begin = pass_cursor;
+                    slot.chunk_end = chunk_end;
+                    slot.keepalive.clear();
+                    slot.keepalive.reserve(chunk_size * 2);
 
                     for (size_t i = pass_cursor; i < chunk_end; ++i) {
                         size_t r_idx = p_indices[i];
@@ -1692,54 +1849,54 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                         pre_dispatcher.c = 1;
                         cmd.record_pipeline(preproc_hwc_crop_u8_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
 
-                        auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, batch_keepalive,
+                        auto record_result = record_tile_outputs(cmd, region, pad_info, in_gpu_chw, slot.keepalive,
                                                                  tile_in_w, tile_in_h);
                         if (!record_result.has_value()) {
                             return std::unexpected(record_result.error());
                         }
                     }
 
-                    const bool is_last_batch = (total_completed_tiles + chunk_size == regions.size());
-                    ncnn::VkMat out_gpu_u8;
-                    ncnn::Mat u8_scratch;
+                    const bool is_last_batch = (tiles_recorded + chunk_size == regions.size());
                     if (is_last_batch) {
+                        ncnn::VkMat out_gpu_u8;
                         out_gpu_u8.create((static_cast<int>(out_total) + 3) / 4, 4u, blob_vkallocator);
                         if (auto oom = check_vkmat_allocated(out_gpu_u8, "u8 tile download staging")) {
                             return std::unexpected(*oom);
                         }
-                        record_normalize_quantize_download(cmd, out_gpu_u8, u8_scratch);
+                        record_normalize_quantize_download(cmd, out_gpu_u8, slot.pending_scratch);
+                        // The download staging buffer is referenced by the
+                        // in-flight command buffer — keep it alive with the
+                        // rest of the chunk's mats until the fence signals.
+                        slot.keepalive.emplace_back(std::move(out_gpu_u8));
                     }
+                    tiles_recorded += chunk_size;
 
                     if (cs_perf2) p2_record_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - perf_t_rec_start2).count();
-                    auto p2_sub_start = std::chrono::steady_clock::now();
-                    int submit_ret = cmd.submit_and_wait();
-                    if (cs_perf2) { p2_submit_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - p2_sub_start).count(); p2_submits++; }
-                    if (submit_ret != 0) {
-                        if (is_last_batch) {
-                            return std::unexpected(EngineError{214, std::format("Vulkan normalize+quantize/download failed (error {})", submit_ret)});
+                    // Hand the finished recording to the submit thread; the
+                    // GPU starts it while the CPU records the next chunk.
+                    {
+                        std::promise<int> result;
+                        slot.pending_future = result.get_future();
+                        SubmitJob job{&cmd, std::move(result)};
+                        {
+                            std::lock_guard<std::mutex> lock(submit_mutex);
+                            submit_jobs.push_back(std::move(job));
                         }
-                        return std::unexpected(EngineError{210, std::format("Vulkan submit failed (error {})", submit_ret)});
-                    }
-                    if (is_last_batch) {
-                        output_downloaded = true;
-                        std::memcpy(output_data, static_cast<const uint8_t*>(u8_scratch.data),
-                                    out_total);
+                        submit_cv.notify_one();
+                        slot.pending = true;
+                        slot.pending_is_last = is_last_batch;
                     }
 
-                    for (size_t i = pass_cursor; i < chunk_end; ++i) {
-                        size_t r_idx = p_indices[i];
-                        const auto& region = regions[r_idx];
-                        progress.completed_tiles++;
-                        progress.current_tile_x = region.x;
-                        progress.current_tile_y = region.y;
-                        if (progress_callback) {
-                            progress_callback(progress);
-                        }
-                    }
-
-                    total_completed_tiles += chunk_size;
                     pass_cursor = chunk_end;
                 }
+            }
+
+            // Drain both slots, older chunk first.
+            if (auto flushed = flush_slot(chunk_counter & 1); !flushed.has_value()) {
+                return std::unexpected(flushed.error());
+            }
+            if (auto flushed = flush_slot((chunk_counter + 1) & 1); !flushed.has_value()) {
+                return std::unexpected(flushed.error());
             }
         } else {
             const size_t tiles_per_cmd = static_cast<size_t>(std::max(1, config.batch_size));
