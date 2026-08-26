@@ -7,7 +7,9 @@
 #include <filesystem>
 #include <format>
 #include <print>
+#include <ranges>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "qrcodegen.hpp"
@@ -253,8 +255,11 @@ auto generate_qr_ascii(const std::string& text) -> std::string {
 
     const QrCode qr = QrCode::encodeText(text.c_str(), QrCode::Ecc::MEDIUM);
 
+    // 半块字符渲染：两模块竖叠一字符，配合 1:2 终端字体格得到 ~1:1 方形模块。
+    // quiet zone 取标准 4 模块——此前用 2 模块在暗色终端/滚动边框干扰下
+    // 识别率明显下降。
     std::string result;
-    int border = 2;
+    constexpr int border = 4;
 
     for (int y = -border; y < qr.getSize() + border; y += 2) {
         for (int x = -border; x < qr.getSize() + border; ++x) {
@@ -292,9 +297,25 @@ void print_connection_card(uint16_t port, const std::array<uint8_t, 32>& identit
     std::println("QR Code (scan with Android app):\n");
 
     // v2 JSON: carries fingerprint + identity pubkey. Android rejects v1.
+    // ("name" removed: Android's JoinInviteParser never reads it — 13 bytes
+    // of payload cost QR modules for nothing.)
     const std::string json = std::format(
         "{{\"v\":2,\"ip\":\"{}\",\"port\":{},\"fp\":\"{}\""
-        ",\"pk\":\"{}\",\"name\":\"Upix-Server\"}}",
+        ",\"pk\":\"{}\"}}",
         addresses[0], port, fp, pk_b64);
-    std::println("{}", generate_qr_ascii(json));
+
+    // 极性：QR 规定亮底暗码。半块字符靠前景色渲染码块、空格露出背景，
+    // 深色终端下会呈现反色的黑底白码，扫码器（含 ZXing）无法识别。
+    // 在彩色终端上强制 SGR 白底黑前景（47/30），与终端主题无关。
+    // 无色环境（管道/NO_COLOR）保持纯文本，由查看环境决定极性。
+    const std::string qr_text = generate_qr_ascii(json);
+    if (upix::console_color_enabled()) {
+        for (const auto& line : qr_text | std::views::split('\n')) {
+            const std::string_view seg(line.begin(), line.end());
+            if (seg.empty()) continue;
+            std::println("\033[47m\033[30m{}\033[0m", seg);
+        }
+    } else {
+        std::println("{}", qr_text);
+    }
 }

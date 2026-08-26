@@ -1,11 +1,7 @@
 package io.upix.ui.screens.home
 
-import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -57,7 +53,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.upix.R
 import io.upix.data.model.ModelInfo
-import io.upix.ui.theme.EnterMotionSpec
 import io.upix.ui.theme.ExpandSizeSpec
 import io.upix.ui.theme.Spacing
 import io.upix.ui.theme.ValueMono
@@ -136,20 +131,12 @@ internal fun ParameterCard(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         val modelLabel = selectedModel?.name ?: notSelectedLabel
-                        AnimatedContent(
-                            targetState = modelLabel,
-                            transitionSpec = {
-                                fadeIn(EnterMotionSpec) togetherWith fadeOut(EnterMotionSpec)
-                            },
-                            label = "modelNameFade"
-                        ) { label ->
-                            Text(
-                                text = label,
-                                style = valueStyleFor(label),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                        }
+                        Text(
+                            text = modelLabel,
+                            style = valueStyleFor(modelLabel),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                     Icon(
                         imageVector = Icons.Outlined.ChevronRight,

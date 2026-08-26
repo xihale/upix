@@ -12,6 +12,8 @@ import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.movableContentOf
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.navigation.compose.rememberNavController
 import io.upix.ui.components.AdaptiveNavigationRail
@@ -48,6 +50,18 @@ fun UpixApp(container: AppContainer) {
         Modifier.navigationBarsPadding()
     }
 
+    // 导航子树必须以 movableContent 挂载：扫码开关会驱动下方 if 分支切换
+    // app shell 结构，若直接在每个分支调用 UpixNavigation，NavHost 子树会在
+    // 分支切换时被销毁重建——其中所有 rememberSaveable（包括扫码开关
+    // showQrScanner 自身）随之丢失，扫码页进入组合后立即被打回（横竖屏
+    // 点击扫码均秒退）。movable 让子树跨分支整体移动，状态与 effect 保留，
+    // ScannerMode 也不会因销毁侧 onDispose->exit() 抖动。
+    val appNav = remember {
+        movableContentOf { modifier: Modifier ->
+            UpixNavigation(container = container, navController = navController, modifier = modifier)
+        }
+    }
+
     CompositionLocalProvider(
         LocalScreenMargin provides if (isMedium) Spacing.xxl else Spacing.lg
     ) {
@@ -55,11 +69,7 @@ fun UpixApp(container: AppContainer) {
             // 扫码全屏：compact/medium/expanded 一律不挂 bottomBar/rail/drawer，
             // 相机页自管系统栏沉浸。也不锁方向——平板上 requestOrientation 会
             // 触发 MIUI letterbox 反复重建。
-            UpixNavigation(
-                container = container,
-                navController = navController,
-                modifier = Modifier.fillMaxSize()
-            )
+            appNav(Modifier.fillMaxSize())
         } else when {
             // compact：底部导航栏。
             !isMedium -> Scaffold(
@@ -70,20 +80,14 @@ fun UpixApp(container: AppContainer) {
                 // 底部由 bottomBar(NavigationBar) 占位，这里不再叠加系统栏 insets。
                 contentWindowInsets = WindowInsets(0, 0, 0, 0)
             ) { innerPadding ->
-                UpixNavigation(
-                    container = container,
-                    navController = navController,
-                    modifier = Modifier.padding(innerPadding)
-                )
+                appNav(Modifier.padding(innerPadding))
             }
 
             // medium：侧边导航栏。
             !isExpanded -> Row(modifier = Modifier.fillMaxSize()) {
                 AdaptiveNavigationRail(navController = navController)
-                UpixNavigation(
-                    container = container,
-                    navController = navController,
-                    modifier = Modifier
+                appNav(
+                    Modifier
                         .weight(1f)
                         .fillMaxHeight()
                         .then(navigationModifier)
@@ -92,10 +96,8 @@ fun UpixApp(container: AppContainer) {
 
             // expanded+：常驻侧边抽屉。
             else -> AppNavigationDrawer(navController = navController) {
-                UpixNavigation(
-                    container = container,
-                    navController = navController,
-                    modifier = Modifier
+                appNav(
+                    Modifier
                         .fillMaxSize()
                         .then(navigationModifier)
                 )

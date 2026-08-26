@@ -6,12 +6,14 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.resolutionselector.ResolutionSelector
 import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.core.CameraSelector
+import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
@@ -75,6 +77,9 @@ import io.upix.R
 import io.upix.ui.theme.Spacing
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+
+private const val TAG = "UPIXScanner"
+private const val REPORT_FRAMES = 30
 
 @Composable
 fun QRScannerScreen(
@@ -170,6 +175,10 @@ fun QRScannerScreen(
             setSurfaceProvider(previewView.surfaceProvider)
         }
         val processingFrame = AtomicBoolean(false)
+        // 分析线程串行回调内的统计（单线程 executor，无需原子量）。
+        var firstFrame = true
+        var framesSinceReport = 0
+        var decodeNanosSinceReport = 0L
         val analysis = ImageAnalysis.Builder()
             // 默认分析流仅 640×480：二维码稍远时单模块像素不足，ZXing 解不出。
             // 目标 1080p，取最接近可用分辨率。
@@ -196,9 +205,29 @@ fun QRScannerScreen(
                         return@setAnalyzer
                     }
                     try {
+                        if (firstFrame) {
+                            firstFrame = false
+                            Log.i(
+                                TAG,
+                                "analysis first frame ${imageProxy.width}x${imageProxy.height}" +
+                                    " rot=${imageProxy.imageInfo.rotationDegrees}" +
+                                    " format=${imageProxy.format}"
+                            )
+                        }
+                        val started = System.nanoTime()
                         val payload = decodeQrPayload(imageProxy)
-                        if (payload != null && hasScanned.compareAndSet(false, true)) {
-                            mainExecutor.execute { onPayloadScanned(payload) }
+                        decodeNanosSinceReport += System.nanoTime() - started
+                        if (++framesSinceReport >= REPORT_FRAMES) {
+                            val avgMs = decodeNanosSinceReport / framesSinceReport / 1_000_000
+                            Log.d(TAG, "analysis $framesSinceReport frames, avg decode ${avgMs}ms")
+                            framesSinceReport = 0
+                            decodeNanosSinceReport = 0
+                        }
+                        if (payload != null) {
+                            Log.i(TAG, "decoded payload len=${payload.length}")
+                            if (hasScanned.compareAndSet(false, true)) {
+                                mainExecutor.execute { onPayloadScanned(payload) }
+                            }
                         }
                     } catch (throwable: Throwable) {
                         val message = throwable.message
@@ -216,12 +245,25 @@ fun QRScannerScreen(
             try {
                 val cameraProvider = cameraProviderFuture.get()
                 cameraProvider.unbindAll()
-                cameraProvider.bindToLifecycle(
+                val camera = cameraProvider.bindToLifecycle(
                     lifecycleOwner,
                     CameraSelector.DEFAULT_BACK_CAMERA,
                     preview,
                     analysis
                 )
+                // 近距二维码容易让连续对焦拉风箱：绑定成功后触发一次中心
+                // AF/AE 收敛，之后回落常规连续对焦。
+                previewView.post {
+                    val cx = previewView.width / 2f
+                    val cy = previewView.height / 2f
+                    if (cx > 0f && cy > 0f) {
+                        camera.cameraControl.startFocusAndMetering(
+                            FocusMeteringAction.Builder(
+                                previewView.meteringPointFactory.createPoint(cx, cy)
+                            ).build()
+                        )
+                    }
+                }
             } catch (throwable: Throwable) {
                 scanError = throwable.message
                     ?.let { raw -> "$cameraFailedMessage（$raw）" }

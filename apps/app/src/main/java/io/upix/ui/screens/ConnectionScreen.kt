@@ -73,8 +73,8 @@ fun ConnectionScreen(
     onConfirmFingerprint: () -> Unit,
     onCancelFingerprint: () -> Unit
 ) {
-    // saveable：扫码页锁定竖屏会在横屏进入时触发 Activity 重建，
-    // 普通 remember 会丢状态导致扫码页"秒退"。
+    // saveable：覆盖 Activity 重建场景（如进程被系统回收后恢复）。
+    // shell 结构切换场景由 UpixApp 的 movableContent 保状态。
     val showQrScanner = rememberSaveable { mutableStateOf(false) }
 
     if (showQrScanner.value) {
