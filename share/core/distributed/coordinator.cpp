@@ -2,6 +2,7 @@
 #include "core/tile_types.hpp"
 #include "core/engine_setup.hpp"
 #include "utils/image.hpp"
+#include "utils/image_avif.hpp"
 #include "utils/logger.hpp"
 #include "utils/network.hpp"
 #include "utils/crypto.hpp"
@@ -197,6 +198,7 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
                                   const ProcessingConfig& config,
                                   const std::string& output_format,
                                   int output_quality,
+                                  const EncoderOptions& encoder_opts,
                                   std::function<void(float)> progress_sink)
     -> expected<std::vector<uint8_t>, CoordinatorError> {
 
@@ -260,8 +262,13 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     //              level 8-9 explosion) — identical decoded pixels, ~24x faster
     //              than level 9. (quality 61 -> zlib level 4 via png_compression_level_from_quality.)
     int transport_quality = output_quality;
+    EncoderOptions transport_opts = encoder_opts;
     if (output_format == "png") {
         transport_quality = 61;  // -> zlib level 4 via png_compression_level_from_quality
+        // The transport encode is a bandwidth knob, not the user's output
+        // setting: force the derived level so an explicit --png-level cannot
+        // re-inflate the transport stream.
+        transport_opts.png_level = -1;
     }
     const auto t_enc_start = std::chrono::steady_clock::now();
     Image out_image(out_w, out_h, channels);
@@ -272,7 +279,7 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     const auto sr_xmp = sr_marker::build_xmp(
         model_name.empty() ? loaded_model_name_ : model_name, scale,
         static_cast<int64_t>(std::time(nullptr)));
-    auto encoded = out_image.save_to_memory(output_format, transport_quality, sr_xmp);
+    auto encoded = out_image.save_to_memory(output_format, transport_quality, sr_xmp, transport_opts);
     const auto t_enc_end = std::chrono::steady_clock::now();
     if (!encoded) {
         return std::unexpected(CoordinatorError{5, std::format("output encode failed: {}", encoded.error().message)});
@@ -562,6 +569,10 @@ void Coordinator::handle_client(std::stop_token st,
                 ClientConnectResponse cresp{};
                 cresp.approved = approved ? 1 : 0;
                 cresp.trusted = conn.peer_trusted ? 1 : 0;
+                // Cached dlopen probes: the phone gates AVIF input/output on
+                // these instead of discovering it through task failures.
+                cresp.avif_decode = avif_codec::avif_decode_available() ? 1 : 0;
+                cresp.avif_encode = avif_codec::avif_encode_available() ? 1 : 0;
                 if (!send_encrypted(conn, MessageType::MSG_CLIENT_CONNECT_RESPONSE,
                                     &cresp, sizeof(cresp))) {
                     LOG_ERROR("Coordinator", "Failed to send CONNECT_RESPONSE");
@@ -605,6 +616,7 @@ void Coordinator::handle_client(std::stop_token st,
                 if (output_format.empty()) output_format = "jpg";
                 const int output_quality = task->output_quality == 0 ? 90
                     : static_cast<int>(task->output_quality);
+                const EncoderOptions encoder_opts = from_wire(task->encoder);
                 const uint32_t data_len = task->input_data_length;
                 if (data_len > MAX_NETWORK_PAYLOAD ||
                     sizeof(ClientTaskSubmit) + data_len > frame_payload.size()) {
@@ -692,6 +704,7 @@ void Coordinator::handle_client(std::stop_token st,
                     config,
                     output_format,
                     output_quality,
+                    encoder_opts,
                     progress_sink
                 );
 

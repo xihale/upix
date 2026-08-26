@@ -11,6 +11,7 @@ import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.ModelTraining
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.upix.R
 
@@ -59,8 +60,14 @@ sealed class AppScreen(
         icon = Icons.AutoMirrored.Outlined.ReceiptLong
     )
 
+    data object SettingsEncoder : AppScreen(
+        route = "settings/encoder",
+        titleRes = R.string.common_encoder_settings,
+        icon = Icons.Outlined.Tune
+    )
+
     companion object {
         val bottomNavigationItems = listOf(Home, Devices, Settings)
-        val allScreens = listOf(Home, Devices, Settings, Help, SettingsModels, SettingsLogs)
+        val allScreens = listOf(Home, Devices, Settings, Help, SettingsModels, SettingsLogs, SettingsEncoder)
     }
 }

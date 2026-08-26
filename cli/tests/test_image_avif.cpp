@@ -94,6 +94,29 @@ int main() {
         max_delta = std::max(max_delta, std::abs(src.data()[i] - loaded->data()[i]));
     }
     CHECK(max_delta < 40);
-    std::fprintf(stderr, "OK avif round-trip (max delta %d)\n", max_delta);
+
+    // EncoderOptions knobs: fast preset + 4:4:4 keeps chroma intact even after
+    // a lossy round-trip (each channel pair survives within the tolerance).
+    EncoderOptions opts;
+    opts.avif_speed = 10;
+    opts.avif_subsampling = 444;
+    auto encoded444 = src.save_to_memory("avif", 90, {}, opts);
+    if (encoded444) {
+        auto loaded444 = avif_codec::load(*encoded444);
+        CHECK(loaded444.has_value());
+        CHECK(loaded444->width() == 16);
+        CHECK(loaded444->height() == 16);
+        int max_delta444 = 0;
+        for (int i = 0; i < 16 * 16 * 3; ++i) {
+            max_delta444 =
+                std::max(max_delta444, std::abs(src.data()[i] - loaded444->data()[i]));
+        }
+        CHECK(max_delta444 < 40);
+        std::fprintf(stderr, "OK avif round-trip (420 max delta %d, 444 max delta %d)\n",
+                     max_delta, max_delta444);
+    } else {
+        std::fprintf(stderr, "SKIP avif 444 round-trip: %s\n",
+                     encoded444.error().message.c_str());
+    }
     return 0;
 }

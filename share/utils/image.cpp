@@ -125,9 +125,17 @@ namespace {
     // files ~8% smaller; higher libdeflate levels shrink further but fall
     // behind zlib-1 speed by level 6, so the identity mapping keeps the
     // quality knob honest. libdeflate has no "stored"/0 level; its minimum
-    // is 1.
-    auto png_libdeflate_level_from_quality(int quality) -> int {
-        const int zlib_level = png_compression_level_from_quality(quality);
+    // is 1. An explicit EncoderOptions.png_level (0-9) overrides the
+    // quality-derived mapping.
+    auto png_zlib_level(int quality, const EncoderOptions& opts) -> int {
+        if (opts.png_level >= 0) {
+            return std::clamp(opts.png_level, 0, 9);
+        }
+        return png_compression_level_from_quality(quality);
+    }
+
+    auto png_libdeflate_level(int quality, const EncoderOptions& opts) -> int {
+        const int zlib_level = png_zlib_level(quality, opts);
         return zlib_level == 0 ? 1 : std::clamp(zlib_level, 1, 9);
     }
 
@@ -583,7 +591,7 @@ auto Image::load_from_memory(const std::string& format,
 }
 
 auto Image::save(const std::filesystem::path& path, int quality,
-                 const std::string& xmp) const
+                 const std::string& xmp, const EncoderOptions& opts) const
     -> expected<void, ImageError> {
     // Very large PNG outputs go straight to disk row-by-row instead of
     // materializing the whole compressed file (plus the fast path's ~2x raw
@@ -591,10 +599,10 @@ auto Image::save(const std::filesystem::path& path, int quality,
     const std::string fmt = normalize_image_format(path.extension().string());
     if ((fmt.empty() || fmt == "png") && size() >= kPngStreamingThresholdBytes) {
         return save_png_streaming(*this, path,
-                                  png_libdeflate_level_from_quality(quality), xmp);
+                                  png_libdeflate_level(quality, opts), xmp);
     }
 
-    auto encoded = save_to_memory(path.extension().string(), quality, xmp);
+    auto encoded = save_to_memory(path.extension().string(), quality, xmp, opts);
     if (!encoded.has_value()) {
         return std::unexpected(encoded.error());
     }
@@ -602,7 +610,7 @@ auto Image::save(const std::filesystem::path& path, int quality,
 }
 
 auto Image::save_to_memory(const std::string& format, int quality,
-                           const std::string& xmp) const
+                           const std::string& xmp, const EncoderOptions& opts) const
     -> expected<std::vector<uint8_t>, ImageError> {
     const std::string normalized_format = normalize_image_format(format);
     const std::string output_format = normalized_format.empty() ? "png" : normalized_format;
@@ -617,7 +625,7 @@ auto Image::save_to_memory(const std::string& format, int quality,
             // (OOM-class); return the error instead of falling back.
             std::vector<uint8_t> encoded;
             if (!save_png_libdeflate(
-                    *this, encoded, png_libdeflate_level_from_quality(clamped_quality), xmp)) {
+                    *this, encoded, png_libdeflate_level(clamped_quality, opts), xmp)) {
                 return std::unexpected(ImageError{20, "PNG encode failed (libdeflate)"});
             }
             return encoded;
@@ -643,6 +651,22 @@ auto Image::save_to_memory(const std::string& format, int quality,
             cinfo.in_color_space = channels_ == 1 ? JCS_GRAYSCALE : JCS_RGB;
 
             jpeg_set_defaults(&cinfo);
+            // Chroma subsampling via sampling factors (libjpeg default is
+            // Y=2x2, Cb/Cr=1x1 = 4:2:0). 422/444 widen the chroma resolution
+            // at the cost of file size; values outside {420,422,444} degrade
+            // to the 4:2:0 default (validate() rejects them at config level).
+            if (channels_ == 3) {
+                int subsampling = opts.jpeg_subsampling;
+                if (subsampling != 422 && subsampling != 444) {
+                    subsampling = 420;
+                }
+                cinfo.comp_info[0].h_samp_factor = subsampling == 444 ? 1 : 2;
+                cinfo.comp_info[0].v_samp_factor = subsampling == 420 ? 2 : 1;
+                for (int c = 1; c < 3; ++c) {
+                    cinfo.comp_info[c].h_samp_factor = 1;
+                    cinfo.comp_info[c].v_samp_factor = 1;
+                }
+            }
             jpeg_set_quality(&cinfo, clamped_quality, TRUE);
             jpeg_start_compress(&cinfo, TRUE);
 
@@ -683,7 +707,7 @@ auto Image::save_to_memory(const std::string& format, int quality,
         }
 
         if (output_format == "avif") {
-            return avif_codec::save(*this, clamped_quality, xmp);
+            return avif_codec::save(*this, clamped_quality, xmp, opts);
         }
 
         if (output_format == "webp") {
@@ -699,8 +723,12 @@ auto Image::save_to_memory(const std::string& format, int quality,
                 return std::unexpected(ImageError{19, "WebP encoder init failed"});
             }
             cfg.quality = static_cast<float>(clamped_quality);
-            cfg.lossless = 0;
+            cfg.lossless = opts.webp_lossless ? 1 : 0;
             cfg.thread_level = 1;
+            if (opts.webp_method >= 0) {
+                // Trade encode time for file size (libwebp default is 4).
+                cfg.method = std::clamp(opts.webp_method, 0, 6);
+            }
 
             const int stride = width_ * channels_;
             WebPPicture pic;

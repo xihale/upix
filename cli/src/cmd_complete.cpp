@@ -233,6 +233,13 @@ void complete_option_value(const CLI::Option* o, const std::string& cur,
         complete_files(cur, nullptr, /*dirs_only=*/true);
     } else if (opt_is(o, {"output-format"})) {
         complete_output_formats();
+    } else if (opt_is(o, {"jpeg-subsampling"})) {
+        emit("420", "default");
+        emit("422", "");
+        emit("444", "best chroma");
+    } else if (opt_is(o, {"avif-subsampling"})) {
+        emit("420", "default");
+        emit("444", "best chroma");
     } else if (opt_is(o, {"output", "out", "config", "socket"}, {"o"})) {
         complete_files(cur, nullptr);  // plain paths: let every entry through
     }

@@ -436,9 +436,15 @@ fun HomeScreen(
                 style = MaterialTheme.typography.titleMedium,
                 modifier = Modifier.padding(horizontal = Spacing.xl, vertical = Spacing.sm)
             )
+            // 无任何 AVIF 编码能力（本地构建未带、已连 PC 也不支持）时，副标签
+            // 如实提示；选项保留，本地运行会快速失败。
+            val avifHint = stringResource(R.string.home_output_format_avif_remote_only)
             OutputImageFormat.entries.forEach { format ->
+                val avifRemoteOnly = format == OutputImageFormat.AVIF &&
+                    !state.avifEncodeCapable
                 SelectSheetItem(
                     label = outputFormatLabel(format, followLabel),
+                    sublabel = if (avifRemoteOnly) avifHint else null,
                     selected = state.outputImageFormat == format,
                     // 等宽字体无 CJK 字形：「跟随原图」等中文走系统字体，仅拉丁格式名用 mono。
                     labelStyle = if (format == OutputImageFormat.FOLLOW) null else ValueMono

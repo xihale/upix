@@ -12,6 +12,7 @@
 
 #include "qrcodegen.hpp"
 
+#include "args.hpp"
 #include "utils/logger.hpp"
 #include "utils/network.hpp"
 #include "core/config.hpp"
@@ -28,6 +29,18 @@ upix::ServeDaemon* g_daemon = nullptr;
 void signal_handler(int) {
     g_running = false;
     g_cancel_requested = true;
+}
+
+// ── Encoder flag merge ───────────────────────────────────────────────────────
+// See common.hpp. Only explicitly-given flags override the config file.
+void apply_encoder_overrides(const args::Process& a, upix::ProcessingConfig& config) {
+    if (a.png_level_explicit) config.encoder.png_level = a.png_level;
+    if (a.jpeg_subsampling_explicit) config.encoder.jpeg_subsampling = a.jpeg_subsampling;
+    if (a.webp_method_explicit) config.encoder.webp_method = a.webp_method;
+    if (a.webp_lossless_explicit) config.encoder.webp_lossless = a.webp_lossless;
+    if (a.avif_speed_explicit) config.encoder.avif_speed = a.avif_speed;
+    if (a.avif_subsampling_explicit) config.encoder.avif_subsampling = a.avif_subsampling;
+    if (a.avif_threads_explicit) config.encoder.avif_threads = a.avif_threads;
 }
 
 void daemon_signal_handler(int) {

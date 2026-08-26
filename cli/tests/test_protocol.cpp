@@ -157,6 +157,31 @@ int main() {
         // Fixed-width char fields keep their layout contract.
         CHECK(sizeof(s.model_name) == 64);
         CHECK(sizeof(s.input_format) == 16);
+        // Encoder knob block: appended-at-tail fields + wire conversion round-trip.
+        s.encoder = to_wire(EncoderOptions{
+            .png_level = 7,
+            .jpeg_subsampling = 444,
+            .webp_method = 5,
+            .webp_lossless = true,
+            .avif_speed = 9,
+            .avif_subsampling = 444,
+            .avif_threads = 12,
+        });
+        std::memcpy(buf.data(), &s, sizeof(s));
+        std::memcpy(&back, buf.data(), sizeof(back));
+        CHECK(back.encoder.avif_speed == 9);
+        CHECK(back.encoder.webp_lossless == 1);
+        const EncoderOptions decoded = from_wire(back.encoder);
+        CHECK(decoded.png_level == 7);
+        CHECK(decoded.jpeg_subsampling == 444);
+        CHECK(decoded.webp_method == 5);
+        CHECK(decoded.webp_lossless);
+        CHECK(decoded.avif_subsampling == 444);
+        CHECK(decoded.avif_threads == 12);
+        // Appended layouts keep natural 4-byte alignment on arm64 and x86_64.
+        CHECK(sizeof(EncoderOptionsWire) == 28);
+        CHECK(sizeof(ClientTaskSubmit) == 140);
+        CHECK(sizeof(ServeRequest) == 128);
     }
     {
         ClientConnectRequest r{};
@@ -176,12 +201,17 @@ int main() {
         ClientConnectResponse r{};
         r.approved = 1;
         r.trusted = 0;
+        r.avif_decode = 1;
+        r.avif_encode = 0;  // lean host without a system encoder-capable libavif
         ClientConnectResponse back{};
         std::vector<uint8_t> buf(sizeof(r));
         std::memcpy(buf.data(), &r, sizeof(r));
         std::memcpy(&back, buf.data(), sizeof(back));
         CHECK(std::memcmp(&r, &back, sizeof(r)) == 0);
         CHECK(back.approved == 1 && back.trusted == 0);
+        // Capability bits ride the pairing frame: 4×uint8, no padding.
+        CHECK(sizeof(ClientConnectResponse) == 4);
+        CHECK(back.avif_decode == 1 && back.avif_encode == 0);
     }
     {
         ClientTaskResponse r{};

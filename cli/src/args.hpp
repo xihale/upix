@@ -28,11 +28,31 @@ struct Process {
     int jobs = 1;
     bool jobs_explicit = false;     // set by cli_app.cpp when -j/--jobs is given
                                     // (unset: GPU dir mode sizes workers by VRAM)
-    // -1 = "not set"; downstream treats unset as quality 95. CLI11's
-    // capture_default_str would print "-1" in help, which is misleading, so the
-    // option is registered without capture_default_str and help text spells it out.
+    // -1 = "not set"; downstream treats unset as quality 90 (kDefaultOutputQuality,
+    // share/core/config.hpp). CLI11's capture_default_str would print "-1" in
+    // help, which is misleading, so the option is registered without
+    // capture_default_str and help text spells the default out.
     int output_quality = -1;
     std::string output_format;      // empty = auto from extension
+    // Per-format encoder knobs (see upix::EncoderOptions). Same override
+    // semantics as output_quality: *_explicit is set by cli_app.cpp when the
+    // flag was given, and only explicit flags override the config file.
+    // Field defaults equal the EncoderOptions defaults so a bare `upix` run
+    // and the config-file path behave identically.
+    int png_level = -1;             // -1 = auto (from --output-quality)
+    bool png_level_explicit = false;
+    int jpeg_subsampling = 420;     // 420 / 422 / 444
+    bool jpeg_subsampling_explicit = false;
+    int webp_method = -1;           // -1 = auto (libwebp default 4)
+    bool webp_method_explicit = false;
+    bool webp_lossless = false;     // one-sided flag, like --gpu
+    bool webp_lossless_explicit = false;
+    int avif_speed = 6;             // 0-10
+    bool avif_speed_explicit = false;
+    int avif_subsampling = 420;     // 420 / 444
+    bool avif_subsampling_explicit = false;
+    int avif_threads = 0;           // 0 = auto (hardware concurrency)
+    bool avif_threads_explicit = false;
     bool auto_tile = false;
     bool tile_size_explicit = false;  // set by cli_app.cpp when --tile-size is given
     bool use_gpu = false;

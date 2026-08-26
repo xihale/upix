@@ -15,10 +15,14 @@
 #include "utils/image.hpp"
 #include "utils/network.hpp"  // MAX_NETWORK_PAYLOAD
 
+#include "core/config.hpp"
+
 namespace upix {
 class ServeDaemon;
 struct ProcessingProgress;
 }  // namespace upix
+
+namespace args { struct Process; }
 
 // Maximum payload size for network messages (100 MB).
 using upix::MAX_NETWORK_PAYLOAD;
@@ -65,6 +69,13 @@ void print_progress_stderr(const upix::ProcessingProgress& prog,
 auto normalize_channels_for_model(upix::Image& image,
                                   int expected_channels,
                                   const std::string& image_path) -> bool;
+
+// ── Encoder flag merge ───────────────────────────────────────────────────────
+// Applies the per-format encoder flags that were explicitly given on the
+// command line (cli_app.cpp sets the *_explicit marks) onto a loaded
+// ProcessingConfig; flags absent from the command line leave config-file
+// values untouched. Shared by the inline, batch and daemon-delegate paths.
+void apply_encoder_overrides(const args::Process& a, upix::ProcessingConfig& config);
 
 // ── QR / connection card ────────────────────────────────────────────────────
 // Render text as a 2-row-per-line block of Unicode half-blocks.

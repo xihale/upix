@@ -7,6 +7,7 @@
 #include <string_view>
 #include <vector>
 #include "utils/expected.hpp"
+#include "utils/encoder_options.hpp"
 #include "engine.hpp"
 
 namespace upix {
@@ -50,6 +51,7 @@ struct ProcessingConfig {
     // 输出设置
     int output_quality = kDefaultOutputQuality;
     std::string output_format;
+    EncoderOptions encoder;
 
     // 从 JSON 文件加载
     static auto load(const std::filesystem::path& path)

@@ -3,13 +3,17 @@ package com.upix.network
 import android.content.Context
 import android.net.Uri
 import com.upix.data.model.PcModel
+import com.upix.data.repository.EncoderSettings
 import com.upix.data.repository.LogRepository
 import com.upix.data.repository.NativeProcessResult
 import com.upix.data.repository.ResolvedImageInput
 import com.upix.data.repository.decodeEncodedImageBounds
+import com.upix.data.repository.isAvifName
 import com.upix.data.repository.readEncodedBytes
 import com.upix.data.repository.outputFormatFor
 import com.upix.nativelib.NCNNEngine
+import com.upix.nativelib.NativeCapabilities
+import com.upix.nativelib.PeerCapabilities
 import com.upix.nativelib.NativeWorker
 import java.io.File
 import java.io.FileOutputStream
@@ -82,6 +86,9 @@ class CoordinatorClient(
         }
 
         if (learnedPubKey != null) {
+            // The pairing handshake just succeeded: the CONNECT_RESPONSE carried
+            // the PC's AVIF codec flags — pick them up for format gating.
+            PeerCapabilities.refresh()
             // Use the (possibly learned) key for the endpoint so subsequent image
             // processing handshakes can do strict MITM verification against it.
             connectedEndpoint = ConnectedEndpoint(
@@ -226,6 +233,15 @@ class CoordinatorClient(
         val endpoint = connectedEndpoint
             ?: return Result.failure(IllegalStateException("No connected coordinator endpoint"))
 
+        // Preflight: an AVIF input needs SOMEONE on the path that can decode it.
+        // Remote mode ships the original bytes — only the PC's avif-decode
+        // matters here. Reject before uploading instead of failing mid-task.
+        if (isAvifName(input.displayName) && !PeerCapabilities.avifDecode) {
+            val message = "PC 端不支持 AVIF 解码：在 PC 上安装 libavif（如 pacman -S libavif）后重试"
+            logRepository.error("CoordinatorClient", message)
+            return Result.failure(IllegalStateException(message))
+        }
+
         // Ship the ORIGINAL encoded bytes; the PC decodes them. A 12 MP photo
         // uploads as ~4 MB of JPEG instead of ~36 MB of raw RGB, and the
         // phone never holds a full-size pixel buffer for distributed jobs.
@@ -246,6 +262,7 @@ class CoordinatorClient(
             )
 
         val outputFormat = outputFormatFor(outputFile)
+        val settings = encoderSettings
         val startedAt = System.currentTimeMillis()
         val encodedOutput = NCNNEngine.nativeProcessImageDistributed(
             host = endpoint.host,
@@ -257,23 +274,36 @@ class CoordinatorClient(
             inputFormat = inputFormat,
             inputImage = inputBytes,
             outputFormat = outputFormat,
-            outputQuality = DEFAULT_OUTPUT_QUALITY
+            outputQuality = settings.normalizedQuality,
+            encoderOptionsJson = settings.toNativeJson()
         )
 
-        // null/empty output == PC unreachable / handshake failed / submit error.
-        // Drop the endpoint (so the UI flips to DISCONNECTED) and surface a
-        // failure the caller can catch. 引擎现在的行为是中止整个批次而不是
-        // 静默回退本地，因此这里只如实报告“PC 不可达”。
+        // null/empty output has two distinct causes:
+        //  - "Distributed task failed: <pc message>" — the PC answered with a
+        //    structured rejection (e.g. it can't decode/encode AVIF). The link
+        //    and the PC are healthy: KEEP the endpoint and surface the real
+        //    reason instead of masquerading as a network failure.
+        //  - anything else (truncation, timeout, handshake) — treat as before:
+        //    drop the endpoint so the UI flips to DISCONNECTED.
         if (encodedOutput == null || encodedOutput.isEmpty()) {
-            clearEndpoint(endpoint)
             val reason = runCatching { NCNNEngine.nativeGetLastError() }
                 .getOrNull()
                 ?.trim()
                 .orEmpty()
-            val message = if (reason.isNotBlank()) {
-                "PC 不可达：$reason"
-            } else {
-                "PC 不可达"
+            val taskRejected = reason.startsWith("Distributed task failed:")
+            if (!taskRejected) {
+                clearEndpoint(endpoint)
+            }
+            val pcReason = reason.removePrefix("Distributed task failed: ").trim()
+            val message = when {
+                taskRejected && pcReason.isNotBlank() ->
+                    if (pcReason.contains("avif", ignoreCase = true)) {
+                        "$pcReason（远端 AVIF 需要 PC 安装 libavif，如 pacman -S libavif）"
+                    } else {
+                        "PC 任务失败：$pcReason"
+                    }
+                reason.isNotBlank() -> "PC 不可达：$reason"
+                else -> "PC 不可达"
             }
             logRepository.error("CoordinatorClient", message)
             return Result.failure(IllegalStateException(message))
@@ -324,6 +354,7 @@ class CoordinatorClient(
     private fun clearEndpoint(endpoint: ConnectedEndpoint) {
         connectedEndpoint = null
         _connected.value = false
+        PeerCapabilities.reset()
         logRepository.info("CoordinatorClient", "Disconnected from ${endpoint.host}:${endpoint.port}")
     }
 
@@ -350,8 +381,15 @@ class CoordinatorClient(
         val peerPubKeyB64: String
     )
 
+    // 高级编码参数由 MainViewModel 推送（与本地编码同一来源）；快照语义。
+    @Volatile
+    private var encoderSettings = EncoderSettings()
+
+    fun updateEncoderSettings(settings: EncoderSettings) {
+        encoderSettings = settings
+    }
+
     private companion object {
-        private const val DEFAULT_OUTPUT_QUALITY = 95
         private const val MIN_TILE_SIZE = 16
     }
 }

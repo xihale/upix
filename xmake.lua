@@ -116,6 +116,27 @@ rule("upix.upx")
     end)
 rule_end()
 
+-- Optional AVIF codecs, opt in with: xmake f --avif-encoder=y --avif-decoder=y
+-- (Android: ./gradlew -Pupix.avifEncoder=true -Pupix.avifDecoder=true, or
+-- UPIX_AVIF_ENCODER=1/UPIX_AVIF_DECODER=1 for scripts/build_native.sh).
+-- Encoder (libavif+aom) enables standalone/on-device AVIF output
+-- (+~4.9 MB arm64 .so / +~2.4 MB compressed APK, measured 2026-08-26);
+-- decoder (libavif+dav1d) enables native AVIF input decode — e.g. AVIF
+-- inputs below Android 12 (+~0.9 MB / +~0.4 MB). The default build stays
+-- lean: the host dlopens the system libavif at runtime, Android reports
+-- AVIF encode unavailable and input decode keeps the platform BitmapFactory.
+option("avif-encoder")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Link libavif+aom for AVIF encoding (default: dlopen system libavif)")
+option_end()
+
+option("avif-decoder")
+    set_default(false)
+    set_showmenu(true)
+    set_description("Link libavif+dav1d for AVIF decoding (default: dlopen/system decode)")
+option_end()
+
 -- ncnn package: "auto" lets its install script probe the host CPU and skip
 -- compiling kernel variants it could never dispatch to ("all" = upstream).
 local ncnn_x86_isa = has_config("native_isa") and is_plat("linux") and "auto" or "all"
@@ -130,6 +151,19 @@ add_requires("ncnn~runtime 20260113", {configs = {vulkan = true, online_spirv = 
 add_requires("libwebp", {configs = {libwebpmux = true}})
 add_requires("libpng", "libjpeg", "glaze", "libsodium")
 add_requires("libdeflate", {system = not is_plat("android")})
+-- One libavif require with the merged codec set (aom/dav1d) so both options
+-- share a single package install. Must stay in table-config form: variadic
+-- configs get swallowed (see libwebp note above / memory of the SR work).
+if has_config("avif-encoder") or has_config("avif-decoder") then
+    local avif_codec_configs = {}
+    if has_config("avif-encoder") then
+        avif_codec_configs.aom = true
+    end
+    if has_config("avif-decoder") then
+        avif_codec_configs.dav1d = true
+    end
+    add_requires("libavif", {configs = avif_codec_configs})
+end
 if is_plat("android") then
     add_requires("libomp")
 end

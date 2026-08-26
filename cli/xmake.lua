@@ -7,14 +7,29 @@ target("upix-cli")
 
     -- Single source of truth: root xmake.lua's set_version() feeds the
     -- CLI11 --version output via UPIX_VERSION (cli_app.cpp). The
-    -- project module is script-scope only, hence on_load.
+    -- project module is script-scope only, hence on_load. Optional codec
+    -- builds append their capabilities so `upix --version` says whether
+    -- AVIF is linked in or dlopen'd at runtime.
     on_load(function (target)
         import("core.project.project")
-        target:add('defines', 'UPIX_VERSION="v' .. project.version() .. '"')
+        local caps = ""
+        if has_config("avif-encoder") then
+            caps = caps .. " +avif-encoder"
+        end
+        if has_config("avif-decoder") then
+            caps = caps .. " +avif-decoder"
+        end
+        if caps == "" then
+            caps = " avif:system-dlopen"
+        end
+        target:add('defines', 'UPIX_VERSION="v' .. project.version() .. caps .. '"')
     end)
 
     add_deps("upix-core")
     add_packages("ncnn~runtime", "libwebp", "glaze", "qr-code-generator-cpp", "cli11", "libsodium", "libcurl", "openssl", "libzip")
+    if has_config("avif-encoder") or has_config("avif-decoder") then
+        add_packages("libavif")
+    end
 
     add_files(
         "src/main.cpp",
@@ -47,6 +62,9 @@ target("test_image_avif")
     set_kind("binary")
     add_deps("upix-core")
     add_packages("libwebp", "libpng", "libjpeg", "libdeflate")
+    if has_config("avif-encoder") or has_config("avif-decoder") then
+        add_packages("libavif")
+    end
     if is_plat("linux", "bsd") then
         add_syslinks("dl")
     end
@@ -57,6 +75,9 @@ target("test_sr_marker")
     set_kind("binary")
     add_deps("upix-core")
     add_packages("libwebp", "libpng", "libjpeg", "libdeflate")
+    if has_config("avif-encoder") or has_config("avif-decoder") then
+        add_packages("libavif")
+    end
     if is_plat("linux", "bsd") then
         add_syslinks("dl")
     end

@@ -5,6 +5,7 @@
 #include <filesystem>
 #include <cstdint>
 #include "expected.hpp"
+#include "encoder_options.hpp"
 
 namespace upix {
 
@@ -46,12 +47,14 @@ public:
 
     // `xmp`: optional XMP payload embedded as a metadata marker (PNG iTXt,
     // JPEG APP1, WebP "XMP " chunk, AVIF XMP item). Empty = no marker.
+    // `opts`: per-format advanced encoder knobs; default = historical behavior.
     auto save(const std::filesystem::path& path, int quality = 90,
-              const std::string& xmp = {}) const
+              const std::string& xmp = {}, const EncoderOptions& opts = {}) const
         -> expected<void, ImageError>;
 
     auto save_to_memory(const std::string& format = "png", int quality = 90,
-                        const std::string& xmp = {}) const
+                        const std::string& xmp = {},
+                        const EncoderOptions& opts = {}) const
         -> expected<std::vector<uint8_t>, ImageError>;
 
     // Get pixel data

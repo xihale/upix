@@ -306,7 +306,8 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     const auto sr_xmp = sr_marker::build_xmp(
         used_model, used_scale, static_cast<int64_t>(std::time(nullptr)));
     auto save_res = out_image.save(final_path,
-                                   static_cast<int>(req.output_quality), sr_xmp);
+                                   static_cast<int>(req.output_quality), sr_xmp,
+                                   from_wire(req.encoder));
     if (!save_res) {
         send_serve_error(*sock, ("save failed: " + save_res.error().message).c_str());
         return;

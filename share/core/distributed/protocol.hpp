@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "utils/encoder_options.hpp"
+
 namespace upix {
 
 // Wire protocol for the 1:1 phone↔PC model. The phone is a submitter (not a
@@ -90,10 +92,54 @@ struct AuthResponse {
     uint8_t trusted;  // 0 = first-time (TOFU pending), 1 = already in TrustStore
 };
 
+// Fixed-layout mirror of upix::EncoderOptions that rides ClientTaskSubmit
+// and ServeRequest. Natural 4-byte alignment, identical on Android arm64 and
+// desktop x86_64 (same convention as the structs embedding it).
+struct EncoderOptionsWire {
+    int32_t png_level = -1;         // -1 = auto (derive from output_quality)
+    int32_t jpeg_subsampling = 420;
+    int32_t webp_method = -1;       // -1 = auto (libwebp default)
+    uint8_t webp_lossless = 0;
+    uint8_t reserved[3] = {0, 0, 0};
+    int32_t avif_speed = 6;
+    int32_t avif_subsampling = 420;
+    int32_t avif_threads = 0;       // 0 = auto (hardware concurrency)
+};
+static_assert(sizeof(EncoderOptionsWire) == 28);
+
+inline auto to_wire(const EncoderOptions& opts) -> EncoderOptionsWire {
+    EncoderOptionsWire w;
+    w.png_level = opts.png_level;
+    w.jpeg_subsampling = opts.jpeg_subsampling;
+    w.webp_method = opts.webp_method;
+    w.webp_lossless = opts.webp_lossless ? 1 : 0;
+    w.avif_speed = opts.avif_speed;
+    w.avif_subsampling = opts.avif_subsampling;
+    w.avif_threads = opts.avif_threads;
+    return w;
+}
+
+inline auto from_wire(const EncoderOptionsWire& w) -> EncoderOptions {
+    EncoderOptions opts;
+    opts.png_level = w.png_level;
+    opts.jpeg_subsampling = w.jpeg_subsampling;
+    opts.webp_method = w.webp_method;
+    opts.webp_lossless = w.webp_lossless != 0;
+    opts.avif_speed = w.avif_speed;
+    opts.avif_subsampling = w.avif_subsampling;
+    opts.avif_threads = w.avif_threads;
+    return opts;
+}
+
 // One-shot image submit (phone→PC). Compressed input file bytes follow the
 // struct contiguously inside the same encrypted frame; the PC decodes them, so
 // raw pixels never cross the radio. output_format/quality tell the PC how to
-// encode the upscaled result.
+// encode the upscaled result; `encoder` carries the per-format advanced knobs.
+//
+// The encoder fields were appended to ClientTaskSubmit/ServeRequest after the
+// initial release. Both structs only ever grow at the tail, and receivers
+// validate exact frame sizes (payload_length / paths_bytes checks), so a
+// version-mismatched pair fails loudly instead of misparsing.
 struct ClientTaskSubmit {
     char model_name[64];      // empty = PC's first available model
     char input_format[16];    // "jpg"/"png"/"webp"/"avif" (from source mime/name)
@@ -102,6 +148,7 @@ struct ClientTaskSubmit {
     uint32_t tile_overlap;
     uint32_t output_quality;  // 0 -> PC defaults to 90
     uint32_t input_data_length;
+    EncoderOptionsWire encoder;
 };
 
 struct ClientTaskResponse {
@@ -136,9 +183,14 @@ struct ClientConnectRequest {
 //   approved  0 = PC denied (phone must disconnect), 1 = allowed
 //   trusted   0 = first-time (just approved this session), 1 = already
 //             in TrustStore (auto-approved, no prompt shown on PC)
+//   avif_*    PC-side AVIF codec availability, probed via the system libavif
+//             when the coordinator accepts the connection. The phone gates
+//             AVIF input/output on these instead of assuming PC support.
 struct ClientConnectResponse {
     uint8_t approved;
     uint8_t trusted;
+    uint8_t avif_decode;
+    uint8_t avif_encode;
 };
 
 // ── Shared model library messages ───────────────────────────────────────────
@@ -205,6 +257,7 @@ struct ServeRequest {
     int32_t output_quality;  // encoder quality (ProcessingConfig::output_quality)
     uint32_t input_path_length;   // bytes of input path following this struct
     uint32_t output_path_length;  // bytes of output path following this struct; 0 = daemon derives
+    EncoderOptionsWire encoder;   // per-format advanced knobs (same fields as ClientTaskSubmit)
     // payload: [input_path bytes][output_path bytes] — no NUL terminators.
 };
 

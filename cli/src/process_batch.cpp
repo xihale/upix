@@ -228,6 +228,7 @@ int run_batch(const args::Process& a) {
         if (cli_output_quality >= 0) {
             config.output_quality = cli_output_quality;
         }
+        apply_encoder_overrides(a, config);
         if (!cli_output_format.empty()) {
             config.output_format = upix::normalize_output_format(cli_output_format);
         } else {
@@ -415,7 +416,7 @@ int run_batch(const args::Process& a) {
             const auto sr_xmp = upix::sr_marker::build_xmp(
                 model_name_used, processed.scale,
                 static_cast<int64_t>(std::time(nullptr)));
-            auto save_res = processed.output_image.save(final_out_path, config.output_quality, sr_xmp);
+            auto save_res = processed.output_image.save(final_out_path, config.output_quality, sr_xmp, config.encoder);
             if (!save_res.has_value()) {
                 LOG_ERROR("Task", "Failed to save output: {} -> {}",
                           save_res.error().message, final_out_path.string());

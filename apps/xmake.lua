@@ -7,6 +7,9 @@ target("upix-native")
     set_kind("shared")
     add_deps("upix-core")
     add_packages("ncnn~runtime", "libwebp", "libpng", "libjpeg", "glaze", "libsodium", "libdeflate", "libomp")
+    if has_config("avif-encoder") or has_config("avif-decoder") then
+        add_packages("libavif")
+    end
     add_files("app/src/main/cpp/jni_bridge.cpp")
     add_includedirs("$(projectdir)/share/core/distributed")
     add_syslinks("android", "log", "vulkan")

@@ -216,6 +216,7 @@ int cmd_process(const args::Process& a) {
             }
             if (cli_output_quality >= 0) config.output_quality = cli_output_quality;
             if (!cli_output_format.empty()) config.output_format = cli_output_format;
+            apply_encoder_overrides(a, config);
             // Empty → daemon derives: keeps the input's extension when it maps
             // to a known encoder, else .png (same rule as derive_default_output).
             const std::string out_fmt = !config.output_format.empty()
@@ -257,6 +258,7 @@ int cmd_process(const args::Process& a) {
             req.tile_size = tile_size_explicit ? tile_size : 0;
             req.tile_overlap = tile_overlap;
             req.output_quality = static_cast<int32_t>(config.output_quality);
+            req.encoder = upix::to_wire(config.encoder);
             req.input_path_length = static_cast<uint32_t>(in_abs.string().size());
             req.output_path_length = static_cast<uint32_t>(out_abs.size());
 
@@ -453,6 +455,7 @@ int cmd_process(const args::Process& a) {
     if (cli_output_quality >= 0) {
         config.output_quality = cli_output_quality;
     }
+    apply_encoder_overrides(a, config);
     if (!cli_output_format.empty()) {
         config.output_format = upix::normalize_output_format(cli_output_format);
     } else {
@@ -543,7 +546,7 @@ int cmd_process(const args::Process& a) {
     LOG_INFO("Engine", "Inference done, encoding and saving output...");
     const auto sr_xmp = upix::sr_marker::build_xmp(
         model_name_resolved, scale, static_cast<int64_t>(std::time(nullptr)));
-    auto save_result = output_image.save(final_output_path, config.output_quality, sr_xmp);
+    auto save_result = output_image.save(final_output_path, config.output_quality, sr_xmp, config.encoder);
     if (!save_result.has_value()) {
         LOG_ERROR("Engine", "Failed to save output: {}", save_result.error().message);
         return 1;

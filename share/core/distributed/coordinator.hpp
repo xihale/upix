@@ -89,6 +89,7 @@ public:
         const ProcessingConfig& config,
         const std::string& output_format,
         int output_quality,
+        const EncoderOptions& encoder_opts = {},
         std::function<void(float)> progress_sink = nullptr
     ) -> expected<std::vector<uint8_t>, CoordinatorError>;
 

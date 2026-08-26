@@ -101,7 +101,7 @@ class LocalNativeBenchmarkTest {
                 var firstMd5: String? = null
                 for (iter in -warmup() until iters()) {
                     val t = System.nanoTime()
-                    val out = NCNNEngine.nativeProcessImage(ptr, rgb, size, size, 3, format(), quality())
+                    val out = NCNNEngine.nativeProcessImage(ptr, rgb, size, size, 3, format(), quality(), "")
                     val ms = (System.nanoTime() - t) / 1_000_000
                     assertTrue("nativeProcessImage returned null: ${NCNNEngine.nativeGetLastError()}", out != null)
                     if (iter < 0) continue

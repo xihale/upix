@@ -28,6 +28,7 @@ import com.upix.startProcessing
 import com.upix.ui.input.rememberInputSelection
 import com.upix.ui.components.SecondaryScreenScaffold
 import com.upix.ui.screens.ConnectionScreen
+import com.upix.ui.screens.EncoderSettingsPane
 import com.upix.ui.screens.HelpScreen
 import com.upix.ui.screens.HomeCallbacks
 import com.upix.ui.screens.HomeScreen
@@ -244,6 +245,7 @@ fun UpixNavigation(
             // medium+ 双栏 detail pane 直接嵌入子页：在此收集所需状态。
             val modelsUiState by modelsViewModel.uiState.collectAsStateWithLifecycle()
             val logs by logRepository.logs.collectAsStateWithLifecycle()
+            val encoderSettings by mainViewModel.encoderSettings.collectAsStateWithLifecycle()
             DestinationContainer {
                 SettingsScreen(
                     selectedModelName = mainUiState.selectedModel?.name,
@@ -255,6 +257,9 @@ fun UpixNavigation(
                     },
                     onOpenHelp = {
                         navController.navigate(AppScreen.Help.route)
+                    },
+                    onOpenEncoder = {
+                        navController.navigate(AppScreen.SettingsEncoder.route)
                     },
                     detailPaneContent = { detail ->
                         when (detail) {
@@ -281,6 +286,11 @@ fun UpixNavigation(
                                 onClearLogs = logRepository::clear
                             )
                             SettingsDetail.HELP -> HelpScreen()
+                            SettingsDetail.ENCODER -> EncoderSettingsPane(
+                                settings = encoderSettings,
+                                showAvif = mainUiState.avifEncodeCapable,
+                                onChange = mainViewModel::setEncoderSettings
+                            )
                         }
                     }
                 )
@@ -321,6 +331,19 @@ fun UpixNavigation(
                 LogsScreen(
                     logs = logs,
                     onClearLogs = logRepository::clear
+                )
+            }
+        }
+        composable(AppScreen.SettingsEncoder.route) {
+            val encoderSettings by mainViewModel.encoderSettings.collectAsStateWithLifecycle()
+            SecondaryScreenScaffold(
+                titleRes = AppScreen.SettingsEncoder.titleRes,
+                onBack = { navController.popBackStack() }
+            ) {
+                EncoderSettingsPane(
+                    settings = encoderSettings,
+                    showAvif = mainUiState.avifEncodeCapable,
+                    onChange = mainViewModel::setEncoderSettings
                 )
             }
         }

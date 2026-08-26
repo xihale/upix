@@ -8,6 +8,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.exifinterface.media.ExifInterface
 import com.upix.nativelib.NCNNEngine
+import com.upix.nativelib.NativeCapabilities
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -48,7 +49,9 @@ internal fun decodeRgb(
     }.getOrNull()
     if (bitmap == null) {
         if (isAvifName(displayName) || isAvifUri(resolver, uri)) {
-            onError(avifDecodeErrorMessage(displayName ?: uri.toString()))
+            // 平台解码器不认（API 26-30 或 OEM 差异）：带 native dav1d 的构建
+            // 走 native 解码回退，精简构建维持错误提示。
+            return decodeAvifNative(resolver, uri, displayName ?: uri.toString(), onError)
         }
         return null
     }
@@ -135,10 +138,69 @@ private fun hasSufficientHeapForRgbBuffer(
 ): Boolean {
     val runtime = Runtime.getRuntime()
     val used = runtime.totalMemory() - runtime.freeMemory()
-    val available = (runtime.maxMemory() - used).coerceAtLeast(0L)
+    val available = runtime.maxMemory() - used
     val estimatedAdditionalBytes = rgbByteCount + (width.toLong() * Int.SIZE_BYTES)
     val safeBudget = (available * MAX_RGB_BUFFER_HEAP_RATIO).toLong()
     return estimatedAdditionalBytes <= safeBudget
+}
+
+/**
+ * Native AVIF 解码回退（需构建携带 libavif+dav1d，见 NativeCapabilities）。
+ * 平台 BitmapFactory 解不了 AVIF 的场合（API 26-30、OEM 解码器缺陷）由这里
+ * 兜底。AVIF 的朝向放在容器 irot/imir box 中而非 EXIF，native 解码已按
+ * libavif 语义处理；此处不做 EXIF 旋转（AVIF 输入无 EXIF 朝向）。
+ */
+private fun decodeAvifNative(
+    resolver: ContentResolver,
+    uri: Uri,
+    label: String,
+    onError: (message: String) -> Unit
+): DecodedRgbImage? {
+    if (!NativeCapabilities.avifDecode) {
+        onError(avifDecodeErrorMessage(label))
+        return null
+    }
+    val bytes = runCatching {
+        resolver.openInputStream(uri)?.use { stream -> stream.readBytes() }
+    }.onFailure { throwable ->
+        onError("Unable to read AVIF input $uri: ${throwable.message}")
+    }.getOrNull() ?: return null
+    if (bytes.isEmpty() || bytes.size > MAX_ENCODED_INPUT_BYTES) {
+        onError("AVIF input has invalid size (${bytes.size} bytes): $label")
+        return null
+    }
+    val meta = LongArray(3)
+    val pixels = runCatching {
+        NCNNEngine.nativeDecodeImage(bytes, meta)
+    }.onFailure { throwable ->
+        onError("Native AVIF decode failed for $label: ${throwable.message}")
+    }.getOrNull()
+    if (pixels == null) {
+        val nativeError = runCatching { NCNNEngine.nativeGetLastError() }
+            .getOrNull().orEmpty().trim()
+        onError(
+            if (nativeError.isNotBlank()) {
+                "无法解码 AVIF（native）：$label（$nativeError）"
+            } else {
+                "无法解码 AVIF（native）：$label"
+            }
+        )
+        return null
+    }
+    val width = meta[0].toInt()
+    val height = meta[1].toInt()
+    val rgbByteCount = width.toLong() * height.toLong() * RGB_CHANNELS
+    if (width <= 0 || height <= 0 || rgbByteCount > Int.MAX_VALUE ||
+        pixels.size != rgbByteCount.toInt()
+    ) {
+        onError("Native AVIF decode produced invalid output: ${width}x$height, bytes=${pixels.size}")
+        return null
+    }
+    if (!hasSufficientHeapForRgbBuffer(width = width, rgbByteCount = rgbByteCount)) {
+        onError("Insufficient heap for decoded AVIF: ${width}x$height")
+        return null
+    }
+    return DecodedRgbImage(width = width, height = height, rgbBytes = pixels)
 }
 
 /** Output encoding format requested from the native layer for [file]'s extension. */

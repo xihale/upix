@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import com.upix.R
 import com.upix.nativelib.NCNNEngine
+import com.upix.nativelib.NativeCapabilities
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -26,6 +27,15 @@ class NativeImageProcessingRepository(
     private val logRepository: LogRepository
 ) : ImageProcessingStore {
     private val appContext = context.applicationContext
+
+    // 高级编码参数：MainViewModel 在初始化/设置变更时推送；快照语义，
+    // session.process() 每张图读取一次（run 中途改设置不影响进行中的批次）。
+    @Volatile
+    private var encoderSettings = EncoderSettings()
+
+    override fun updateEncoderSettings(settings: EncoderSettings) {
+        encoderSettings = settings
+    }
 
     @Synchronized
     override fun openSession(
@@ -79,7 +89,9 @@ class NativeImageProcessingRepository(
             context = appContext,
             logRepository = logRepository,
             enginePtr = selectedHandle.enginePtr,
-            scaleFactor = selectedHandle.scaleFactor
+            scaleFactor = selectedHandle.scaleFactor,
+            // 编码参数在 session 建立时快照：run 中途改设置不影响进行中的批次。
+            encoderSettings = encoderSettings
         )
     }
 
@@ -312,7 +324,8 @@ class NativeImageProcessingRepository(
                 height,
                 RGB_CHANNELS,
                 VALIDATION_OUTPUT_FORMAT,
-                DEFAULT_OUTPUT_QUALITY
+                DEFAULT_OUTPUT_QUALITY,
+                ""
             )
         }
         result.onFailure { throwable ->
@@ -405,7 +418,8 @@ class NativeImageProcessingRepository(
         private val context: Context,
         private val logRepository: LogRepository,
         private var enginePtr: Long,
-        private var scaleFactor: Int
+        private var scaleFactor: Int,
+        private val encoderSettings: EncoderSettings
     ) : ImageProcessingSession {
         override fun process(
             input: ResolvedImageInput,
@@ -425,14 +439,21 @@ class NativeImageProcessingRepository(
                     "actual=${decoded.rgbBytes.size}, expected=$expectedRgbBytes"
             }
             val outputFormat = outputFormatFor(outputFile)
-            require(outputFormat != AVIF_OUTPUT_FORMAT) {
-                "本地无法编码 AVIF。请连接 PC 远程处理，或改用 PNG/JPEG/WebP"
+            // AVIF 本地编码仅在自带编码器的构建可用（-Pupix.avifEncoder=true）；
+            // 精简构建保持旧行为——快速失败，引导改格式或连 PC。
+            if (outputFormat == AVIF_OUTPUT_FORMAT && !NativeCapabilities.avifEncode) {
+                require(false) {
+                    "本地无法编码 AVIF（此构建未内置 AVIF 编码器）。" +
+                        "请连接 PC 远程处理，或改用 PNG/JPEG/WebP"
+                }
             }
+            val settings = encoderSettings
             logRepository.info(
                 "NativeImageProcessingRepository",
                 "Start native processing: input=${input.displayName}, uri=${input.uri}, " +
                     "size=${decoded.width}x${decoded.height}, rgbBytes=${decoded.rgbBytes.size}, " +
-                    "output=${outputFile.absolutePath}, format=$outputFormat"
+                    "output=${outputFile.absolutePath}, format=$outputFormat, " +
+                    "quality=${settings.normalizedQuality}"
             )
 
             val outputBytes = NCNNEngine.nativeProcessImage(
@@ -442,7 +463,8 @@ class NativeImageProcessingRepository(
                 decoded.height,
                 RGB_CHANNELS,
                 outputFormat,
-                DEFAULT_OUTPUT_QUALITY
+                settings.normalizedQuality,
+                settings.toNativeJson()
             )
             requireNotNull(outputBytes) {
                 "Native engine returned empty result: ${input.displayName}, " +

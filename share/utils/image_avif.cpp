@@ -9,6 +9,13 @@
 #include <string>
 #include <thread>
 
+#if defined(UPIX_WITH_AVIF_ENCODER) || defined(UPIX_WITH_AVIF_DECODER)
+// Compile-time linked libavif (opt-in build: `xmake f --avif-encoder=y` /
+// `--avif-decoder=y`, Android: `-Pupix.avifEncoder=true` etc.). The codec
+// version is pinned by the package manager at build time, so the ABI-overlay
+// machinery of the dlopen path is unnecessary — direct calls into avif/avif.h.
+#include <avif/avif.h>
+#else
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -17,18 +24,308 @@
 #else
 #include <dlfcn.h>
 #endif
+#endif
 
 namespace upix::avif_codec {
+namespace {
+
+auto be32(const uint8_t* p) -> uint32_t {
+    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) | p[3];
+}
+
+auto box_type_eq(const uint8_t* type, const char* want) -> bool {
+    return std::memcmp(type, want, 4) == 0;
+}
+
+auto find_brand(std::span<const uint8_t> data, const char* brand) -> bool {
+    if (data.size() < 12 || !box_type_eq(&data[4], "ftyp")) {
+        return false;
+    }
+    const uint32_t box_size = be32(data.data());
+    if (box_size < 16) {
+        return false;
+    }
+    const size_t limit = std::min(data.size(), static_cast<size_t>(box_size));
+    for (size_t offset = 8; offset + 4 <= limit; offset += 4) {
+        if (box_type_eq(&data[offset], brand)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+struct IspeWalk {
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+
+auto walk_boxes(std::span<const uint8_t> data, size_t begin, size_t end,
+                IspeWalk& out, int depth) -> void {
+    if (depth > 12 || begin >= end || end > data.size()) {
+        return;
+    }
+    const uint8_t* base = data.data();
+    size_t offset = begin;
+    while (offset + 8 <= end) {
+        const uint32_t size32 = be32(base + offset);
+        const uint8_t* type = base + offset + 4;
+        size_t header = 8;
+        uint64_t box_size = size32;
+        if (size32 == 1) {
+            if (offset + 16 > end) {
+                return;
+            }
+            box_size = (static_cast<uint64_t>(be32(base + offset + 8)) << 32) |
+                       be32(base + offset + 12);
+            header = 16;
+        } else if (size32 == 0) {
+            box_size = end - offset;
+        }
+        if (box_size < header || offset + box_size > end) {
+            return;
+        }
+        const size_t payload_begin = offset + header;
+        const size_t payload_end = offset + static_cast<size_t>(box_size);
+        if (box_type_eq(type, "ispe") && payload_end - payload_begin >= 12) {
+            out.width = be32(base + payload_begin + 4);
+            out.height = be32(base + payload_begin + 8);
+            return;
+        }
+        if (box_type_eq(type, "meta") && payload_end >= payload_begin + 4) {
+            walk_boxes(data, payload_begin + 4, payload_end, out, depth + 1);
+        } else if (box_type_eq(type, "iprp") || box_type_eq(type, "ipco")) {
+            walk_boxes(data, payload_begin, payload_end, out, depth + 1);
+        }
+        if (out.width > 0 && out.height > 0) {
+            return;
+        }
+        offset = payload_end;
+    }
+}
+
+// Thread count shared by the encoder (parallel tiles) and RGB conversions.
+auto codec_threads() -> int {
+    const unsigned hw = std::thread::hardware_concurrency();
+    return hw > 0 ? static_cast<int>(hw) : 4;
+}
+
+// AVIF chroma subsampling from EncoderOptions, degrading anything outside
+// {420, 444} to the 420 default (validate() rejects them at config level).
+auto avif_subsampling_or_default(int requested) -> int {
+    return requested == 444 ? 444 : 420;
+}
+
+}  // namespace
+
+auto looks_like_avif(const uint8_t* data, size_t size) -> bool {
+    if (data == nullptr || size < 16) {
+        return false;
+    }
+    const std::span<const uint8_t> bytes{data, size};
+    return find_brand(bytes, "avif") || find_brand(bytes, "avis");
+}
+
+auto sniff_dimensions(const uint8_t* data, size_t size) -> std::pair<uint32_t, uint32_t> {
+    if (data == nullptr || size < 16 || !looks_like_avif(data, size)) {
+        return {0, 0};
+    }
+    IspeWalk found;
+    walk_boxes(std::span<const uint8_t>{data, size}, 0, size, found, 0);
+    return {found.width, found.height};
+}
+
+#if defined(UPIX_WITH_AVIF_ENCODER) || defined(UPIX_WITH_AVIF_DECODER)
+
+// ── Static build ────────────────────────────────────────────────────────────
+
+#if defined(UPIX_WITH_AVIF_DECODER)
+
+auto load(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError> {
+    avifDecoder* decoder = avifDecoderCreate();
+    avifImage* image = avifImageCreateEmpty();
+    if (!decoder || !image) {
+        if (image) {
+            avifImageDestroy(image);
+        }
+        if (decoder) {
+            avifDecoderDestroy(decoder);
+        }
+        return std::unexpected(ImageError{25, "AVIF decoder allocation failed"});
+    }
+
+    const avifResult read_result =
+        avifDecoderReadMemory(decoder, image, buffer.data(), buffer.size());
+    avifDecoderDestroy(decoder);
+    if (read_result != AVIF_RESULT_OK) {
+        avifImageDestroy(image);
+        return std::unexpected(
+            ImageError{25, std::string("AVIF decode failed: ") + avifResultToString(read_result)});
+    }
+    if (image->width == 0 || image->height == 0) {
+        avifImageDestroy(image);
+        return std::unexpected(ImageError{25, "AVIF decode produced empty image"});
+    }
+
+    avifRGBImage rgb;
+    avifRGBImageSetDefaults(&rgb, image);
+    rgb.format = AVIF_RGB_FORMAT_RGB;
+    rgb.depth = 8;
+    rgb.maxThreads = codec_threads();
+    if (avifRGBImageAllocatePixels(&rgb) != AVIF_RESULT_OK || rgb.pixels == nullptr ||
+        rgb.width == 0 || rgb.height == 0) {
+        avifImageDestroy(image);
+        return std::unexpected(ImageError{25, "AVIF RGB allocation failed"});
+    }
+    if (avifImageYUVToRGB(image, &rgb) != AVIF_RESULT_OK) {
+        avifRGBImageFreePixels(&rgb);
+        avifImageDestroy(image);
+        return std::unexpected(ImageError{25, "AVIF YUV to RGB failed"});
+    }
+
+    Image out(static_cast<int>(rgb.width), static_cast<int>(rgb.height), 3);
+    const size_t row_bytes = static_cast<size_t>(rgb.width) * 3;
+    const size_t src_stride = rgb.rowBytes != 0 ? rgb.rowBytes : row_bytes;
+    for (uint32_t y = 0; y < rgb.height; ++y) {
+        std::memcpy(
+            out.data() + static_cast<size_t>(y) * row_bytes,
+            rgb.pixels + static_cast<size_t>(y) * src_stride,
+            row_bytes);
+    }
+
+    avifRGBImageFreePixels(&rgb);
+    avifImageDestroy(image);
+    return out;
+}
+
+#else  // !UPIX_WITH_AVIF_DECODER
+
+auto load(const std::vector<uint8_t>&) -> expected<Image, ImageError> {
+    return std::unexpected(
+        ImageError{24, "AVIF decode not built in (rebuild with --avif-decoder=y)"});
+}
+
+#endif  // UPIX_WITH_AVIF_DECODER
+
+#if defined(UPIX_WITH_AVIF_ENCODER)
+
+auto save(const Image& image, int quality, const std::string& xmp,
+          const EncoderOptions& opts)
+    -> expected<std::vector<uint8_t>, ImageError> {
+    if (image.channels() != 3 && image.channels() != 4) {
+        return std::unexpected(ImageError{18, "AVIF save requires 3 or 4 channels"});
+    }
+    if (image.width() <= 0 || image.height() <= 0) {
+        return std::unexpected(ImageError{26, "AVIF encode failed: empty image"});
+    }
+
+    avifImage* avif_image = avifImageCreate(
+        static_cast<uint32_t>(image.width()),
+        static_cast<uint32_t>(image.height()),
+        8,
+        avif_subsampling_or_default(opts.avif_subsampling) == 444
+            ? AVIF_PIXEL_FORMAT_YUV444
+            : AVIF_PIXEL_FORMAT_YUV420);
+    if (!avif_image) {
+        return std::unexpected(ImageError{26, "AVIF image allocation failed"});
+    }
+    if (!xmp.empty()) {
+        // Strict here (the dlopen path is best-effort): silently dropping the
+        // SR marker would break the skip-on-refeed contract.
+        if (avifImageSetMetadataXMP(
+                avif_image, reinterpret_cast<const uint8_t*>(xmp.data()),
+                xmp.size()) != AVIF_RESULT_OK) {
+            avifImageDestroy(avif_image);
+            return std::unexpected(ImageError{26, "AVIF XMP metadata attach failed"});
+        }
+    }
+
+    avifRGBImage rgb;
+    avifRGBImageSetDefaults(&rgb, avif_image);
+    rgb.format = image.channels() == 4 ? AVIF_RGB_FORMAT_RGBA : AVIF_RGB_FORMAT_RGB;
+    rgb.depth = 8;
+    rgb.maxThreads = codec_threads();
+    rgb.pixels = const_cast<uint8_t*>(image.data());
+    rgb.rowBytes = static_cast<uint32_t>(image.width() * image.channels());
+    if (avifImageRGBToYUV(avif_image, &rgb) != AVIF_RESULT_OK) {
+        avifImageDestroy(avif_image);
+        return std::unexpected(ImageError{26, "AVIF RGB to YUV failed"});
+    }
+
+    avifEncoder* encoder = avifEncoderCreate();
+    if (!encoder) {
+        avifImageDestroy(avif_image);
+        return std::unexpected(ImageError{26, "AVIF encoder allocation failed"});
+    }
+    encoder->quality = std::clamp(quality, 1, 100);
+    encoder->qualityAlpha = encoder->quality;
+    encoder->speed = std::clamp(opts.avif_speed, 0, 10);
+    // Without threads the encoder is single-threaded: a 4500² still takes ~13 s
+    // where parallel tiles take ~2.4 s on the same machine.
+    encoder->maxThreads =
+        opts.avif_threads > 0 ? opts.avif_threads : codec_threads();
+
+    avifRWData output = AVIF_DATA_EMPTY;
+    const avifResult write_result = avifEncoderWrite(encoder, avif_image, &output);
+    avifEncoderDestroy(encoder);
+    avifImageDestroy(avif_image);
+
+    if (write_result != AVIF_RESULT_OK || output.data == nullptr || output.size == 0) {
+        if (output.data) {
+            avifRWDataFree(&output);
+        }
+        if (write_result == AVIF_RESULT_NO_CODEC_AVAILABLE) {
+            return std::unexpected(ImageError{27, "libavif built without an AV1 encoder"});
+        }
+        return std::unexpected(
+            ImageError{26, std::string("AVIF encode failed: ") + avifResultToString(write_result)});
+    }
+
+    std::vector<uint8_t> encoded(output.data, output.data + output.size);
+    avifRWDataFree(&output);
+    return encoded;
+}
+
+#else  // !UPIX_WITH_AVIF_ENCODER
+
+auto save(const Image&, int, const std::string&, const EncoderOptions&)
+    -> expected<std::vector<uint8_t>, ImageError> {
+    return std::unexpected(
+        ImageError{27, "AVIF encode not built in (rebuild with --avif-encoder=y)"});
+}
+
+#endif  // UPIX_WITH_AVIF_ENCODER
+
+auto avif_decode_available() -> bool {
+#if defined(UPIX_WITH_AVIF_DECODER)
+    return true;
+#else
+    return false;
+#endif
+}
+
+auto avif_encode_available() -> bool {
+#if defined(UPIX_WITH_AVIF_ENCODER)
+    return true;
+#else
+    return false;
+#endif
+}
+
+#else  // dlopen build (default)
+
+// ── dlopen build ────────────────────────────────────────────────────────────
+
 namespace {
 
 using avifResult = int;
 
 constexpr avifResult kAvifOk = 0;
 constexpr avifResult kAvifNoCodecAvailable = 15;
+constexpr int kAvifPixelFormatYuv444 = 1;
 constexpr int kAvifPixelFormatYuv420 = 3;
 constexpr int kAvifRgbFormatRgb = 0;
 constexpr int kAvifRgbFormatRgba = 1;
-constexpr int kAvifSpeedStill = 6;
 
 struct AvifImage;
 struct AvifDecoder;
@@ -277,108 +574,9 @@ auto load_api() -> const AvifApi& {
     return api;
 }
 
-auto be32(const uint8_t* p) -> uint32_t {
-    return (static_cast<uint32_t>(p[0]) << 24) | (static_cast<uint32_t>(p[1]) << 16) |
-           (static_cast<uint32_t>(p[2]) << 8) | p[3];
-}
-
-auto box_type_eq(const uint8_t* type, const char* want) -> bool {
-    return std::memcmp(type, want, 4) == 0;
-}
-
-auto find_brand(std::span<const uint8_t> data, const char* brand) -> bool {
-    if (data.size() < 12 || !box_type_eq(&data[4], "ftyp")) {
-        return false;
-    }
-    const uint32_t box_size = be32(data.data());
-    if (box_size < 16) {
-        return false;
-    }
-    const size_t limit = std::min(data.size(), static_cast<size_t>(box_size));
-    for (size_t offset = 8; offset + 4 <= limit; offset += 4) {
-        if (box_type_eq(&data[offset], brand)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-struct IspeWalk {
-    uint32_t width = 0;
-    uint32_t height = 0;
-};
-
-auto walk_boxes(std::span<const uint8_t> data, size_t begin, size_t end,
-                IspeWalk& out, int depth) -> void {
-    if (depth > 12 || begin >= end || end > data.size()) {
-        return;
-    }
-    const uint8_t* base = data.data();
-    size_t offset = begin;
-    while (offset + 8 <= end) {
-        const uint32_t size32 = be32(base + offset);
-        const uint8_t* type = base + offset + 4;
-        size_t header = 8;
-        uint64_t box_size = size32;
-        if (size32 == 1) {
-            if (offset + 16 > end) {
-                return;
-            }
-            box_size = (static_cast<uint64_t>(be32(base + offset + 8)) << 32) |
-                       be32(base + offset + 12);
-            header = 16;
-        } else if (size32 == 0) {
-            box_size = end - offset;
-        }
-        if (box_size < header || offset + box_size > end) {
-            return;
-        }
-        const size_t payload_begin = offset + header;
-        const size_t payload_end = offset + static_cast<size_t>(box_size);
-        if (box_type_eq(type, "ispe") && payload_end - payload_begin >= 12) {
-            out.width = be32(base + payload_begin + 4);
-            out.height = be32(base + payload_begin + 8);
-            return;
-        }
-        if (box_type_eq(type, "meta") && payload_end >= payload_begin + 4) {
-            walk_boxes(data, payload_begin + 4, payload_end, out, depth + 1);
-        } else if (box_type_eq(type, "iprp") || box_type_eq(type, "ipco")) {
-            walk_boxes(data, payload_begin, payload_end, out, depth + 1);
-        }
-        if (out.width > 0 && out.height > 0) {
-            return;
-        }
-        offset = payload_end;
-    }
-}
-
-// Thread count shared by the encoder (parallel tiles) and RGB conversions.
-auto codec_threads() -> int {
-    const unsigned hw = std::thread::hardware_concurrency();
-    return hw > 0 ? static_cast<int>(hw) : 4;
-}
-
 }  // namespace
 
-auto looks_like_avif(const uint8_t* data, size_t size) -> bool {
-    if (data == nullptr || size < 16) {
-        return false;
-    }
-    const std::span<const uint8_t> bytes{data, size};
-    return find_brand(bytes, "avif") || find_brand(bytes, "avis");
-}
-
-auto sniff_dimensions(const uint8_t* data, size_t size) -> std::pair<uint32_t, uint32_t> {
-    if (data == nullptr || size < 16 || !looks_like_avif(data, size)) {
-        return {0, 0};
-    }
-    IspeWalk found;
-    walk_boxes(std::span<const uint8_t>{data, size}, 0, size, found, 0);
-    return {found.width, found.height};
-}
-
-auto load(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError> {
-    const AvifApi& api = load_api();
+auto load(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError> {    const AvifApi& api = load_api();
     if (!api.decode_ready()) {
         return std::unexpected(ImageError{24, missing_library_message()});
     }
@@ -398,7 +596,6 @@ auto load(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError> {
     const avifResult read_result =
         api.decoder_read_memory(decoder, image, buffer.data(), buffer.size());
     api.decoder_destroy(decoder);
-    decoder = nullptr;
     if (read_result != kAvifOk) {
         api.image_destroy(image);
         return std::unexpected(
@@ -448,7 +645,8 @@ auto load(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError> {
     return out;
 }
 
-auto save(const Image& image, int quality, const std::string& xmp)
+auto save(const Image& image, int quality, const std::string& xmp,
+          const EncoderOptions& opts)
     -> expected<std::vector<uint8_t>, ImageError> {
     if (image.channels() != 3 && image.channels() != 4) {
         return std::unexpected(ImageError{18, "AVIF save requires 3 or 4 channels"});
@@ -469,7 +667,9 @@ auto save(const Image& image, int quality, const std::string& xmp)
         static_cast<uint32_t>(image.width()),
         static_cast<uint32_t>(image.height()),
         8,
-        kAvifPixelFormatYuv420
+        avif_subsampling_or_default(opts.avif_subsampling) == 444
+            ? kAvifPixelFormatYuv444
+            : kAvifPixelFormatYuv420
     );
     if (!avif_image) {
         return std::unexpected(ImageError{26, "AVIF image allocation failed"});
@@ -507,10 +707,11 @@ auto save(const Image& image, int quality, const std::string& xmp)
     auto* overlay = reinterpret_cast<AvifEncoderOverlay*>(encoder);
     overlay->quality = quality;
     overlay->quality_alpha = quality;
-    overlay->speed = kAvifSpeedStill;
+    overlay->speed = std::clamp(opts.avif_speed, 0, 10);
     // Without threads the encoder is single-threaded: a 4500² still takes ~13 s
     // where `avifenc -j N` (parallel tiles) takes ~2.4 s on the same machine.
-    overlay->max_threads = codec_threads();
+    overlay->max_threads =
+        opts.avif_threads > 0 ? opts.avif_threads : codec_threads();
 
     AvifRWData output{nullptr, 0};
     const avifResult write_result = api.encoder_write(encoder, avif_image, &output);
@@ -559,5 +760,7 @@ auto probe_api_quietly() -> const AvifApi& {
 
 auto avif_decode_available() -> bool { return probe_api_quietly().decode_ready(); }
 auto avif_encode_available() -> bool { return probe_api_quietly().encode_ready(); }
+
+#endif  // static vs dlopen
 
 }  // namespace upix::avif_codec

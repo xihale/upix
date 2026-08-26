@@ -16,12 +16,17 @@ import com.upix.data.model.ModelInfo
 import com.upix.data.model.ModelLibraryEntry
 import com.upix.data.model.PcModel
 import com.upix.data.repository.BatchOutputRepository
+import com.upix.data.repository.AppSettingsRepository
 import com.upix.data.repository.DeviceRepository
+import com.upix.data.repository.EncoderSettings
+import com.upix.data.repository.ImageProcessingStore
 import com.upix.data.repository.InputSourceSpec
 import com.upix.data.repository.LogRepository
 import com.upix.data.repository.ModelProvider
 import com.upix.data.repository.OutputImageFormat
 import com.upix.data.repository.sanitizeModelName
+import com.upix.nativelib.NativeCapabilities
+import com.upix.nativelib.PeerCapabilities
 import com.upix.network.CoordinatorClient
 import com.upix.util.StringProvider
 import java.io.File
@@ -31,6 +36,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
@@ -53,6 +59,8 @@ data class MainUiState(
     val processNestedFolders: Boolean = true,
     val skipSrMarkedInputs: Boolean = true,
     val outputImageFormat: OutputImageFormat = OutputImageFormat.FOLLOW,
+    /** 本地构建是否带可选 AVIF 编码器（进程内恒定，进 state 便于 UI 消费）。 */
+    val avifEncodeCapable: Boolean = false,
     val modelDirectoryPath: String = "",
     val useRemote: Boolean = false,
     /** 合并后的双端模型库（按名称排序，含双端存在标记）。 */
@@ -84,6 +92,8 @@ class MainViewModel(
     private val stringProvider: StringProvider,
     private val batchOutputRepository: BatchOutputRepository,
     private val coordinatorClient: CoordinatorClient,
+    private val nativeImageProcessingRepository: ImageProcessingStore,
+    private val appSettingsRepository: AppSettingsRepository,
     private val modelsDirectory: () -> File
 ) : ViewModel() {
     private val _selectedModelName = MutableStateFlow<String?>(null)
@@ -98,6 +108,30 @@ class MainViewModel(
     private val _processNestedFolders = MutableStateFlow(true)
     private val _skipSrMarkedInputs = MutableStateFlow(true)
     private val _outputImageFormat = MutableStateFlow(OutputImageFormat.FOLLOW)
+
+    // 高级编码参数：启动时从 AppSettingsRepository 恢复并推送到两个执行端
+    //（本地 native / 远程 PC），变更时同路径下发+落盘。独立 StateFlow 暴露，
+    // 不进 5 流上限的 uiState combine。
+    private val _encoderSettings = MutableStateFlow(EncoderSettings())
+    val encoderSettings: StateFlow<EncoderSettings> = _encoderSettings.asStateFlow()
+
+    init {
+        val persisted = appSettingsRepository.loadEncoderSettings()
+        _encoderSettings.value = persisted
+        pushEncoderSettings(persisted)
+    }
+
+    private fun pushEncoderSettings(settings: EncoderSettings) {
+        nativeImageProcessingRepository.updateEncoderSettings(settings)
+        coordinatorClient.updateEncoderSettings(settings)
+    }
+
+    /** 高级编码参数：持久化并推送到本地/远程两个执行端。 */
+    fun setEncoderSettings(settings: EncoderSettings) {
+        _encoderSettings.value = settings
+        appSettingsRepository.saveEncoderSettings(settings)
+        pushEncoderSettings(settings)
+    }
 
     private val baseUiState = combine(
         modelRepository.models,
@@ -117,7 +151,15 @@ class MainViewModel(
             selectedImagePath = encodedInputSource,
             selectedOutputDirectoryUri = selectedOutputDirectoryUri,
             modelDirectoryPath = modelRepository.modelDirectoryPath(),
-            useRemote = connectionState == ConnectionState.CONNECTED
+            useRemote = connectionState == ConnectionState.CONNECTED,
+            // AVIF 输出能力 = 本地构建期编码器 ∥ 已连接 PC 的握手能力位。
+            // PeerCapabilities 在配对成功时刷新、断开时清零，且 CONNECTED 翻转
+            // 本身就会触发本 combine 重算，因此这里直接读值即可保持响应式。
+            avifEncodeCapable = NativeCapabilities.avifEncode ||
+                (
+                    connectionState == ConnectionState.CONNECTED &&
+                        PeerCapabilities.avifEncode
+                    )
         )
     }
 
@@ -501,6 +543,8 @@ class MainViewModel(
                     stringProvider = container.stringProvider,
                     batchOutputRepository = container.batchOutputRepository,
                     coordinatorClient = container.coordinatorClient,
+                    nativeImageProcessingRepository = container.nativeImageProcessingRepository,
+                    appSettingsRepository = container.appSettingsRepository,
                     modelsDirectory = container.modelRepository::modelsDirectory
                 )
             }

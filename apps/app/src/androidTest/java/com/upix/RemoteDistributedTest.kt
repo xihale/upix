@@ -118,7 +118,8 @@ class RemoteDistributedTest {
             inputImage = syntheticRgb,
             inputFormat = "png",
             outputFormat = format,
-            outputQuality = 95   // ignored by lossless PNG; honors jpg/webp
+            outputQuality = 95,  // ignored by lossless PNG; honors jpg/webp
+            encoderOptionsJson = ""
         )
         assertNotNull(
             "submit($format) returned null. Last native error: " +

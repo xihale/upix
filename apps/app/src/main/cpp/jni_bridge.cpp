@@ -1,6 +1,8 @@
 #include <jni.h>
 #include <string>
 #include <android/log.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -23,8 +25,11 @@
 #include "protocol.hpp"
 #include "utils/crypto_sodium.hpp"
 #include "utils/image.hpp"
+#include "utils/image_avif.hpp"
 #include "utils/network.hpp"
 #include "utils/sr_marker.hpp"
+
+#include "glaze/glaze.hpp"
 
 #define LOG_TAG "Upix"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -61,6 +66,46 @@ void set_jni_last_error(const std::string& error_message) {
 
 auto get_jni_last_error() -> std::string {
     return g_jni_last_error;
+}
+
+// Peer AVIF capabilities learned from the most recent CONNECT_RESPONSE
+// (perform_connect_request below). Cleared whenever a pairing attempt starts,
+// so a stale PC's flags never outlive its connection attempt.
+std::atomic<bool> g_peer_avif_decode{false};
+std::atomic<bool> g_peer_avif_encode{false};
+
+// Parses the Kotlin-side encoder settings JSON (field names mirror
+// upix::EncoderOptions). Null/empty/malformed input falls back to defaults —
+// advanced settings are best-effort, never fatal. Values are clamped/normalized
+// the same way ProcessingConfig::validate() would.
+auto parse_encoder_options(JNIEnv* env, jstring json) -> EncoderOptions {
+    EncoderOptions opts;
+    if (json == nullptr) {
+        return opts;
+    }
+    const char* chars = env->GetStringUTFChars(json, nullptr);
+    if (chars == nullptr) {
+        return opts;
+    }
+    const std::string text(chars);
+    env->ReleaseStringUTFChars(json, chars);
+    if (!text.empty()) {
+        // Reflect over EncoderOptions directly; unknown keys are ignored so
+        // the Kotlin side can carry extra fields without breaking older
+        // natives.
+        (void)glz::read<glz::opts{.error_on_unknown_keys = false}>(opts, text);
+    }
+    opts.png_level = std::clamp(opts.png_level, -1, 9);
+    if (opts.jpeg_subsampling != 422 && opts.jpeg_subsampling != 444) {
+        opts.jpeg_subsampling = 420;
+    }
+    opts.webp_method = std::clamp(opts.webp_method, -1, 6);
+    opts.avif_speed = std::clamp(opts.avif_speed, 0, 10);
+    if (opts.avif_subsampling != 444) {
+        opts.avif_subsampling = 420;
+    }
+    opts.avif_threads = std::clamp(opts.avif_threads, 0, 64);
+    return opts;
 }
 
 // Process-wide long-term Ed25519 identity. Loaded once via nativeLoadIdentity;
@@ -250,6 +295,8 @@ auto perform_connect_request(
     std::string& error_msg
 ) -> bool {
     error_msg.clear();
+    g_peer_avif_decode.store(false);
+    g_peer_avif_encode.store(false);
 
     // (1) 构造 ClientConnectRequest: 设备名 + 自己的指纹。
     upix::ClientConnectRequest req{};
@@ -307,6 +354,11 @@ auto perform_connect_request(
         error_msg = "PC denied the connection";
         return false;
     }
+    // Approved ⇒ this response carries the PC's AVIF codec flags; publish them
+    // for nativePeerCapabilities()/Kotlin gating. Older PCs without the fields
+    // leave zeros in the (value-initialized) tail — same as "no support".
+    g_peer_avif_decode.store(resp->avif_decode != 0);
+    g_peer_avif_encode.store(resp->avif_encode != 0);
     return true;
 }
 
@@ -619,6 +671,96 @@ Java_com_upix_nativelib_NCNNEngine_nativeProbeSrMarker(
     }
 }
 
+JNIEXPORT jstring JNICALL
+Java_com_upix_nativelib_NCNNEngine_nativeCapabilities(JNIEnv* env, jobject thiz) {
+    (void)thiz;
+    // Comma-separated build capabilities; the Kotlin layer uses these to gate
+    // AVIF output/input availability (compile-time optional codecs, root
+    // xmake.lua). Empty = baseline build (no AVIF encode, platform-only decode).
+    std::string caps;
+#if defined(UPIX_WITH_AVIF_ENCODER)
+    caps += "avif-encode";
+#endif
+#if defined(UPIX_WITH_AVIF_DECODER)
+    if (!caps.empty()) {
+        caps += ",";
+    }
+    caps += "avif-decode";
+#endif
+    return env->NewStringUTF(caps.c_str());
+}
+
+// AVIF capabilities of the paired PC, learned from the latest successful
+// pairing handshake (CONNECT_RESPONSE). Same comma-token format as
+// nativeCapabilities(); empty = unknown / nothing learned yet.
+JNIEXPORT jstring JNICALL
+Java_com_upix_nativelib_NCNNEngine_nativePeerCapabilities(JNIEnv* env, jobject thiz) {
+    (void)thiz;
+    std::string caps;
+    if (g_peer_avif_decode.load()) {
+        caps += "avif-decode";
+    }
+    if (g_peer_avif_encode.load()) {
+        if (!caps.empty()) {
+            caps += ",";
+        }
+        caps += "avif-encode";
+    }
+    return env->NewStringUTF(caps.c_str());
+}
+
+// Decode an encoded image buffer into raw pixels via the native Image
+// pipeline. out_meta[0..2] = width, height, channels; returns the pixel bytes.
+// The Kotlin input path only routes here when the platform decoder failed
+// (AVIF below API 31) — the native AVIF decoder is a compile-time option.
+JNIEXPORT jbyteArray JNICALL
+Java_com_upix_nativelib_NCNNEngine_nativeDecodeImage(
+    JNIEnv* env,
+    jobject thiz,
+    jbyteArray encoded,
+    jlongArray out_meta
+) {
+    (void)thiz;
+    try {
+        if (encoded == nullptr || out_meta == nullptr ||
+            env->GetArrayLength(out_meta) < 3) {
+            set_jni_last_error("nativeDecodeImage: invalid arguments");
+            return nullptr;
+        }
+        const jsize size = env->GetArrayLength(encoded);
+        if (size <= 0) {
+            set_jni_last_error("nativeDecodeImage: empty input");
+            return nullptr;
+        }
+        std::vector<uint8_t> buffer(static_cast<size_t>(size));
+        env->GetByteArrayRegion(
+            encoded, 0, size, reinterpret_cast<jbyte*>(buffer.data()));
+        auto image = Image::load_from_memory("avif", buffer);
+        if (!image) {
+            set_jni_last_error("nativeDecodeImage: " + image.error().message);
+            return nullptr;
+        }
+        const jlong meta[3] = {
+            image->width(), image->height(), static_cast<jlong>(image->channels())};
+        env->SetLongArrayRegion(out_meta, 0, 3, meta);
+        const jsize pixel_bytes = static_cast<jsize>(image->size());
+        jbyteArray pixels = env->NewByteArray(pixel_bytes);
+        if (pixels == nullptr) {
+            return nullptr;
+        }
+        env->SetByteArrayRegion(
+            pixels, 0, pixel_bytes,
+            reinterpret_cast<const jbyte*>(image->data()));
+        return pixels;
+    } catch (const std::exception& e) {
+        set_jni_last_error(std::string("nativeDecodeImage failed: ") + e.what());
+        return nullptr;
+    } catch (...) {
+        set_jni_last_error("nativeDecodeImage failed: unknown native error");
+        return nullptr;
+    }
+}
+
 JNIEXPORT jbyteArray JNICALL
 Java_com_upix_nativelib_NCNNEngine_nativeProcessImage(
     JNIEnv* env,
@@ -629,7 +771,8 @@ Java_com_upix_nativelib_NCNNEngine_nativeProcessImage(
     jint height,
     jint channels,
     jstring output_format,
-    jint output_quality
+    jint output_quality,
+    jstring encoder_options_json
 ) {
     (void)thiz;
     if (engine_ptr == 0 || input_image == nullptr) return nullptr;
@@ -738,10 +881,13 @@ Java_com_upix_nativelib_NCNNEngine_nativeProcessImage(
         const auto sr_xmp = sr_marker::build_xmp(
             engine->model_name(), scale_factor,
             static_cast<int64_t>(time(nullptr)));
+        const EncoderOptions encoder_opts =
+            parse_encoder_options(env, encoder_options_json);
         auto encoded_result = output_image.save_to_memory(
             output_config.output_format,
             output_config.output_quality,
-            sr_xmp
+            sr_xmp,
+            encoder_opts
         );
         if (!encoded_result.has_value()) {
             const std::string message =
@@ -816,7 +962,8 @@ Java_com_upix_nativelib_NCNNEngine_nativeProcessImageDistributed(
     jstring input_format,
     jbyteArray input_image,
     jstring output_format,
-    jint output_quality
+    jint output_quality,
+    jstring encoder_options_json
 ) {
     (void)thiz;
     try {
@@ -945,6 +1092,7 @@ Java_com_upix_nativelib_NCNNEngine_nativeProcessImageDistributed(
         submit_request.tile_size = static_cast<uint32_t>(std::max(tile_size, 16));
         submit_request.tile_overlap = static_cast<uint32_t>(std::max(tile_overlap, 0));
         submit_request.output_quality = static_cast<uint32_t>(normalized_quality);
+        submit_request.encoder = to_wire(parse_encoder_options(env, encoder_options_json));
         submit_request.input_data_length = static_cast<uint32_t>(input_bytes.size());
 
         std::vector<uint8_t> plaintext(sizeof(submit_request) + input_bytes.size());
@@ -1093,6 +1241,77 @@ Java_com_upix_nativelib_NCNNEngine_nativeGetScaleFactor(
         set_jni_last_error("nativeGetScaleFactor failed: unknown native error");
         return 0;
     }
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_upix_nativelib_NCNNEngine_nativeDebugBlobScan(
+    JNIEnv* env,
+    jobject thiz,
+    jlong engine_ptr,
+    jbyteArray input_image,
+    jint width,
+    jint height,
+    jint channels
+) {
+    (void)thiz;
+    if (engine_ptr == 0 || input_image == nullptr) return nullptr;
+    if (width <= 0 || height <= 0 || channels <= 0) {
+        set_jni_last_error("nativeDebugBlobScan: invalid dimensions");
+        return nullptr;
+    }
+    const jsize input_size = env->GetArrayLength(input_image);
+    const int64_t expected =
+        static_cast<int64_t>(width) * static_cast<int64_t>(height) * static_cast<int64_t>(channels);
+    if (expected <= 0 || input_size != static_cast<jsize>(expected)) {
+        set_jni_last_error("nativeDebugBlobScan: input byte array size mismatch");
+        return nullptr;
+    }
+    jbyte* input_data = env->GetByteArrayElements(input_image, nullptr);
+    if (input_data == nullptr) {
+        set_jni_last_error("nativeDebugBlobScan: failed to access input bytes");
+        return nullptr;
+    }
+    std::string report;
+    try {
+        auto* engine = reinterpret_cast<Engine*>(engine_ptr);
+        report = engine->debug_blob_scan(
+            reinterpret_cast<const uint8_t*>(input_data),
+            width,
+            height,
+            channels
+        );
+    } catch (const std::exception& exception) {
+        report = std::string("nativeDebugBlobScan failed: ") + exception.what();
+    } catch (...) {
+        report = "nativeDebugBlobScan failed: unknown native error";
+    }
+    env->ReleaseByteArrayElements(input_image, input_data, JNI_ABORT);
+    return env->NewStringUTF(report.c_str());
+}
+
+// Diagnostic: ncnn logs failures to stderr and the engine logger writes
+// stdout — Android discards both. Point fd 1 and fd 2 at one file so all of
+// it becomes retrievable on-device.
+JNIEXPORT jboolean JNICALL
+Java_com_upix_nativelib_NCNNEngine_nativeRedirectStderr(
+    JNIEnv* env,
+    jobject thiz,
+    jstring path
+) {
+    (void)thiz;
+    if (path == nullptr) return JNI_FALSE;
+    const char* path_c = env->GetStringUTFChars(path, nullptr);
+    if (path_c == nullptr) return JNI_FALSE;
+    fflush(stderr);
+    fflush(stdout);
+    const int fd = open(path_c, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) {
+        dup2(fd, STDOUT_FILENO);
+        dup2(fd, STDERR_FILENO);
+        if (fd > STDERR_FILENO) close(fd);
+    }
+    env->ReleaseStringUTFChars(path, path_c);
+    return fd >= 0 ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT void JNICALL

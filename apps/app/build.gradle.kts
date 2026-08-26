@@ -133,11 +133,22 @@ val buildNativeScript = rootProject.projectDir.resolve("scripts/build_native.sh"
 
 // Native is always xmake -m release (-O3 / stripped), matching the old CMake
 // flags. Debug APKs still load this .so; JNI debugging is not the debug build.
+// Optional AVIF codecs: -Pupix.avifEncoder=true (+~5 MB .so, on-device AVIF
+// output) / -Pupix.avifDecoder=true (+~1 MB, native AVIF input decode). Both
+// flags are passed explicitly (y/n) so the properties are the single source
+// of truth — xmake options are sticky across `xmake f` runs otherwise.
 tasks.register<Exec>("xmakeNative") {
     group = "build"
     description = "Build libupix-native.so with xmake"
     workingDir = repoRoot
-    commandLine(buildNativeScript.absolutePath, "release", "arm64-v8a")
+    val nativeArgs = mutableListOf(
+        buildNativeScript.absolutePath,
+        "release",
+        "arm64-v8a",
+        "--avif-encoder=" + if (findProperty("upix.avifEncoder")?.toString()?.equals("true", ignoreCase = true) == true) "y" else "n",
+        "--avif-decoder=" + if (findProperty("upix.avifDecoder")?.toString()?.equals("true", ignoreCase = true) == true) "y" else "n"
+    )
+    commandLine(nativeArgs)
 }
 
 afterEvaluate {

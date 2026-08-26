@@ -37,6 +37,55 @@ cd apps
 
 The native engine (`libupix-native.so`) is built with xmake by a Gradle task (`xmakeNative` in `apps/app/build.gradle.kts`) that runs before each APK build; see `apps/xmake.lua`.
 
+### Optional AVIF codecs (opt-in)
+
+The default build is lean: the CLI dlopens the system libavif at runtime for
+AVIF (encode needs one with an encoder, e.g. `pacman -S libavif`), and the
+Android app has no on-device AVIF encode (AVIF output routes to a paired PC;
+AVIF input decodes via the platform on Android 12+). Two compile-time options
+bundle real codecs instead:
+
+```bash
+# CLI / host
+xmake f --avif-encoder=y --avif-decoder=y && xmake     # both optional, independent
+
+# Android
+./gradlew -Pupix.avifEncoder=true -Pupix.avifDecoder=true assembleRelease
+# or directly: scripts/build_native.sh release arm64-v8a --avif-encoder=y
+# or:          UPIX_AVIF_ENCODER=1 UPIX_AVIF_DECODER=1 scripts/build_native.sh release arm64-v8a
+```
+
+| Option | Effect | arm64 `.so` cost (measured, 2026-08-26) |
+| --- | --- | --- |
+| `avif-encoder` | libavif+aom compiled in: on-device AVIF **output** (the CLI encodes standalone; the Android app unlocks the AVIF format for local processing) | 9.6 → 16.9 MB raw / +3.0 MB gzipped in the APK |
+| `avif-decoder` | libavif+dav1d compiled in: native AVIF **input** decode — covers AVIF inputs below Android 12 and bypasses OEM decoder quirks | 9.6 → 11.0 MB raw / +0.6 MB gzipped in the APK |
+
+Both enabled: 17.6 MB raw / 9.0 MB gzipped. Baseline is the lean default
+`libupix-native.so`; "gzipped" approximates the per-ABI APK delta since APK
+entries are deflate-compressed.
+
+`upix --version` reports the build's codec capabilities (`+avif-encoder`,
+`+avif-decoder`, or `avif:system-dlopen`). On-device AVIF encoding is
+software (no phone SoC ships an AV1 hardware encoder): at quality 90 expect
+roughly 1-2 s per 20 MP at speed 8 on a recent flagship, several seconds at
+speed 6, and ~1 GB peak memory at 50 MP — speed 8 is the recommended default
+for large images.
+
+### AVIF over remote (phone ↔ PC)
+
+AVIF capability is negotiated at pairing time: the PC's CONNECT_RESPONSE
+carries `avif_decode` / `avif_encode` bits (probed from its system libavif),
+and the app gates AVIF input/output on local-or-peer capability instead of
+assuming the PC supports it:
+
+- **Input**: an AVIF file can only be processed remotely if the PC advertises
+  `avif_decode`; otherwise the submit is rejected up front ("PC 端不支持
+  AVIF 解码：安装 libavif …").
+- **Output**: the AVIF format entry is offered when either side can encode;
+  selecting it with neither able to fails fast before any GPU work.
+- A PC-side task rejection (decode/encode failure) is surfaced as a per-task
+  error and no longer drops the connection.
+
 ## Usage
 
 ### Single Image
@@ -56,6 +105,16 @@ the input). The flag form is equivalent when a script prefers it:
 ```
 
 Use `--output-quality <1-100>` to trade file size for fidelity and `--output-format <png|jpg|jpeg|webp|avif>` to override the saved container.
+
+Per-format encoder knobs (also accepted in the `--config` JSON under `"encoder"`):
+
+- `--png-level <0-9>` – PNG zlib compression level (default: auto, derived from `--output-quality`)
+- `--jpeg-subsampling <420|422|444>` – JPEG chroma subsampling (default: 420)
+- `--webp-method <0-6>` – WebP encode effort, higher = smaller but slower (default: auto, 4)
+- `--webp-lossless` – Force lossless WebP output
+- `--avif-speed <0-10>` – AVIF encoder speed, higher = much faster, larger files (default: 6)
+- `--avif-subsampling <420|444>` – AVIF chroma subsampling (default: 420)
+- `--avif-threads <0-64>` – AVIF encoder tile threads (default: auto, hardware concurrency)
 
 Optional parameters:
 

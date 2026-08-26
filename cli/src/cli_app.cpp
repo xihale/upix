@@ -74,15 +74,60 @@ auto build_app() -> std::unique_ptr<CLI::App> {
                   "Re-process inputs that already carry an SR marker "
                   "(such inputs are skipped by default)");
     app->add_option("--output-quality", proc_args.output_quality,
-                    "Output quality 0-100 (default: 95)")
+                    "Output quality 0-100, shared by the lossy encoders (default: 90)")
         ->check(CLI::Range(0, 100));
     app->add_option("--output-format", proc_args.output_format,
                     "Output format (default: auto from extension)")
         ->check(CLI::IsMember({"png", "jpg", "jpeg", "webp", "avif"}));
+
+    // ── per-format encoder knobs ────────────────────────────────────────────
+    // Sentinel defaults (-1 / 0 = auto) would print misleadingly via
+    // capture_default_str, so those spell the default out in the description
+    // (same rationale as --output-quality above); real defaults use
+    // capture_default_str. Flags given explicitly override the --config file.
+    auto* png_level_opt =
+        app->add_option("--png-level", proc_args.png_level,
+                        "PNG zlib compression level 0-9 (default: auto, derived from --output-quality)")
+            ->check(CLI::Range(-1, 9));
+    auto* jpeg_subsampling_opt =
+        app->add_option("--jpeg-subsampling", proc_args.jpeg_subsampling,
+                        "JPEG chroma subsampling")
+            ->check(CLI::IsMember({420, 422, 444}))
+            ->capture_default_str();
+    auto* webp_method_opt =
+        app->add_option("--webp-method", proc_args.webp_method,
+                        "WebP encode effort 0-6, higher = smaller but slower (default: auto, 4)")
+            ->check(CLI::Range(-1, 6));
+    auto* webp_lossless_opt =
+        app->add_flag("--webp-lossless", proc_args.webp_lossless,
+                      "Force lossless WebP (default: lossy at --output-quality)");
+    auto* avif_speed_opt =
+        app->add_option("--avif-speed", proc_args.avif_speed,
+                        "AVIF encoder speed 0-10, higher = much faster, larger files")
+            ->check(CLI::Range(0, 10))
+            ->capture_default_str();
+    auto* avif_subsampling_opt =
+        app->add_option("--avif-subsampling", proc_args.avif_subsampling,
+                        "AVIF chroma subsampling")
+            ->check(CLI::IsMember({420, 444}))
+            ->capture_default_str();
+    auto* avif_threads_opt =
+        app->add_option("--avif-threads", proc_args.avif_threads,
+                        "AVIF encoder tile threads (default: auto, hardware concurrency)")
+            ->check(CLI::Range(0, 64));
     app->add_option("--config", proc_args.config_file, "Config file path");
-    app->callback([input_opt, tile_size_opt, jobs_opt] {
+    app->callback([input_opt, tile_size_opt, jobs_opt, png_level_opt,
+                   jpeg_subsampling_opt, webp_method_opt, webp_lossless_opt,
+                   avif_speed_opt, avif_subsampling_opt, avif_threads_opt] {
         proc_args.tile_size_explicit = tile_size_opt->count() > 0;
         proc_args.jobs_explicit = jobs_opt->count() > 0;
+        proc_args.png_level_explicit = png_level_opt->count() > 0;
+        proc_args.jpeg_subsampling_explicit = jpeg_subsampling_opt->count() > 0;
+        proc_args.webp_method_explicit = webp_method_opt->count() > 0;
+        proc_args.webp_lossless_explicit = webp_lossless_opt->count() > 0;
+        proc_args.avif_speed_explicit = avif_speed_opt->count() > 0;
+        proc_args.avif_subsampling_explicit = avif_subsampling_opt->count() > 0;
+        proc_args.avif_threads_explicit = avif_threads_opt->count() > 0;
         if (input_opt->count() > 0) {
             g_exit_code = cmd_process(proc_args);
         }

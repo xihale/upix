@@ -105,6 +105,43 @@ int main() {
     CHECK(round_trip("webp", "model-webp", 4, 1724500003));
     (void)round_trip("avif", "model-avif", 2, 1724500004);
 
+    // Advanced encoder knobs must not disturb the marker: same XMP payload,
+    // different codec settings.
+    {
+        auto img = make_test_image(16, 16);
+        const auto xmp2 = sr_marker::build_xmp("opts-model", 2, 1724500006);
+
+        EncoderOptions jpg_opts;
+        jpg_opts.jpeg_subsampling = 444;
+        auto jpg444 = img.save_to_memory("jpg", 90, xmp2, jpg_opts);
+        CHECK(jpg444.has_value());
+        CHECK(sr_marker::probe(jpg444->data(), jpg444->size()).has_value());
+
+        EncoderOptions webp_opts;
+        webp_opts.webp_lossless = true;
+        webp_opts.webp_method = 6;
+        auto webpll = img.save_to_memory("webp", 90, xmp2, webp_opts);
+        CHECK(webpll.has_value());
+        CHECK(sr_marker::probe(webpll->data(), webpll->size()).has_value());
+
+        EncoderOptions png_opts;
+        png_opts.png_level = 9;
+        auto png9 = img.save_to_memory("png", 90, xmp2, png_opts);
+        CHECK(png9.has_value());
+        CHECK(sr_marker::probe(png9->data(), png9->size()).has_value());
+
+        EncoderOptions avif_opts;
+        avif_opts.avif_speed = 10;
+        avif_opts.avif_subsampling = 444;
+        auto avif444 = img.save_to_memory("avif", 90, xmp2, avif_opts);
+        if (avif444) {
+            CHECK(sr_marker::probe(avif444->data(), avif444->size()).has_value());
+        } else {
+            std::fprintf(stderr, "SKIP avif opts round-trip\n");
+        }
+        std::fprintf(stderr, "OK marker under encoder options\n");
+    }
+
     // Streaming-PNG path: >=128 MiB raw sends Image::save through
     // save_png_streaming (libpng, file-based) instead of the libdeflate
     // memory writer. The libpng writer must emit the same iTXt marker.

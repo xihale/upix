@@ -14,6 +14,8 @@ import com.upix.data.repository.ProcessingCheckpointStore
 import com.upix.data.repository.ProcessingFailureDetail
 import com.upix.data.repository.ResolvedImageInput
 import com.upix.network.CoordinatorClient
+import com.upix.nativelib.NativeCapabilities
+import com.upix.nativelib.PeerCapabilities
 import com.upix.util.StringProvider
 import java.util.LinkedHashMap
 import java.util.UUID
@@ -84,7 +86,10 @@ internal class ProcessingRunEngine(
         // otherwise we process on-device. Local-device-as-worker is gone.
         val useRemote = coordinatorClient?.isConnected() == true
         val effectiveDistributedMode = useRemote
-        batchOutputRepository.setWriteAvif(useRemote)
+        // AVIF 可写由真实能力决定：本地看构建期可选依赖（-Pupix.avifEncoder=true），
+        // 远端看配对握手学到的 PC 编码能力位（CONNECT_RESPONSE），不再无脑假设。
+        val pcAvifEncode = useRemote && PeerCapabilities.avifEncode
+        batchOutputRepository.setWriteAvif(pcAvifEncode || NativeCapabilities.avifEncode)
         // 跳过开关与目录扫描同规则：resume 还原 checkpoint 记录的值。
         val effectiveSkipSrMarked = resumeCheckpoint?.skipSrMarkedInputs ?: skipSrMarkedInputs
 
@@ -116,7 +121,9 @@ internal class ProcessingRunEngine(
             return false
         }
 
-        if (!useRemote && batchOutputRepository.outputFormatSetting() == OutputImageFormat.AVIF) {
+        if (!pcAvifEncode && !NativeCapabilities.avifEncode &&
+            batchOutputRepository.outputFormatSetting() == OutputImageFormat.AVIF
+        ) {
             val errorMessage = stringProvider.getString(R.string.processing_error_local_avif)
             logRepository.error("ProcessingViewModel", errorMessage)
             viewModel.updateUiState { state ->

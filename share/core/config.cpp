@@ -44,6 +44,7 @@ struct ConfigJson {
     std::string model_name;
     std::string output_format;
     int output_quality = kDefaultOutputQuality;
+    EncoderOptions encoder;
 };
 } // namespace detail
 
@@ -103,6 +104,7 @@ auto ProcessingConfig::load(const std::filesystem::path& path)
     config.model_name = parsed.model_name;
     config.output_quality = parsed.output_quality;
     config.output_format = normalize_output_format(parsed.output_format);
+    config.encoder = parsed.encoder;
 
     return config;
 }
@@ -136,6 +138,26 @@ auto ProcessingConfig::validate() const -> std::vector<std::string> {
     const std::string normalized_format = normalize_output_format(output_format);
     if (!normalized_format.empty() && !is_supported_output_format(normalized_format)) {
         errors.push_back("output_format must be one of: png, jpg, jpeg, webp, avif");
+    }
+
+    if (encoder.png_level < -1 || encoder.png_level > 9) {
+        errors.push_back("encoder.png_level must be -1 (auto) or 0-9");
+    }
+    if (encoder.jpeg_subsampling != 420 && encoder.jpeg_subsampling != 422 &&
+        encoder.jpeg_subsampling != 444) {
+        errors.push_back("encoder.jpeg_subsampling must be 420, 422 or 444");
+    }
+    if (encoder.webp_method < -1 || encoder.webp_method > 6) {
+        errors.push_back("encoder.webp_method must be -1 (auto) or 0-6");
+    }
+    if (encoder.avif_speed < 0 || encoder.avif_speed > 10) {
+        errors.push_back("encoder.avif_speed must be between 0 and 10");
+    }
+    if (encoder.avif_subsampling != 420 && encoder.avif_subsampling != 444) {
+        errors.push_back("encoder.avif_subsampling must be 420 or 444");
+    }
+    if (encoder.avif_threads < 0 || encoder.avif_threads > 64) {
+        errors.push_back("encoder.avif_threads must be between 0 (auto) and 64");
     }
 
     return errors;
