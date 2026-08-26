@@ -54,7 +54,7 @@ TCPSocket::TCPSocket(TCPSocket&& other) noexcept
     : StreamSocket(std::move(other))
     , peer_address_(std::move(other.peer_address_))
     , peer_port_(other.peer_port_) {
-    // Note: io_mutex_ is default-constructed (mutexes are non-movable).
+    // Note: tx_mutex_/rx_mutex_ are default-constructed (mutexes are non-movable).
     // The moved-from socket is left in a closed state.
     other.peer_port_ = 0;
 }
@@ -62,8 +62,9 @@ TCPSocket::TCPSocket(TCPSocket&& other) noexcept
 TCPSocket& TCPSocket::operator=(TCPSocket&& other) noexcept {
     if (this != &other) {
         close();
-        // io_mutex_ intentionally not moved; lock other's mutex to read its state.
-        std::lock_guard<std::recursive_mutex> other_lock(other.io_mutex_);
+        // Direction locks intentionally not moved; lock other's mutexes to read its state.
+        std::lock_guard<std::recursive_mutex> other_tx(other.tx_mutex_);
+        std::lock_guard<std::recursive_mutex> other_rx(other.rx_mutex_);
         take_fd_from(other);
         peer_address_ = std::move(other.peer_address_);
         peer_port_ = other.peer_port_;

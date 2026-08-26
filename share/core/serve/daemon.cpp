@@ -71,8 +71,8 @@ struct ConnGuard {
 
 // Accessor subclass: StreamSocket keeps its fd protected with no public getter,
 // but teardown needs the fd number to ::shutdown() a connection whose thread is
-// blocked in recv(). (Calling close() from another thread would deadlock on
-// io_mutex_, which receive_all holds across the blocking read.) Legal C++: a
+// blocked in recv(). (Calling close() from another thread would deadlock on the
+// rx lock, which receive_all holds across the blocking read.) Legal C++: a
 // derived class may read protected base members through its own objects.
 class ConnSock : public UnixSocket {
 public:

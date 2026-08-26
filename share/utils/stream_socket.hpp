@@ -7,11 +7,14 @@
 namespace upix {
 
 // Shared implementation for stream sockets backed by a plain fd (TCP and
-// AF_UNIX): owns the fd plus the I/O lock that keeps concurrent users from
-// interleaving partial sends/receives (which would corrupt the framing
-// protocol), and implements the send/receive primitives. TCPSocket and
-// UnixSocket build their connect/peer-bookkeeping surface on top and expose
-// these methods unchanged through public inheritance.
+// AF_UNIX): owns the fd plus SEPARATE receive/transmit locks. Full-duplex
+// streams allow simultaneous read+write, and the wire framing is per
+// direction, so a reader polling with SO_RCVTIMEO must never keep a sender
+// waiting for the whole poll window: a shared rx/tx lock here turned every
+// interleave into a lock convoy (~200 ms per acquire; a 546 KB result took
+// 11-23 s to transfer). send_all / receive_all hold their own direction's
+// lock across the whole call, so concurrent writers/reader races remain
+// impossible.
 class StreamSocket {
 public:
     auto send(const void* data, size_t size)
@@ -42,19 +45,22 @@ protected:
         other.socket_ = -1;
     }
 
-    // Close the fd (no-op when already closed). Derived close() may add their
-    // own bookkeeping on top (e.g. clearing the Unix socket path).
+    // Close the fd under both direction locks: while it runs concurrently
+    // with an in-flight recv/send the syscall returns EBADF/ENOTCONN either
+    // way — same observable behavior as closing mid-transfer before.
     void close_fd();
 
     // Steal the fd from `other` (used by derived move assignments). The
-    // caller is responsible for locking other.io_mutex_ when required.
+    // caller is responsible for locking other.tx_mutex_/rx_mutex_ when
+    // required.
     void take_fd_from(StreamSocket& other) {
         socket_ = other.socket_;
         other.socket_ = -1;
     }
 
     int socket_ = -1;
-    mutable std::recursive_mutex io_mutex_;
+    mutable std::recursive_mutex tx_mutex_;
+    mutable std::recursive_mutex rx_mutex_;
 };
 
 } // namespace upix

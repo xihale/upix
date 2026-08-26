@@ -8,7 +8,7 @@ namespace upix {
 
 auto StreamSocket::send(const void* data, size_t size)
     -> expected<size_t, NetworkError> {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(tx_mutex_);
     if (socket_ < 0) {
         return std::unexpected(NetworkError{EBADF, "Socket not connected"});
     }
@@ -22,7 +22,7 @@ auto StreamSocket::send(const void* data, size_t size)
 
 auto StreamSocket::send_all(const void* data, size_t size)
     -> expected<void, NetworkError> {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(tx_mutex_);
     size_t total_sent = 0;
     const uint8_t* ptr = static_cast<const uint8_t*>(data);
 
@@ -38,7 +38,7 @@ auto StreamSocket::send_all(const void* data, size_t size)
 
 auto StreamSocket::receive(void* buffer, size_t max_size)
     -> expected<size_t, NetworkError> {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(rx_mutex_);
     if (socket_ < 0) {
         return std::unexpected(NetworkError{EBADF, "Socket not connected"});
     }
@@ -55,7 +55,7 @@ auto StreamSocket::receive(void* buffer, size_t max_size)
 
 auto StreamSocket::receive_all(void* buffer, size_t size)
     -> expected<void, NetworkError> {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    std::lock_guard<std::recursive_mutex> lock(rx_mutex_);
     size_t total_received = 0;
     uint8_t* ptr = static_cast<uint8_t*>(buffer);
 
@@ -70,7 +70,11 @@ auto StreamSocket::receive_all(void* buffer, size_t size)
 }
 
 void StreamSocket::close_fd() {
-    std::lock_guard<std::recursive_mutex> lock(io_mutex_);
+    // Both direction locks: a concurrent send/recv must observe a stable
+    // socket_ either side of the close (it then fails with EBADF — same as
+    // closing mid-transfer before the split).
+    std::lock_guard<std::recursive_mutex> tx_lock(tx_mutex_);
+    std::lock_guard<std::recursive_mutex> rx_lock(rx_mutex_);
     if (socket_ >= 0) {
         ::close(socket_);
         socket_ = -1;

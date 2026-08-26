@@ -21,13 +21,14 @@ UnixSocket::~UnixSocket() {
 UnixSocket::UnixSocket(UnixSocket&& other) noexcept
     : StreamSocket(std::move(other))
     , path_(std::move(other.path_)) {
-    // io_mutex_ is non-movable; default-constructed. Moved-from socket is left closed.
+    // Direction locks are non-movable; default-constructed. Moved-from socket is left closed.
 }
 
 UnixSocket& UnixSocket::operator=(UnixSocket&& other) noexcept {
     if (this != &other) {
         close();
-        std::lock_guard<std::recursive_mutex> other_lock(other.io_mutex_);
+        std::lock_guard<std::recursive_mutex> other_tx(other.tx_mutex_);
+        std::lock_guard<std::recursive_mutex> other_rx(other.rx_mutex_);
         take_fd_from(other);
         path_ = std::move(other.path_);
     }
