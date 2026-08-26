@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
@@ -44,7 +45,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.material3.adaptive.layout.ListDetailPaneScaffoldRole
-import androidx.compose.material3.adaptive.navigation.NavigableListDetailPaneScaffold
 import androidx.compose.material3.adaptive.navigation.ThreePaneScaffoldNavigator
 import androidx.compose.material3.adaptive.navigation.rememberListDetailPaneScaffoldNavigator
 import androidx.compose.runtime.Composable
@@ -190,7 +190,27 @@ fun SettingsScreen(
     }
 }
 
-/** medium+ 双栏：list pane 复用设置列表，detail pane 承载子页内容。 */
+/** 设置详情空态：expanded 下未选子页时 detail pane 的占位。 */
+@Composable
+private fun SettingsDetailEmpty(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = stringResource(R.string.settings_detail_empty),
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+    }
+}
+
+/**
+ * medium+ 设置双栏。不再用 NavigableListDetailPaneScaffold 渲染：
+ * 其内置 pane 转场是边界膨胀动效（detail 从列表位置"弹出"），与设计语言 §7 的
+ * 安静 fade 冲突且无公开参数可关。这里保留 navigator 管理返回栈与返回手势，
+ * 仅自行排布两个 pane，切换统一走 [EnterMotionSpec] 纯 fade。
+ */
 @OptIn(ExperimentalMaterial3AdaptiveApi::class)
 @Composable
 private fun SettingsListDetailPane(
@@ -201,38 +221,36 @@ private fun SettingsListDetailPane(
     listContent: @Composable ((SettingsDetail) -> Unit) -> Unit
 ) {
     val scope = rememberCoroutineScope()
+    val openDetail: (SettingsDetail) -> Unit = { detail ->
+        scope.launch { navigator.navigateTo(ListDetailPaneScaffoldRole.Detail, detail) }
+    }
+    val currentDetail = navigator.currentDestination?.contentKey
 
-    NavigableListDetailPaneScaffold(
-        navigator = navigator,
-        modifier = modifier,
-        listPane = {
+    if (showDetailHeader) {
+        // expanded：list 常驻左栏（1/3），detail 右栏随选中项 fade 切换。
+        Row(modifier = modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
-                    .fillMaxSize()
+                    .weight(1f)
+                    .fillMaxHeight()
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = LocalScreenMargin.current)
                     .padding(top = Spacing.md, bottom = Spacing.xxl),
                 verticalArrangement = Arrangement.spacedBy(Spacing.md)
             ) {
-                listContent { detail ->
-                    scope.launch {
-                        navigator.navigateTo(ListDetailPaneScaffoldRole.Detail, detail)
-                    }
-                }
+                listContent(openDetail)
             }
-        },
-        detailPane = {
-            AnimatedContent(
-                targetState = navigator.currentDestination?.contentKey,
-                transitionSpec = {
-                    fadeIn(EnterMotionSpec) togetherWith fadeOut(EnterMotionSpec)
-                },
-                label = "settingsDetailFade"
-            ) { detail ->
-                if (detail != null) {
-                    if (showDetailHeader) {
-                        // expanded 双栏：list 常驻可点选切换、无返回诉求，detail
-                        // 以节标题标明当前子页；weight 包裹保证子页滚动区高度有界。
+            Box(modifier = Modifier.weight(2f).fillMaxHeight()) {
+                AnimatedContent(
+                    targetState = currentDetail,
+                    transitionSpec = {
+                        fadeIn(EnterMotionSpec) togetherWith fadeOut(EnterMotionSpec)
+                    },
+                    label = "settingsDetailFade"
+                ) { detail ->
+                    if (detail == null) {
+                        SettingsDetailEmpty()
+                    } else {
                         Column(modifier = Modifier.fillMaxSize()) {
                             SectionHeader(
                                 text = stringResource(detail.titleRes),
@@ -250,24 +268,35 @@ private fun SettingsListDetailPane(
                                 detailPaneContent(detail)
                             }
                         }
-                    } else {
-                        detailPaneContent(detail)
-                    }
-                } else {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            text = stringResource(R.string.settings_detail_empty),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
                     }
                 }
             }
         }
-    )
+    } else {
+        // medium 单 pane 阶段：list/detail 整页互切，同样纯 fade。
+        AnimatedContent(
+            targetState = currentDetail,
+            transitionSpec = {
+                fadeIn(EnterMotionSpec) togetherWith fadeOut(EnterMotionSpec)
+            },
+            label = "settingsPageFade"
+        ) { detail ->
+            if (detail == null) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = LocalScreenMargin.current)
+                        .padding(top = Spacing.md, bottom = Spacing.xxl),
+                    verticalArrangement = Arrangement.spacedBy(Spacing.md)
+                ) {
+                    listContent(openDetail)
+                }
+            } else {
+                detailPaneContent(detail)
+            }
+        }
+    }
 }
 
 /** 设置列表主体：compact 单栏与 medium+ list pane 共用。节间留白 > 卡内行距。 */
