@@ -43,6 +43,40 @@ class LocalNativeBenchmarkTest {
     private fun quality(): Int = arg("quality", "90").toIntOrNull() ?: 90
     private fun deviceArg(): String = arg("device", "both") // gpu | cpu | both
 
+    /**
+     * Experiment switches (perf work): forceDiscrete flips
+     * UPIX_GPU_ENABLE_FP16_ARITH (frozen pack has both profiles), tileEnv
+     * overrides UPIX_GPU_TILE_SIZE, outDir dumps one encoded output per
+     * (device,size) for host-side pixel comparisons.
+     */
+    private fun applySwitches(deviceName: String) {
+        val outDir = arg("outDir", "")
+        if (outDir.isNotBlank()) {
+            try {
+                java.io.File(outDir).mkdirs()
+            } catch (_: Exception) {}
+            System.setProperty("upix.bench.outDir", outDir)
+        }
+        if (arg("forceDiscrete", "0") == "1") {
+            android.system.Os.setenv("UPIX_GPU_ENABLE_FP16_ARITH", "1", true)
+        }
+        val tileEnv = arg("tileEnv", "")
+        if (tileEnv.isNotBlank()) {
+            android.system.Os.setenv("UPIX_GPU_TILE_SIZE", tileEnv, true)
+        }
+    }
+
+    private fun dumpOutput(deviceName: String, size: Int, bytes: ByteArray?) {
+        if (bytes == null) return
+        val outDir = arg("outDir", "")
+        if (outDir.isBlank()) return
+        runCatching {
+            val f = java.io.File(outDir, "bench-$deviceName-$size.png")
+            f.writeBytes(bytes)
+            log("dumped ${f.absolutePath} bytes=${bytes.size}")
+        }
+    }
+
     /** First .param under the app's model dir, without the extension. */
     private fun findModelBase(): String {
         val ctx = InstrumentationRegistry.getInstrumentation().targetContext
@@ -80,6 +114,7 @@ class LocalNativeBenchmarkTest {
         MessageDigest.getInstance("MD5").digest(bytes).joinToString("") { "%02x".format(it) }
 
     private fun bench(deviceName: String, deviceType: Int, modelBase: String) {
+        applySwitches(deviceName)
         val t0 = System.nanoTime()
         val ptr = NCNNEngine.nativeInit(deviceType)
         val initMs = (System.nanoTime() - t0) / 1_000_000
@@ -105,7 +140,10 @@ class LocalNativeBenchmarkTest {
                     val ms = (System.nanoTime() - t) / 1_000_000
                     assertTrue("nativeProcessImage returned null: ${NCNNEngine.nativeGetLastError()}", out != null)
                     if (iter < 0) continue
-                    if (firstMd5 == null) firstMd5 = md5(out!!)
+                    if (firstMd5 == null) {
+                        firstMd5 = md5(out!!)
+                        dumpOutput(deviceName, size, out)
+                    }
                     val mps = size.toLong() * size / 1000.0 / ms
                     log("run $deviceName ${size}x$size iter=$iter ms=$ms mps=%.2f".format(mps))
                 }

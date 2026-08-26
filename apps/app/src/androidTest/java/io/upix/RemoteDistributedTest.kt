@@ -108,24 +108,36 @@ class RemoteDistributedTest {
     private fun roundTripInFormat(format: String) {
         requireHost()
         val key = pair()
-        val encoded: ByteArray? = NCNNEngine.nativeProcessImageDistributed(
-            host = host(),
-            port = port(),
-            peerPubKeyB64 = key,
-            modelName = model(),
-            tileSize = 64,
-            tileOverlap = 8,
-            inputImage = syntheticRgb,
-            inputFormat = "png",
-            outputFormat = format,
-            outputQuality = 95,  // ignored by lossless PNG; honors jpg/webp
-            encoderOptionsJson = ""
+        // Persistent session: one handshake per batch (the P0 long-connection
+        // model), then send + blocking receive for this single task.
+        val handle: Long = NCNNEngine.nativeOpenDistributedSession(
+            host = host(), port = port(), peerPubKeyB64 = key
         )
-        assertNotNull(
-            "submit($format) returned null. Last native error: " +
+        assertTrue(
+            "openDistributedSession failed. Last native error: " +
                 "${runCatching { NCNNEngine.nativeGetLastError() }.getOrNull()}",
-            encoded
+            handle != 0L
         )
+        try {
+            val sent = NCNNEngine.nativeSendDistributedTask(
+                handle = handle,
+                modelName = model(),
+                tileSize = 64,
+                tileOverlap = 8,
+                inputFormat = "png",
+                inputImage = syntheticRgb,
+                outputFormat = format,
+                outputQuality = 95,  // ignored by lossless PNG; honors jpg/webp
+                encoderOptionsJson = "",
+                allowChunked = true
+            )
+            val encoded: ByteArray? = if (!sent) null else
+                NCNNEngine.nativeReceiveDistributedResult(handle, null)
+            assertNotNull(
+                "submit($format) returned null. Last native error: " +
+                    "${runCatching { NCNNEngine.nativeGetLastError() }.getOrNull()}",
+                encoded
+            )
         assertTrue("submit($format) returned empty bytes", encoded!!.isNotEmpty())
 
         // The PC must have encoded in the requested format, not silently fallen
@@ -153,6 +165,9 @@ class RemoteDistributedTest {
             "submit($format) did not decode (outWidth=$outWidth)",
             outWidth > 64 && outHeight > 64
         )
+        } finally {
+            NCNNEngine.nativeCloseDistributedSession(handle)
+        }
     }
 
     /** Phase 1 — pairing only (no submit). */
@@ -160,6 +175,103 @@ class RemoteDistributedTest {
     fun a_pairing_succeeds() {
         requireHost()
         pair()
+    }
+
+    /**
+     * Phase 3 — batch timing over one persistent session, replicating the
+     * app's depth-1 pipeline ordering (prefetch file bytes of N+1 → await
+     * result N → upload N+1 → persist N). Logs one CSREMOTE line per image:
+     *
+     *   CSREMOTE <i>/<n> read=<ms> upload=<ms> wait=<ms> persist=<ms> total=<ms>
+     *
+     * upload happens after wait completes (same thread as the app); read
+     * runs during PC inference. Use adb reverse tcp:port to reach a host
+     * coordinator without LAN.
+     */
+    @Test
+    fun z_remote_batch_timing() {
+        requireHost()
+        val count = arg("count", "3").trim().toIntOrNull() ?: 3
+        val side = arg("side", "256").trim().toIntOrNull() ?: 256
+        val key = pair()
+
+        fun makePngBytes(size: Int): ByteArray {
+            val pixels = IntArray(size * size) { i ->
+                val x = i % size
+                val y = i / size
+                (0xFF shl 24) or ((x * 4 and 0xFF) shl 16) or ((y * 4 and 0xFF) shl 8) or ((x + y) and 0xFF)
+            }
+            val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+            bmp.setPixels(pixels, 0, size, 0, 0, size, size)
+            val out = ByteArrayOutputStream()
+            bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+            bmp.recycle()
+            return out.toByteArray()
+        }
+
+        data class Timed(val read: Long, val upload: Long, val wait: Long, val persist: Long, val total: Long)
+
+        val handle = NCNNEngine.nativeOpenDistributedSession(
+            host = host(), port = port(), peerPubKeyB64 = key
+        )
+        assertTrue("openDistributedSession failed", handle != 0L)
+        try {
+            // 预取槽：read 在 PC 推理期间发生（应用内一致）。
+            var pendingReadMs = 0L
+            fun primeRead(): ByteArray {
+                val t0 = System.nanoTime()
+                val bytes = makePngBytes(side)
+                pendingReadMs = (System.nanoTime() - t0) / 1_000_000
+                return bytes
+            }
+
+            var inputBytes = primeRead()
+            var uploaded = false
+
+            fun send(bytes: ByteArray): Boolean = NCNNEngine.nativeSendDistributedTask(
+                handle = handle,
+                modelName = model(),
+                tileSize = 0,
+                tileOverlap = 8,
+                inputFormat = "png",
+                inputImage = bytes,
+                outputFormat = "jpg",
+                outputQuality = 90,
+                encoderOptionsJson = "",
+                allowChunked = true
+            )
+
+            for (i in 0 until count) {
+                val t0 = System.nanoTime()
+                assertTrue("send #$i failed", send(inputBytes))
+                val uploadMs = (System.nanoTime() - t0) / 1_000_000
+                uploaded = true
+
+                val tWait0 = System.nanoTime()
+                val encoded = NCNNEngine.nativeReceiveDistributedResult(handle, null)
+                val waitMs = (System.nanoTime() - tWait0) / 1_000_000
+                assertNotNull("receive #$i failed: ${NCNNEngine.nativeGetLastError()}", encoded)
+
+                val tPersist0 = System.nanoTime()
+                assertEncodedFormat(encoded!!, "jpg")
+                BitmapFactory.decodeByteArray(encoded, 0, encoded.size)
+                val persistMs = (System.nanoTime() - tPersist0) / 1_000_000
+
+                val total = pendingReadMs + uploadMs + waitMs + persistMs
+                android.util.Log.i(
+                    "Upix",
+                    "CSREMOTE $i/$count read=$pendingReadMs upload=$uploadMs " +
+                        "wait=$waitMs persist=$persistMs total=$total bytes=${encoded.size}"
+                )
+
+                if (i + 1 < count) {
+                    inputBytes = primeRead()
+                }
+            }
+            check(uploaded)
+        } finally {
+            NCNNEngine.nativeCloseDistributedSession(handle)
+        }
     }
 
     /** Phase 2 — distributed round-trip, one method per output format. */
