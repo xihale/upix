@@ -52,9 +52,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.CornerRadius
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -237,26 +234,26 @@ fun QRScannerScreen(
                 factory = { previewView },
                 modifier = Modifier.fillMaxSize()
             )
-            // 取景框层（纯装饰）：约 35% 高度偏移处放置四角括号，其下挂提示胶囊。
-            Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally
+            // 取景层：全屏四角括号（分析管线本就解整帧，无小框限制），
+            // 提示胶囊居中悬浮。
+            QrReticle(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .statusBarsPadding()
+                    .navigationBarsPadding()
+                    .padding(horizontal = Spacing.xl, vertical = Spacing.xl)
+            )
+            Surface(
+                modifier = Modifier.align(Alignment.Center),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.72f),
+                contentColor = MaterialTheme.colorScheme.inverseOnSurface
             ) {
-                Spacer(modifier = Modifier.weight(0.34f))
-                QrReticle(modifier = Modifier.size(256.dp))
-                Spacer(modifier = Modifier.height(Spacing.xl))
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.inverseSurface.copy(alpha = 0.72f),
-                    contentColor = MaterialTheme.colorScheme.inverseOnSurface
-                ) {
-                    Text(
-                        text = stringResource(R.string.scanner_hint),
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.sm)
-                    )
-                }
-                Spacer(modifier = Modifier.weight(0.66f))
+                Text(
+                    text = stringResource(R.string.scanner_hint),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.sm)
+                )
             }
         } else {
             Column(
@@ -404,33 +401,20 @@ private fun decodeQrPayload(imageProxy: ImageProxy): String? {
 }
 
 /**
- * 取景框（纯装饰）：极淡圆角描边（10% 白）+ 四角括号（白 90%、2dp 描边、
- * 臂长 28dp，折弯处经 cornerPathEffect 圆润过渡）。无交互语义。
+ * 取景框（纯装饰）：铺满可用区域的四角括号——白 90%、3dp 描边、臂长 36dp，
+ * 折弯处经 cornerPathEffect 圆润过渡。表达"整个屏幕都是扫描区"，无交互语义。
  */
 @Composable
 private fun QrReticle(modifier: Modifier = Modifier) {
     val bracketColor = Color.White.copy(alpha = 0.9f)
-    val faintBorderColor = Color.White.copy(alpha = 0.1f)
     Canvas(modifier = modifier) {
-        val stroke = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Round)
         val bracketStroke = Stroke(
-            width = 2.dp.toPx(),
+            width = 3.dp.toPx(),
             cap = StrokeCap.Round,
             pathEffect = PathEffect.cornerPathEffect(8.dp.toPx())
         )
-        val inset = stroke.width / 2f + 1.dp.toPx()
-        val cornerRadius = CornerRadius(18.dp.toPx(), 18.dp.toPx())
-
-        // 极淡的圆角边框，标出完整扫描区域。
-        drawRoundRect(
-            color = faintBorderColor,
-            topLeft = Offset(inset, inset),
-            size = Size(size.width - inset * 2f, size.height - inset * 2f),
-            cornerRadius = cornerRadius,
-            style = stroke
-        )
-
-        val arm = 28.dp.toPx()
+        val inset = bracketStroke.width / 2f + 1.dp.toPx()
+        val arm = 36.dp.toPx()
         val w = size.width
         val h = size.height
         val path = Path().apply {
