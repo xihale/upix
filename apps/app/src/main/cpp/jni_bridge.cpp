@@ -634,7 +634,16 @@ constexpr int CANCEL_DRAIN_TIMEOUT_MS = 90 * 1000;
 constexpr size_t MAX_SUBMIT_INPUT_BYTES =
     static_cast<size_t>(upix::MAX_NETWORK_PAYLOAD) - sizeof(upix::ClientTaskSubmit) - 64;
 
-// Seal + send one CLIENT_SUBMIT frame: struct + original file bytes.
+// Seal + send one CLIENT_SUBMIT. Two formats (see ClientTaskSubmit in
+// protocol.hpp): inputs ≤ SINGLE_FRAME_SUBMIT_BYTES ride the legacy
+// struct+bytes single frame (one RTT, no chunk overhead); larger inputs are
+// sent as a struct-only frame followed by ≤8MB MSG_CLIENT_DATA chunks. The
+// chunked path never materializes a whole plaintext or whole wire copy of
+// the input — peak extra memory is one chunk (~8MB wire) instead of ~2x
+// input size. `allow_chunked` = false forces the legacy format (the
+// version-fallback resend against an old PC that rejected a chunked submit).
+constexpr size_t SINGLE_FRAME_SUBMIT_BYTES = 4u * 1024u * 1024u;
+
 auto send_distributed_submit(
     upix::TCPSocket& socket,
     upix::EncryptedSession& session,
@@ -646,7 +655,8 @@ auto send_distributed_submit(
     size_t input_len,
     const std::string& output_format,
     int output_quality,
-    const upix::EncoderOptions& encoder_opts
+    const upix::EncoderOptions& encoder_opts,
+    bool allow_chunked
 ) -> bool {
     if (input_len == 0 || input_len > MAX_SUBMIT_INPUT_BYTES) {
         set_jni_last_error("Distributed processing input size is invalid");
@@ -668,17 +678,49 @@ auto send_distributed_submit(
     submit_request.encoder = to_wire(encoder_opts);
     submit_request.input_data_length = static_cast<uint32_t>(input_len);
 
-    std::vector<uint8_t> plaintext(sizeof(submit_request) + input_len);
-    std::memcpy(plaintext.data(), &submit_request, sizeof(submit_request));
-    std::memcpy(plaintext.data() + sizeof(submit_request), input_data, input_len);
+    const bool chunked = allow_chunked && input_len > SINGLE_FRAME_SUBMIT_BYTES;
+    if (!chunked) {
+        std::vector<uint8_t> plaintext(sizeof(submit_request) + input_len);
+        std::memcpy(plaintext.data(), &submit_request, sizeof(submit_request));
+        std::memcpy(plaintext.data() + sizeof(submit_request), input_data, input_len);
 
-    upix::MessageHeader submit_header{};
-    submit_header.type = upix::MessageType::MSG_CLIENT_SUBMIT;
-    submit_header.payload_length = static_cast<uint32_t>(plaintext.size());
-    auto submit_wire = session.seal(submit_header, plaintext.data());
-    if (!socket.send_all(submit_wire.data(), submit_wire.size()).has_value()) {
-        set_jni_last_error("Distributed submit send failed");
-        return false;
+        upix::MessageHeader submit_header{};
+        submit_header.type = upix::MessageType::MSG_CLIENT_SUBMIT;
+        submit_header.payload_length = static_cast<uint32_t>(plaintext.size());
+        auto submit_wire = session.seal(submit_header, plaintext.data());
+        if (!socket.send_all(submit_wire.data(), submit_wire.size()).has_value()) {
+            set_jni_last_error("Distributed submit send failed");
+            return false;
+        }
+        return true;
+    }
+
+    // Chunked: struct-only frame, then ≤8MB DATA chunks sealed one at a
+    // time. input_data stays the caller's buffer; only the current chunk's
+    // wire copy exists at any moment.
+    {
+        upix::MessageHeader submit_header{};
+        submit_header.type = upix::MessageType::MSG_CLIENT_SUBMIT;
+        submit_header.payload_length = static_cast<uint32_t>(sizeof(submit_request));
+        auto submit_wire = session.seal(submit_header, &submit_request);
+        if (!socket.send_all(submit_wire.data(), submit_wire.size()).has_value()) {
+            set_jni_last_error("Distributed submit send failed");
+            return false;
+        }
+    }
+    size_t offset = 0;
+    while (offset < input_len) {
+        const size_t n = std::min<size_t>(
+            upix::CLIENT_DATA_CHUNK_BYTES, input_len - offset);
+        upix::MessageHeader chunk_header{};
+        chunk_header.type = upix::MessageType::MSG_CLIENT_DATA;
+        chunk_header.payload_length = static_cast<uint32_t>(n);
+        auto chunk_wire = session.seal(chunk_header, input_data + offset);
+        if (!socket.send_all(chunk_wire.data(), chunk_wire.size()).has_value()) {
+            set_jni_last_error("Distributed submit chunk send failed");
+            return false;
+        }
+        offset += n;
     }
     return true;
 }
@@ -1349,8 +1391,10 @@ Java_io_upix_nativelib_NCNNEngine_nativeOpenDistributedSession(
     }
 }
 
-// Upload one image on an open session (seal + send CLIENT_SUBMIT). Split from
-// receive so the caller can push image N+1 while the PC still works on N.
+// Upload one image on an open session (seal + send CLIENT_SUBMIT; >4MB
+// inputs travel as a struct frame + ≤8MB DATA chunks unless allowChunked is
+// false — the legacy resend path against old PCs). Split from receive so the
+// caller can push image N+1 while the PC still works on N.
 // Returns false on failure (details via nativeGetLastError).
 JNIEXPORT jboolean JNICALL
 Java_io_upix_nativelib_NCNNEngine_nativeSendDistributedTask(
@@ -1364,7 +1408,8 @@ Java_io_upix_nativelib_NCNNEngine_nativeSendDistributedTask(
     jbyteArray input_image,
     jstring output_format,
     jint output_quality,
-    jstring encoder_options_json
+    jstring encoder_options_json,
+    jboolean allow_chunked
 ) {
     (void)thiz;
     try {
@@ -1440,7 +1485,8 @@ Java_io_upix_nativelib_NCNNEngine_nativeSendDistributedTask(
             input_bytes.size(),
             output_format_str,
             static_cast<int>(output_quality),
-            parse_encoder_options(env, encoder_options_json));
+            parse_encoder_options(env, encoder_options_json),
+            allow_chunked == JNI_TRUE);
         return sent ? JNI_TRUE : JNI_FALSE;
     } catch (const std::exception& exception) {
         set_jni_last_error(std::string("nativeSendDistributedTask failed: ") + exception.what());

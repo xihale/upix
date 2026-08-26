@@ -46,7 +46,9 @@ object NCNNEngine {
 
     /**
      * 在打开的会话上上传一张图（seal + 发送 CLIENT_SUBMIT）。与接收拆分，
-     * 调用方可在 PC 还在算第 N 张时先把第 N+1 张推上去。
+     * 调用方可在 PC 还在算第 N 张时先把第 N+1 张推上去。>4MB 的输入走
+     * 分块格式（struct 帧 + ≤8MB CLIENT_DATA 续帧，削峰值内存）；
+     * [allowChunked]=false 强制旧式单帧（对不支持分块的旧 PC 的降级重发）。
      */
     external fun nativeSendDistributedTask(
         handle: Long,
@@ -57,7 +59,8 @@ object NCNNEngine {
         inputImage: ByteArray,
         outputFormat: String,
         outputQuality: Int,
-        encoderOptionsJson: String
+        encoderOptionsJson: String,
+        allowChunked: Boolean
     ): Boolean
 
     /**

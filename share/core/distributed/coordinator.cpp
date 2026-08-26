@@ -625,14 +625,63 @@ bool Coordinator::handle_client_submit(
     ClientTaskSubmit task{};
     std::memcpy(&task, frame_payload.data(), sizeof(task));
     const uint32_t data_len = task.input_data_length;
-    if (data_len > MAX_NETWORK_PAYLOAD ||
-        sizeof(ClientTaskSubmit) + data_len > frame_payload.size()) {
-        LOG_ERROR("Coordinator", "Compressed client image payload truncated");
-        return false;
+
+    std::vector<uint8_t> compressed;
+    const auto reply_task_error = [&](const std::string& message) {
+        ClientTaskResponse response{};
+        response.success = 0;
+        std::strncpy(response.error_message, message.c_str(),
+                     sizeof(response.error_message) - 1);
+        (void)send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
+                             &response, sizeof(response));
+        LOG_ERROR("Coordinator", "Client submit rejected: " + message);
+    };
+
+    if (frame_payload.size() == sizeof(ClientTaskSubmit)) {
+        // ── Chunked submit (new format): struct-only frame, input bytes
+        //    follow as MSG_CLIENT_DATA continuations. Pre-allocate the
+        //    declared total and unseal chunk-by-chunk into place — the wire
+        //    and plaintext copies of a large input never coexist whole.
+        if (data_len == 0 || data_len > MAX_NETWORK_PAYLOAD) {
+            reply_task_error("invalid chunked submit size");
+            return true;
+        }
+        compressed.resize(data_len);
+        size_t received = 0;
+        while (received < data_len) {
+            auto chunk = recv_encrypted(conn);
+            if (!chunk) {
+                // Transport died mid-upload: cannot even answer.
+                LOG_ERROR("Coordinator", "Chunked submit transport failed");
+                return false;
+            }
+            if (chunk->first.type != MessageType::MSG_CLIENT_DATA) {
+                // Old-vs-new protocol mismatch or a broken sender: answer as
+                // a per-task error so the phone can fall back to a legacy
+                // single-frame submit on this still-open session.
+                reply_task_error("chunked submit interrupted: expected CLIENT_DATA");
+                return true;
+            }
+            if (chunk->second.size() > data_len - received) {
+                reply_task_error("chunked submit overflow");
+                return true;
+            }
+            std::memcpy(compressed.data() + received,
+                        chunk->second.data(), chunk->second.size());
+            received += chunk->second.size();
+        }
+        LOG_INFO("Coordinator", "Chunked submit reassembled: " + format_bytes(data_len));
+    } else {
+        // ── Legacy single-frame submit: struct + input bytes inline.
+        if (data_len > MAX_NETWORK_PAYLOAD ||
+            sizeof(ClientTaskSubmit) + data_len > frame_payload.size()) {
+            LOG_ERROR("Coordinator", "Compressed client image payload truncated");
+            return false;
+        }
+        compressed.assign(
+            frame_payload.data() + sizeof(ClientTaskSubmit),
+            frame_payload.data() + sizeof(ClientTaskSubmit) + data_len);
     }
-    std::vector<uint8_t> compressed(
-        frame_payload.data() + sizeof(ClientTaskSubmit),
-        frame_payload.data() + sizeof(ClientTaskSubmit) + data_len);
 
     // Stop requested while queued: don't even start the worker.
     if (st.stop_requested()) {
@@ -835,7 +884,7 @@ void Coordinator::run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
         // matching the way the phone opens it (session.open verifies the MAC).
         // Encoded results above MAX_NETWORK_PAYLOAD stream as MSG_CLIENT_DATA
         // continuation frames instead; small results stay single-frame.
-        constexpr size_t CLIENT_CHUNK_BYTES = 8u * 1024u * 1024u;
+        constexpr size_t CLIENT_CHUNK_BYTES = CLIENT_DATA_CHUNK_BYTES;
         const auto& result_bytes = process_result.value_or(std::vector<uint8_t>{});
         const size_t leading_bytes =
             std::min<size_t>(result_bytes.size(), MAX_NETWORK_PAYLOAD);

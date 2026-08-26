@@ -101,6 +101,8 @@ class CoordinatorClient(
                 port = port,
                 peerPubKeyB64 = learnedPubKey
             )
+            // 新端点：分块支持未知，恢复默认（>4MB 走分块）。
+            chunkedSubmitUnsupported = false
             if (normalizedPeerPubKeyB64.isNotEmpty()) {
                 // strict/QR-认证路径：本次连接已携带并校验 PC 公钥，立即视为已连接。
                 _connected.value = true
@@ -246,6 +248,21 @@ class CoordinatorClient(
     @Volatile
     private var prefetched: PrefetchedInput? = null
 
+    /**
+     * 当前端点的 PC 不支持分块提交（收到 "truncated/interrupted" 应答或
+     * 分块后立即摔线时置位；换端点/掉线时复位）。置位后大图直发单帧。
+     */
+    @Volatile
+    private var chunkedSubmitUnsupported = false
+
+    /** 一次 awaitResult 的原始结果（清理/降级决策交给外层）。 */
+    private class AwaitOutcome(
+        val bytes: ByteArray?,
+        val reason: String,
+        val taskRejected: Boolean,
+        val userCanceled: Boolean
+    )
+
     /** 后台预读下一张图的原始编码字节；beginRemoteTask 命中即免同步读。 */
     fun prefetchRemoteInput(input: ResolvedImageInput) {
         if (prefetched?.uri == input.uri) {
@@ -278,6 +295,34 @@ class CoordinatorClient(
         private val tileSize: Int,
         private val tileOverlap: Int
     ) {
+        /** 本次上传是否走了分块格式（>4MB）。决定 awaitResult 的降级策略。 */
+        internal var sentChunked = false
+
+        /** 分块提交被拒后的单帧重发（旧 PC 降级路径）。 */
+        private fun resendSingleFrame(): Boolean {
+            val handle = nativeSessionHandle
+            if (handle == 0L) {
+                return false
+            }
+            return try {
+                NCNNEngine.nativeSendDistributedTask(
+                    handle,
+                    modelName,
+                    tileSize,
+                    tileOverlap,
+                    inputFormat,
+                    inputBytes,
+                    outputFormat,
+                    settings.normalizedQuality,
+                    settings.toNativeJson(),
+                    /*allowChunked=*/ false
+                )
+            } catch (e: UnsatisfiedLinkError) {
+                logRepository.error("CoordinatorClient", "Native bridge unavailable: ${e.message}")
+                false
+            }
+        }
+
         /**
          * 阻塞等待 PC 结果；进度帧通过 [onProgress] 流出（stage 0=推理
          * percent/eta，1=编码）。PC 侧任务失败（"Distributed task failed:"）
@@ -286,13 +331,82 @@ class CoordinatorClient(
          * 取消（[cancelRemoteTask] 已请求）：以 CancellationException 抛出，
          * 而不是按普通失败处理——用户主动取消不应把当前图记为失败，也不应
          * 清掉已配对端点。会话视情况关闭（旧 PC 会摔线），端点保留。
+         *
+         * 分块降级：本任务是分块上传且失败呈现为 "truncated/interrupted"
+         * per-task 错误（新版 PC）或分块后立即传输失败（旧 PC 直接摔线）时，
+         * 若尺寸允许则自动降级为单帧重发一次（新 PC 同会话重发；旧 PC 重开
+         * 会话重发，端点保留），并记住该端点不支持分块，后续大图直发单帧。
          */
         fun awaitResult(
             onProgress: (stage: Int, percent: Int, etaSeconds: Int) -> Unit
         ): Result<ByteArray> {
+            var outcome = awaitResultOnce(onProgress)
+            if (outcome.reason.isNotEmpty() && sentChunked &&
+                inputBytes.size <= SINGLE_FRAME_LIMIT_BYTES
+            ) {
+                val rejectedChunking = outcome.taskRejected &&
+                    (outcome.reason.contains("truncat", ignoreCase = true) ||
+                        outcome.reason.contains("interrupted", ignoreCase = true))
+                val transportAfterChunked = !outcome.taskRejected && !outcome.userCanceled
+                if (rejectedChunking || transportAfterChunked) {
+                    chunkedSubmitUnsupported = true
+                    logRepository.warning(
+                        "CoordinatorClient",
+                        "Chunked submit rejected by PC (${outcome.reason}); retrying as a single frame"
+                    )
+                    outcome = if (rejectedChunking) {
+                        // 新 PC：会话仍活着，直接同会话单帧重发。
+                        if (resendSingleFrame()) awaitResultOnce(onProgress) else outcome
+                    } else {
+                        // 旧 PC 摔线：关会话重开（端点保留）再单帧重发。
+                        closeSession()
+                        val endpoint = connectedEndpoint
+                        if (endpoint != null && openSession(endpoint) && resendSingleFrame()) {
+                            awaitResultOnce(onProgress)
+                        } else {
+                            outcome
+                        }
+                    }
+                }
+            }
+
+            // 取消路径（native "Distributed task canceled..." 或 PC 的
+            // error="canceled"）：不算失败、不清端点。
+            if (outcome.userCanceled) {
+                closeSession()
+                throw CancellationException("已取消（PC 已停止计算）")
+            }
+            if (outcome.bytes != null && outcome.bytes.isNotEmpty()) {
+                return Result.success(outcome.bytes)
+            }
+            if (!outcome.taskRejected) {
+                closeSession()
+                connectedEndpoint?.let { clearEndpoint(it) }
+            }
+            val reason = outcome.reason
+            val pcReason = reason.removePrefix("Distributed task failed: ").trim()
+            val message = when {
+                outcome.taskRejected && pcReason.isNotBlank() ->
+                    if (pcReason.contains("avif", ignoreCase = true)) {
+                        "$pcReason（远端 AVIF 需要 PC 安装 libavif，如 pacman -S libavif）"
+                    } else {
+                        "PC 任务失败：$pcReason"
+                    }
+                reason.isNotBlank() -> "PC 不可达：$reason"
+                else -> "PC 不可达"
+            }
+            logRepository.error("CoordinatorClient", message)
+            return Result.failure(IllegalStateException(message))
+        }
+
+        /** 一次完整的“等待结果”。不做任何会话/端点清理（交给 awaitResult）。 */
+        private fun awaitResultOnce(
+            onProgress: (stage: Int, percent: Int, etaSeconds: Int) -> Unit
+        ): AwaitOutcome {
             val handle = nativeSessionHandle
             if (handle == 0L) {
-                return Result.failure(IllegalStateException("Distributed session is closed"))
+                return AwaitOutcome(null, "Distributed session is closed",
+                    taskRejected = false, userCanceled = false)
             }
             val encodedOutput = try {
                 NCNNEngine.nativeReceiveDistributedResult(
@@ -303,42 +417,17 @@ class CoordinatorClient(
                 logRepository.error("CoordinatorClient", "Native bridge unavailable: ${e.message}")
                 null
             }
-            if (encodedOutput == null || encodedOutput.isEmpty()) {
-                val reason = runCatching { NCNNEngine.nativeGetLastError() }
-                    .getOrNull()
-                    ?.trim()
-                    .orEmpty()
-                // 用户取消路径：native 层报 "Distributed task canceled..."，或
-                // PC 对 CANCEL 的终止应答 error="canceled"。两者都不算失败。
-                if (reason.startsWith("Distributed task canceled")) {
-                    closeSession()
-                    throw CancellationException("已取消（PC 已停止计算）")
-                }
-                val taskRejected = reason.startsWith("Distributed task failed:")
-                if (taskRejected &&
-                    reason.removePrefix("Distributed task failed:").trim() == "canceled"
-                ) {
-                    throw CancellationException("已取消（PC 已停止计算）")
-                }
-                if (!taskRejected) {
-                    closeSession()
-                    connectedEndpoint?.let { clearEndpoint(it) }
-                }
-                val pcReason = reason.removePrefix("Distributed task failed: ").trim()
-                val message = when {
-                    taskRejected && pcReason.isNotBlank() ->
-                        if (pcReason.contains("avif", ignoreCase = true)) {
-                            "$pcReason（远端 AVIF 需要 PC 安装 libavif，如 pacman -S libavif）"
-                        } else {
-                            "PC 任务失败：$pcReason"
-                        }
-                    reason.isNotBlank() -> "PC 不可达：$reason"
-                    else -> "PC 不可达"
-                }
-                logRepository.error("CoordinatorClient", message)
-                return Result.failure(IllegalStateException(message))
+            if (encodedOutput != null && encodedOutput.isNotEmpty()) {
+                return AwaitOutcome(encodedOutput, "", taskRejected = false, userCanceled = false)
             }
-            return Result.success(encodedOutput)
+            val reason = runCatching { NCNNEngine.nativeGetLastError() }
+                .getOrNull()
+                ?.trim()
+                .orEmpty()
+            val taskRejected = reason.startsWith("Distributed task failed:")
+            val userCanceled = reason.startsWith("Distributed task canceled") ||
+                (taskRejected && reason.removePrefix("Distributed task failed:").trim() == "canceled")
+            return AwaitOutcome(null, reason, taskRejected, userCanceled)
         }
 
         /** 把 PC 返回的编码字节写盘并组装结果（纯本地 IO，可与其他事并行）。 */
@@ -424,6 +513,9 @@ class CoordinatorClient(
         val normalizedTileSize =
             if (tileSize == 0) 0 else tileSize.coerceAtLeast(MIN_TILE_SIZE)
         val normalizedOverlap = tileOverlap.coerceAtLeast(0)
+        // >4MB 走分块上传（削峰值内存），除非该端点已被确认不支持分块。
+        val useChunked =
+            !chunkedSubmitUnsupported && inputBytes.size > CHUNKED_SUBMIT_THRESHOLD_BYTES
         val task = RemoteTask(
             input = input,
             inputBounds = inputBounds,
@@ -435,8 +527,9 @@ class CoordinatorClient(
             tileSize = normalizedTileSize,
             tileOverlap = normalizedOverlap
         )
+        task.sentChunked = useChunked
 
-        val send: (Long) -> Boolean = { handle ->
+        val send: (Long, Boolean) -> Boolean = { handle, allowChunked ->
             try {
                 NCNNEngine.nativeSendDistributedTask(
                     handle,
@@ -447,7 +540,8 @@ class CoordinatorClient(
                     inputBytes,
                     outputFormat,
                     settings.normalizedQuality,
-                    settings.toNativeJson()
+                    settings.toNativeJson(),
+                    allowChunked
                 )
             } catch (e: UnsatisfiedLinkError) {
                 logRepository.error("CoordinatorClient", "Native bridge unavailable: ${e.message}")
@@ -458,12 +552,17 @@ class CoordinatorClient(
         if (nativeSessionHandle == 0L && !openSession(endpoint)) {
             return Result.failure(IllegalStateException("PC 不可达：${lastNativeError()}"))
         }
-        if (send(nativeSessionHandle)) {
+        if (send(nativeSessionHandle, useChunked)) {
             return Result.success(task)
         }
-        // 传输层失败：PC 可能重启（或是不支持会话循环的旧版）。重开一次再发。
+        // 传输层失败：PC 可能重启（或是不支持会话循环的旧版）。重开一次再发；
+        // 若首次是分块发送，则按“旧 PC 不支持分块”处理，重发强制单帧并记
+        // 住该端点不支持分块（后续大图少付一次分块失败）。
+        if (useChunked) {
+            chunkedSubmitUnsupported = true
+        }
         closeSession()
-        if (!openSession(endpoint) || !send(nativeSessionHandle)) {
+        if (!openSession(endpoint) || !send(nativeSessionHandle, false)) {
             val reason = lastNativeError()
             closeSession()
             clearEndpoint(endpoint)
@@ -552,6 +651,7 @@ class CoordinatorClient(
         closeSession()
         prefetched = null
         connectedEndpoint = null
+        chunkedSubmitUnsupported = false
         _connected.value = false
         PeerCapabilities.reset()
         logRepository.info("CoordinatorClient", "Disconnected from ${endpoint.host}:${endpoint.port}")
@@ -586,5 +686,14 @@ class CoordinatorClient(
 
     private companion object {
         private const val MIN_TILE_SIZE = 16
+
+        /** 超过此大小的输入走分块上传（与 native SINGLE_FRAME_SUBMIT_BYTES 一致）。 */
+        private const val CHUNKED_SUBMIT_THRESHOLD_BYTES: Int = 4 * 1024 * 1024
+
+        /**
+         * 单帧提交的字节上限（native MAX_SUBMIT_INPUT_BYTES：100MB 帧上限
+         * 减去 struct + nonce/MAC 余量）。超过它的输入只能分块，无降级余地。
+         */
+        private const val SINGLE_FRAME_LIMIT_BYTES: Int = 100 * 1024 * 1024 - 512
     }
 }

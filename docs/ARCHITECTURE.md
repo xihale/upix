@@ -168,7 +168,7 @@ auto_tile_size=true 时：
 | 组 | 消息 | 说明 |
 |----|------|------|
 | 加密握手 | `KEY_HELLO 0x0007`（明文）/ `AUTH_PROOF 0x0008` / `AUTH_RESPONSE 0x0004` | X25519+Ed25519 握手，之后全帧加密 |
-| 任务提交 | `CLIENT_SUBMIT 0x0500` / `CLIENT_RESPONSE 0x0501` / `TASK_PROGRESS 0x0502` / `CLIENT_DATA 0x0503` / `TASK_CANCEL 0x0504` | 手机→PC 提交整图（会话内可多次）；TASK_PROGRESS 为 PC→手机流式进度（兼防 NAT 空闲踢线），手机端透传进 UI；CLIENT_DATA 为 >100MB 结果续帧；TASK_CANCEL（手机→PC，空载荷）中止当前在途任务——PC 在下一个 tile 边界停算并以 success=0/error="canceled" 应答，会话保持可用（响应已发出后才到达的迟到 CANCEL 被容忍忽略） |
+| 任务提交 | `CLIENT_SUBMIT 0x0500` / `CLIENT_RESPONSE 0x0501` / `TASK_PROGRESS 0x0502` / `CLIENT_DATA 0x0503` / `TASK_CANCEL 0x0504` | 手机→PC 提交整图（会话内可多次，双格式：单帧 struct+数据 / struct 帧 + CLIENT_DATA ≤8MB 续帧，后者供 >4MB 大图削峰）；TASK_PROGRESS 为 PC→手机流式进度（兼防 NAT 空闲踢线），手机端透传进 UI；CLIENT_DATA 双向复用——PC→手机为 >100MB 结果续帧，手机→PC 为分块上传续帧；TASK_CANCEL（手机→PC，空载荷）中止当前在途任务——PC 在下一个 tile 边界停算并以 success=0/error="canceled" 应答，会话保持可用（响应已发出后才到达的迟到 CANCEL 被容忍忽略） |
 | 配对 | `CLIENT_CONNECT_REQUEST 0x0700` / `CLIENT_CONNECT_RESPONSE 0x0701` | 批准位 + 信任位 + AVIF 能力位 |
 | 共享模型库 | `MODEL_LIST/UPLOAD/DOWNLOAD 0x0510-0x0515` | 手机浏览/上传/拉取 PC 上的模型 |
 | 本地 daemon | `SERVE_REQUEST/RESPONSE/DATA/PROGRESS 0x0601-0x0604` | Unix domain socket，独立号段 |
@@ -207,7 +207,13 @@ auto_tile_size=true 时：
 `coordinator.{hpp,cpp}`（骨架+路由）+ `coordinator_admin.cpp`（模型目录设置）。
 监听 TCP，完成上述握手与配对，然后：
 
-- 接收 `MSG_CLIENT_SUBMIT`（请求头 + 压缩的图像文件字节，原始像素不上无线电）；
+- 接收 `MSG_CLIENT_SUBMIT`（请求头 + 压缩的图像文件字节，原始像素不上无线电）。
+  双格式兼容：submit 帧 payload = sizeof(struct)+数据 即旧式单帧；=
+  sizeof(struct) 即新式分块——按 struct 声明的 `input_data_length` **预分配**
+  总长缓冲，随后逐个解开 ≤8MB 的 `MSG_CLIENT_DATA` 续帧原位拼接，wire 与
+  明文的全量拷贝永不同时存在（峰值 ≈ 总长 + 2×8MB）。分块流被非 DATA 帧
+  打断时以 per-task 错误应答（"chunked submit interrupted"），会话保持可用，
+  旧手机可无缝续用；
 - **远程 tile 尺寸 0=auto**：手机默认提交 `tile_size=0`，PC 在 `process_locally` 里用
   `TileSizeOptimizer` 实测选优（探针按 model+设备+尺寸桶进程级缓存，每模型只付一次
   ~秒级测量；CLI 的 `--auto-tile` 同一缓存），失败兜底 `get_recommended_tile_size`；
@@ -241,6 +247,13 @@ TASK_PROGRESS 经回调透传进 UI）→ 批末 `nativeCloseDistributedSession`
 解码/推理 N+1 重叠，下一张原图字节在等结果时后台预取。模型共享等其他操作仍为
 一次性独立 TCP 连接（握手 → 配对 → 单操作帧 → 收结果 → 关连接）。
 超时：连接 10s、I/O 60s。传输失败自动重开会话重发一次（容忍 PC 重启）。
+
+**大图分块上传**：`nativeSendDistributedTask` 对 >4MB 输入改发 struct 帧 + N 个
+≤8MB `MSG_CLIENT_DATA` 续帧（`allowChunked=false` 强制旧式单帧）。不再构造
+整份 plaintext/wire 全量拷贝——提交侧峰值从 ~2×输入 降到 ~8MB。**版本回退**：
+旧 PC 不认识分块（摔线或回 "truncated" 类 per-task 错误）时，`awaitResult`
+自动降级为单帧重发一次（仅当尺寸 ≤100MB 帧上限）：per-task 错误 → 同会话重发；
+摔线 → 重开会话重发（端点保留）；并记住该端点不支持分块，后续大图直发单帧。
 
 **取消**：`ProcessingViewModel.cancelProcessing` 取消协程之外，还会经
 `CoordinatorClient.cancelRemoteTask` → `nativeCancelDistributedTask` 置会话级
@@ -451,7 +464,8 @@ cmd_process → 探测 daemon → 连 Unix socket
 ```
 UI → NativeImageProcessingRepository → CoordinatorClient（持久会话 + 深度 1 流水线）
   → nativeOpenDistributedSession (JNI: TCP + KEY_HELLO ×2 + AUTH + CONNECT 配对，每批一次)
-  → 每张图: nativeSendDistributedTask（CLIENT_SUBMIT 上传）
+  → 每张图: nativeSendDistributedTask（CLIENT_SUBMIT 上传；>4MB 为 struct 帧
+            + ≤8MB CLIENT_DATA 续帧，旧 PC 拒绝时自动降级单帧重发一次）
             nativeReceiveDistributedResult（收 TASK_PROGRESS* → 回调进 UI → CLIENT_RESPONSE(+DATA*)）
             [上传 N+1 → 写盘 N，与 PC 处理重叠]
   → 批末 nativeCloseDistributedSession

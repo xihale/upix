@@ -36,7 +36,9 @@ enum class MessageType : uint16_t {
     MSG_TASK_PROGRESS = 0x0502,
     // PC→phone: continuation result bytes after a MSG_CLIENT_RESPONSE whose
     // encoded result exceeds MAX_NETWORK_PAYLOAD. Results at or below the cap
-    // stay in the single RESPONSE frame.
+    // stay in the single RESPONSE frame. Reused in the opposite direction
+    // (phone→PC) as the input continuation frames of a chunked CLIENT_SUBMIT
+    // (see ClientTaskSubmit).
     MSG_CLIENT_DATA = 0x0503,
     // phone→PC, empty payload: abort the task that is currently running on
     // this session. Valid only while a CLIENT_SUBMIT is being processed (a
@@ -137,9 +139,22 @@ inline auto from_wire(const EncoderOptionsWire& w) -> EncoderOptions {
     return opts;
 }
 
-// One-shot image submit (phone→PC). Compressed input file bytes follow the
-// struct contiguously inside the same encrypted frame; the PC decodes them, so
-// raw pixels never cross the radio. output_format/quality tell the PC how to
+// One-shot image submit (phone→PC). Two wire formats, distinguished by the
+// submit frame's payload length:
+//
+//   legacy single frame — payload = sizeof(ClientTaskSubmit) + input bytes
+//   chunked (preferred for inputs > ~4MB) — the submit frame carries ONLY
+//     the struct (payload == sizeof(ClientTaskSubmit), input_data_length =
+//     total input size); the input bytes follow as N MSG_CLIENT_DATA frames
+//     (each ≤ CLIENT_DATA_CHUNK_BYTES plaintext, independently AEAD-sealed).
+//     The receiver pre-allocates input_data_length and reassembles chunk by
+//     chunk, so neither side ever materializes a full plaintext+wire copy
+//     of a large input. Old PCs answer a chunked submit with a per-task
+//     "truncated"-style error (or drop the connection); the phone then
+//     falls back to the legacy single frame.
+//
+// The phone ships compressed input file bytes; the PC decodes them, so raw
+// pixels never cross the radio. output_format/quality tell the PC how to
 // encode the upscaled result; `encoder` carries the per-format advanced knobs.
 //
 // The encoder fields were appended to ClientTaskSubmit/ServeRequest after the
@@ -153,9 +168,15 @@ struct ClientTaskSubmit {
     uint32_t tile_size;       // 0 = auto: PC picks via TileSizeOptimizer (cached per model), see coordinator.cpp
     uint32_t tile_overlap;
     uint32_t output_quality;  // 0 -> PC defaults to 90
-    uint32_t input_data_length;
+    uint32_t input_data_length;  // total input bytes (inline OR across DATA chunks)
     EncoderOptionsWire encoder;
 };
+
+// Chunk size for MSG_CLIENT_DATA continuation frames, both directions:
+// chunked CLIENT_SUBMIT uploads (phone→PC) and >MAX_NETWORK_PAYLOAD result
+// streams (PC→phone). Small enough to bound seal/open working memory at
+// ~2x8MB per frame, large enough to amortize the per-frame AEAD + TCP cost.
+inline constexpr uint32_t CLIENT_DATA_CHUNK_BYTES = 8u * 1024u * 1024u;
 
 struct ClientTaskResponse {
     uint8_t success;
