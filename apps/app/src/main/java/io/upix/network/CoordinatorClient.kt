@@ -402,7 +402,11 @@ class CoordinatorClient(
             )
 
         val settings = encoderSettings
-        val normalizedTileSize = tileSize.coerceAtLeast(MIN_TILE_SIZE)
+        // 0 is the protocol's "auto" sentinel: pass it through untouched so
+        // the PC picks the tile (TileSizeOptimizer, cached per model); any
+        // explicit size is clamped to the 16px protocol minimum.
+        val normalizedTileSize =
+            if (tileSize == 0) 0 else tileSize.coerceAtLeast(MIN_TILE_SIZE)
         val normalizedOverlap = tileOverlap.coerceAtLeast(0)
         val task = RemoteTask(
             input = input,

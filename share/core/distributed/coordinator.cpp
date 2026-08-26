@@ -1,5 +1,6 @@
 #include "coordinator.hpp"
 #include "core/tile_types.hpp"
+#include "core/tile_optimizer.hpp"
 #include "core/engine_setup.hpp"
 #include "utils/image.hpp"
 #include "utils/image_avif.hpp"
@@ -231,13 +232,37 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
             return std::unexpected(CoordinatorError{3, "Invalid output dimensions"});
         }
 
+        // tile_size 0 = remote auto: the phone did not pin a size, so the PC
+        // picks one with the same TileSizeOptimizer probe the CLI's
+        // --auto-tile uses. The probe result is cached per (model, device,
+        // dimension bucket) process-wide, so the one-time measurement cost
+        // (~8 sizes x 7 single-tile forwards) is paid on the first submit of
+        // a model, not per task; the engine recommendation is the fallback
+        // if the probe cannot produce a usable size.
+        int tile_size = config.tile_size;
+        if (tile_size == 0) {
+            TileSizeOptimizer optimizer;
+            ModelConstraints mc;
+            mc.model_name = model_name.empty() ? loaded_model_name_ : model_name;
+            mc.min_tile_size = config.min_tile_size;
+            mc.max_tile_size = config.max_tile_size;
+            tile_size = optimizer.find_optimal_tile_size(
+                *engine_, mc, config, width, height);
+            if (tile_size <= 0) {
+                tile_size = engine_->get_recommended_tile_size();
+            }
+            LOG_INFO("Coordinator",
+                     "Auto-selected tile size {} for remote task (tile_size=0)",
+                     tile_size);
+        }
+
         LOG_INFO("Coordinator", "Processing locally: {}x{} model={} tile={}", width, height,
-                 model_name.empty() ? loaded_model_name_ : model_name, config.tile_size);
+                 model_name.empty() ? loaded_model_name_ : model_name, tile_size);
 
         out_bytes.resize(out_bytes_n);
 
         TileConfig tc;
-        tc.tile_size = config.tile_size;
+        tc.tile_size = tile_size;
         tc.overlap = config.tile_overlap;
         tc.batch_size = 1;
 

@@ -571,7 +571,10 @@ auto send_distributed_submit(
                  sizeof(submit_request.input_format) - 1);
     std::strncpy(submit_request.output_format, output_format.c_str(),
                  sizeof(submit_request.output_format) - 1);
-    submit_request.tile_size = static_cast<uint32_t>(std::max(tile_size, 16));
+    // tile_size 0 = remote auto (PC-side TileSizeOptimizer); every explicit
+    // size is still clamped to the 16px protocol minimum.
+    submit_request.tile_size = static_cast<uint32_t>(
+        tile_size == 0 ? 0 : std::max(tile_size, 16));
     submit_request.tile_overlap = static_cast<uint32_t>(std::max(tile_overlap, 0));
     submit_request.output_quality = static_cast<uint32_t>(std::clamp(output_quality, 1, 100));
     submit_request.encoder = to_wire(encoder_opts);

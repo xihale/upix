@@ -201,6 +201,10 @@ auto_tile_size=true 时：
 监听 TCP，完成上述握手与配对，然后：
 
 - 接收 `MSG_CLIENT_SUBMIT`（请求头 + 压缩的图像文件字节，原始像素不上无线电）；
+- **远程 tile 尺寸 0=auto**：手机默认提交 `tile_size=0`，PC 在 `process_locally` 里用
+  `TileSizeOptimizer` 实测选优（探针按 model+设备+尺寸桶进程级缓存，每模型只付一次
+  ~秒级测量；CLI 的 `--auto-tile` 同一缓存），失败兜底 `get_recommended_tile_size`；
+  手机端三处 min 约束（Kotlin/jni/协议）均放行 0 且仅 0 例外；
 - 用本地引擎跑完整超分（`engine_setup` 初始化 + `TileProcessor.process_image_u8`）；
 - 处理中持续回发 `MSG_TASK_PROGRESS`，完成后回 `MSG_CLIENT_RESPONSE`（+ 必要时
   `MSG_CLIENT_DATA` 续帧）；编解码失败以 per-task 错误回传，不摔连接；

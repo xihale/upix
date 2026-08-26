@@ -24,6 +24,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <thread>
@@ -163,13 +164,14 @@ auto recv_sealed(TCPSocket& sock, EncryptedSession& session)
 // the terminal MSG_CLIENT_RESPONSE. Returns the parsed response + assembled
 // result payload, or nullopt on transport/protocol failure.
 auto submit_and_await(TCPSocket& sock, EncryptedSession& session,
-                      const std::vector<uint8_t>& png_bytes, const char* model_name)
+                      const std::vector<uint8_t>& png_bytes, const char* model_name,
+                      uint32_t tile_size = 64)
     -> std::optional<std::pair<ClientTaskResponse, std::vector<uint8_t>>> {
     ClientTaskSubmit task{};
     std::strncpy(task.model_name, model_name, sizeof(task.model_name) - 1);
     std::strncpy(task.input_format, "png", sizeof(task.input_format) - 1);
     std::strncpy(task.output_format, "png", sizeof(task.output_format) - 1);
-    task.tile_size = 64;
+    task.tile_size = tile_size;
     task.tile_overlap = 8;
     task.output_quality = 90;
     task.input_data_length = static_cast<uint32_t>(png_bytes.size());
@@ -383,6 +385,42 @@ int main() {
         CHECK(real_first->second == real_second->second);
         std::printf("OK real-model path (%s): two submits on one session, %zu-byte "
                     "identical results\n", model_name_env, real_first->second.size());
+
+        // ── tile_size=0 (remote auto): the PC must resolve it itself. The
+        //    PC log line "Auto-selected tile size ... for remote task" goes
+        //    to this process's stdout (the coordinator runs in-process), so
+        //    capture stdout around the submit and assert the log appeared.
+        //    Two 0-submits must also be byte-identical: the probe cache
+        //    guarantees the same tile is picked for the same model+buckets.
+        const auto cap_path = dir / "tile0_capture.log";
+        std::fflush(stdout);
+        const int saved_stdout = ::dup(STDOUT_FILENO);
+        CHECK(saved_stdout >= 0);
+        CHECK(std::freopen(cap_path.c_str(), "w", stdout) != nullptr);
+        auto auto_first = submit_and_await(rsock, *rsession, png_bytes, model_name_env, 0);
+        std::fflush(stdout);
+        ::dup2(saved_stdout, STDOUT_FILENO);
+        ::close(saved_stdout);
+        CHECK(auto_first.has_value());
+        CHECK(auto_first->first.success == 1);
+        CHECK(auto_first->second.size() > 1000);
+        std::string captured;
+        {
+            std::ifstream in(cap_path);
+            std::string line;
+            while (std::getline(in, line)) {
+                captured += line + '\n';
+            }
+        }
+        CHECK(captured.find("Auto-selected tile size") != std::string::npos);
+        CHECK(captured.find("for remote task") != std::string::npos);
+        std::printf("OK tile_size=0 auto path: PC logged auto-selection\n");
+        auto auto_second = submit_and_await(rsock, *rsession, png_bytes, model_name_env, 0);
+        CHECK(auto_second.has_value());
+        CHECK(auto_second->first.success == 1);
+        CHECK(auto_first->second == auto_second->second);
+        std::printf("OK tile_size=0 auto path: two 0-submits byte-identical "
+                    "(probe cache picked the same tile)\n");
 
         rsock.close();
         real.stop();

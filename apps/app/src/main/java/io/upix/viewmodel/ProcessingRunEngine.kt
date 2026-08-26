@@ -846,7 +846,10 @@ internal class ProcessingRunEngine(
     }
 
     companion object {
-        private const val DISTRIBUTED_TILE_SIZE = 256
+        // 0 = protocol "auto" sentinel: the PC picks the tile size with its
+        // TileSizeOptimizer (probe cached per model, far better informed
+        // than the phone could be about the PC's GPU/VRAM).
+        private const val DISTRIBUTED_TILE_SIZE = 0
         private const val DISTRIBUTED_TILE_OVERLAP = 16
     }
 }

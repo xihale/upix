@@ -144,7 +144,7 @@ struct ClientTaskSubmit {
     char model_name[64];      // empty = PC's first available model
     char input_format[16];    // "jpg"/"png"/"webp"/"avif" (from source mime/name)
     char output_format[16];   // empty -> PC defaults to jpg
-    uint32_t tile_size;       // 0 = auto
+    uint32_t tile_size;       // 0 = auto: PC picks via TileSizeOptimizer (cached per model), see coordinator.cpp
     uint32_t tile_overlap;
     uint32_t output_quality;  // 0 -> PC defaults to 90
     uint32_t input_data_length;
