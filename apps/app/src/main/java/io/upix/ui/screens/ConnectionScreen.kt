@@ -33,6 +33,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -72,7 +73,9 @@ fun ConnectionScreen(
     onConfirmFingerprint: () -> Unit,
     onCancelFingerprint: () -> Unit
 ) {
-    val showQrScanner = remember { mutableStateOf(false) }
+    // saveable：扫码页锁定竖屏会在横屏进入时触发 Activity 重建，
+    // 普通 remember 会丢状态导致扫码页"秒退"。
+    val showQrScanner = rememberSaveable { mutableStateOf(false) }
 
     if (showQrScanner.value) {
         QRScannerScreen(
