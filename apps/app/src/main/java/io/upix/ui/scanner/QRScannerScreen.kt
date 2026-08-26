@@ -3,12 +3,15 @@ package io.upix.ui.scanner
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
@@ -134,7 +137,12 @@ fun QRScannerScreen(
 
     DisposableEffect(Unit) {
         ScannerMode.enter()
+        // 扫码锁定竖屏：旋转会重建 Activity 导致"退出"，且横屏下 rail/drawer
+        // 会挤在画面左侧。退出时恢复系统跟随。
+        val activity = context as? Activity
+        activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         onDispose {
+            activity?.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
             ScannerMode.exit()
             cameraExecutor.shutdown()
         }
@@ -166,6 +174,18 @@ fun QRScannerScreen(
         }
         val processingFrame = AtomicBoolean(false)
         val analysis = ImageAnalysis.Builder()
+            // 默认分析流仅 640×480：二维码稍远时单模块像素不足，ZXing 解不出。
+            // 目标 1080p，取最接近可用分辨率。
+            .setResolutionSelector(
+                ResolutionSelector.Builder()
+                    .setResolutionStrategy(
+                        ResolutionStrategy(
+                            android.util.Size(1920, 1080),
+                            ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                        )
+                    )
+                    .build()
+            )
             .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
             .build()
             .apply {
