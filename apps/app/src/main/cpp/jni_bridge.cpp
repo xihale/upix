@@ -123,9 +123,9 @@ auto identity_snapshot() -> std::shared_ptr<const upix::IdentityKey> {
 }
 
 // Client side of the 3-message ECDH+signature handshake. Mirrors
-// Worker::handshake() in share/core/distributed/worker.cpp byte-for-byte.
-// On success returns an activated EncryptedSession; on failure returns
-// nullopt and sets error_msg.
+// Coordinator::run_handshake() in share/core/distributed/coordinator.cpp
+// byte-for-byte. On success returns an activated EncryptedSession; on
+// failure returns nullopt and sets error_msg.
 auto run_client_handshake(
     upix::TCPSocket& socket,
     const std::array<uint8_t, 32>& peer_identity_pubkey,

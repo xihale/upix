@@ -2,7 +2,7 @@
 
 **Status:** Normative spec for the Compose UI (`apps/app/src/main/java/io/upix/ui/**`).
 **Aesthetic:** 简洁 · natural · 大方 · elegant — Apple-style restraint on a Material 3 expressive-lite base. Generous whitespace, fewer borders, one accent, zero decorative noise.
-**Constraints:** Pure Compose Material3 (`material3:1.5.0-alpha17`) + `material-icons-extended`. No new dependencies. Every number below is copy-paste ready.
+**Constraints:** Pure Compose Material3 (`material3:1.5.0-alpha26`, pinned in `libs.versions.toml`/`build.gradle.kts` for the public Expressive APIs) + `material-icons-extended`. No new dependencies. Every number below is copy-paste ready.
 
 ---
 
@@ -364,7 +364,7 @@ Count badge caps display at "99+". Recolor from error-red default to `Badge(colo
 
 Ordered, each independently compilable:
 
-1. ✅ **Done — `theme/Theme.kt`** — delete the `Build.VERSION.SDK_INT >= S` dynamic-color branch (D1); add the `Shapes(...)` block from §4 to `MaterialExpressiveTheme(shapes = ...)`. (Executed: branch deleted; shipped as `UpixShapes` Shapes block, `ui/theme/Theme.kt:100-105`.)
+1. ✅ **Done — `theme/Theme.kt`** — delete the `Build.VERSION.SDK_INT >= S` dynamic-color branch (D1); add the `Shapes(...)` block from §4 to `MaterialExpressiveTheme(shapes = ...)`. (Executed: branch deleted; shipped as `UpixShapes` Shapes block, `ui/theme/Theme.kt:100-105`. **Superseded 2026-08-24:** D1 was later re-ruled to *keep* dynamic color on Android 12+ — the branch is back at `Theme.kt:124-125`, see the D1 entry above. The `UpixShapes` block from this item remains in force.)
 2. ✅ **Done — Radius moves** — switch `shapes.large` → `shapes.medium` on the four card Surfaces: `home/ParameterCard.kt` (:105), `screens/SettingsScreen.kt` (:288, `SettingsGroupCard`), `screens/ConnectionScreen.kt` (:196, `StatusCard`), `screens/ModelsScreen.kt` (:269, empty-state Surface). Hero `ImageStage` and preview media frame stay `large`. (Executed: all four plus the connection error banner at `ConnectionScreen.kt:159` are `shapes.medium`.)
 3. ✅ **Done — Hairline softening** — `home/HeroArea.kt` thumbnail delete circle: border color `outline` → `outlineVariant`. (Executed: `HeroArea.kt:372`.)
 4. ✅ **Done — Badge recolor** — `ui/screens/home/BottomActionDock.kt` queue `Badge` → `primaryContainer`/`onPrimaryContainer` (§9.11). (Executed: `BottomActionDock.kt:134-140`, including the "99+" display cap; reverified against HEAD e556d7a — cap `Text` sits at :139.)

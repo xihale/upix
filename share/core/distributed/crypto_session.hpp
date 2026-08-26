@@ -24,7 +24,7 @@ public:
     void activate(const SessionKey& key);
 
     // seal: 输入明文 header + payload,输出完整 wire bytes。
-    // wire = [MessageHeader(15B,type 不变,payload_length 改为 nonce+ct 长度)]
+    // wire = [MessageHeader(14B,type 不变,payload_length 改为 nonce+ct 长度)]
     //        [nonce(24B)][ciphertext(payload_len + 16 MAC)]
     auto seal(const MessageHeader& header, const void* plaintext_payload) const
         -> std::vector<uint8_t>;

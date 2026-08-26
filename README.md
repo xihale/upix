@@ -1,6 +1,6 @@
 # Upix - Distributed Image Super-Resolution
 
-Upix is a distributed image super-resolution system that supports both standalone CLI and distributed computing across multiple devices. It uses modern C++ (C++23), ncnn for inference, and supports popular image formats via libpng, libjpeg, and libwebp.
+Upix is an image super-resolution system with a standalone CLI (and Android app) plus encrypted LAN offloading: the phone pairs with a PC and delegates the GPU work. It uses modern C++ (C++23), ncnn for inference, and supports popular image formats via libpng, libjpeg, libwebp, and (optionally) libavif.
 
 ## Features
 
@@ -8,7 +8,8 @@ Upix is a distributed image super-resolution system that supports both standalon
 - Tile-based processing with configurable overlap
 - Auto-tuning of tile size based on model and image dimensions
 - Multi-threaded directory processing via `--jobs` (CPU engines)
-- Distributed computing coordinator/worker model (QR code pairing)
+- Offload to a PC over the LAN: QR pairing, end-to-end encrypted (X25519 + Ed25519 + secretbox)
+- Outputs carry an XMP marker; re-feeding an already-upscaled image skips by default
 - Cross-platform: Linux/macOS/Windows CLI + Android app
 
 ## Build
@@ -22,11 +23,13 @@ Upix is a distributed image super-resolution system that supports both standalon
 ### Build CLI
 
 ```bash
-cd cli
-xmake
+scripts/build_cli.sh release    # from the repo root
 ```
 
-The binary will be located at `build/linux/x86_64/release/upix-cli` (path may vary by platform).
+The script always reconfigures xmake for linux/x86_64 before building — xmake keeps a
+single global config per project, so a bare `xmake` after an Android build would target
+Android. The binary lands at `build/linux/x86_64/release/upix-cli`. Debug builds:
+`scripts/build_cli.sh debug`.
 
 ### Build Android App
 
@@ -170,9 +173,10 @@ and downloaded on demand (see `models/README.md`):
 ./upix-cli model import ~/foo.param ~/foo.bin         # import local custom models
 ```
 
-Models are discovered from the `models` directory (default `./models`, override
-with `--models-dir` on any subcommand, or set `UPIX_MODELS_DIR` to work
-from any directory). Each model is a `.param` + `.bin` pair; both layouts work:
+Models are discovered from the per-user store `$XDG_DATA_HOME/upix/models`
+(`~/.local/share/upix/models` by default) — the same set from any working directory.
+Override per invocation with `--models-dir` on any subcommand, or globally by exporting
+`UPIX_MODELS_DIR`. Each model is a `.param` + `.bin` pair; both layouts work:
 
 ```
 models/
@@ -184,7 +188,20 @@ models/
 ```
 
 On Android, the Models page offers the same download list plus local import
-of your own `.param`/`.bin`/`.zip` files.
+of your own `.param`/`.bin`/`.zip` files; models on a paired PC can be listed,
+pulled, and pushed from there too.
+
+### SR Marker (idempotent re-runs)
+
+Every output embeds an XMP marker (`urn:upix:sr:1`) recording that — and with
+which model/scale — the image was upscaled. Feeding a marked image back in
+**skips it by default** (both CLI and Android), so batch pipelines that overlap
+input and output directories don't waste GPU time re-upscaling results. Use
+`-f` / `--force` to process a marked image anyway:
+
+```bash
+./upix-cli input.png -f    # re-upscale even though it carries the marker
+```
 
 ### Distributed Mode
 
@@ -204,8 +221,14 @@ Show the connection card without starting anything:
 Distributed offloading is driven from the Android app, not the CLI. With `host`
 running, open the Android app, scan the QR (or connect manually with the IP and
 port from the card), and submit an image; the PC upscales it and returns the
-result over the encrypted protocol. Pairing is approved on the PC the first
-time and remembered afterwards.
+result over the encrypted protocol.
+
+Pairing is trust-on-first-use: both endpoints have persistent Ed25519 identities
+(`~/.upix/identity` on the PC). On first connect the phone shows the PC's
+8-hex-digit fingerprint for confirmation and the PC prompts `[y/n]`; afterwards
+the peer is remembered in the trust store (`~/.upix/trusted_clients`) and
+reconnects are automatic. All traffic after the handshake is encrypted
+(X25519 key exchange, XSalsa20-Poly1305 frames) — no pre-shared password.
 
 ### Performance Probes
 
@@ -295,7 +318,9 @@ Load with `--config FILE`. CLI flags override the loaded configuration.
 ## Development
 
 See [docs/README.md](docs/README.md) for documentation navigation.
-[ARCHITECTURE.md](docs/ARCHITECTURE.md) is the single source of truth for system layout.
+[ARCHITECTURE.md](docs/ARCHITECTURE.md) is the single source of truth for system
+layout; [DEVELOPMENT.md](docs/DEVELOPMENT.md) covers build/test/release workflows
+and known pitfalls.
 
 ## License
 
@@ -307,11 +332,11 @@ Upix is licensed under the [MIT License](LICENSE).
 |-----------|---------|-------|
 | [ncnn](https://github.com/Tencent/ncnn) | BSD 3-Clause | Inference engine (Tencent). Copyright © 2017 Tencent |
 | [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) | BSD 3-Clause | Source of the bundled super-resolution models (converted to ncnn format) |
-| libpng / libjpeg / libwebp | libpng / IJG / BSD 3-Clause | Image codecs |
+| libpng / libjpeg / libwebp / libdeflate | libpng / IJG / BSD 3-Clause / MIT | Image codecs, SPIR-V pack decompression |
 | glaze | MIT | JSON serialization |
 | libsodium | ISC | Encrypted pairing channel |
 | CLI11 | BSD 3-Clause | CLI parsing |
-| OpenSSL / libcurl | Apache-2.0 / curl | Model download transport |
+| OpenSSL / libcurl / libzip | Apache-2.0 / curl / BSD 3-Clause | Model download transport |
 | AndroidX / Jetpack Compose / CameraX / zxing | Apache 2.0 | Android app UI, camera QR scanning |
 
 Android dependencies are declared in `apps/app/build.gradle.kts`; the full C++ dependency
