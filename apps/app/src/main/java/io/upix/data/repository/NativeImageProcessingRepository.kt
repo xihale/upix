@@ -421,6 +421,44 @@ class NativeImageProcessingRepository(
         private var scaleFactor: Int,
         private val encoderSettings: EncoderSettings
     ) : ImageProcessingSession {
+        // depth-1 解码预取槽：处理第 N 张时后台解码第 N+1 张，推理期间
+        // GPU/CPU 忙而解码线程空闲，重叠后每张图省一次解码墙钟。单槽即可
+        // 覆盖批次顺序推进；最后一次写入者胜。锁保护跨线程读写。
+        private val prefetchLock = Any()
+        private var prefetchUriString: String? = null
+        private var prefetchDecoded: DecodedRgbImage? = null
+
+        override fun prefetch(input: ResolvedImageInput) {
+            if (enginePtr == 0L) {
+                return
+            }
+            val decoded = try {
+                decodeInput(input)
+            } catch (throwable: Throwable) {
+                logRepository.warning(
+                    "NativeImageProcessingRepository",
+                    "Prefetch decode failed for ${input.displayName}: ${throwable.message}"
+                )
+                null
+            }
+            synchronized(prefetchLock) {
+                prefetchUriString = input.uri.toString()
+                prefetchDecoded = decoded
+            }
+        }
+
+        private fun takePrefetched(input: ResolvedImageInput): DecodedRgbImage? {
+            synchronized(prefetchLock) {
+                val hit = prefetchUriString != null &&
+                    prefetchUriString == input.uri.toString() && prefetchDecoded != null
+                if (!hit) return null
+                val decoded = prefetchDecoded
+                prefetchUriString = null
+                prefetchDecoded = null
+                return decoded
+            }
+        }
+
         override fun process(
             input: ResolvedImageInput,
             outputFile: File
@@ -428,7 +466,13 @@ class NativeImageProcessingRepository(
             val activeEnginePtr = enginePtr
             require(activeEnginePtr != 0L) { "Native session already closed" }
 
-            val decoded = decodeInput(input)
+            val decoded = takePrefetched(input)
+                ?: (decodeInput(input)?.also {
+                    logRepository.info(
+                        "NativeImageProcessingRepository",
+                        "decoded ${input.displayName} on the process path (no prefetch hit)"
+                    )
+                })
             requireNotNull(decoded) {
                 "Failed to decode image input: ${input.displayName}"
             }

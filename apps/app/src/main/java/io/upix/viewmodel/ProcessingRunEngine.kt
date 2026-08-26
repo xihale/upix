@@ -24,6 +24,7 @@ import java.util.LinkedHashMap
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.async
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -539,10 +540,20 @@ internal class ProcessingRunEngine(
                         }
                     } else {
                         withContext(defaultDispatcher) {
-                            checkNotNull(currentSession).process(
+                            val sessionForAhead = checkNotNull(currentSession)
+                            // 本地 depth-1 流水线：处理当前张的同时预解码下一
+                            // 张（推理忙 GPU/CPU，解码走独立线程）。join 保证
+                            // process() 时缓存已就绪；解码失败由会话内正常解
+                            // 码路径兜底。
+                            val decodeAheadJob = runImages.getOrNull(itemIndex + 1)?.let { next ->
+                                async(ioDispatcher) { sessionForAhead.prefetch(next) }
+                            }
+                            val result = sessionForAhead.process(
                                 input = item,
                                 outputFile = outputFile
                             )
+                            decodeAheadJob?.join()
+                            result
                         }
                     }
 

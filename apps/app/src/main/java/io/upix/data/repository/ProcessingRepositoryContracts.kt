@@ -147,6 +147,13 @@ interface ImageProcessingSession : AutoCloseable {
         input: ResolvedImageInput,
         outputFile: File
     ): Result<NativeProcessResult>
+
+    /**
+     * 预取提示：提前解码 [input]，让下一张图的解码与当前图的推理/编码
+     * 重叠（depth-1）。实现可以忽略；失败必须吞掉——process() 里的正常
+     * 解码路径会兜底重试并把真实错误上报。每次调用覆盖上一个预取槽位。
+     */
+    fun prefetch(input: ResolvedImageInput) {}
 }
 
 interface ImageProcessingStore {
