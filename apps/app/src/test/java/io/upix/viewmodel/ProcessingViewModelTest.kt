@@ -350,6 +350,50 @@ class ProcessingViewModelTest {
     }
 
     @Test
+    fun multiSourceBatchRunsAsSingleQueueRowAndProcessesAllImages() = runTest(mainDispatcherRule.testDispatcher) {
+        // 相册多选合并批次：InputSourceSpec.encode 产出的 upix://multi: 源
+        // 一次入队（一行队列/一份 checkpoint），run 把成员图全部跑完。
+        val uriA = "content://media/external/images/media/31"
+        val uriB = "content://media/external/images/media/42"
+        val mergedSource = io.upix.data.repository.InputSourceSpec.encode(listOf(uriA, uriB))
+        assertNotNull(mergedSource)
+        val inputSourceResolver = FakeInputSourceResolver().apply {
+            register(mergedSource!!, listOf(uriA, uriB))
+        }
+        val imageProcessingStore = FakeImageProcessingStore()
+        val viewModel = makeViewModel(
+            inputSourceRepository = inputSourceResolver,
+            nativeImageProcessingRepository = imageProcessingStore
+        )
+
+        advanceUntilIdle()
+        val batchId = viewModel.enqueueBatch(
+            imagePath = mergedSource!!,
+            modelName = "Real-ESRGANv3-anime-x2",
+            distributedMode = false,
+            outputDirectoryUri = null
+        )
+        advanceUntilIdle()
+
+        assertNotNull(batchId)
+        val queueItems = viewModel.uiState.value.queueItems
+        assertEquals(1, queueItems.size)
+        assertEquals(mergedSource, queueItems.first().source)
+        assertEquals(2, queueItems.first().expectedItems)
+
+        viewModel.startBatchQueue()
+        advanceUntilIdle()
+
+        assertEquals(listOf(uriA, uriB), imageProcessingStore.processedUris)
+        val finalState = viewModel.uiState.value
+        assertEquals(1, finalState.queueItems.size)
+        assertEquals(PersistedQueueItemStatus.COMPLETED, finalState.queueItems.first().status)
+        assertEquals(ProcessingStatus.COMPLETED, finalState.task?.status)
+        assertEquals(2, finalState.task?.totalItems)
+        assertFalse(finalState.isQueueRunning)
+    }
+
+    @Test
     fun batchQueueStopsOnFailureAndAllowsRetry() = runTest(mainDispatcherRule.testDispatcher) {
         val sourceA = "content://source/fail-first"
         val sourceB = "content://source/second"

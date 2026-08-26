@@ -361,7 +361,10 @@ OOM 预检与降级、原子写、Zip Slip 防护、payload 上限、双探针�
 切后台进程不被冻结、WiFi 传输不中断；前台通知低频显示批次进度与 PC 推理百分比，
 批次终态各发一条完成/失败/取消通知；批次间不重启服务，active=false 或用户划掉
 最近任务时自停并释放 WakeLock。服务不承载处理逻辑——run 仍在 viewModelScope，
-经 ProcessingForegroundCoordinator 共享 StateFlow 单向驱动）。
+经 ProcessingForegroundCoordinator 共享 StateFlow 单向驱动）。相册多选合并单批次：
+系统相册 N 张图经 `InputSourceSpec.encode` 编成 `upix://multi:` 单源一次入队
+（一次规划/一份 checkpoint/一行队列；解析、输出目录与断点续传语义同文件夹批次，
+`source` 为普通字符串字段，旧单 URI 队列文件格式不变）。
 
 **Android 本地超分调用链**：
 ```

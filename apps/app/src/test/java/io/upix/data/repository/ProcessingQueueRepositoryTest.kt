@@ -173,6 +173,57 @@ class ProcessingQueueRepositoryTest {
         assertFalse(loaded.isQueueRunning)
     }
 
+    @Test
+    fun multiSourceBatchRoundTripsVerbatimThroughPersistence() {
+        // 相册多选合并批次：source 是 InputSourceSpec.encode 的 upix://multi:
+        // 编码串（一个批次=N 张图）。持久化必须原样保留（trim 不破坏 JSON
+        // payload），重载后旧/新两种格式共存。
+        val multiSource = requireNotNull(
+            InputSourceSpec.encode(
+                listOf(
+                    "content://media/external/images/media/31",
+                    "content://media/external/images/media/42"
+                )
+            )
+        )
+        assertTrue(multiSource.startsWith("upix://multi:"))
+
+        runBlocking {
+            repository.persistQueue(
+                ProcessingQueueSnapshot(
+                    items = listOf(
+                        PersistedQueueItem(
+                            id = "multi-batch",
+                            source = multiSource,
+                            modelName = "Real-ESRGANv3-anime-x2",
+                            distributedMode = false,
+                            createdAtEpochMs = 1L,
+                            expectedItems = 2,
+                            status = PersistedQueueItemStatus.PENDING
+                        )
+                    ),
+                    isQueueRunning = false
+                )
+            )
+        }
+
+        val restoredRepository = ProcessingQueueRepository(
+            context = context,
+            logRepository = logRepository
+        )
+        val loaded = restoredRepository.loadQueue()
+        assertEquals(1, loaded.items.size)
+        assertEquals(multiSource, loaded.items.first().source)
+        assertEquals(2, loaded.items.first().expectedItems)
+        assertEquals(
+            listOf(
+                "content://media/external/images/media/31",
+                "content://media/external/images/media/42"
+            ),
+            InputSourceSpec.decode(loaded.items.first().source)
+        )
+    }
+
     companion object {
         private const val QUEUE_FILE_NAME = "processing_queue.json"
     }

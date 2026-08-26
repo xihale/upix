@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import io.upix.R
 import io.upix.data.model.ModelImportResult
+import io.upix.data.repository.InputSourceSpec
 import io.upix.data.repository.LogRepository
 import io.upix.util.isImageSourceDecodable
 import io.upix.util.needsLegacyWritePermission
@@ -125,10 +126,18 @@ internal class InputSelectionController(
             }
             if (selectedModelName == null) {
                 logRepository.warning("UpixApp", "No model selected, skip auto enqueue for newly added images")
-            } else {
-                queueEligibleSources.forEach { source ->
+            } else if (queueEligibleSources.isNotEmpty()) {
+                // 多选合并为一个批次：InputSourceSpec.encode 把 N 个 URI 编码成
+                // upix://multi: 单源（1 个时原样返回），一次规划/一份 checkpoint/
+                // 一行队列；解析、输出目录、断点续传语义与文件夹批次一致
+                // （InputSourceRepository/BatchOutputRepository/QueueSheet 均已
+                // 内建 multi 解码）。
+                val mergedBatchSource = InputSourceSpec.encode(queueEligibleSources)
+                if (mergedBatchSource == null) {
+                    logRepository.warning("UpixApp", "No queue eligible sources to enqueue after merge")
+                } else {
                     processingViewModel.enqueueBatch(
-                        imagePath = source,
+                        imagePath = mergedBatchSource,
                         modelName = selectedModelName,
                         distributedMode = useRemote,
                         outputDirectoryUri = outputDirectoryUri,
