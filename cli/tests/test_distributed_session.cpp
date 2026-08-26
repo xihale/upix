@@ -902,7 +902,7 @@ int main() {
                                         64, "jpg");
             CHECK(out.has_value());
             CHECK(out->first.success == 1);
-            auto decoded = Image::load_from_memory("png", out->second);
+            auto decoded = Image::load_from_memory("jpg", out->second);
             CHECK(decoded.has_value());
             return {decoded->width(), decoded->height()};
         }();
@@ -923,7 +923,7 @@ int main() {
                                         64, "jpg");
             CHECK(out.has_value());
             CHECK(out->first.success == 1);
-            auto decoded = Image::load_from_memory("png", out->second);
+            auto decoded = Image::load_from_memory("jpg", out->second);
             CHECK(decoded.has_value());
             CHECK(decoded->width() > decoded->height());  // landscape base
             CHECK(exif_jpeg_dims.first == decoded->height());
