@@ -4,9 +4,11 @@
 #include <string>
 #include <string_view>
 #include <cstdlib>
+#include <cstdio>
 #include <mutex>
 #include <chrono>
 #include <iostream>
+#include <unistd.h>
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -21,7 +23,9 @@ enum class LogLevel {
     ERROR = 3
 };
 
-// ANSI color codes for terminal output
+// ANSI color codes for terminal output. Empty when color is disabled so the
+// SGR escapes never leak into pipes, redirected files, or captured child
+// output (see scripts/publish_models.py, which relies on NO_COLOR).
 namespace console_colors {
     constexpr const char* RESET = "\033[0m";
     constexpr const char* RED = "\033[31m";       // ERROR
@@ -30,6 +34,26 @@ namespace console_colors {
     constexpr const char* BLUE = "\033[34m";      // DEBUG
     constexpr const char* CYAN = "\033[36m";      // Tag
     constexpr const char* WHITE = "\033[37m";     // Message
+}
+
+// Should ANSI color codes be emitted on stdout? Honors the de-facto standard
+// env vars (NO_COLOR, FORCE_COLOR, CLICOLOR_FORCE) plus a TTY check on stdout.
+// Android has no interactive stdout, so it is always off there.
+inline bool console_color_enabled() {
+#ifdef __ANDROID__
+    return false;
+#else
+    if (const char* no_color = std::getenv("NO_COLOR")) {
+        if (no_color[0] != '\0') return false;  // any non-empty value disables
+    }
+    if (const char* force = std::getenv("FORCE_COLOR")) {
+        if (force[0] != '\0') return true;
+    }
+    if (const char* clicolor_force = std::getenv("CLICOLOR_FORCE")) {
+        if (clicolor_force[0] != '\0' && clicolor_force[0] != '0') return true;
+    }
+    return ::isatty(STDOUT_FILENO) == 1;
+#endif
 }
 
 class Logger {
@@ -60,10 +84,18 @@ public:
             tm_buf.tm_year + 1900, tm_buf.tm_mon + 1, tm_buf.tm_mday,
             tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec, ms);
 
-        std::cout << std::format("[{}] [{}{}] [{}{}] {}\n",
+        // When color is disabled (pipe/file/NO_COLOR/Android), emit the plain
+        // SGR-less line. Otherwise wrap each colored span with RESET so the
+        // color never bleeds past the level label into the message or beyond
+        // the newline.
+        const char* tag_color   = use_color_ ? console_colors::CYAN  : "";
+        const char* level_color = use_color_ ? level_to_color(level) : "";
+        const char* reset_color = use_color_ ? console_colors::RESET : "";
+
+        std::cout << std::format("[{}] [{}{}{}] [{}{}{}] {}\n",
                                  timestamp,
-                                 console_colors::CYAN, tag,
-                                 level_to_color(level), level_to_string(level),
+                                 tag_color, tag, reset_color,
+                                 level_color, level_to_string(level), reset_color,
                                  message) << std::flush;
 
 #ifdef __ANDROID__
@@ -141,6 +173,7 @@ private:
         }
         return LogLevel::INFO;
     }();
+    const bool use_color_ = console_color_enabled();
     std::mutex mutex_;
 };
 
