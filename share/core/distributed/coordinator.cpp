@@ -708,8 +708,53 @@ bool Coordinator::handle_client_submit(
         if (st.stop_requested()) {
             run.cancel.store(true);
         }
+        // Drain the worker's coalesced progress slot — one frame per tick
+        // max; stale values collapse naturally. The int→uint pct conversion
+        // and eta come straight from the atomics the worker published.
+        {
+            const int pending_pct =
+                run.progress_pct.exchange(-1, std::memory_order_relaxed);
+            if (!transport_ok) {
+                // unreachable guard for readers: transport death breaks below
+            }
+            if (pending_pct >= 0 && transport_ok) {
+                const bool cs_perf3 =
+                    std::getenv("UPIX_PIPELINE_TIMER") != nullptr;
+                const auto ps_t0 = std::chrono::steady_clock::now();
+                TaskProgress msg{};
+                msg.stage = 0;
+                msg.percent = static_cast<uint32_t>(pending_pct);
+                msg.eta_seconds = run.progress_eta.load(std::memory_order_relaxed);
+                if (!send_encrypted(conn, MessageType::MSG_TASK_PROGRESS,
+                                    &msg, sizeof(msg))) {
+                    LOG_WARNING("Coordinator",
+                                "Progress send failed (peer gone); canceling task");
+                    run.connection_lost.store(true);
+                    run.cancel.store(true);
+                    transport_ok = false;
+                    break;
+                }
+                if (cs_perf3) {
+                    LOG_INFO("Coordinator",
+                             "[PERF] progress send pct={} took {:.1f} ms",
+                             pending_pct,
+                             std::chrono::duration<double, std::milli>(
+                                 std::chrono::steady_clock::now() - ps_t0)
+                                 .count());
+                }
+            }
+        }
         std::optional<std::pair<MessageHeader, std::vector<uint8_t>>> frame;
+        const auto pf_t0 = std::chrono::steady_clock::now();
         const auto poll = recv_encrypted_poll(conn, TASK_FRAME_POLL_MS, frame);
+        if (std::getenv("UPIX_PIPELINE_TIMER") != nullptr &&
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - pf_t0).count() > 500) {
+            LOG_INFO("Coordinator",
+                     "[PERF] poll tick took {:.1f} ms",
+                     std::chrono::duration<double, std::milli>(
+                         std::chrono::steady_clock::now() - pf_t0).count());
+        }
         if (poll == FramePoll::Timeout) {
             continue;
         }
@@ -839,31 +884,24 @@ void Coordinator::run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
         // connection that cannot receive the result anymore.
         int last_sent_pct = -1;
         const auto task_start = std::chrono::steady_clock::now();
-        auto progress_sink = [&conn, &last_sent_pct, &task_start, &run, this](float frac) {
+        auto progress_sink = [&last_sent_pct, &run, &task_start](float frac) {
             const int pct = static_cast<int>(
                 std::clamp(frac, 0.0f, 1.0f) * 100.0f);
             if (pct == last_sent_pct) {
                 return;
             }
-            last_sent_pct = pct;
-            // Real time estimate: linear projection from observed rate
-            // (same math the CLI's ETA uses).
-            TaskProgress msg{};
-            msg.stage = 0;
-            msg.percent = static_cast<uint32_t>(pct);
+            // Publish only: the handler thread transmits progress frames
+            // from its poll loop. Direct sends here convoyed against the
+            // polled reader on the shared io_mutex (~10 s per frame).
+            // ETA math mirrors the CLI's linear projection.
+            run.progress_pct.store(pct, std::memory_order_relaxed);
             if (pct > 0 && pct < 100) {
                 const double elapsed =
                     std::chrono::duration<double>(
                         std::chrono::steady_clock::now() - task_start).count();
-                msg.eta_seconds = static_cast<uint32_t>(
-                    elapsed / pct * (100 - pct));
-            }
-            if (!send_encrypted(conn, MessageType::MSG_TASK_PROGRESS,
-                                &msg, sizeof(msg))) {
-                LOG_WARNING("Coordinator",
-                            "Progress send failed (peer gone); canceling task");
-                run.connection_lost.store(true);
-                run.cancel.store(true);
+                run.progress_eta.store(
+                    static_cast<uint32_t>(elapsed / pct * (100 - pct)),
+                    std::memory_order_relaxed);
             }
         };
 

@@ -126,14 +126,24 @@ private:
     // the per-task worker thread it spawns:
     //   cancel           — set by MSG_TASK_CANCEL, a dead connection (the
     //                      handler's polled read fails, or the worker's
-    //                      progress send fails) or coordinator stop(); the
+    //                      response send fails) or coordinator stop(); the
     //                      worker aborts inference at the next tile boundary.
     //   connection_lost  — the transport failed mid-task (diagnostics only).
     //   done             — the worker finished its terminal response send.
+    //   progress_pct/eta — latest inference progress written by the worker;
+    //                      transmitted by the handler, one frame per poll tick.
+    // Progress frames used to be sent directly by the worker. That convoyed
+    // against the handler's polled reads on StreamSocket's single io_mutex:
+    // measured ~10 s per progress send — a 1900x slowdown of the whole
+    // upscale (UPIX_PIPELINE_TIMER total vs submit split proved it). The
+    // worker now only publishes into these atomics; the handler thread owns
+    // every socket write while a task is in flight.
     struct ClientTaskRun {
         std::atomic<bool> cancel{false};
         std::atomic<bool> connection_lost{false};
         std::atomic<bool> done{false};
+        std::atomic<int> progress_pct{-1};      // -1 = nothing new to send
+        std::atomic<uint32_t> progress_eta{0};
     };
 
     // Handle one CLIENT_SUBMIT frame: decode input, upscale, encode, send
