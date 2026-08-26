@@ -8,6 +8,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -58,17 +60,29 @@ val ExpandSizeSpec = tween<IntSize>(ExpandTween, easing = EmphasizedDecelerateEa
 /** AnimatedVisibility 进入/退出的尺寸 spec（140ms，与 fade 同步）。 */
 val EnterSizeSpec = tween<IntSize>(EnterTween, easing = EmphasizedDecelerateEasing)
 
-/** NavHost 目的地进入：纯 fade（400ms emphasized-decelerate），不做位移。 */
-val NavEnterTransition: EnterTransition = fadeIn(tween(NavEnterTween, easing = EmphasizedDecelerateEasing))
+/** NavHost 目的地进入：shared-axis 式从右滑入（30dp 视差）+ fade。 */
+val NavEnterTransition: EnterTransition = slideInHorizontally(
+    animationSpec = tween(NavEnterTween, easing = EmphasizedDecelerateEasing),
+    initialOffsetX = { it / 4 }
+) + fadeIn(tween(NavEnterTween, easing = EmphasizedDecelerateEasing))
 
-/** NavHost 目的地退出：纯 fade（200ms emphasized-accelerate），不做位移。 */
-val NavExitTransition: ExitTransition = fadeOut(tween(NavExitTween, easing = EmphasizedAccelerateEasing))
+/** NavHost 目的地退出：向左滑出（小幅视差）+ fade，与进入形成空间方向感。 */
+val NavExitTransition: ExitTransition = slideOutHorizontally(
+    animationSpec = tween(NavExitTween, easing = EmphasizedAccelerateEasing),
+    targetOffsetX = { -it / 6 }
+) + fadeOut(tween(NavExitTween, easing = EmphasizedAccelerateEasing))
 
-/** 返回键进入（pop）：与正向进入一致（400ms decelerate）。 */
-val NavPopEnterTransition: EnterTransition = NavEnterTransition
+/** 返回键进入（pop）：方向镜像——上一页从左侧滑回。 */
+val NavPopEnterTransition: EnterTransition = slideInHorizontally(
+    animationSpec = tween(NavEnterTween, easing = EmphasizedDecelerateEasing),
+    initialOffsetX = { -it / 6 }
+) + fadeIn(tween(NavEnterTween, easing = EmphasizedDecelerateEasing))
 
-/** 返回键退出（pop）：与正向退出一致（200ms accelerate）。 */
-val NavPopExitTransition: ExitTransition = NavExitTransition
+/** 返回键退出（pop）：当前页向右滑出。 */
+val NavPopExitTransition: ExitTransition = slideOutHorizontally(
+    animationSpec = tween(NavExitTween, easing = EmphasizedAccelerateEasing),
+    targetOffsetX = { it / 4 }
+) + fadeOut(tween(NavExitTween, easing = EmphasizedAccelerateEasing))
 
 /**
  * 给定 interactionSource，按下时缩到 0.97（graphicsLayer，仅 transform）。
