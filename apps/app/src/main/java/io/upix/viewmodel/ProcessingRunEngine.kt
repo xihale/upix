@@ -24,10 +24,23 @@ import java.util.LinkedHashMap
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
+
+// One queued output-commit job: the inference result is already in the
+// staging file; the commit (SAF copy / MediaStore insert / filesystem move)
+// runs asynchronously and its bookkeeping is applied at a drain point.
+private data class QueuedCommit(
+    val item: ResolvedImageInput,
+    val outputFile: java.io.File,
+    val elapsedMs: Long,
+    val job: Deferred<Result<String>>
+)
 
 // Execution engine for a single processing run, extracted verbatim from
 // ProcessingViewModel.startProcessingInternal. It validates inputs, asks the
@@ -35,8 +48,7 @@ import kotlinx.coroutines.withContext
 // native routing with mid-run remote fallback), output commit/discard,
 // checkpointing and terminal state transitions — reporting every state change
 // back to the owning ProcessingViewModel.
-internal class ProcessingRunEngine(
-    private val viewModel: ProcessingViewModel,
+internal class ProcessingRunEngine(    private val viewModel: ProcessingViewModel,
     private val planner: ProcessingRunPlanner,
     private val modelRepository: ModelProvider,
     private val nativeImageProcessingRepository: ImageProcessingStore,
@@ -339,6 +351,15 @@ internal class ProcessingRunEngine(
             var uploadsLaunched = 0
             var remoteSendAheadError: Exception? = null
 
+            // 提交（落盘）流水线：commit 是纯文件 IO（SAF copy/MediaStore/
+            // rename），不在 GPU/网络关键路径上。远程路径把它异步入串行通道
+            // （Semaphore(1)，SAF 慢时也不与推理收流抢 IO），成功计数/
+            // pending 移除/checkpoint 一并延后到收割点；批次终态判定前必须
+            // 全量收割，保证 checkpoint 与磁盘一致。取消时未启动的 job 随
+            // scope 终止，暂存文件名是确定性的，下次 run 原地覆盖。
+            val pendingCommits = mutableListOf<QueuedCommit>()
+            val commitLimiter = Semaphore(1)
+
             // Persists a checkpoint reflecting the run's current progress. The
             // run-invariant fields are captured here; the mutable progress
             // (successfulCount / pendingByUri / failureDetailsByUri / lastError)
@@ -366,6 +387,88 @@ internal class ProcessingRunEngine(
             // Initial checkpoint (moved into the run coroutine so the disk
             // write happens off the main thread via persistCheckpoint).
             saveCheckpointSnapshot()
+
+            // Apply the bookkeeping of finished commit jobs: success bumps the
+            // counter and shrinks the pending set (checkpoint + UI follow),
+            // failure records the item and discards its staging file. In FIFO
+            // order — the commit channel is serial, so completion order equals
+            // enqueue order. waitAll=false only reaps what already finished
+            // (per-round opportunity); waitAll=true suspends until every
+            // queued commit is settled (PC-failure exit and terminal state).
+            suspend fun drainCompletedCommits(waitAll: Boolean) {
+                var changed = false
+                while (pendingCommits.isNotEmpty()) {
+                    val head = pendingCommits.first()
+                    if (!waitAll && !head.job.isCompleted) {
+                        break
+                    }
+                    pendingCommits.removeAt(0)
+                    val commitResult = head.job.await()
+                    val headUri = head.item.uri.toString()
+                    if (commitResult.isSuccess) {
+                        successfulCount += 1
+                        pendingByUri.remove(headUri)
+                        failureDetailsByUri.remove(headUri)
+                        val destination = commitResult.getOrNull()
+                            ?: head.outputFile.absolutePath
+                        logRepository.info(
+                            "ProcessingViewModel",
+                            "Processed ${head.item.displayName} -> $destination (${head.elapsedMs}ms committed async, done=$successfulCount/$totalItems, pending=${pendingByUri.size})"
+                        )
+                        if (!queueItemId.isNullOrBlank()) {
+                            val dest = destination
+                            viewModel.updateUiState { state ->
+                                state.copy(
+                                    queueItems = state.queueItems.map { queueItem ->
+                                        if (queueItem.id == queueItemId) {
+                                            queueItem.copy(lastOutputUri = dest)
+                                        } else {
+                                            queueItem
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    } else {
+                        val errText = commitResult.exceptionOrNull()?.message
+                            ?: stringProvider.getString(R.string.processing_error_save_output)
+                        lastError = errText
+                        val previousAttempts =
+                            failureDetailsByUri[headUri]?.attempts ?: 0
+                        failureDetailsByUri[headUri] = ProcessingFailureDetail(
+                            uri = headUri,
+                            displayName = head.item.displayName,
+                            errorMessage = errText,
+                            attempts = previousAttempts + 1
+                        )
+                        withContext(ioDispatcher) {
+                            batchOutputRepository.discardOutputFile(head.outputFile)
+                        }
+                        logRepository.error(
+                            "ProcessingViewModel",
+                            "Failed to store output for ${head.item.displayName}: $lastError (pending=${pendingByUri.size})"
+                        )
+                    }
+                    changed = true
+                }
+                if (changed) {
+                    saveCheckpointSnapshot()
+                    viewModel.updateUiState { state ->
+                        val currentTask = state.task ?: return@updateUiState state
+                        val orderedFailures = planner.orderedFailureDetails(failureDetailsByUri)
+                        state.copy(
+                            task = currentTask.copy(
+                                progress = planner.progressOf(successfulCount, totalItems),
+                                completedItems = successfulCount,
+                                pendingItems = pendingByUri.size,
+                                failedItems = orderedFailures.size,
+                                failureDetails = orderedFailures,
+                                lastErrorMessage = lastError
+                            )
+                        )
+                    }
+                }
+            }
 
             try {
                 if (remoteRouting) {
@@ -448,6 +551,8 @@ internal class ProcessingRunEngine(
                     if (!isActive) {
                         return@launchRun
                     }
+                    // 先收割上一拍已完成的异步 commit:成功计数/进度及时推进。
+                    drainCompletedCommits(waitAll = false)
 
                     viewModel.updateUiState { state ->
                         val currentTask = state.task ?: return@updateUiState state
@@ -593,13 +698,14 @@ internal class ProcessingRunEngine(
                     if (remoteRouting && result.isFailure) {
                         val reason = result.exceptionOrNull()?.message
                             ?: stringProvider.getString(R.string.processing_error_unknown_processing)
-                        lastError = "PC 处理失败：$reason"
+                        val errText = "PC 处理失败：$reason"
+                        lastError = errText
                         val failedItemUri = item.uri.toString()
                         val previousAttempts = failureDetailsByUri[failedItemUri]?.attempts ?: 0
                         failureDetailsByUri[failedItemUri] = ProcessingFailureDetail(
                             uri = failedItemUri,
                             displayName = item.displayName,
-                            errorMessage = lastError,
+                            errorMessage = errText,
                             attempts = previousAttempts + 1
                         )
                         withContext(ioDispatcher) {
@@ -623,75 +729,100 @@ internal class ProcessingRunEngine(
                                 )
                             )
                         }
-                        viewModel.emitRemoteFallbackMessage(lastError)
+                        viewModel.emitRemoteFallbackMessage(errText)
                         logRepository.error(
                             "ProcessingViewModel",
-                            "Remote processing failed for ${item.displayName}, aborting batch: $lastError"
+                            "Remote processing failed for ${item.displayName}, aborting batch: $errText"
                         )
+                        // 已推理完成的结果仍尽力提交完再退(成果不因 PC 故障
+                        // 丢弃);它们的成败同样进 failureDetails/checkpoint。
+                        drainCompletedCommits(waitAll = true)
                         break
                     }
                     val elapsedMs = System.currentTimeMillis() - startedAt
                     val itemUri = item.uri.toString()
 
                     if (result.isSuccess) {
-                        // 提交输出（SAF/MediaStore 写入）是文件 IO，切到 IO 线程。
-                        val commitResult = withContext(ioDispatcher) {
-                            batchOutputRepository.commitOutput(
-                                outputDirectory = outputDirectory,
-                                input = item,
-                                outputFile = outputFile
-                            )
-                        }
-                        if (commitResult.isSuccess) {
-                            successfulCount += 1
-                            pendingByUri.remove(itemUri)
-                            failureDetailsByUri.remove(itemUri)
-                            val destination = commitResult.getOrNull()
-                                ?: result.getOrNull()?.outputFile?.absolutePath
-                                ?: outputFile.absolutePath
-                            logRepository.info(
-                                "ProcessingViewModel",
-                                "Processed ${item.displayName} -> $destination (${elapsedMs}ms, done=$successfulCount/$totalItems, pending=${pendingByUri.size})"
-                            )
-                            if (!queueItemId.isNullOrBlank()) {
-                                viewModel.updateUiState { state ->
-                                    state.copy(
-                                        queueItems = state.queueItems.map { queueItem ->
-                                            if (queueItem.id == queueItemId) {
-                                                queueItem.copy(lastOutputUri = destination)
-                                            } else {
-                                                queueItem
-                                            }
-                                        }
-                                    )
+                        if (remoteRouting) {
+                            // 远程路径:commit 异步入串行通道,与 PC 推理/
+                            // 收流重叠;记账延后到收割点(循环头/终态前)。
+                            val queued = QueuedCommit(
+                                item = item,
+                                outputFile = outputFile,
+                                elapsedMs = elapsedMs,
+                                job = async(ioDispatcher) {
+                                    commitLimiter.withPermit {
+                                        batchOutputRepository.commitOutput(
+                                            outputDirectory = outputDirectory,
+                                            input = item,
+                                            outputFile = outputFile
+                                        )
+                                    }
                                 }
-                            }
+                            )
+                            pendingCommits.add(queued)
                         } else {
-                            lastError = commitResult.exceptionOrNull()?.message
-                                ?: stringProvider.getString(R.string.processing_error_save_output)
-                            val previousAttempts = failureDetailsByUri[itemUri]?.attempts ?: 0
-                            failureDetailsByUri[itemUri] = ProcessingFailureDetail(
-                                uri = itemUri,
-                                displayName = item.displayName,
-                                errorMessage = lastError,
-                                attempts = previousAttempts + 1
-                            )
-                            withContext(ioDispatcher) {
-                                batchOutputRepository.discardOutputFile(outputFile)
+                            // 本地路径:推理就是瓶颈,保持同步提交。
+                            val commitResult = withContext(ioDispatcher) {
+                                batchOutputRepository.commitOutput(
+                                    outputDirectory = outputDirectory,
+                                    input = item,
+                                    outputFile = outputFile
+                                )
                             }
-                            logRepository.error(
-                                "ProcessingViewModel",
-                                "Failed to store output for ${item.displayName}: $lastError (pending=${pendingByUri.size})"
-                            )
+                            if (commitResult.isSuccess) {
+                                successfulCount += 1
+                                pendingByUri.remove(itemUri)
+                                failureDetailsByUri.remove(itemUri)
+                                val destination = commitResult.getOrNull()
+                                    ?: result.getOrNull()?.outputFile?.absolutePath
+                                    ?: outputFile.absolutePath
+                                logRepository.info(
+                                    "ProcessingViewModel",
+                                    "Processed ${item.displayName} -> $destination (${elapsedMs}ms, done=$successfulCount/$totalItems, pending=${pendingByUri.size})"
+                                )
+                                if (!queueItemId.isNullOrBlank()) {
+                                    viewModel.updateUiState { state ->
+                                        state.copy(
+                                            queueItems = state.queueItems.map { queueItem ->
+                                                if (queueItem.id == queueItemId) {
+                                                    queueItem.copy(lastOutputUri = destination)
+                                                } else {
+                                                    queueItem
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            } else {
+                                val errText = commitResult.exceptionOrNull()?.message
+                                    ?: stringProvider.getString(R.string.processing_error_save_output)
+                                lastError = errText
+                                val previousAttempts = failureDetailsByUri[itemUri]?.attempts ?: 0
+                                failureDetailsByUri[itemUri] = ProcessingFailureDetail(
+                                    uri = itemUri,
+                                    displayName = item.displayName,
+                                    errorMessage = errText,
+                                    attempts = previousAttempts + 1
+                                )
+                                withContext(ioDispatcher) {
+                                    batchOutputRepository.discardOutputFile(outputFile)
+                                }
+                                logRepository.error(
+                                    "ProcessingViewModel",
+                                    "Failed to store output for ${item.displayName}: $lastError (pending=${pendingByUri.size})"
+                                )
+                            }
                         }
                     } else {
-                        lastError = result.exceptionOrNull()?.message
+                        val errText = result.exceptionOrNull()?.message
                             ?: stringProvider.getString(R.string.processing_error_unknown_processing)
+                        lastError = errText
                         val previousAttempts = failureDetailsByUri[itemUri]?.attempts ?: 0
                         failureDetailsByUri[itemUri] = ProcessingFailureDetail(
                             uri = itemUri,
                             displayName = item.displayName,
-                            errorMessage = lastError,
+                            errorMessage = errText,
                             attempts = previousAttempts + 1
                         )
                         withContext(ioDispatcher) {
@@ -702,8 +833,11 @@ internal class ProcessingRunEngine(
                             "Failed to process ${item.displayName}: $lastError (pending=${pendingByUri.size})"
                         )
                     }
-
-                    saveCheckpointSnapshot()
+                    // 远程路径的 checkpoint 已随 commit 收割落盘(有变化才写),
+                    // 不再每轮同步写;本地路径没有收割点,保持每轮快照。
+                    if (!remoteRouting) {
+                        saveCheckpointSnapshot()
+                    }
 
                     viewModel.updateUiState { state ->
                         val currentTask = state.task ?: return@updateUiState state
@@ -724,6 +858,10 @@ internal class ProcessingRunEngine(
                         )
                     }
                 }
+
+                // 终态前全量收割:最后几张的 commit(以及任意仍在飞的任务)
+                // 必须全部落账,pendingByUri/失败清单才反映磁盘真实状态。
+                drainCompletedCommits(waitAll = true)
 
                 if (pendingByUri.isEmpty()) {
                     checkpointRepository.clearCheckpoint()
