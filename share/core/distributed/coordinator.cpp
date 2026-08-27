@@ -747,179 +747,195 @@ void Coordinator::maybe_launch_head_prefetch(
                                                              : "inline");
 }
 
-// Handle one CLIENT_SUBMIT. The submit frame is parsed here (still on the
-// connection handler thread), then the whole task — decode, upscale, encode,
-// response send — runs on a per-task worker thread while THIS thread keeps
-// reading frames with a short poll timeout. That split is what makes the
-// task interruptible: MSG_TASK_CANCEL (or a dying connection, or stop())
-// observed here flips the task's cancel atomic, and inference aborts at the
-// next tile boundary instead of running to completion for a peer that will
-// never read the result.
-//
-// This thread also stages submit-ahead traffic: while the worker computes,
-// exactly one more CLIENT_SUBMIT may arrive. Its struct frame arms
-// `early_next`; MSG_CLIENT_DATA continuations then append to
-// early_next->staged_data as they stream in. Reassembly finishes eagerly
-// right after the join (seeding from whatever already landed), so a peer
-// advertising CONNECT_RESPONSE.pipeline_depth >= 1 can upload task N+1
-// during task N without a wire stall between images. Any further unexpected
-// frame still violates the protocol and drops the connection.
-//
-// Returns:
-//   false  — transport failure / malformed submit; drop the connection.
-//   true   — session stays usable; `early_next` may hold a submit (complete
-//            or mid-reassembly) captured while the worker was running.
-bool Coordinator::handle_client_submit(
-    WorkerConnection& conn, std::stop_token& st,
-    CapturedSubmit incoming,
-    std::deque<CapturedSubmit>& early_next) {
-    // Append-only contract for `early_next`: entries may already be parked
-    // here when a captured submit is served from the session loop's drain,
-    // and clearing on entry would silently eat them. Every exit path below
-    // only pushes_back.
-    // Compressed-input submit: the phone ships original file bytes; decode
-    // happens on the worker so raw pixels never cross the radio.
-    if (incoming.payload.size() < sizeof(ClientTaskSubmit)) {
-        LOG_ERROR("Coordinator", "Authenticated client submit payload is invalid");
+bool Coordinator::capture_input_complete(const CapturedSubmit& cap) {
+    if (cap.payload.size() == sizeof(ClientTaskSubmit)) {
+        // Chunked framing: complete once staged bytes reach the declared len.
+        const uint32_t want = declared_chunk_len(cap);
+        return want > 0 && cap.staged_data.size() >= want;
+    }
+    if (cap.payload.size() < sizeof(ClientTaskSubmit)) {
+        return false;  // malformed; the pump replies an error when served
+    }
+    // Legacy single-frame framing: struct + input inline, so whatever the
+    // declared length is, all bytes are already here.
+    return true;
+}
+
+bool Coordinator::assemble_capture(const CapturedSubmit& cap,
+                                   ClientTaskSubmit& task_out,
+                                   std::vector<uint8_t>& input_out,
+                                   std::string& err) {
+    std::memcpy(&task_out, cap.payload.data(), sizeof(task_out));
+    const uint32_t data_len = task_out.input_data_length;
+
+    if (cap.payload.size() == sizeof(ClientTaskSubmit)) {
+        // Chunked: staged_data must hold exactly the declared payload.
+        if (data_len == 0 || data_len > MAX_NETWORK_PAYLOAD) {
+            err = "invalid chunked submit size";
+            return false;
+        }
+        input_out.resize(data_len);
+        std::memcpy(input_out.data(), cap.staged_data.data(), data_len);
+        return true;
+    }
+
+    // Legacy single-frame: struct + bytes tail. A structurally broken frame
+    // here means the peer violated framing — caller drops the connection.
+    if (data_len > MAX_NETWORK_PAYLOAD ||
+        sizeof(ClientTaskSubmit) + data_len > cap.payload.size()) {
+        err.clear();
         return false;
     }
-    ClientTaskSubmit task{};
-    std::memcpy(&task, incoming.payload.data(), sizeof(task));
-    const uint32_t data_len = task.input_data_length;
+    input_out.assign(cap.payload.begin() + sizeof(ClientTaskSubmit),
+                     cap.payload.end());
+    return true;
+}
 
-    std::vector<uint8_t> compressed;
+// Session task pump (see coordinator.hpp for the full contract).
+bool Coordinator::pump_session_submits(
+    WorkerConnection& conn, std::stop_token& st,
+    CapturedSubmit&& first) {
+    std::deque<CapturedSubmit> captures;
+    captures.push_back(std::move(first));
+    std::vector<std::unique_ptr<LiveTask>> inflight;
+
+    // Every exit path joins workers BEFORE returning — they reference conn.
+    // After flipping cancel, every gate-parked worker must be notified, or a
+    // run waiting for its send turn would hang forever on join (its predicate
+    // changed while it was parked — the classic lost wakeup).
+    const auto cancel_all_and_join = [&] {
+        for (auto& t : inflight) {
+            t->run->cancel.store(true);
+            std::lock_guard<std::mutex> lk(t->run->send_order_m);
+            t->run->send_order_cv.notify_all();
+        }
+        for (auto& t : inflight) {
+            if (t->thread.joinable()) {
+                t->thread.join();
+            }
+        }
+        inflight.clear();
+    };
+
+    // Reply helper for structurally invalid captures: per-task error, session
+    // stays usable. Transport failures still drop the connection (send false
+    // via send failure detection on the next poll).
     const auto reply_task_error = [&](const std::string& message) {
         ClientTaskResponse response{};
         response.success = 0;
         std::strncpy(response.error_message, message.c_str(),
                      sizeof(response.error_message) - 1);
+        LOG_ERROR("Coordinator", "Client submit rejected: " + message);
         (void)send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
                              &response, sizeof(response));
-        LOG_ERROR("Coordinator", "Client submit rejected: " + message);
     };
 
-    if (incoming.payload.size() == sizeof(ClientTaskSubmit)) {
-        // ── Chunked submit (new format): struct-only frame, input bytes
-        //    follow as MSG_CLIENT_DATA continuations. Pre-allocate the
-        //    declared total and unseal chunk-by-chunk into place — the wire
-        //    and plaintext copies of a large input never coexist whole.
-        if (data_len == 0 || data_len > MAX_NETWORK_PAYLOAD) {
-            reply_task_error("invalid chunked submit size");
-            return true;
+    bool transport_ok = true;
+
+    // Open the socket-write gate for the oldest unfinished run. Idempotent;
+    // called whenever the front may have changed (initial spawn, any reap).
+    const auto grant_front_send = [&] {
+        if (inflight.empty()) {
+            return;
         }
-        compressed.resize(data_len);
-        size_t received = 0;
-        if (!incoming.staged_data.empty()) {
-            // Bytes this handler already consumed off the wire mid-task
-            // (submit-ahead staging). Capture never overfills past data_len,
-            // but a defensive bound costs nothing.
-            if (incoming.staged_data.size() > data_len) {
-                reply_task_error("chunked submit overflow");
-                return true;
-            }
-            received = incoming.staged_data.size();
-            std::memcpy(compressed.data(), incoming.staged_data.data(), received);
+        auto* r = inflight.front()->run.get();
+        {
+            std::lock_guard<std::mutex> lk(r->send_order_m);
+            r->send_ready = true;
         }
-        while (received < data_len) {
-            auto chunk = recv_encrypted(conn);
-            if (!chunk) {
-                // Transport died mid-upload: cannot even answer.
-                LOG_ERROR("Coordinator", "Chunked submit transport failed");
-                return false;
-            }
-            if (chunk->first.type != MessageType::MSG_CLIENT_DATA) {
-                // Old-vs-new protocol mismatch or a broken sender: answer as
-                // a per-task error so the phone can fall back to a legacy
-                // single-frame submit on this still-open session.
-                reply_task_error("chunked submit interrupted: expected CLIENT_DATA");
-                return true;
-            }
-            if (chunk->second.size() > data_len - received) {
-                reply_task_error("chunked submit overflow");
-                return true;
-            }
-            std::memcpy(compressed.data() + received,
-                        chunk->second.data(), chunk->second.size());
-            received += chunk->second.size();
-        }
-        LOG_INFO("Coordinator", "Chunked submit reassembled: " + format_bytes(data_len));
-    } else {
-        // ── Legacy single-frame submit: struct + input bytes inline.
-        if (data_len > MAX_NETWORK_PAYLOAD ||
-            sizeof(ClientTaskSubmit) + data_len > incoming.payload.size()) {
-            LOG_ERROR("Coordinator", "Compressed client image payload truncated");
+        r->send_order_cv.notify_all();
+    };
+
+    for (;;) {
+        // Shutdown must not orphan workers spinning on an dead socket: flip
+        // cancel every iteration and bail out as soon as a joinable wake-up
+        // (any Timeout/Error tick reaches here within TASK_FRAME_POLL_MS).
+        if (st.stop_requested()) {
+            cancel_all_and_join();
             return false;
         }
-        compressed.assign(
-            incoming.payload.data() + sizeof(ClientTaskSubmit),
-            incoming.payload.data() + sizeof(ClientTaskSubmit) + data_len);
-    }
 
-    // Stop requested while queued: don't even start the worker.
-    if (st.stop_requested()) {
-        return false;
-    }
+        // Spawn new workers from complete head captures while slots last.
+        while (!captures.empty() && inflight.size() < kMaxInflightTasks &&
+               capture_input_complete(captures.front())) {
+            CapturedSubmit cap = std::move(captures.front());
+            captures.pop_front();
 
-    ClientTaskRun run;
-    std::thread worker([this, &conn, task = std::move(task),
-                        input = std::move(compressed), &run,
-                        pre = std::move(incoming.ahead)]() mutable {
-        run_client_task(conn, task, std::move(input), run, std::move(pre));
-    });
-
-    // ── In-task frame loop ──────────────────────────────────────────────────
-    // Poll-read frames until the worker posted its terminal response. While
-    // the task computes, further CLIENT_SUBMITs may stream in (submit-ahead):
-    // each arms a new queue entry, and MSG_CLIENT_DATA continuations append
-    // to the TAIL entry's staged_data until its declared length is reached.
-    // The phone's depth-2 window keeps at most one captured submit — but the
-    // response can beat a late submit to this loop (the pipeline transition
-    // race), so a bounded chain, not a single slot, is the correct contract.
-    // Anything else here is still a protocol violation.
-    bool transport_ok = true;
-    for (;;) {
-        if (run.done.load()) {
-            break;
-        }
-        if (st.stop_requested()) {
-            run.cancel.store(true);
-        }
-        // Drain the worker's coalesced progress slot — one frame per tick
-        // max; stale values collapse naturally. The int→uint pct conversion
-        // and eta come straight from the atomics the worker published.
-        {
-            const int pending_pct =
-                run.progress_pct.exchange(-1, std::memory_order_relaxed);
-            if (!transport_ok) {
-                // unreachable guard for readers: transport death breaks below
+            ClientTaskSubmit task{};
+            std::vector<uint8_t> input;
+            std::string err;
+            if (!assemble_capture(cap, task, input, err)) {
+                if (!err.empty()) {
+                    reply_task_error(err);
+                    continue;  // malformed sizes: answered, keep serving
+                }
+                cancel_all_and_join();
+                return false;  // broken legacy framing: drop the connection
             }
-            if (pending_pct >= 0 && transport_ok) {
-                const bool cs_perf3 =
-                    std::getenv("UPIX_PIPELINE_TIMER") != nullptr;
-                const auto ps_t0 = std::chrono::steady_clock::now();
+            LOG_INFO("Coordinator", "Serving staged submit: {} ({})",
+                     format_bytes(input.size()),
+                     cap.payload.size() == sizeof(ClientTaskSubmit)
+                         ? "chunked" : "inline");
+
+            auto live = std::make_unique<LiveTask>();
+            auto predecoded = std::move(cap.ahead);
+            auto* run_ptr = live->run.get();
+            live->thread = std::thread(
+                [this, &conn, task = std::move(task), input = std::move(input),
+                 run_ptr, p = std::move(predecoded)]() mutable {
+                    run_client_task(conn, task, std::move(input), *run_ptr,
+                                    std::move(p));
+                });
+            inflight.push_back(std::move(live));
+        }
+
+        // Reap finished tasks and exit once nothing is left to serve.
+        for (auto it = inflight.begin(); it != inflight.end();) {
+            if ((*it)->run->done.load()) {
+                if (it->get()->thread.joinable()) {
+                    it->get()->thread.join();
+                }
+                it = inflight.erase(it);
+            } else {
+                ++it;
+            }
+        }
+        grant_front_send();
+        if (inflight.empty() && captures.empty()) {
+            // Batch lull: hand control back to the session loop's blocking
+            // read; a fresh submit re-enters the pump within microseconds.
+            conn.socket->set_timeout(SESSION_FRAME_TIMEOUT_MS);
+            return transport_ok;
+        }
+
+        // Progress frames are sent for the OLDEST unfinished run only —
+        // TaskProgress has no task id, and the phone keys percent/ETA on the
+        // task it is currently awaiting (service order = arrival order).
+        if (transport_ok && !inflight.empty()) {
+            const int pending_pct =
+                inflight.front()->run->progress_pct.exchange(
+                    -1, std::memory_order_relaxed);
+            if (pending_pct >= 0) {
+                const bool perf_timer = std::getenv("UPIX_PIPELINE_TIMER") != nullptr;
                 TaskProgress msg{};
                 msg.stage = 0;
                 msg.percent = static_cast<uint32_t>(pending_pct);
-                msg.eta_seconds = run.progress_eta.load(std::memory_order_relaxed);
+                msg.eta_seconds = inflight.front()->run->progress_eta.load(
+                    std::memory_order_relaxed);
                 if (!send_encrypted(conn, MessageType::MSG_TASK_PROGRESS,
                                     &msg, sizeof(msg))) {
                     LOG_WARNING("Coordinator",
-                                "Progress send failed (peer gone); canceling task");
-                    run.connection_lost.store(true);
-                    run.cancel.store(true);
-                    transport_ok = false;
-                    break;
+                                "Progress send failed (peer gone); canceling");
+                    cancel_all_and_join();
+                    return false;
                 }
-                if (cs_perf3) {
-                    LOG_INFO("Coordinator",
-                             "[PERF] progress send pct={} took {:.1f} ms",
-                             pending_pct,
-                             std::chrono::duration<double, std::milli>(
-                                 std::chrono::steady_clock::now() - ps_t0)
-                                 .count());
+                if (perf_timer) {
+                    LOG_INFO("Coordinator", "[PERF] progress send pct={}",
+                             pending_pct);
                 }
             }
         }
+
         std::optional<std::pair<MessageHeader, std::vector<uint8_t>>> frame;
         const auto pf_t0 = std::chrono::steady_clock::now();
         const auto poll = recv_encrypted_poll(conn, TASK_FRAME_POLL_MS, frame);
@@ -935,73 +951,109 @@ bool Coordinator::handle_client_submit(
             continue;
         }
         if (poll == FramePoll::Error) {
-            // Dead/reset connection: treat as cancel so the worker stops
-            // burning GPU on a task nobody will read, then fall through to
-            // the join (the worker's response send fails and it exits).
-            run.cancel.store(true);
-            run.connection_lost.store(true);
-            transport_ok = false;
-            LOG_WARNING("Coordinator", "Connection lost while task was running; canceling task");
-            break;
+            LOG_WARNING("Coordinator",
+                        "Connection lost while task(s) were running; canceling");
+            cancel_all_and_join();
+            return false;
         }
+
+        if (st.stop_requested()) {
+            cancel_all_and_join();
+            return false;
+        }
+
+        // ── Reassembly gate for an in-flight chunked upload ─────────────────
+        // If the HEAD capture is a chunked submit whose bytes are still
+        // trickling in, this frame must be its next MSG_CLIENT_DATA
+        // continuation. That stays true even when nothing is running: a slow
+        // phone may simply still be uploading task N+2 between waves of work.
+        // Any other frame means that staging will never finish (version
+        // mismatch / sender bug): answer a PER-TASK error and abandon only
+        // that capture so the peer can fall back to a legacy single-frame
+        // submit on this live session. Never drop the connection here.
+        if (!captures.empty()) {
+            const uint32_t want = declared_chunk_len(captures.front());
+            const size_t& have = captures.front().staged_data.size();
+            if (want > 0 && have < want) {
+                CapturedSubmit& head = captures.front();
+                if (frame->first.type == MessageType::MSG_CLIENT_DATA &&
+                    frame->second.size() <= want - have) {
+                    head.staged_data.insert(head.staged_data.end(),
+                                            frame->second.begin(),
+                                            frame->second.end());
+                    maybe_launch_head_prefetch(captures);
+                    continue;
+                }
+                if (frame->first.type == MessageType::MSG_CLIENT_DATA) {
+                    reply_task_error("chunked submit overflow");
+                } else {
+                    reply_task_error(
+                        "chunked submit interrupted: expected CLIENT_DATA");
+                }
+                captures.pop_front();
+                continue;
+            }
+        }
+
         if (frame->first.type == MessageType::MSG_TASK_CANCEL) {
-            run.cancel.store(true);
-            LOG_INFO("Coordinator", "Task cancel requested by peer " + conn.device_id);
+            LOG_INFO("Coordinator", "Task cancel requested by peer " +
+                     conn.device_id + " (canceling all in-flight tasks)");
+            for (auto& t : inflight) {
+                t->run->cancel.store(true);
+                std::lock_guard<std::mutex> lk(t->run->send_order_m);
+                t->run->send_order_cv.notify_all();
+            }
             continue;
         }
+
         if (frame->first.type == MessageType::MSG_CLIENT_SUBMIT) {
-            if (early_next.size() >= kMaxAheadCaptures) {
+            if (captures.size() >= kMaxAheadCaptures) {
                 LOG_WARNING("Coordinator",
-                            "Peer {} exceeded the submit-ahead capture bound; dropping",
+                            "Peer {} exceeded the submit-ahead capture bound; "
+                            "dropping",
                             conn.device_id);
-                run.cancel.store(true);
-                transport_ok = false;
-                break;
+                cancel_all_and_join();
+                return false;
             }
             CapturedSubmit cap;
             cap.header = frame->first;
             cap.payload = std::move(frame->second);
-            early_next.push_back(std::move(cap));
+            captures.push_back(std::move(cap));
             // An inline submit is complete the moment it lands — its whole
             // input can start decoding while the GPU keeps working.
-            maybe_launch_head_prefetch(early_next);
+            maybe_launch_head_prefetch(captures);
             continue;
         }
-        if (frame->first.type == MessageType::MSG_CLIENT_DATA && !early_next.empty() &&
-            declared_chunk_len(early_next.back()) > 0 &&
+
+        if (frame->first.type == MessageType::MSG_CLIENT_DATA && !captures.empty() &&
+            declared_chunk_len(captures.back()) > 0 &&
             frame->second.size() <=
-                declared_chunk_len(early_next.back()) -
-                    early_next.back().staged_data.size()) {
-            early_next.back().staged_data.insert(early_next.back().staged_data.end(),
-                                                 frame->second.begin(),
-                                                 frame->second.end());
-            // Head entry fully staged while the GPU is still busy: start the
-            // prefetch decode now so task N+1 begins inference without paying
-            // input prep. Only the head gets one — deeper entries would pin
-            // decoded frames in RAM for no latency gain.
-            maybe_launch_head_prefetch(early_next);
+                declared_chunk_len(captures.back()) -
+                    captures.back().staged_data.size()) {
+            captures.back().staged_data.insert(captures.back().staged_data.end(),
+                                               frame->second.begin(),
+                                               frame->second.end());
+            // Tail entry fully staged while the GPU may still be busy: start
+            // the prefetch decode now so its inference begins without paying
+            // input prep. Only completions get one — deeper prefetches would
+            // pin decoded frames in RAM for no latency gain.
+            maybe_launch_head_prefetch(captures);
             continue;
         }
+
         // A frame that cannot belong to any open capture slot (non-submit,
         // DATA past declared length, or DATA with nothing staged): protocol
         // violation. Cancel so no GPU time is burned for a peer that will
         // never read the result, and drop the connection.
         LOG_WARNING("Coordinator",
-            "Peer {} sent an unexpected mid-task frame; dropping "
-            "(type={} len={} queue_depth={} tail_staged={})",
+            "Peer {} sent an unexpected frame; dropping "
+            "(type={} len={} queued={} inflight={})",
             conn.device_id,
             static_cast<unsigned>(frame->first.type), frame->second.size(),
-            early_next.size(), early_next.empty()
-                ? size_t{0} : early_next.back().staged_data.size());
-        run.cancel.store(true);
-        transport_ok = false;
-        break;
+            captures.size(), inflight.size());
+        cancel_all_and_join();
+        return false;
     }
-    worker.join();
-    // Leave the receive side in a defined state for the session loop (the
-    // last poll may have left the short poll timeout armed).
-    conn.socket->set_timeout(SESSION_FRAME_TIMEOUT_MS);
-    return transport_ok;
 }
 
 // Worker body of one CLIENT_SUBMIT: decode → process_locally → terminal
@@ -1014,14 +1066,30 @@ void Coordinator::run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
     const auto canceled = [&run] {
         return run.cancel.load(std::memory_order_relaxed);
     };
+    // Serialize this run's socket writes behind any still-unfinished earlier
+    // task of the same session: the phone reads terminal responses FIFO in
+    // submit order, so a task that finishes early must not transmit ahead of
+    // its turn (see ClientTaskRun::send_ready). The gate always opens once
+    // cancel lands — by then the peer is going away either way. Polling
+    // fallback so a missed wakeup can never park a worker forever.
+    const auto ordered_send = [&](MessageType type, const void* payload,
+                                  size_t len) {
+        {
+            std::unique_lock<std::mutex> lk(run.send_order_m);
+            while (!run.send_ready && !canceled()) {
+                run.send_order_cv.wait_for(lk, std::chrono::milliseconds(250));
+            }
+        }
+        return send_encrypted(conn, type, payload, len);
+    };
     // Per-task error reply that keeps the session alive for the next submit.
     const auto reply_error = [&](const std::string& message) {
         ClientTaskResponse response{};
         response.success = 0;
         std::strncpy(response.error_message, message.c_str(),
                      sizeof(response.error_message) - 1);
-        (void)send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
-                             &response, sizeof(response));
+        (void)ordered_send(MessageType::MSG_CLIENT_RESPONSE,
+                           &response, sizeof(response));
         LOG_ERROR("Coordinator", "Client task failed: " + message);
     };
     // Ensure done is set even if anything below throws unexpectedly.
@@ -1135,8 +1203,7 @@ void Coordinator::run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
         if (process_result.has_value()) {
             TaskProgress enc{};
             enc.stage = 1;
-            (void)send_encrypted(conn, MessageType::MSG_TASK_PROGRESS,
-                                 &enc, sizeof(enc));
+            (void)ordered_send(MessageType::MSG_TASK_PROGRESS, &enc, sizeof(enc));
         }
 
         ClientTaskResponse response{};
@@ -1166,14 +1233,14 @@ void Coordinator::run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
                         result_bytes.data(), leading_bytes);
         }
         const auto t_send_start = std::chrono::steady_clock::now();
-        bool sent_ok = send_encrypted(conn, MessageType::MSG_CLIENT_RESPONSE,
-                                      resp_payload.data(), resp_payload.size());
+        bool sent_ok = ordered_send(MessageType::MSG_CLIENT_RESPONSE,
+                                    resp_payload.data(), resp_payload.size());
         for (size_t offset = resp_payload.size() - sizeof(ClientTaskResponse);
              sent_ok && offset < result_bytes.size();
              offset += CLIENT_CHUNK_BYTES) {
             const size_t n = std::min(CLIENT_CHUNK_BYTES, result_bytes.size() - offset);
-            sent_ok = send_encrypted(conn, MessageType::MSG_CLIENT_DATA,
-                                     result_bytes.data() + offset, n);
+            sent_ok = ordered_send(MessageType::MSG_CLIENT_DATA,
+                                   result_bytes.data() + offset, n);
         }
         const auto t_send_end = std::chrono::steady_clock::now();
         if (!sent_ok) {
@@ -1292,10 +1359,12 @@ void Coordinator::handle_client(std::stop_token st,
                 cresp.avif_decode = avif_codec::avif_decode_available() ? 1 : 0;
                 cresp.avif_encode = avif_codec::avif_encode_available() ? 1 : 0;
                 // Submit-ahead depth this session tolerates: the in-task
-                // frame loop stages exactly one more CLIENT_SUBMIT (with its
-                // DATA continuations) while a task computes. The phone keys
-                // its upload window on this instead of probing.
-                cresp.pipeline_depth = 1;
+                // frame loop keeps up to pipeline_depth+1 CLIENT_SUBMITs
+                // alive at once (2 = one computing + one more fully staged;
+                // the phone's upload window is keyed on this). The multi-
+                // worker pump actually runs depth+1 concurrent tasks so task
+                // N's encode/transfer overlaps with N+1's inference.
+                cresp.pipeline_depth = 2;
                 if (!send_encrypted(conn, MessageType::MSG_CLIENT_CONNECT_RESPONSE,
                                     &cresp, sizeof(cresp))) {
                     LOG_ERROR("Coordinator", "Failed to send CONNECT_RESPONSE");
@@ -1328,10 +1397,11 @@ void Coordinator::handle_client(std::stop_token st,
 
             // ── Session frame loop ────────────────────────────────────────────
             // CLIENT_SUBMIT keeps the connection open: the phone pipelines a
-            // whole batch over one session (handshake/pairing once) and, at
-            // pipeline_depth >= 1, may stage submits ahead — handle_client_
-            // submit returns everything captured mid-task and it is drained
-            // here before any fresh read. Model-library ops stay one-shot
+            // whole batch over one session (handshake/pairing once). The
+            // multi-task pump owns everything from the first submit until
+            // the batch goes quiet — while a task computes it stages further
+            // submits and keeps up to kMaxInflightTasks workers alive so the
+            // GPU never idles between images. Model-library ops stay one-shot
             // (handle + return). Legacy clients that close after the first
             // response end the loop on the next recv (EOF).
             for (;;) {
@@ -1339,23 +1409,8 @@ void Coordinator::handle_client(std::stop_token st,
                 CapturedSubmit incoming;
                 incoming.header = frame_hdr;
                 incoming.payload = std::move(frame_payload);
-                std::deque<CapturedSubmit> ahead;
-                if (!handle_client_submit(conn, st, std::move(incoming), ahead)) {
+                if (!pump_session_submits(conn, st, std::move(incoming))) {
                     return;
-                }
-                while (!ahead.empty()) {
-                    CapturedSubmit nxt = std::move(ahead.front());
-                    ahead.pop_front();
-                    // handle_client_submit clears the out-queue on entry, so
-                    // any remaining captures must be parked outside first.
-                    std::deque<CapturedSubmit> spill;
-                    spill.swap(ahead);
-                    if (!handle_client_submit(conn, st, std::move(nxt), spill)) {
-                        return;  // transport died serving a captured submit
-                    }
-                    for (auto& cap : spill) {
-                        ahead.push_back(std::move(cap));
-                    }
                 }
                 conn.socket->set_timeout(SESSION_FRAME_TIMEOUT_MS);
                 auto next_frame = recv_encrypted(conn);

@@ -214,11 +214,13 @@ struct ClientConnectRequest {
 //             when the coordinator accepts the connection. The phone gates
 //             AVIF input/output on these instead of assuming PC support.
 //   pipeline_depth  submit-ahead depth the session tolerates (tail-grown
-//             field): 1 = while a task computes, the handler stages exactly
-//             one more CLIENT_SUBMIT incl. its MSG_CLIENT_DATA continuations,
-//             then runs it right after — the phone may upload task N+1 during
-//             task N. Receivers use a legacy size floor of 4 bytes; older PCs
-//             omit the byte (= no pipelining).
+//             field): d = while task N computes, the handler stages up to
+//             d more CLIENT_SUBMITs incl. their MSG_CLIENT_DATA
+//             continuations and keeps up to d+1 workers alive, so the phone
+//             may keep d tasks uploaded-but-unreceived. 2 = task N's output
+//             encode/transfer overlaps with N+1's inference (the GPU no
+//             longer idles between images). Receivers use a legacy size
+//             floor of 4 bytes; older PCs omit the byte (= no pipelining).
 struct ClientConnectResponse {
     uint8_t approved;
     uint8_t trusted;

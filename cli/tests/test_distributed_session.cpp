@@ -396,7 +396,7 @@ auto connect_and_pair(TCPSocket& sock, uint16_t port,
     if (cresp->approved != 1) {
         return std::nullopt;
     }
-    if (cresp->pipeline_depth != 1) {
+    if (cresp->pipeline_depth != 2) {
         return std::nullopt;
     }
     return session;
@@ -465,7 +465,7 @@ int main() {
         CHECK(cresp->trusted == 1);
         // This PC advertises submit-ahead: the phone may stage task N+1
         // (struct + DATA chunks) while task N still computes.
-        CHECK(cresp->pipeline_depth == 1);
+        CHECK(cresp->pipeline_depth == 2);
     }
 
     // ── A tiny valid PNG as input. ──────────────────────────────────────────
@@ -636,7 +636,7 @@ int main() {
             const auto* cresp = reinterpret_cast<const ClientConnectResponse*>(
                 frame->second.data());
             CHECK(cresp->approved == 1);
-            CHECK(cresp->pipeline_depth == 1);
+            CHECK(cresp->pipeline_depth == 2);
         }
 
         auto real_first = submit_and_await(rsock, *rsession, png_bytes, model_name_env);

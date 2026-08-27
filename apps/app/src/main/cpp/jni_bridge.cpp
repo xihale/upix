@@ -1084,6 +1084,13 @@ Java_io_upix_nativelib_NCNNEngine_nativePeerCapabilities(JNIEnv* env, jobject th
         // Depth 2 = one task computing + one more fully staged on the wire.
         caps += "pipeline-ahead";
     }
+    if (g_peer_pipeline_depth.load() >= 2) {
+        // The PC keeps TWO workers alive (task N computes while N+1 is fully
+        // staged and its worker queued), so the engine may ALSO upload N+2
+        // during N's result wait — that keeps the phone's post-receive
+        // persist/commit work overlapped with PC inference of the next image.
+        caps += ",pipeline-deep";
+    }
     return env->NewStringUTF(caps.c_str());
 }
 

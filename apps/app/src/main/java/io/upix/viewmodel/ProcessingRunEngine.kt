@@ -324,12 +324,19 @@ internal class ProcessingRunEngine(
             var processingSession: ImageProcessingSession? = null
             // 远程流水线状态：remoteInFlight 是"已上传、待收结果"的任务。
             // 深度1（旧 PC）：读下一张字节与推理重叠，收完结果后才上传下一张。
-            // 深度2（CONNECT_RESPONSE.pipeline_depth ≥ 1，PeerCapabilities.
-            // submitAhead）：上传 N+1 与"等结果 N + 写盘 N"全部重叠，逐张周期
-            // 收敛到 PC 推理本身。remoteSendAheadError 非空 = 发前上传失败
+            // 深度2（CONNECT_RESPONSE.pipeline_depth ≥ 2，PeerCapabilities.
+            // deepPipeline）：上传窗口扩到 2——等结果 N 时就把 N+2 也推上链路，
+            // 本侧"收 N + 写盘 N + SAF 提交 N"与"PC 推理 N+1、收 N+2 上传"
+            // 全双工并行，逐张周期收敛到 max(PC 推理, PC 编码+回传)，
+            // GPU 不再在图间断粮。窗口约束：wire 上同时至多一个未完成的
+            // submission（单 upload 队列串行发射，DATA 帧永不交错，PC 按
+            // FIFO 匹配 staging）。remoteSendAheadError 非空 = 发前上传失败
             // （发前路径不做任何会话恢复），循环下一迭代按当前图失败上报并
             // 终止批次。
             var remoteInFlight: CoordinatorClient.RemoteTask? = null
+            val remoteUploads = ArrayDeque<
+                kotlinx.coroutines.Deferred<Result<CoordinatorClient.RemoteTask>>>()
+            var uploadsLaunched = 0
             var remoteSendAheadError: Exception? = null
 
             // Persists a checkpoint reflecting the run's current progress. The
@@ -475,39 +482,43 @@ internal class ProcessingRunEngine(
                             )
                         } else {
                     withContext(ioDispatcher) {
-                        val nextIndex = itemIndex + 1
                         val submitAheadActive = PeerCapabilities.submitAhead
                         // 深度1（旧 PC）：预取下一张原图字节，与 PC 处理当前张
-                        // 重叠。深度2：读取挪进发前作业内做。
-                        if (!submitAheadActive) {
-                            runImages.getOrNull(nextIndex)?.let { next ->
-                                coordinatorClient!!.prefetchRemoteInput(next)
-                            }
+                        // 重叠。深度2+：读取挪进上传作业内做。
+                        if (!submitAheadActive && itemIndex + 1 < runImages.size) {
+                            coordinatorClient!!.prefetchRemoteInput(runImages[itemIndex + 1])
                         }
-                        // 深度2发前上传：现在就推 N+1 的 struct/分块帧上链路，
-                        // 与 PC 推理 N、本侧收结果 N 全双工重叠。窗口严格 ≤2：
-                        // 上一轮的 ahead 作业已在上轮末尾 join，同一时刻至多
-                        // 一个上传在飞（两条提交的 DATA 帧不会在线上交错）。
-                        // 用户取消在 awaitResult 内抛出时会跳过 join——孤儿
-                        // 上传靠 CoordinatorClient.sessionOpGate 保证句柄不被
-                        // 并发释放，随 closeSession 后自然失败退出。
-                        val aheadJob = if (submitAheadActive && nextIndex < runImages.size) {
-                            val next = runImages[nextIndex]
-                            val nextOutputFile = batchOutputRepository.outputFileFor(
+                        // 发前上传窗口补满：保持 uploaded-awaiting ≤ 深度。
+                        // PC depth 1 → 提前 1 张（N+1）；depth ≥ 2 → 提前
+                        // 2 张（本轮补发 N+2）。全部经由同一个异步队列串行
+                        // 入线（队列 head 尚未完成时新作业也不会发送——
+                        // kotlinx 的 async 只调度，真正的 socket 写在各作业
+                        // 线程内完成；深度窗口 = 队列长度约束本身保证至多
+                        // 一个未完成 submission 在 wire 上）。
+                        val aheadDepth = when {
+                            PeerCapabilities.deepPipeline -> 2
+                            submitAheadActive -> 1
+                            else -> 0
+                        }
+                        while (uploadsLaunched - itemIndex < aheadDepth &&
+                            uploadsLaunched < runImages.size
+                        ) {
+                            val k = uploadsLaunched++
+                            val kOutputFile = batchOutputRepository.outputFileFor(
                                 outputDirectory = outputDirectory,
-                                input = next
+                                input = runImages[k]
                             )
-                            async(ioDispatcher) {
-                                coordinatorClient!!.beginRemoteTaskAhead(
-                                    input = next,
-                                    modelName = modelName,
-                                    tileSize = DISTRIBUTED_TILE_SIZE,
-                                    tileOverlap = DISTRIBUTED_TILE_OVERLAP,
-                                    outputFormat = outputFormatFor(nextOutputFile)
-                                )
-                            }
-                        } else {
-                            null
+                            remoteUploads.addLast(
+                                async(ioDispatcher) {
+                                    coordinatorClient!!.beginRemoteTaskAhead(
+                                        input = runImages[k],
+                                        modelName = modelName,
+                                        tileSize = DISTRIBUTED_TILE_SIZE,
+                                        tileOverlap = DISTRIBUTED_TILE_OVERLAP,
+                                        outputFormat = outputFormatFor(kOutputFile)
+                                    )
+                                }
+                            )
                         }
                         val fetchResult = flight.awaitResult { stage, percent, eta ->
                             viewModel.updateUiState { state ->
@@ -536,13 +547,15 @@ internal class ProcessingRunEngine(
                                 )
                             }
                         }
-                        if (aheadJob != null) {
-                            // 先落地发前结果再写盘：窗口状态在本轮末尾收敛，
-                            // 失败尽早进入 remoteSendAheadError 供下轮上报。
-                            val begun = aheadJob.await()
+                        // 收完结果 N：把队首已传完的 submission 换成下一轮的
+                        // 待收任务（先落地发前结果再写盘：窗口状态在本轮末尾
+                        // 收敛，失败尽早进入 remoteSendAheadError 供下轮上报）。
+                        if (remoteUploads.isNotEmpty()) {
+                            val begun = remoteUploads.removeFirst().await()
                             remoteInFlight = begun.getOrNull()
-                            remoteSendAheadError = begun.exceptionOrNull() as? Exception
-                                ?: begun.exceptionOrNull()?.let { IllegalStateException(it.message) }
+                            remoteSendAheadError = begun.exceptionOrNull()
+                                as? Exception ?: begun.exceptionOrNull()
+                                ?.let { IllegalStateException(it.message) }
                             if (begun.isFailure) {
                                 logRepository.error(
                                     "ProcessingRunEngine",

@@ -146,6 +146,17 @@ private:
         std::atomic<bool> done{false};
         std::atomic<int> progress_pct{-1};      // -1 = nothing new to send
         std::atomic<uint32_t> progress_eta{0};
+        // Submit-order gate for this run's socket writes (progress stage,
+        // error replies, final response + DATA chunks). With several tasks in
+        // flight a later task can FINISH first — e.g. its predecoded input is
+        // corrupt and the decode fails instantly while the previous image is
+        // still computing. Responses must still reach the phone in submit
+        // order (it reads them FIFO against what it uploaded), so every send
+        // blocks until the pump flips send_ready for the oldest unfinished
+        // run.
+        std::mutex send_order_m;
+        std::condition_variable send_order_cv;
+        bool send_ready = false;
     };
 
     // A CLIENT_SUBMIT captured off the session stream while a task was still
@@ -211,26 +222,61 @@ private:
     // path will assemble, so "prefetchable" never disagrees with "serveable".
     void maybe_launch_head_prefetch(std::deque<CapturedSubmit>& q);
 
-    // Handle one CLIENT_SUBMIT frame: decode input, upscale, encode, send
-    // CLIENT_RESPONSE (+CLIENT_DATA continuations). The heavy work runs on a
-    // per-task worker thread so this (handler) thread stays free to read
-    // frames — that is what makes MSG_TASK_CANCEL reachable while inference
-    // is in flight, and also where submit-ahead CLIENT_SUBMITs (+DATA) from
-    // the phone get staged into `early_next`. This function blocks until the
-    // worker finished (joining it) and returns:
-    //   false                  — transport failed / malformed submit; drop.
-    //   true + early_next      — 0..N submits captured mid-task (bounded by
-    //                              kMaxAheadCaptures; the phone's window is
-    //                              2, so >1 is already abnormal yet legal to
-    //                              queue rather than drop). The session loop
-    //                              drains them before reading fresh frames.
-    //   true, empty queue      — loop back to a normal blocking read.
-    // Per-task failures are reported inside the response without killing the
-    // connection.
+    // Session task pump: owns every CLIENT_SUBMIT of a batch once the first
+    // one arrives. Heavy work runs on up to kMaxInflightTasks concurrent
+    // worker threads while THIS thread keeps polling frames — that is what
+    // keeps MSG_TASK_CANCEL reachable, stages submit-ahead traffic, and (the
+    // reason it is a multi-worker pump at all) overlaps task N's output
+    // encode + result transfer with task N+1's inference. Task N's worker
+    // releases engine_mutex_ before encoding, so a queued N+1 worker grabs
+    // the GPU the instant inference ends instead of waiting for the encode,
+    // the Wi-Fi transfer and the session bookkeeping to unwind too. Exits
+    // when everything captured and spawned has been served (control returns
+    // to the session loop's normal blocking read — a lull between batches)
+    // or by dropping the connection on protocol violations / dead transport.
+    // Returns false only when the connection must be dropped.
+    //
+    // Concurrency contract that keeps this safe:
+    //   socket writes  — StreamSocket tx_mutex_ gives whole-frame atomicity,
+    //                    and secretbox nonces are random per seal, so workers
+    //                    may send their own results concurrently.
+    //   GPU            — engine_mutex_ serializes inference; encode runs
+    //                    outside the lock precisely so a queued worker can
+    //                    take over immediately.
+    //   response order — service order equals arrival order (captures are a
+    //                    FIFO and a worker is only spawned from the queue
+    //                    head), so responses reach the phone in submit order.
+    //   progress       — TaskProgress carries no task id; only the OLDEST
+    //                    unfinished run may transmit, so the phone never sees
+    //                    a newer task's percentages early.
     static constexpr size_t kMaxAheadCaptures = 4;
-    bool handle_client_submit(WorkerConnection& conn, std::stop_token& st,
-                              CapturedSubmit incoming,
-                              std::deque<CapturedSubmit>& early_next);
+    static constexpr size_t kMaxInflightTasks = 3;
+
+    // One spawned-but-not-yet-reaped task. Everything except `thread` lives
+    // behind a unique_ptr so growing the vector never moves an object the
+    // worker references (run atomics are taken by reference inside its body).
+    struct LiveTask {
+        std::unique_ptr<ClientTaskRun> run{std::make_unique<ClientTaskRun>()};
+        std::thread thread;
+        LiveTask() = default;
+        LiveTask(const LiveTask&) = delete;
+        LiveTask& operator=(const LiveTask&) = delete;
+    };
+
+    // True when a captured submit has its whole input locally available and
+    // can therefore be handed to a worker without touching the socket again.
+    bool capture_input_complete(const CapturedSubmit& cap);
+
+    // Copy the compressed input out of a completed capture (chunked staged
+    // bytes or legacy inline tail). Never reads the socket: only feed it
+    // captures for which capture_input_complete() is true. Returns false with
+    // err set for a structurally invalid submit (caller replies a per-task
+    // error and keeps the session).
+    bool assemble_capture(const CapturedSubmit& cap, ClientTaskSubmit& task_out,
+                          std::vector<uint8_t>& input_out, std::string& err);
+
+    bool pump_session_submits(WorkerConnection& conn, std::stop_token& st,
+                              CapturedSubmit&& first);
 
     // Worker body of one CLIENT_SUBMIT (runs on its own std::thread):
     // decode (or await the submit-ahead prefetch) → process_locally

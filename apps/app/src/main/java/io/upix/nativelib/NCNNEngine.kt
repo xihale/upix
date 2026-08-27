@@ -153,6 +153,8 @@ object NativeCapabilities {
  *  - output-format gating (AVIF output needs PC avif-encode)
  *  - [submitAhead] lets the run engine keep one task uploaded-but-unreceived
  *    (upload N+1 while the PC computes N; CONNECT_RESPONSE.pipeline_depth)
+ *  - [deepPipeline] raises that to two outstanding uploads (N+1 AND N+2), so
+ *    the phone's post-receive persist/commit overlaps with PC inference
  */
 object PeerCapabilities {
     @Volatile
@@ -167,12 +169,22 @@ object PeerCapabilities {
     var submitAhead: Boolean = false
         private set
 
+    /**
+     * PC runs a multi-worker pump (CONNECT_RESPONSE.pipeline_depth >= 2):
+     * upload N+2 while awaiting result N — on top of [submitAhead]'s N+1 — so
+     * the phone's persist/commit of result N overlaps with PC inference.
+     */
+    @Volatile
+    var deepPipeline: Boolean = false
+        private set
+
     /** Re-read the comma-token string the last handshake published. */
     fun refresh() {
         val caps = runCatching { NCNNEngine.nativePeerCapabilities() }.getOrDefault("")
         avifEncode = caps.split(',').any { it.trim().equals("avif-encode", true) }
         avifDecode = caps.split(',').any { it.trim().equals("avif-decode", true) }
         submitAhead = caps.split(',').any { it.trim().equals("pipeline-ahead", true) }
+        deepPipeline = caps.split(',').any { it.trim().equals("pipeline-deep", true) }
     }
 
     /** Forget everything (disconnect / switching endpoints). */
@@ -180,5 +192,6 @@ object PeerCapabilities {
         avifEncode = false
         avifDecode = false
         submitAhead = false
+        deepPipeline = false
     }
 }
