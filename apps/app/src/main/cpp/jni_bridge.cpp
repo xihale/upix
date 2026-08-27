@@ -70,11 +70,15 @@ auto get_jni_last_error() -> std::string {
     return g_jni_last_error;
 }
 
-// Peer AVIF capabilities learned from the most recent CONNECT_RESPONSE
+// Peer capabilities learned from the most recent CONNECT_RESPONSE
 // (perform_connect_request below). Cleared whenever a pairing attempt starts,
 // so a stale PC's flags never outlive its connection attempt.
 std::atomic<bool> g_peer_avif_decode{false};
 std::atomic<bool> g_peer_avif_encode{false};
+// Submit-ahead depth the PC advertised (CONNECT_RESPONSE.pipeline_depth;
+// 0 = old PC without the field). The phone may keep at most this many tasks
+// submitted-but-unreceived: upload task N+1 while task N still computes.
+std::atomic<int> g_peer_pipeline_depth{0};
 
 // Parses the Kotlin-side encoder settings JSON (field names mirror
 // upix::EncoderOptions). Null/empty/malformed input falls back to defaults —
@@ -299,6 +303,7 @@ auto perform_connect_request(
     error_msg.clear();
     g_peer_avif_decode.store(false);
     g_peer_avif_encode.store(false);
+    g_peer_pipeline_depth.store(0);
 
     // (1) 构造 ClientConnectRequest: 设备名 + 自己的指纹。
     upix::ClientConnectRequest req{};
@@ -346,8 +351,12 @@ auto perform_connect_request(
         return false;
     }
     auto& [resp_hdr, resp_payload] = *opened;
+    // ClientConnectResponse only ever grows at the tail: accept anything from
+    // the 4-byte legacy floor (approved/trusted/avif_*) upward. Older PCs
+    // without pipeline_depth simply report depth 0 (= serial submits).
+    constexpr size_t kLegacyConnectResponseSize = 4;
     if (resp_hdr.type != upix::MessageType::MSG_CLIENT_CONNECT_RESPONSE ||
-        resp_payload.size() < sizeof(upix::ClientConnectResponse)) {
+        resp_payload.size() < kLegacyConnectResponseSize) {
         error_msg = "unexpected response during pairing";
         return false;
     }
@@ -356,11 +365,16 @@ auto perform_connect_request(
         error_msg = "PC denied the connection";
         return false;
     }
-    // Approved ⇒ this response carries the PC's AVIF codec flags; publish them
-    // for nativePeerCapabilities()/Kotlin gating. Older PCs without the fields
-    // leave zeros in the (value-initialized) tail — same as "no support".
+    // Approved ⇒ this response carries the PC's codec/pipelining flags;
+    // publish them for nativePeerCapabilities()/Kotlin gating. Bytes past the
+    // legacy tail stay unread when the peer is old (payload shorter than the
+    // current struct).
     g_peer_avif_decode.store(resp->avif_decode != 0);
     g_peer_avif_encode.store(resp->avif_encode != 0);
+    if (resp_payload.size() >= sizeof(upix::ClientConnectResponse)) {
+        g_peer_pipeline_depth.store(
+            static_cast<int>(resp->pipeline_depth));
+    }
     return true;
 }
 
@@ -741,6 +755,15 @@ auto receive_distributed_result(
     upix::TCPSocket& socket = session_state.socket;
     upix::EncryptedSession& session = *session_state.session;
 
+    // New wait, new cancel state. Clearing here (instead of at submit time)
+    // keeps a user cancel racing a concurrent submit-ahead upload from being
+    // erased before this loop can observe it: sends no longer touch the
+    // flags at all. A stale flag from an aborted batch cannot leak — cancel
+    // always ends that batch with closeSession(), and a fresh session object
+    // starts zeroed.
+    session_state.cancel_requested.store(false);
+    session_state.cancel_sent.store(false);
+
     // Leave the receive timeout in its normal (long) state on every exit.
     struct RecvTimeoutGuard {
         upix::TCPSocket& socket;
@@ -1053,6 +1076,13 @@ Java_io_upix_nativelib_NCNNEngine_nativePeerCapabilities(JNIEnv* env, jobject th
             caps += ",";
         }
         caps += "avif-encode";
+    }
+    if (g_peer_pipeline_depth.load() >= 1) {
+        if (!caps.empty()) {
+            caps += ",";
+        }
+        // Depth 2 = one task computing + one more fully staged on the wire.
+        caps += "pipeline-ahead";
     }
     return env->NewStringUTF(caps.c_str());
 }
@@ -1466,13 +1496,12 @@ Java_io_upix_nativelib_NCNNEngine_nativeSendDistributedTask(
             input_image, 0, input_size,
             reinterpret_cast<jbyte*>(input_bytes.data()));
 
-        // New task on this session: a stale cancel flag from a previous
-        // (aborted) batch must not leak into this receive loop. If a cancel
-        // lands between this reset and the receive, the loop still honors
-        // it — the CANCEL frame then follows the submit, and the PC aborts
-        // the task it just received.
-        session_state->cancel_requested.store(false);
-        session_state->cancel_sent.store(false);
+        // NOTE: the per-task cancel flags are deliberately NOT cleared here.
+        // With submit-ahead (pipeline_depth >= 1) this send can run
+        // concurrently with a blocked nativeReceiveDistributedResult; wiping
+        // cancel_requested at send time raced a user cancel and could erase
+        // it before the receive loop observed it. The receive side clears
+        // both flags once, when a new wait begins.
 
         const bool sent = send_distributed_submit(
             session_state->socket,

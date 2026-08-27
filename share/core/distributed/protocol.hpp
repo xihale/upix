@@ -213,11 +213,18 @@ struct ClientConnectRequest {
 //   avif_*    PC-side AVIF codec availability, probed via the system libavif
 //             when the coordinator accepts the connection. The phone gates
 //             AVIF input/output on these instead of assuming PC support.
+//   pipeline_depth  submit-ahead depth the session tolerates (tail-grown
+//             field): 1 = while a task computes, the handler stages exactly
+//             one more CLIENT_SUBMIT incl. its MSG_CLIENT_DATA continuations,
+//             then runs it right after — the phone may upload task N+1 during
+//             task N. Receivers use a legacy size floor of 4 bytes; older PCs
+//             omit the byte (= no pipelining).
 struct ClientConnectResponse {
     uint8_t approved;
     uint8_t trusted;
     uint8_t avif_decode;
     uint8_t avif_encode;
+    uint8_t pipeline_depth;
 };
 
 // ── Shared model library messages ───────────────────────────────────────────

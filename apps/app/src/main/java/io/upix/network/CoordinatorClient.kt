@@ -300,23 +300,27 @@ class CoordinatorClient(
 
         /** 分块提交被拒后的单帧重发（旧 PC 降级路径）。 */
         private fun resendSingleFrame(): Boolean {
-            val handle = nativeSessionHandle
-            if (handle == 0L) {
-                return false
-            }
             return try {
-                NCNNEngine.nativeSendDistributedTask(
-                    handle,
-                    modelName,
-                    tileSize,
-                    tileOverlap,
-                    inputFormat,
-                    inputBytes,
-                    outputFormat,
-                    settings.normalizedQuality,
-                    settings.toNativeJson(),
-                    /*allowChunked=*/ false
-                )
+                // 门闩内完成：防句柄在重发中途被关闭路径释放。
+                synchronized(sessionOpGate) {
+                    val handle = nativeSessionHandle
+                    if (handle == 0L) {
+                        false
+                    } else {
+                        NCNNEngine.nativeSendDistributedTask(
+                            handle,
+                            modelName,
+                            tileSize,
+                            tileOverlap,
+                            inputFormat,
+                            inputBytes,
+                            outputFormat,
+                            settings.normalizedQuality,
+                            settings.toNativeJson(),
+                            /*allowChunked=*/ false
+                        )
+                    }
+                }
             } catch (e: UnsatisfiedLinkError) {
                 logRepository.error("CoordinatorClient", "Native bridge unavailable: ${e.message}")
                 false
@@ -468,6 +472,32 @@ class CoordinatorClient(
         tileSize: Int,
         tileOverlap: Int,
         outputFormat: String
+    ): Result<RemoteTask> = beginRemoteTaskImpl(
+        input, modelName, tileSize, tileOverlap, outputFormat, recoverOnFailure = true
+    )
+
+    /**
+     * 深度2发前窗口专用：语义同 [beginRemoteTask]，但任何失败都不做恢复——
+     * 不重开、不清端点（那些动作会与阻塞中的 awaitResult 抢同一会话）。
+     * 发前失败即批次失败，由引擎的串行路径统一上报终止。
+     */
+    fun beginRemoteTaskAhead(
+        input: ResolvedImageInput,
+        modelName: String,
+        tileSize: Int,
+        tileOverlap: Int,
+        outputFormat: String
+    ): Result<RemoteTask> = beginRemoteTaskImpl(
+        input, modelName, tileSize, tileOverlap, outputFormat, recoverOnFailure = false
+    )
+
+    private fun beginRemoteTaskImpl(
+        input: ResolvedImageInput,
+        modelName: String,
+        tileSize: Int,
+        tileOverlap: Int,
+        outputFormat: String,
+        recoverOnFailure: Boolean
     ): Result<RemoteTask> {
         val endpoint = connectedEndpoint
             ?: return Result.failure(IllegalStateException("No connected coordinator endpoint"))
@@ -549,11 +579,22 @@ class CoordinatorClient(
             }
         }
 
-        if (nativeSessionHandle == 0L && !openSession(endpoint)) {
-            return Result.failure(IllegalStateException("PC 不可达：${lastNativeError()}"))
+        if (nativeSessionHandle == 0L) {
+            if (!recoverOnFailure) {
+                // 发前路径禁止在这里开新会话（与 awaitResult 抢句柄）。
+                return Result.failure(IllegalStateException("Distributed session is closed"))
+            }
+            if (!openSession(endpoint)) {
+                return Result.failure(IllegalStateException("PC 不可达：${lastNativeError()}"))
+            }
         }
-        if (send(nativeSessionHandle, useChunked)) {
+        // 发送全程持门闩：取消/掉线路径的 closeSession 与之互斥，句柄不会在
+        // native 上传中途被删除（见 sessionOpGate 注释）。
+        if (withSessionHandle { send(it, useChunked) } == true) {
             return Result.success(task)
+        }
+        if (!recoverOnFailure) {
+            return Result.failure(IllegalStateException(lastNativeError().ifBlank { "upload failed" }))
         }
         // 传输层失败：PC 可能重启（或是不支持会话循环的旧版）。重开一次再发；
         // 若首次是分块发送，则按“旧 PC 不支持分块”处理，重发强制单帧并记
@@ -562,7 +603,8 @@ class CoordinatorClient(
             chunkedSubmitUnsupported = true
         }
         closeSession()
-        if (!openSession(endpoint) || !send(nativeSessionHandle, false)) {
+        val resent = if (openSession(endpoint)) withSessionHandle { send(it, false) } else null
+        if (resent != true) {
             val reason = lastNativeError()
             closeSession()
             clearEndpoint(endpoint)
@@ -585,50 +627,75 @@ class CoordinatorClient(
      * 请求取消在途的远程任务（取消按钮接线）：向会话发 MSG_TASK_CANCEL 的
      * 请求标志。阻塞中的 awaitResult 会在一个轮询周期内发出取消帧，并在 PC
      * 停止推理、回出 "canceled" 终止应答后以 CancellationException 返回。
-     * 无会话/无在途任务时为空操作（下一次上传会清掉标志）。
+     * 无会话/无在途任务时为空操作（标志在新一次等待开始时清零）。
      */
     fun cancelRemoteTask() {
-        val handle = nativeSessionHandle
-        if (handle == 0L) {
-            return
+        // 句柄快照与 native 调用同在门闩内：发前上传可能正持锁上传，取消等
+        // 待其帧界；关闭与本调用同协程不可能并发。
+        synchronized(sessionOpGate) {
+            val handle = nativeSessionHandle
+            if (handle == 0L) {
+                return
+            }
+            try {
+                NCNNEngine.nativeCancelDistributedTask(handle)
+            } catch (e: Throwable) {
+                logRepository.warning("CoordinatorClient", "Remote task cancel failed: ${e.message}")
+            }
         }
-        try {
-            NCNNEngine.nativeCancelDistributedTask(handle)
-        } catch (e: Throwable) {
-            logRepository.warning("CoordinatorClient", "Remote task cancel failed: ${e.message}")
+    }
+
+    // 会话句柄生命周期门闩。深度2发前窗口里，上传跑在独立线程上，而失败/
+    // 取消路径会在引擎协程线程上关闭会话——nativeClose 会删除句柄背后的
+    // 对象，持着旧句柄调 nativeSend 就是 use-after-free。三类操作（打开/
+    // 发送/关闭）全部在门闩内取句柄并完成 native 调用；阻塞式接收是唯一
+    // 的例外：它只在 awaitResult 调用栈内存活，与关闭同协程串行，天然无
+    // 重叠（这也是取消延迟不受上传时间拖累的原因——门闩只包发送）。
+    private val sessionOpGate = Any()
+
+    /** 门闩内取当前句柄执行 [block]；无会话返回 null。 */
+    private inline fun <T> withSessionHandle(block: (Long) -> T): T? {
+        synchronized(sessionOpGate) {
+            val handle = nativeSessionHandle
+            return if (handle == 0L) null else block(handle)
         }
     }
 
     private fun openSession(endpoint: ConnectedEndpoint): Boolean {
-        nativeSessionHandle = try {
-            NCNNEngine.nativeOpenDistributedSession(
-                endpoint.host,
-                endpoint.port,
-                endpoint.peerPubKeyB64
-            )
-        } catch (e: UnsatisfiedLinkError) {
-            logRepository.error("CoordinatorClient", "Native bridge unavailable: ${e.message}")
-            0L
-        } catch (e: Exception) {
-            logRepository.error("CoordinatorClient", "Session open failed: ${e.message}")
-            0L
+        synchronized(sessionOpGate) {
+            nativeSessionHandle = try {
+                NCNNEngine.nativeOpenDistributedSession(
+                    endpoint.host,
+                    endpoint.port,
+                    endpoint.peerPubKeyB64
+                )
+            } catch (e: UnsatisfiedLinkError) {
+                logRepository.error("CoordinatorClient", "Native bridge unavailable: ${e.message}")
+                0L
+            } catch (e: Exception) {
+                logRepository.error("CoordinatorClient", "Session open failed: ${e.message}")
+                0L
+            }
+            if (nativeSessionHandle == 0L) {
+                return false
+            }
+            // CONNECT_RESPONSE 携带的能力位（AVIF 编解码 + 流水线深度）在这条
+            // 连接上重新学到一次。
+            PeerCapabilities.refresh()
+            return true
         }
-        if (nativeSessionHandle == 0L) {
-            return false
-        }
-        // CONNECT_RESPONSE 携带的 AVIF 能力位在这条连接上重新学到一次。
-        PeerCapabilities.refresh()
-        return true
     }
 
     private fun closeSession() {
-        val handle = nativeSessionHandle
-        nativeSessionHandle = 0L
-        if (handle != 0L) {
-            try {
-                NCNNEngine.nativeCloseDistributedSession(handle)
-            } catch (e: Throwable) {
-                logRepository.warning("CoordinatorClient", "Session close failed: ${e.message}")
+        synchronized(sessionOpGate) {
+            val handle = nativeSessionHandle
+            nativeSessionHandle = 0L
+            if (handle != 0L) {
+                try {
+                    NCNNEngine.nativeCloseDistributedSession(handle)
+                } catch (e: Throwable) {
+                    logRepository.warning("CoordinatorClient", "Session close failed: ${e.message}")
+                }
             }
         }
     }

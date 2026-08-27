@@ -9,6 +9,7 @@
 #include "core/config.hpp"
 #include "utils/expected.hpp"
 #include <array>
+#include <deque>
 #include <optional>
 #include <string>
 #include <memory>
@@ -146,22 +147,42 @@ private:
         std::atomic<uint32_t> progress_eta{0};
     };
 
+    // A CLIENT_SUBMIT captured off the session stream while a task was still
+    // running (submit-ahead). For a chunked submit the struct frame arrives
+    // first and its MSG_CLIENT_DATA continuations trickle in during later
+    // poll ticks — staged_data parks those bytes so they are not read again
+    // from the socket; reassembly finishes eagerly once the current task
+    // joins. The whole capture is then processed like any fresh submit.
+    struct CapturedSubmit {
+        MessageHeader header{};
+        std::vector<uint8_t> payload;      // full SUBMIT frame payload (struct [+ inline input])
+        std::vector<uint8_t> staged_data;  // DATA continuations consumed mid-task
+    };
+
+    // Declared chunked length for a captured submit (0 = legacy single-frame
+    // / invalid declaration). DATA continuations are matched against this.
+    static uint32_t declared_chunk_len(const CapturedSubmit& cap);
+
     // Handle one CLIENT_SUBMIT frame: decode input, upscale, encode, send
     // CLIENT_RESPONSE (+CLIENT_DATA continuations). The heavy work runs on a
     // per-task worker thread so this (handler) thread stays free to read
     // frames — that is what makes MSG_TASK_CANCEL reachable while inference
-    // is in flight. This function blocks until the worker finished (joining
-    // it) and returns:
-    //   false            — transport failed / malformed submit; drop session.
-    //   true + early_frame — a frame that arrived while the worker was
-    //                      finishing (e.g. the next CLIENT_SUBMIT) and must
-    //                      be processed by the session loop as-is.
-    //   true, no frame   — loop back to a normal blocking read.
+    // is in flight, and also where submit-ahead CLIENT_SUBMITs (+DATA) from
+    // the phone get staged into `early_next`. This function blocks until the
+    // worker finished (joining it) and returns:
+    //   false                  — transport failed / malformed submit; drop.
+    //   true + early_next      — 0..N submits captured mid-task (bounded by
+    //                              kMaxAheadCaptures; the phone's window is
+    //                              2, so >1 is already abnormal yet legal to
+    //                              queue rather than drop). The session loop
+    //                              drains them before reading fresh frames.
+    //   true, empty queue      — loop back to a normal blocking read.
     // Per-task failures are reported inside the response without killing the
     // connection.
+    static constexpr size_t kMaxAheadCaptures = 4;
     bool handle_client_submit(WorkerConnection& conn, std::stop_token& st,
-                              std::vector<uint8_t> frame_payload,
-                              std::optional<std::pair<MessageHeader, std::vector<uint8_t>>>& early_frame);
+                              CapturedSubmit incoming,
+                              std::deque<CapturedSubmit>& early_next);
 
     // Worker body of one CLIENT_SUBMIT (runs on its own std::thread):
     // decode → process_locally (cancel-aware) → terminal response. All

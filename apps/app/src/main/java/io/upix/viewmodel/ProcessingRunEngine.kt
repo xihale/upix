@@ -322,9 +322,13 @@ internal class ProcessingRunEngine(
             // aborts the batch with an error instead of silently falling back.
             val remoteRouting = effectiveDistributedMode
             var processingSession: ImageProcessingSession? = null
-            // 远程深度 1 流水线状态：send-ahead 的下一张任务 + 其失败原因。
-            // remoteInFlight == null 且 remoteSendAheadError != null 时，循环
-            // 在下一迭代把该错误按当前图失败上报并终止批次。
+            // 远程流水线状态：remoteInFlight 是"已上传、待收结果"的任务。
+            // 深度1（旧 PC）：读下一张字节与推理重叠，收完结果后才上传下一张。
+            // 深度2（CONNECT_RESPONSE.pipeline_depth ≥ 1，PeerCapabilities.
+            // submitAhead）：上传 N+1 与"等结果 N + 写盘 N"全部重叠，逐张周期
+            // 收敛到 PC 推理本身。remoteSendAheadError 非空 = 发前上传失败
+            // （发前路径不做任何会话恢复），循环下一迭代按当前图失败上报并
+            // 终止批次。
             var remoteInFlight: CoordinatorClient.RemoteTask? = null
             var remoteSendAheadError: Exception? = null
 
@@ -470,73 +474,87 @@ internal class ProcessingRunEngine(
                                     ?: IllegalStateException("Remote upload failed")
                             )
                         } else {
-                            withContext(ioDispatcher) {
-                                // 预取下一张原图字节，与 PC 处理当前张重叠。
-                                runImages.getOrNull(itemIndex + 1)?.let { next ->
-                                    coordinatorClient!!.prefetchRemoteInput(next)
-                                }
-                                val fetchResult = flight.awaitResult { stage, percent, eta ->
-                                    viewModel.updateUiState { state ->
-                                        val currentTask = state.task
-                                            ?: return@updateUiState state
-                                        val phase: RemoteItemPhase
-                                        val itemFraction: Float
-                                        if (stage == 1) {
-                                            phase = RemoteItemPhase.ENCODING
-                                            itemFraction = 1.0f
-                                        } else {
-                                            phase = RemoteItemPhase.INFERENCE
-                                            itemFraction = (percent / 100.0f)
-                                                .coerceIn(0.0f, 1.0f)
-                                        }
-                                        state.copy(
-                                            task = currentTask.copy(
-                                                remotePhase = phase,
-                                                remoteItemProgress = itemFraction,
-                                                remoteItemEtaSeconds =
-                                                    if (stage == 0 && eta > 0) eta else null,
-                                                progress = combinedRemoteProgress(
-                                                    successfulCount, totalItems, itemFraction
-                                                )
-                                            )
-                                        )
-                                    }
-                                }
-                                // 先上传下一张、再写盘当前张：PC 在手机提交 SAF 的
-                                // 整段时间里可以解码并推理下一张（深度 1 流水线）。
-                                val nextIndex = itemIndex + 1
-                                remoteInFlight = if (nextIndex < runImages.size) {
-                                    val next = runImages[nextIndex]
-                                    val nextOutputFile = batchOutputRepository.outputFileFor(
-                                        outputDirectory = outputDirectory,
-                                        input = next
-                                    )
-                                    val begun = coordinatorClient!!.beginRemoteTask(
-                                        input = next,
-                                        modelName = modelName,
-                                        tileSize = DISTRIBUTED_TILE_SIZE,
-                                        tileOverlap = DISTRIBUTED_TILE_OVERLAP,
-                                        outputFormat = outputFormatFor(nextOutputFile)
-                                    )
-                                    if (begun.isFailure) {
-                                        remoteSendAheadError =
-                                            begun.exceptionOrNull() as? Exception
-                                                ?: IllegalStateException(
-                                                    begun.exceptionOrNull()?.message
-                                                )
-                                        null
-                                    } else {
-                                        remoteSendAheadError = null
-                                        begun.getOrThrow()
-                                    }
-                                } else {
-                                    null
-                                }
-                                fetchResult.fold(
-                                    onSuccess = { encoded -> flight.persist(encoded, outputFile) },
-                                    onFailure = { Result.failure(it) }
+                    withContext(ioDispatcher) {
+                        val nextIndex = itemIndex + 1
+                        val submitAheadActive = PeerCapabilities.submitAhead
+                        // 深度1（旧 PC）：预取下一张原图字节，与 PC 处理当前张
+                        // 重叠。深度2：读取挪进发前作业内做。
+                        if (!submitAheadActive) {
+                            runImages.getOrNull(nextIndex)?.let { next ->
+                                coordinatorClient!!.prefetchRemoteInput(next)
+                            }
+                        }
+                        // 深度2发前上传：现在就推 N+1 的 struct/分块帧上链路，
+                        // 与 PC 推理 N、本侧收结果 N 全双工重叠。窗口严格 ≤2：
+                        // 上一轮的 ahead 作业已在上轮末尾 join，同一时刻至多
+                        // 一个上传在飞（两条提交的 DATA 帧不会在线上交错）。
+                        // 用户取消在 awaitResult 内抛出时会跳过 join——孤儿
+                        // 上传靠 CoordinatorClient.sessionOpGate 保证句柄不被
+                        // 并发释放，随 closeSession 后自然失败退出。
+                        val aheadJob = if (submitAheadActive && nextIndex < runImages.size) {
+                            val next = runImages[nextIndex]
+                            val nextOutputFile = batchOutputRepository.outputFileFor(
+                                outputDirectory = outputDirectory,
+                                input = next
+                            )
+                            async(ioDispatcher) {
+                                coordinatorClient!!.beginRemoteTaskAhead(
+                                    input = next,
+                                    modelName = modelName,
+                                    tileSize = DISTRIBUTED_TILE_SIZE,
+                                    tileOverlap = DISTRIBUTED_TILE_OVERLAP,
+                                    outputFormat = outputFormatFor(nextOutputFile)
                                 )
                             }
+                        } else {
+                            null
+                        }
+                        val fetchResult = flight.awaitResult { stage, percent, eta ->
+                            viewModel.updateUiState { state ->
+                                val currentTask = state.task
+                                    ?: return@updateUiState state
+                                val phase: RemoteItemPhase
+                                val itemFraction: Float
+                                if (stage == 1) {
+                                    phase = RemoteItemPhase.ENCODING
+                                    itemFraction = 1.0f
+                                } else {
+                                    phase = RemoteItemPhase.INFERENCE
+                                    itemFraction = (percent / 100.0f)
+                                        .coerceIn(0.0f, 1.0f)
+                                }
+                                state.copy(
+                                    task = currentTask.copy(
+                                        remotePhase = phase,
+                                        remoteItemProgress = itemFraction,
+                                        remoteItemEtaSeconds =
+                                            if (stage == 0 && eta > 0) eta else null,
+                                        progress = combinedRemoteProgress(
+                                            successfulCount, totalItems, itemFraction
+                                        )
+                                    )
+                                )
+                            }
+                        }
+                        if (aheadJob != null) {
+                            // 先落地发前结果再写盘：窗口状态在本轮末尾收敛，
+                            // 失败尽早进入 remoteSendAheadError 供下轮上报。
+                            val begun = aheadJob.await()
+                            remoteInFlight = begun.getOrNull()
+                            remoteSendAheadError = begun.exceptionOrNull() as? Exception
+                                ?: begun.exceptionOrNull()?.let { IllegalStateException(it.message) }
+                            if (begun.isFailure) {
+                                logRepository.error(
+                                    "ProcessingRunEngine",
+                                    "Send-ahead upload failed: ${begun.exceptionOrNull()?.message}"
+                                )
+                            }
+                        }
+                        fetchResult.fold(
+                            onSuccess = { encoded -> flight.persist(encoded, outputFile) },
+                            onFailure = { Result.failure(it) }
+                        )
+                    }
                         }
                     } else {
                         withContext(defaultDispatcher) {

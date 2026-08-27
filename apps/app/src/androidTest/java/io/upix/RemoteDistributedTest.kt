@@ -9,6 +9,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import io.upix.nativelib.NCNNEngine
 import io.upix.nativelib.NativeWorker
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.FixMethodOrder
 import org.junit.Test
@@ -339,4 +340,238 @@ class RemoteDistributedTest {
 
     @Test
     fun e_distributedUpscale_avif() = roundTripInFormat("avif")
+
+    /**
+     * Depth-2 submit-ahead window (requires the PC to advertise CONNECT_
+     * RESPONSE.pipeline_depth >= 1): task N+1 streams up the wire while task N
+     * still computes, so every image's cycle collapses onto PC inference time.
+     * One CSPIPE row per image:
+     *   CSPIPE <i>/<n> upload=<ms> wait=<ms> persist=<ms> total=<ms>
+     * upload runs CONCURRENTLY with the previous wait (started before it).
+     */
+    @Test
+    fun f_pipeline_window_timing() {
+        requireHost()
+        val key = pair()
+
+        // Inputs: real photos when -e inputDir is given, else synthetic frames.
+        data class Item(val displayName: String, val bytes: ByteArray)
+        val items: List<Item>
+        val dirArg = arg("inputDir", "").trim()
+        if (dirArg.isNotEmpty()) {
+            val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+            val dirFile = resolveInputDir(dirArg, ctx)
+            val names = dirFile.list { _, f ->
+                f.lowercase().endsWith(".jpg") || f.lowercase().endsWith(".jpeg") ||
+                    f.lowercase().endsWith(".png") || f.lowercase().endsWith(".webp")
+            }?.sorted() ?: emptyList()
+            assertTrue("no images in $dirArg", names.isNotEmpty())
+            items = names.map { name ->
+                val bytes = File(dirFile, name).readBytes()
+                Item(name, bytes)
+            }
+        } else {
+            val n = arg("count", "4").trim().toIntOrNull() ?: 4
+            val side = arg("side", "512").trim().toIntOrNull() ?: 512
+            items = (0 until n).map { i ->
+                Item("synthetic-$i.png", makeNoisePng(side, i))
+            }
+        }
+
+        val handle = NCNNEngine.nativeOpenDistributedSession(
+            host = host(), port = port(), peerPubKeyB64 = key
+        )
+        assertTrue("openDistributedSession failed", handle != 0L)
+
+        fun formatOf(name: String): String = when {
+            name.lowercase().endsWith(".png") -> "png"
+            name.lowercase().endsWith(".webp") -> "webp"
+            else -> "jpg"
+        }
+
+        fun send(item: Item): Boolean = NCNNEngine.nativeSendDistributedTask(
+            handle = handle,
+            modelName = model(),
+            tileSize = 0,
+            tileOverlap = 8,
+            inputFormat = formatOf(item.displayName),
+            inputImage = item.bytes,
+            outputFormat = "jpg",
+            outputQuality = 90,
+            encoderOptionsJson = "",
+            allowChunked = true
+        )
+
+        var outDir: File? = null
+        try {
+            val dumpOut = arg("outDir", "").trim()
+            if (dumpOut.isNotEmpty()) {
+                outDir = File(dumpOut).apply { mkdirs() }
+            }
+
+            val uploadMs = LongArray(items.size)
+            val tPrime0 = System.nanoTime()
+            assertTrue("send #0 failed", send(items[0]))
+            uploadMs[0] = (System.nanoTime() - tPrime0) / 1_000_000
+            var nextToSend = 1
+            val uploader = java.util.concurrent.Executors.newSingleThreadExecutor()
+
+            try {
+                for (i in items.indices) {
+                    // Keep ≤2 tasks on the wire: start uploading N+1 BEFORE
+                    // waiting on N's result (this is the whole optimization).
+                    val fut = if (nextToSend < items.size) {
+                        val k = nextToSend++
+                        uploader.submit(java.util.concurrent.Callable {
+                            val t0 = System.nanoTime()
+                            val ok = send(items[k])
+                            uploadMs[k] = (System.nanoTime() - t0) / 1_000_000
+                            ok
+                        })
+                    } else {
+                        null
+                    }
+
+                    val tWait0 = System.nanoTime()
+                    val encoded = NCNNEngine.nativeReceiveDistributedResult(handle, null)
+                    val waitMs = (System.nanoTime() - tWait0) / 1_000_000
+                    assertNotNull(
+                        "receive #$i failed: " +
+                            runCatching { NCNNEngine.nativeGetLastError() }.getOrNull(),
+                        encoded
+                    )
+
+                    val tPersist0 = System.nanoTime()
+                    BitmapFactory.decodeByteArray(encoded!!, 0, encoded.size)
+                    outDir?.let { File(it, "pipe-${items[i].displayName}.jpg").writeBytes(encoded) }
+                    val persistMs = (System.nanoTime() - tPersist0) / 1_000_000
+
+                    if (fut != null) {
+                        // Upload of item i+1 was launched before the wait;
+                        // confirm it went out cleanly once this item is done.
+                        assertTrue("pipelined send #$nextToSend failed", fut.get())
+                    }
+                    android.util.Log.i(
+                        "Upix",
+                        "CSPIPE $i/${items.size} upload=${uploadMs[i]} " +
+                            "wait=$waitMs persist=$persistMs total=" +
+                            "${uploadMs[i] + waitMs + persistMs} " +
+                            "bytes=${encoded.size} (${items[i].displayName})"
+                    )
+                }
+            } finally {
+                uploader.shutdown()
+            }
+        } finally {
+            NCNNEngine.nativeCloseDistributedSession(handle)
+        }
+    }
+
+    /**
+     * Cancel while a task is in flight AND another is being uploaded ahead:
+     * the blocked receive must return promptly with a "Distributed task
+     * canceled..." error. Guards the cancel-flag lifetime against concurrent
+     * submit-ahead sends (a send used to wipe cancel_requested before the
+     * receive loop could observe it).
+     */
+    @Test
+    fun g_cancel_during_pipeline_wait() {
+        requireHost()
+        val key = pair()
+        val handle = NCNNEngine.nativeOpenDistributedSession(
+            host = host(), port = port(), peerPubKeyB64 = key
+        )
+        assertTrue("openDistributedSession failed", handle != 0L)
+        try {
+            val bigTask = makeNoisePng(1400, 7)
+            val sentA = NCNNEngine.nativeSendDistributedTask(
+                handle = handle,
+                modelName = model(),
+                tileSize = 64,
+                tileOverlap = 8,
+                inputFormat = "png",
+                inputImage = bigTask,
+                outputFormat = "jpg",
+                outputQuality = 90,
+                encoderOptionsJson = "",
+                allowChunked = false
+            )
+            assertTrue("send #0 failed", sentA)
+
+            // The slow task should be computing now. Fire off an ahead-upload
+            // on another thread exactly like the depth-2 engine does…
+            val ahead = Thread {
+                runCatching {
+                    NCNNEngine.nativeSendDistributedTask(
+                        handle = handle,
+                        modelName = model(),
+                        tileSize = 64,
+                        tileOverlap = 8,
+                        inputFormat = "png",
+                        inputImage = makeNoisePng(900, 11),
+                        outputFormat = "jpg",
+                        outputQuality = 90,
+                        encoderOptionsJson = "",
+                        allowChunked = true
+                    )
+                }
+            }
+            ahead.start()
+            // …and hit cancel WHILE the receive below is polling.
+            Thread {
+                runCatching { Thread.sleep(300) }
+                runCatching { NCNNEngine.nativeCancelDistributedTask(handle) }
+            }.start()
+
+            val t0 = System.currentTimeMillis()
+            val encoded = NCNNEngine.nativeReceiveDistributedResult(handle, null)
+            val elapsed = System.currentTimeMillis() - t0
+            ahead.join(5000)
+
+            assertNull(
+                "expected a canceled receive, got ${encoded?.size} bytes",
+                encoded
+            )
+            val reason = runCatching { NCNNEngine.nativeGetLastError() }.getOrNull().orEmpty()
+            // Same classification as CoordinatorClient.awaitOutcome: the PC's
+            // graceful abort arrives as a generic failure whose message is
+            // exactly "canceled"; only connection-loss cancels use the
+            // dedicated "Distributed task canceled..." prefix.
+            val taskRejected = reason.startsWith("Distributed task failed:")
+            assertTrue(
+                "error '$reason' is not a cancel (after ${elapsed}ms)",
+                reason.startsWith("Distributed task canceled") ||
+                    (taskRejected && reason.removePrefix("Distributed task failed:").trim() == "canceled")
+            )
+            assertTrue("cancel took ${elapsed}ms — not prompt", elapsed < 30000)
+            android.util.Log.i("Upix", "CSPIPE cancel OK after ${elapsed}ms")
+        } finally {
+            NCNNEngine.nativeCloseDistributedSession(handle)
+        }
+    }
+
+    /** Deterministic pseudo-noise PNG (compresses poorly → predictable size). */
+    private fun makeNoisePng(size: Int, seed: Int): ByteArray {
+        val pixels = IntArray(size * size) { i ->
+            val x = i % size
+            val y = i / size
+            val v = (x * y + x * 17 + y * 23 + seed * 977) and 0xFF
+            (0xFF shl 24) or (v shl 16) or ((v * 3) and 0xFF shl 8) or ((v * 7) and 0xFF)
+        }
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        bmp.setPixels(pixels, 0, size, 0, 0, size, size)
+        val out = ByteArrayOutputStream()
+        bmp.compress(Bitmap.CompressFormat.PNG, 100, out)
+        bmp.recycle()
+        return out.toByteArray()
+    }
+
+    /** inputDir resolution shared by the batch tests (device-local or pushed). */
+    private fun resolveInputDir(raw: String, context: android.content.Context): File {
+        val f = File(raw)
+        return if (f.isDirectory) f
+        else File(context.getExternalFilesDir(null), raw).also {
+            assertTrue("inputDir not found: $raw", it.isDirectory)
+        }
+    }
 }

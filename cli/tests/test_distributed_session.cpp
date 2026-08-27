@@ -396,6 +396,9 @@ auto connect_and_pair(TCPSocket& sock, uint16_t port,
     if (cresp->approved != 1) {
         return std::nullopt;
     }
+    if (cresp->pipeline_depth != 1) {
+        return std::nullopt;
+    }
     return session;
 }
 
@@ -460,6 +463,9 @@ int main() {
             frame->second.data());
         CHECK(cresp->approved == 1);
         CHECK(cresp->trusted == 1);
+        // This PC advertises submit-ahead: the phone may stage task N+1
+        // (struct + DATA chunks) while task N still computes.
+        CHECK(cresp->pipeline_depth == 1);
     }
 
     // ── A tiny valid PNG as input. ──────────────────────────────────────────
@@ -630,6 +636,7 @@ int main() {
             const auto* cresp = reinterpret_cast<const ClientConnectResponse*>(
                 frame->second.data());
             CHECK(cresp->approved == 1);
+            CHECK(cresp->pipeline_depth == 1);
         }
 
         auto real_first = submit_and_await(rsock, *rsession, png_bytes, model_name_env);
@@ -810,6 +817,62 @@ int main() {
             CHECK(after.has_value());
             CHECK(after->first.success == 1);
             std::printf("OK other session unaffected by the dropped one\n");
+        }
+
+        // ── Submit-ahead staging (pipeline_depth >= 1): while a multi-second
+        //    task still computes, stream in the NEXT chunked submit — its
+        //    struct arms the mid-task capture and every MSG_CLIENT_DATA
+        //    continuation lands across later poll ticks — then drain both
+        //    responses in order. Regression for "a DATA frame arriving
+        //    mid-task used to count as a protocol violation and dropped the
+        //    whole session". The staged output must also be pixel-equal to a
+        //    serial resubmit of the same input. ─────────────────────────────
+        {
+            const auto slow = make_noise_jpeg(2600, 2000, 98);
+            const auto pipelined = make_noise_jpeg(2400, 2200, 97);
+
+            // Task A fully uploaded first — reassembly is eager, so its
+            // worker is computing while task B travels.
+            ClientTaskSubmit ta = make_task(slow, model_name_env, "jpg", 0);
+            CHECK(send_sealed(rsock, *rsession,
+                              MessageType::MSG_CLIENT_SUBMIT, &ta, sizeof(ta)));
+            for (size_t off = 0; off < slow.size(); off += CLIENT_DATA_CHUNK_BYTES) {
+                const size_t n =
+                    std::min<size_t>(CLIENT_DATA_CHUNK_BYTES, slow.size() - off);
+                CHECK(send_sealed(rsock, *rsession,
+                                  MessageType::MSG_CLIENT_DATA,
+                                  slow.data() + off, n));
+            }
+
+            // Task B streams in while A computes: exactly what a depth-2
+            // phone produces.
+            ClientTaskSubmit tb = make_task(pipelined, model_name_env, "jpg", 0);
+            CHECK(send_sealed(rsock, *rsession,
+                              MessageType::MSG_CLIENT_SUBMIT, &tb, sizeof(tb)));
+            for (size_t off = 0; off < pipelined.size(); off += CLIENT_DATA_CHUNK_BYTES) {
+                const size_t n =
+                    std::min<size_t>(CLIENT_DATA_CHUNK_BYTES, pipelined.size() - off);
+                CHECK(send_sealed(rsock, *rsession,
+                                  MessageType::MSG_CLIENT_DATA,
+                                  pipelined.data() + off, n));
+            }
+
+            auto resp_a = drain_until_response(rsock, *rsession, nullptr);
+            CHECK(resp_a.has_value());
+            CHECK(resp_a->first.success == 1);
+            auto resp_b = drain_until_response(rsock, *rsession, nullptr);
+            CHECK(resp_b.has_value());
+            CHECK(resp_b->first.success == 1);
+
+            auto serial_b = submit_chunked_and_await(
+                rsock, *rsession, pipelined, model_name_env, "jpg", 0);
+            CHECK(serial_b.has_value());
+            CHECK(serial_b->first.success == 1);
+            CHECK(outputs_equivalent(resp_b->second, serial_b->second));
+            std::printf("OK submit-ahead staging: %.2f MB+%.2f MB pipelined, "
+                        "responses in order, pixels identical to serial\n",
+                        static_cast<double>(slow.size()) / (1024.0 * 1024.0),
+                        static_cast<double>(pipelined.size()) / (1024.0 * 1024.0));
         }
 
         // ── Big input, chunked vs single-frame upload. The same noise JPEG

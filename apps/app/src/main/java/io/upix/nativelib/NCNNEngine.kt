@@ -144,13 +144,15 @@ object NativeCapabilities {
 }
 
 /**
- * AVIF capabilities of the currently paired PC, refreshed from the native
+ * Capabilities of the currently paired PC, refreshed from the native
  * layer after each pairing handshake ([NCNNEngine.nativePeerCapabilities]).
  * The native side clears the flags when a new pairing attempt starts, so a
  * stale PC's support never outlives its connection. Consumers:
  *
  *  - [CoordinatorClient] input preflight (AVIF input needs PC avif-decode)
  *  - output-format gating (AVIF output needs PC avif-encode)
+ *  - [submitAhead] lets the run engine keep one task uploaded-but-unreceived
+ *    (upload N+1 while the PC computes N; CONNECT_RESPONSE.pipeline_depth)
  */
 object PeerCapabilities {
     @Volatile
@@ -161,16 +163,22 @@ object PeerCapabilities {
     var avifDecode: Boolean = false
         private set
 
+    @Volatile
+    var submitAhead: Boolean = false
+        private set
+
     /** Re-read the comma-token string the last handshake published. */
     fun refresh() {
         val caps = runCatching { NCNNEngine.nativePeerCapabilities() }.getOrDefault("")
         avifEncode = caps.split(',').any { it.trim().equals("avif-encode", true) }
         avifDecode = caps.split(',').any { it.trim().equals("avif-decode", true) }
+        submitAhead = caps.split(',').any { it.trim().equals("pipeline-ahead", true) }
     }
 
     /** Forget everything (disconnect / switching endpoints). */
     fun reset() {
         avifEncode = false
         avifDecode = false
+        submitAhead = false
     }
 }
