@@ -17,6 +17,7 @@
 #include <vector>
 #include <functional>
 #include <atomic>
+#include <condition_variable>
 #include <mutex>
 #include <queue>
 #include <future>
@@ -153,15 +154,62 @@ private:
     // poll ticks — staged_data parks those bytes so they are not read again
     // from the socket; reassembly finishes eagerly once the current task
     // joins. The whole capture is then processed like any fresh submit.
+    //
+    // Submit-ahead prefetch: once the HEAD queued entry's chunks are fully
+    // staged while a task is still computing, a helper thread starts decoding
+    // it (EXIF → decode → normalize → orientation bake) so the GPU gap
+    // between task N and N+1 shrinks by the whole input-prep time. The
+    // shared_ptr survives deque spill-swaps; owning the jthread keeps the
+    // destructor-join invariant wherever the state dies.
+    struct AheadDecode {
+        std::mutex mtx;
+        std::condition_variable cv;
+        bool ready = false;
+        bool ok = false;
+        std::string error;                 // reply_error text on !ok
+        std::vector<uint8_t> pixels;       // normalized u8 image on ok
+        int width = 0;
+        int height = 0;
+        int channels = 0;
+        std::unique_ptr<std::jthread> worker;  // joins on destruction
+    };
+
     struct CapturedSubmit {
         MessageHeader header{};
         std::vector<uint8_t> payload;      // full SUBMIT frame payload (struct [+ inline input])
         std::vector<uint8_t> staged_data;  // DATA continuations consumed mid-task
+        std::shared_ptr<AheadDecode> ahead;  // set once the head entry is fully staged
     };
 
     // Declared chunked length for a captured submit (0 = legacy single-frame
     // / invalid declaration). DATA continuations are matched against this.
     static uint32_t declared_chunk_len(const CapturedSubmit& cap);
+
+    // EXIF sniff → decode → channel normalize → orientation bake, the exact
+    // input state run_client_task has historically built inline. Shared by
+    // the worker's inline path and the submit-ahead prefetch thread so both
+    // produce byte-identical inputs. Returns nullopt on success; on failure
+    // returns the reply_error text (identical wording to the inline path).
+    auto prepare_task_input(
+        const ClientTaskSubmit& task,
+        const std::vector<uint8_t>& compressed,
+        std::vector<uint8_t>& pixels_out,
+        int& width_out,
+        int& height_out,
+        int& channels_out) -> std::optional<std::string>;
+
+    // Spawn the prefetch decoder for a fully-available head entry (its
+    // AheadDecode must already be assigned). The jthread is owned by the
+    // shared state so it joins deterministically no matter which side —
+    // queue teardown or coordinator stop — drops the last reference.
+    void start_ahead_decode(CapturedSubmit& cap);
+
+    // Launch conditions for the head-entry prefetch, checked at every point
+    // where a queued submit can become fully available: when a legacy/
+    // inline SUBMIT frame is armed (complete on arrival) and whenever DATA
+    // completions stage a chunked one. Byte count mirrors what the serve
+    // path will assemble, so "prefetchable" never disagrees with "serveable".
+    void maybe_launch_head_prefetch(std::deque<CapturedSubmit>& q);
 
     // Handle one CLIENT_SUBMIT frame: decode input, upscale, encode, send
     // CLIENT_RESPONSE (+CLIENT_DATA continuations). The heavy work runs on a
@@ -185,12 +233,14 @@ private:
                               std::deque<CapturedSubmit>& early_next);
 
     // Worker body of one CLIENT_SUBMIT (runs on its own std::thread):
-    // decode → process_locally (cancel-aware) → terminal response. All
-    // mid-task sends (progress, response, DATA continuations) happen here, on
-    // this thread, so they never race the handler's reads.
+    // decode (or await the submit-ahead prefetch) → process_locally
+    // (cancel-aware) → terminal response. All mid-task sends (progress,
+    // response, DATA continuations) happen here, on this thread, so they
+    // never race the handler's reads.
     void run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
                          std::vector<uint8_t> compressed_input,
-                         ClientTaskRun& run);
+                         ClientTaskRun& run,
+                         std::shared_ptr<AheadDecode> predecoded = nullptr);
 
     // Run the server side of the ECDH+signature handshake on conn. On success
     // conn.session is active and conn.peer_* are populated; returns false on

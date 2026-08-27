@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <stdexcept>
 #include <memory>
 #include <print>
 #include <ranges>
@@ -448,44 +449,78 @@ namespace {
         return img;
     }
 
-    auto load_jpeg(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError> {
-        jpeg_decompress_struct cinfo;
-        jpeg_error_mgr jerr;
-        
-        cinfo.err = jpeg_std_error(&jerr);
-        jpeg_create_decompress(&cinfo);
-        
-        jpeg_mem_src(&cinfo, const_cast<unsigned char*>(buffer.data()), buffer.size());
-        
-        if (jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
-            jpeg_destroy_decompress(&cinfo);
-            return std::unexpected(ImageError{6, "Invalid JPEG header"});
-        }
-        
-        cinfo.out_color_space = JCS_RGB;
-        jpeg_start_decompress(&cinfo);
-        
-        int width = cinfo.output_width;
-        int height = cinfo.output_height;
-        int channels = cinfo.output_components;
-        
-        Image img(width, height, channels);
+    // libjpeg's default error_exit calls exit() — on ANY thread that is fatal
+    // to the whole process (a corrupt remote submit would take the entire
+    // coordinator down mid-batch). Route hard errors through a C++ exception
+    // instead; unwinding stops at the try in load_jpeg below, whose guard
+    // releases the decompress state. libjpeg frames are plain C (nothing to
+    // clean up), so table-based unwinding crosses them safely.
+    struct JpegErrorHook {
+        jpeg_error_mgr pub{};
+        std::string message;
+    };
+    struct DecompressGuard {
+        jpeg_decompress_struct* p;
+        ~DecompressGuard() { jpeg_destroy_decompress(p); }
+    };
+    struct CompressGuard {
+        jpeg_compress_struct* p;
+        ~CompressGuard() { jpeg_destroy_compress(p); }
+    };
 
-        while (cinfo.output_scanline < cinfo.output_height) {
-            // jpeg_read_scanlines increments output_scanline, so capture the
-            // row index before the call and decode straight into the image
-            // buffer — no per-row temporary.
-            const int row_index = cinfo.output_scanline;
-            JSAMPROW row = img.data() +
-                           static_cast<size_t>(row_index) * width * channels;
-            JSAMPARRAY scanlines = &row;
-            jpeg_read_scanlines(&cinfo, scanlines, 1);
+    auto load_jpeg(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError> {
+        jpeg_decompress_struct cinfo{};
+        JpegErrorHook hook{};
+
+        cinfo.err = &hook.pub;
+        jpeg_std_error(&hook.pub);
+        hook.pub.error_exit = [](j_common_ptr cinfo) {
+            auto* self = reinterpret_cast<JpegErrorHook*>(cinfo->err);
+            char buf[JMSG_LENGTH_MAX] = {};
+            (*cinfo->err->format_message)(cinfo, buf);
+            self->message = buf;
+            throw std::runtime_error(buf);
+        };
+        jpeg_create_decompress(&cinfo);
+        DecompressGuard guard{&cinfo};
+
+        try {
+            jpeg_mem_src(&cinfo, const_cast<unsigned char*>(buffer.data()),
+                         buffer.size());
+
+            if (jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
+                return std::unexpected(ImageError{6, "Invalid JPEG header"});
+            }
+
+            cinfo.out_color_space = JCS_RGB;
+            jpeg_start_decompress(&cinfo);
+
+            int width = cinfo.output_width;
+            int height = cinfo.output_height;
+            int channels = cinfo.output_components;
+
+            Image img(width, height, channels);
+
+            while (cinfo.output_scanline < cinfo.output_height) {
+                // jpeg_read_scanlines increments output_scanline, so capture the
+                // row index before the call and decode straight into the image
+                // buffer — no per-row temporary.
+                const int row_index = cinfo.output_scanline;
+                JSAMPROW row = img.data() +
+                               static_cast<size_t>(row_index) * width * channels;
+                JSAMPARRAY scanlines = &row;
+                jpeg_read_scanlines(&cinfo, scanlines, 1);
+            }
+
+            jpeg_finish_decompress(&cinfo);
+
+            return img;
+        } catch (const std::exception& e) {
+            const std::string detail =
+                !hook.message.empty() ? hook.message : e.what();
+            return std::unexpected(
+                ImageError{6, "JPEG decode failed: " + detail});
         }
-        
-        jpeg_finish_decompress(&cinfo);
-        jpeg_destroy_decompress(&cinfo);
-        
-        return img;
     }
 
     auto load_webp(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError> {
@@ -636,13 +671,24 @@ auto Image::save_to_memory(const std::string& format, int quality,
                 return std::unexpected(ImageError{15, "JPEG only supports 1 or 3 channels"});
             }
 
-            jpeg_compress_struct cinfo;
-            jpeg_error_mgr jerr;
+            jpeg_compress_struct cinfo{};
+            JpegErrorHook hook{};
             unsigned char* out_buffer = nullptr;
             size_t out_size = 0;
 
-            cinfo.err = jpeg_std_error(&jerr);
+            // Same exit()-default landmine as the decode side: an encoder
+            // error must come back as ImageError, not kill the process.
+            cinfo.err = &hook.pub;
+            jpeg_std_error(&hook.pub);
+            hook.pub.error_exit = [](j_common_ptr cinfo) {
+                auto* self = reinterpret_cast<JpegErrorHook*>(cinfo->err);
+                char buf[JMSG_LENGTH_MAX] = {};
+                (*cinfo->err->format_message)(cinfo, buf);
+                self->message = buf;
+                throw std::runtime_error(buf);
+            };
             jpeg_create_compress(&cinfo);
+            CompressGuard guard{&cinfo};
             jpeg_mem_dest(&cinfo, &out_buffer, &out_size);
 
             cinfo.image_width = width_;
@@ -688,14 +734,21 @@ auto Image::save_to_memory(const std::string& format, int quality,
             for (const int y : std::views::iota(0, height_)) {
                 row_pointers[y] = const_cast<JSAMPROW>(&data_[static_cast<size_t>(y) * row_stride]);
             }
-            while (cinfo.next_scanline < cinfo.image_height) {
-                JDIMENSION num_lines = cinfo.image_height - cinfo.next_scanline;
-                jpeg_write_scanlines(&cinfo, &row_pointers[cinfo.next_scanline], num_lines);
+
+            try {
+                while (cinfo.next_scanline < cinfo.image_height) {
+                    JDIMENSION num_lines = cinfo.image_height - cinfo.next_scanline;
+                    jpeg_write_scanlines(&cinfo, &row_pointers[cinfo.next_scanline], num_lines);
+                }
+
+                jpeg_finish_compress(&cinfo);
+            } catch (const std::exception&) {
+                std::free(out_buffer);
+                return std::unexpected(ImageError{
+                    21, "JPEG encode failed: " + hook.message});
             }
-
-            jpeg_finish_compress(&cinfo);
-            jpeg_destroy_compress(&cinfo);
-
+            // Guard released the compressor; only the destination buffer
+            // remains caller-owned.
             if (!out_buffer || out_size == 0) {
                 std::free(out_buffer);
                 return std::unexpected(ImageError{21, "JPEG memory encode failed"});

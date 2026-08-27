@@ -875,6 +875,58 @@ int main() {
                         static_cast<double>(pipelined.size()) / (1024.0 * 1024.0));
         }
 
+        // ── Submit-ahead prefetch DECODE failure: the head staged entry now
+        //    decodes on a helper thread while task A computes. A corrupted
+        //    task B must surface exactly the inline-path per-task error in
+        //    its own response (success=0), never kill the session, and leave
+        //    a following submit working. ────────────────────────────────────
+        {
+            const auto slow = make_noise_jpeg(2600, 2000, 98);
+            auto broken = make_noise_jpeg(2400, 2200, 97);
+            // Kill the JPEG signature so the decoder rejects it deterministically.
+            broken[0] = 0xDE;
+            broken[1] = 0xAD;
+
+            ClientTaskSubmit ta = make_task(slow, model_name_env, "jpg", 0);
+            CHECK(send_sealed(rsock, *rsession,
+                              MessageType::MSG_CLIENT_SUBMIT, &ta, sizeof(ta)));
+            for (size_t off = 0; off < slow.size(); off += CLIENT_DATA_CHUNK_BYTES) {
+                const size_t n =
+                    std::min<size_t>(CLIENT_DATA_CHUNK_BYTES, slow.size() - off);
+                CHECK(send_sealed(rsock, *rsession,
+                                  MessageType::MSG_CLIENT_DATA,
+                                  slow.data() + off, n));
+            }
+
+            ClientTaskSubmit tb = make_task(broken, model_name_env, "jpg", 0);
+            CHECK(send_sealed(rsock, *rsession,
+                              MessageType::MSG_CLIENT_SUBMIT, &tb, sizeof(tb)));
+            for (size_t off = 0; off < broken.size(); off += CLIENT_DATA_CHUNK_BYTES) {
+                const size_t n =
+                    std::min<size_t>(CLIENT_DATA_CHUNK_BYTES, broken.size() - off);
+                CHECK(send_sealed(rsock, *rsession,
+                                  MessageType::MSG_CLIENT_DATA,
+                                  broken.data() + off, n));
+            }
+
+            auto resp_a = drain_until_response(rsock, *rsession, nullptr);
+            CHECK(resp_a.has_value());
+            CHECK(resp_a->first.success == 1);
+            auto resp_b = drain_until_response(rsock, *rsession, nullptr);
+            CHECK(resp_b.has_value());
+            CHECK(resp_b->first.success == 0);
+            const std::string err(resp_b->first.error_message);
+            CHECK(err.find("input decode failed") != std::string::npos);
+
+            auto after = submit_chunked_and_await(
+                rsock, *rsession, slow, model_name_env, "jpg", 0);
+            CHECK(after.has_value());
+            CHECK(after->first.success == 1);
+            std::printf("OK submit-ahead prefetch failure: '%s' propagated "
+                        "per-task, session survived\n",
+                        err.c_str());
+        }
+
         // ── Big input, chunked vs single-frame upload. The same noise JPEG
         //    (8-20MB) is submitted through both wire formats; the real model
         //    must produce equivalent outputs (identical decoded pixels), and

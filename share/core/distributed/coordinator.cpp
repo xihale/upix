@@ -154,19 +154,24 @@ void Coordinator::stop() {
     //      the serve daemon).
     //   2. Then join the accept thread; its loop observes the stop token on
     //      every poll-tick wake.
-    //   3. Then stop+join the client handler threads. A handler sitting in
+    //   3. Only then destroy the server object: accept_loop still dereferences
+    //      it on its final wake (ASAN proved a use-after-free when reset()
+    //      ran before the join), so the reset must wait until step 2 proves
+    //      no reader remains.
+    //   4. Then stop+join the client handler threads. A handler sitting in
     //      recv() wakes via its own socket timeouts and drops the connection
     //      at the next stop-token check between frames; the pairing-gate wait
     //      resolves through its promise as before.
     if (server_) {
         server_->stop();
-        server_.reset();
     }
 
     if (accept_thread_.joinable()) {
         accept_thread_.request_stop();
         accept_thread_.join();
     }
+
+    server_.reset();
 
     for (auto& t : client_threads_) {
         t.request_stop();
@@ -612,6 +617,136 @@ uint32_t Coordinator::declared_chunk_len(const CapturedSubmit& cap) {
     return p.input_data_length;
 }
 
+// EXIF sniff → decode → channel normalize → orientation bake. Byte-identical
+// to what run_client_task has always built inline; factored out so the
+// submit-ahead prefetch thread can produce the same input state while the
+// GPU is still busy with the previous task.
+auto Coordinator::prepare_task_input(
+    const ClientTaskSubmit& task,
+    const std::vector<uint8_t>& compressed,
+    std::vector<uint8_t>& pixels_out,
+    int& width_out,
+    int& height_out,
+    int& channels_out) -> std::optional<std::string> {
+    // Sniff EXIF orientation from the encoded bytes before they are freed:
+    // portrait JPEGs (orientation 5-8) decode unrotated, and the bake-in
+    // below keeps the remote path upright like the phone's local path.
+    const int exif_orientation =
+        exif::parse_jpeg_exif_orientation(compressed.data(),
+                                          compressed.size());
+    auto decoded = Image::load_from_memory(task.input_format, compressed);
+    if (!decoded) {
+        return "input decode failed: " + decoded.error().message;
+    }
+    // Model input channels win over what the encoder shipped: RGBA
+    // screenshots / gray PNGs must reach the engine as the model's
+    // expected planar layout or the GPU tile pipeline fails with a
+    // shape mismatch (historical gap — the CLI always normalized).
+    int expected_channels = 0;
+    {
+        std::lock_guard<std::mutex> lk(models_mutex_);
+        if (auto task_model = model_manager_.get_model(task.model_name)) {
+            expected_channels = task_model->input_channels;
+        }
+    }
+    if (!upix::normalize_image_channels(*decoded, expected_channels,
+                                        "remote task")) {
+        return "channel conversion failed";
+    }
+    width_out = decoded->width();
+    height_out = decoded->height();
+    channels_out = decoded->channels();
+    pixels_out.assign(decoded->data(), decoded->data() + decoded->size());
+    if (exif_orientation != 1 &&
+        exif::apply_exif_orientation_u8(pixels_out, width_out, height_out,
+                                        channels_out, exif_orientation)) {
+        LOG_INFO("Coordinator", "applied EXIF orientation {}", exif_orientation);
+    }
+    return std::nullopt;
+}
+
+// Spawn the prefetch decoder for a fully-available head entry. Only ever
+// called from the connection handler thread while it owns the queue, so no
+// locking around the entry itself — the shared AheadDecode state is the sole
+// cross-thread channel.
+void Coordinator::start_ahead_decode(CapturedSubmit& cap) {
+    cap.ahead = std::make_shared<AheadDecode>();
+    const auto state = cap.ahead;
+    ClientTaskSubmit task{};
+    std::memcpy(&task, cap.payload.data(), sizeof(task));
+    // Source snapshot: staged chunks for chunked submits, the payload tail
+    // for legacy inline ones. Either way a copy — the entry keeps owning its
+    // bytes because reassembly/serving reads them again later.
+    std::vector<uint8_t> source;
+    if (cap.staged_data.empty() &&
+        cap.payload.size() > sizeof(ClientTaskSubmit)) {
+        source.assign(cap.payload.begin() + sizeof(ClientTaskSubmit),
+                      cap.payload.end());
+    } else {
+        source = cap.staged_data;
+    }
+    const auto bytes = std::make_shared<const std::vector<uint8_t>>(
+        std::move(source));
+    state->worker = std::make_unique<std::jthread>(
+        [this, state, task, bytes](std::stop_token) {
+            std::vector<uint8_t> pixels;
+            int w = 0, h = 0, c = 0;
+            const auto err = prepare_task_input(task, *bytes, pixels, w, h, c);
+            {
+                std::lock_guard<std::mutex> lk(state->mtx);
+                if (err) {
+                    state->ok = false;
+                    state->error = *err;
+                } else {
+                    state->ok = true;
+                    state->pixels = std::move(pixels);
+                    state->width = w;
+                    state->height = h;
+                    state->channels = c;
+                }
+                state->ready = true;
+            }
+            state->cv.notify_all();
+        });
+}
+
+// Prefetch trigger for the current head entry: fires when its full input is
+// present on the queue — legacy inline payloads are complete the moment they
+// are armed; chunked completes once staged bytes reach the declared length.
+void Coordinator::maybe_launch_head_prefetch(
+    std::deque<CapturedSubmit>& q) {
+    if (q.empty()) {
+        return;
+    }
+    CapturedSubmit& head = q.front();
+    if (head.ahead) {
+        return;
+    }
+    size_t have = 0;
+    uint32_t want = 0;
+    if (head.payload.size() == sizeof(ClientTaskSubmit)) {
+        // Chunked framing: declared length drives staged completion.
+        want = declared_chunk_len(head);
+        have = head.staged_data.size();
+    } else {
+        // Legacy single-frame framing: input rides behind the struct.
+        ClientTaskSubmit p{};
+        std::memcpy(&p, head.payload.data(), sizeof(p));
+        want = p.input_data_length;
+        have = head.payload.size() - sizeof(ClientTaskSubmit);
+    }
+    if (want == 0 || have < want ||
+        head.payload.size() <= sizeof(ClientTaskSubmit)) {
+        return;
+    }
+    start_ahead_decode(head);
+    LOG_INFO("Coordinator",
+             "Submit-ahead prefetch decode started for {} ({})",
+             format_bytes(want),
+             head.payload.size() == sizeof(ClientTaskSubmit) ? "chunked"
+                                                             : "inline");
+}
+
 // Handle one CLIENT_SUBMIT. The submit frame is parsed here (still on the
 // connection handler thread), then the whole task — decode, upscale, encode,
 // response send — runs on a per-task worker thread while THIS thread keeps
@@ -727,8 +862,9 @@ bool Coordinator::handle_client_submit(
 
     ClientTaskRun run;
     std::thread worker([this, &conn, task = std::move(task),
-                        input = std::move(compressed), &run]() mutable {
-        run_client_task(conn, task, std::move(input), run);
+                        input = std::move(compressed), &run,
+                        pre = std::move(incoming.ahead)]() mutable {
+        run_client_task(conn, task, std::move(input), run, std::move(pre));
     });
 
     // ── In-task frame loop ──────────────────────────────────────────────────
@@ -826,6 +962,9 @@ bool Coordinator::handle_client_submit(
             cap.header = frame->first;
             cap.payload = std::move(frame->second);
             early_next.push_back(std::move(cap));
+            // An inline submit is complete the moment it lands — its whole
+            // input can start decoding while the GPU keeps working.
+            maybe_launch_head_prefetch(early_next);
             continue;
         }
         if (frame->first.type == MessageType::MSG_CLIENT_DATA && !early_next.empty() &&
@@ -836,6 +975,11 @@ bool Coordinator::handle_client_submit(
             early_next.back().staged_data.insert(early_next.back().staged_data.end(),
                                                  frame->second.begin(),
                                                  frame->second.end());
+            // Head entry fully staged while the GPU is still busy: start the
+            // prefetch decode now so task N+1 begins inference without paying
+            // input prep. Only the head gets one — deeper entries would pin
+            // decoded frames in RAM for no latency gain.
+            maybe_launch_head_prefetch(early_next);
             continue;
         }
         // A frame that cannot belong to any open capture slot (non-submit,
@@ -865,7 +1009,8 @@ bool Coordinator::handle_client_submit(
 // so the handler's polled reads never contend with a half-written frame.
 void Coordinator::run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
                                   std::vector<uint8_t> compressed_input,
-                                  ClientTaskRun& run) {
+                                  ClientTaskRun& run,
+                                  std::shared_ptr<AheadDecode> predecoded) {
     const auto canceled = [&run] {
         return run.cancel.load(std::memory_order_relaxed);
     };
@@ -898,44 +1043,35 @@ void Coordinator::run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
             reply_error("canceled");
             return;
         }
-        // Sniff EXIF orientation from the encoded bytes before they are freed:
-        // portrait JPEGs (orientation 5-8) decode unrotated, and the bake-in
-        // below keeps the remote path upright like the phone's local path.
-        const int exif_orientation =
-            exif::parse_jpeg_exif_orientation(compressed_input.data(),
-                                              compressed_input.size());
-        auto decoded = Image::load_from_memory(task.input_format, compressed_input);
-        compressed_input.clear();
-        compressed_input.shrink_to_fit();
-        if (!decoded) {
-            reply_error("input decode failed: " + decoded.error().message);
-            return;
-        }
-        // Model input channels win over what the encoder shipped: RGBA
-        // screenshots / gray PNGs must reach the engine as the model's
-        // expected planar layout or the GPU tile pipeline fails with a
-        // shape mismatch (historical gap — the CLI always normalized).
-        int expected_channels = 0;
-        {
-            std::lock_guard<std::mutex> lk(models_mutex_);
-            if (auto task_model = model_manager_.get_model(model_name)) {
-                expected_channels = task_model->input_channels;
+        // Input prep: either await the submit-ahead prefetch (a helper thread
+        // decoded while the previous task still held the GPU) or do it inline
+        // — prepare_task_input is the single shared implementation, so both
+        // paths build byte-identical inputs and reply identical errors.
+        int img_width = 0;
+        int img_height = 0;
+        int channels = 0;
+        std::vector<uint8_t> image_data;
+        if (predecoded) {
+            std::unique_lock<std::mutex> lk(predecoded->mtx);
+            predecoded->cv.wait(lk, [&] { return predecoded->ready; });
+            if (!predecoded->ok) {
+                reply_error(predecoded->error);
+                return;
             }
-        }
-        if (!upix::normalize_image_channels(*decoded, expected_channels,
-                                            "remote task")) {
-            reply_error("channel conversion failed");
-            return;
-        }
-        int img_width = decoded->width();
-        int img_height = decoded->height();
-        const int channels = decoded->channels();
-        std::vector<uint8_t> image_data(decoded->data(),
-                                        decoded->data() + decoded->size());
-        if (exif_orientation != 1 &&
-            exif::apply_exif_orientation_u8(image_data, img_width, img_height,
-                                            channels, exif_orientation)) {
-            LOG_INFO("Coordinator", "applied EXIF orientation {}", exif_orientation);
+            image_data = std::move(predecoded->pixels);
+            img_width = predecoded->width;
+            img_height = predecoded->height;
+            channels = predecoded->channels;
+        } else {
+            const auto prep_error = prepare_task_input(
+                task, compressed_input, image_data,
+                img_width, img_height, channels);
+            compressed_input.clear();
+            compressed_input.shrink_to_fit();
+            if (prep_error) {
+                reply_error(*prep_error);
+                return;
+            }
         }
 
         LOG_INFO("Coordinator", "Received authenticated client task: {}x{} model={}",
