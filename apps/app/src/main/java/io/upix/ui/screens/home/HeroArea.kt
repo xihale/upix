@@ -24,6 +24,7 @@ import androidx.compose.material.icons.outlined.AddPhotoAlternate
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.CreateNewFolder
 import androidx.compose.material.icons.outlined.DeleteSweep
+import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.border
@@ -42,6 +43,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -74,11 +76,12 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import io.upix.R
+import io.upix.data.repository.FolderInputInfo
 import io.upix.data.thumbnails.decodeQueueThumbnailWithLimit
 import io.upix.ui.theme.ExpandSizeSpec
 import io.upix.ui.theme.Spacing
-import io.upix.ui.theme.ValueMono
 import io.upix.ui.theme.pressable
+import io.upix.ui.theme.valueStyleFor
 import kotlin.math.abs
 
 // 320dp 舞台 / 全屏预览 sheet 的解码目标：默认 192px 缩略图在放大 3-5 倍后
@@ -292,6 +295,63 @@ private fun SelectedStage(
                 modifier = Modifier.align(Alignment.Center)
             )
         }
+        // 文件夹源（封面是该文件夹第一张图）：左上角角标明示「整个文件夹 · N 张」，
+        // 否则用户会把封面单图误读为只选中了一张。
+        if (firstSource?.let(FolderInputInfo::isFolderSource) == true) {
+            FolderCountBadge(
+                source = firstSource,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(Spacing.md)
+            )
+        }
+    }
+}
+
+/** 文件夹图片计数（异步枚举，不阻塞封面解码）；null = 还没解析出或枚举失败。 */
+@Composable
+private fun produceFolderImageCount(source: String): State<Int?> {
+    val context = LocalContext.current
+    return produceState<Int?>(initialValue = null, source) {
+        value = runCatching { FolderInputInfo.countImages(context, source) }.getOrNull()
+    }
+}
+
+/**
+ * 文件夹角标：明示当前选中是整个文件夹而非封面单图。
+ * 计数解析中/失败只显示「文件夹」；不透明 surfaceContainerHighest 芯片
+ * （半透明纪律：舞台只允许遮罩 surface@55%）。
+ */
+@Composable
+private fun FolderCountBadge(
+    source: String,
+    modifier: Modifier = Modifier
+) {
+    val folderCount by produceFolderImageCount(source)
+    Surface(
+        modifier = modifier,
+        shape = MaterialTheme.shapes.small,
+        color = MaterialTheme.colorScheme.surfaceContainerHighest
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.xs),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+        ) {
+            Icon(
+                imageVector = Icons.Outlined.FolderOpen,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(14.dp)
+            )
+            Text(
+                text = folderCount?.let { count ->
+                    stringResource(R.string.hero_folder_badge_count, count)
+                } ?: stringResource(R.string.hero_folder_badge),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
     }
 }
 
@@ -381,6 +441,24 @@ private fun StageThumbnail(
                     MaterialTheme.colorScheme.onSurfaceVariant
                 }
             )
+        }
+        // 文件夹源瓦片：左下角小徽标点明这一格代表整个文件夹。
+        if (FolderInputInfo.isFolderSource(source)) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(4.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHighest)
+                    .padding(3.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.FolderOpen,
+                    contentDescription = stringResource(R.string.hero_thumbnail_folder_cd),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(11.dp)
+                )
+            }
         }
         // 视觉 22dp 圆标，命中区由外层 48dp Box 承担 clickable（MD3 最小触控要求）：
         // clickable 挂在 22dp 内圈会把命中区压回 22dp，48dp 占位必须整体可点。
@@ -650,14 +728,25 @@ internal fun PreviewBottomSheet(
                 horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
             ) {
                 Column(modifier = Modifier.weight(1f)) {
+                    // 文件夹源：信息栏明示「文件夹 · N 张图片」（封面图只是首图），
+                    // 不再展示首图文件名与尺寸造成「只选了一张」的误读。
+                    val isFolderSource = FolderInputInfo.isFolderSource(source)
+                    val folderCount by produceFolderImageCount(source)
+                    val infoText = if (isFolderSource) {
+                        folderCount?.let { count ->
+                            stringResource(R.string.hero_folder_badge_count, count)
+                        } ?: stringResource(R.string.hero_folder_badge)
+                    } else {
+                        previewDisplayName(source)
+                    }
                     Text(
-                        text = previewDisplayName(source),
-                        style = ValueMono,
+                        text = infoText,
+                        style = valueStyleFor(infoText),
                         color = MaterialTheme.colorScheme.onSurface,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
-                    if (bitmap != null) {
+                    if (bitmap != null && !isFolderSource) {
                         Text(
                             text = "${bitmap.width} \u00d7 ${bitmap.height}",
                             style = MaterialTheme.typography.labelSmall,

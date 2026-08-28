@@ -11,6 +11,7 @@ import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,6 +66,11 @@ internal class InputSelectionController(
     // WakeLock 不依赖该权限，仅通知可见性受影响）。
     private var notificationPermissionAsked = false
     private var pendingNotificationQueueStartBatchId: String? = null
+
+    // 「无模型 → 有模型」跃迁检测状态：首次观察不触发（控制器随重组重建时
+    // 直接对齐当前值，避免旋转/恢复时对已入队批次重复补入队）。
+    private var modelAvailabilityObserved = false
+    private var lastSeenModelName: String? = null
 
     fun pickImages() {
         pickMultipleImagesLauncher.launch(
@@ -195,6 +201,53 @@ internal class InputSelectionController(
         }
     }
 
+    /**
+     * 选图/选文件夹时还没有任何模型会跳过自动入队（只记 warning）。这里在
+     * 「无模型 → 有模型」跃迁的一刻把已选输入补进队列，否则列表会一直为空。
+     * 每次模型名变化由 [rememberInputSelection] 的 LaunchedEffect 调用；
+     * 模型 A→B 切换不补——沿用「切模型不重排已入队批次」的既有语义。
+     */
+    fun onSelectedModelNameChanged() {
+        val currentModelName = mainUiState.selectedModel?.name
+        val becameAvailable = modelAvailabilityObserved &&
+            lastSeenModelName == null &&
+            currentModelName != null
+        modelAvailabilityObserved = true
+        lastSeenModelName = currentModelName
+        if (!becameAvailable) {
+            return
+        }
+        val eligibleSources = pendingEnqueueSources(
+            selectedSources = mainUiState.selectedInputSources,
+            corruptedSources = mainUiState.corruptedInputSources,
+            queuedSources = processingViewModel.queuedSources()
+        )
+        if (eligibleSources.isEmpty()) {
+            return
+        }
+        // 与选图路径同一合并语义：N 源编码成 upix://multi: 单批次
+        // （文件夹树 URI 子源与单图子源混排同样受 InputSourceRepository 支持）。
+        val mergedBatchSource = InputSourceSpec.encode(eligibleSources)
+        if (mergedBatchSource == null) {
+            logRepository.warning("UpixApp", "No queue eligible sources to enqueue after model became available")
+            return
+        }
+        processingViewModel.enqueueBatch(
+            imagePath = mergedBatchSource,
+            modelName = currentModelName,
+            distributedMode = mainUiState.useRemote,
+            outputDirectoryUri = mainUiState.selectedOutputDirectoryUri,
+            overwriteOriginal = mainUiState.overwriteOriginalImage,
+            backupOriginal = mainUiState.backupOriginalImage,
+            processNestedFolders = mainUiState.processNestedFolders,
+            skipSrMarkedInputs = mainUiState.skipSrMarkedInputs
+        )
+        logRepository.info(
+            "UpixApp",
+            "Enqueued ${eligibleSources.size} input source(s) selected before a model was available: $currentModelName"
+        )
+    }
+
     fun handlePickedOutputFolderUri(uri: Uri?) {
         if (uri == null) {
             logRepository.warning("UpixApp", "Output folder picker canceled")
@@ -309,6 +362,19 @@ private fun buildModelImportFeedbackMessage(result: ModelImportResult, context: 
     }
 }
 
+/**
+ * 模型就绪补入队的候选源：剔除损坏源与已在队列中的源
+ * （文件夹树 URI 等单源批次可精确去重；多图合并批次由 enqueueBatch 的
+ * matchesBatchConfiguration 兜底去重）。
+ */
+internal fun pendingEnqueueSources(
+    selectedSources: List<String>,
+    corruptedSources: Set<String>,
+    queuedSources: Set<String>
+): List<String> = selectedSources.filterNot { source ->
+    source in corruptedSources || source in queuedSources
+}
+
 /** 创建 [InputSelectionController] 并注册其全部 ActivityResult launcher。 */
 @Composable
 internal fun rememberInputSelection(
@@ -331,6 +397,11 @@ internal fun rememberInputSelection(
         )
     }
     controller.mainUiState = mainUiState
+
+    // 模型就绪的一刻把「无模型时选的输入」补入队（见 onSelectedModelNameChanged）。
+    LaunchedEffect(mainUiState.selectedModel?.name) {
+        controller.onSelectedModelNameChanged()
+    }
 
     controller.pickMultipleImagesLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia()

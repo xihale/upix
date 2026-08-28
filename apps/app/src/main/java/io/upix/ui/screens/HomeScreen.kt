@@ -311,6 +311,7 @@ fun HomeScreen(
                 }
             )
 
+            val followFormatLabel = stringResource(R.string.config_output_format_follow)
             ParameterCard(
                 selectedModel = state.selectedModel,
                 notSelectedLabel = notSelectedLabel,
@@ -321,8 +322,10 @@ fun HomeScreen(
                 skipSrMarkedInputs = state.skipSrMarkedInputs,
                 outputFormatLabel = outputFormatLabel(
                     format = state.outputImageFormat,
-                    followLabel = stringResource(R.string.config_output_format_follow)
+                    followLabel = followFormatLabel
                 ),
+                outputFormatFollowsOriginal = state.outputImageFormat == OutputImageFormat.FOLLOW,
+                outputFormatFollowLabel = followFormatLabel,
                 availableScales = availableScales,
                 hasCustomOutputDirectory = state.selectedOutputDirectoryUri != null,
                 onPickModel = { showModelSheet = true },

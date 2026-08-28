@@ -42,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -75,6 +76,8 @@ internal fun ParameterCard(
     processNestedFolders: Boolean,
     skipSrMarkedInputs: Boolean = true,
     outputFormatLabel: String = "",
+    outputFormatFollowsOriginal: Boolean = true,
+    outputFormatFollowLabel: String = "",
     availableScales: List<Int> = emptyList(),
     hasCustomOutputDirectory: Boolean = false,
     onPickModel: () -> Unit,
@@ -88,6 +91,11 @@ internal fun ParameterCard(
     onToggleSkipSrMarkedInputs: (Boolean) -> Unit = {}
 ) {
     var advancedExpanded by remember { mutableStateOf(false) }
+    // 覆盖原图开启时输出写回原路径，输出目录与输出格式均不生效：整组锁定。
+    val overwriteUsable = overwriteSwitchEnabled(
+        outputFormatFollowsOriginal = outputFormatFollowsOriginal,
+        overwriteOriginal = overwriteOriginal
+    )
     val expandIconRotation by animateFloatAsState(
         targetValue = if (advancedExpanded) 180f else 0f,
         label = "advancedExpandRotation"
@@ -181,13 +189,15 @@ internal fun ParameterCard(
 
             // 输出路径：标题 + 路径副行的标准两行行样式，点击整行选目录；
             // 自定义目录时提供「使用默认」快捷操作，不再挤在行尾按钮里。
+            // 覆盖原图开启时输出写回原图位置，该行不生效：不可点击且整行降透明。
             Column(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .pressable(onClick = onSelectOutputFolder)
+                        .pressable(enabled = !overwriteOriginal, onClick = onSelectOutputFolder)
+                        .alpha(if (overwriteOriginal) LockedRowAlpha else 1f)
                         .padding(horizontal = Spacing.lg, vertical = Spacing.sm),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
@@ -225,6 +235,7 @@ internal fun ParameterCard(
                 if (hasCustomOutputDirectory) {
                     TextButton(
                         onClick = onUseDefaultOutputFolder,
+                        enabled = !overwriteOriginal,
                         modifier = Modifier.padding(start = Spacing.lg)
                     ) {
                         Text(stringResource(R.string.home_use_default_output))
@@ -259,20 +270,28 @@ internal fun ParameterCard(
 
             if (advancedExpanded) {
                 Column {
-                    // 覆盖原图开启时输出写回原路径，格式不可生效：禁用该行。
+                    // 覆盖原图开启时输出写回原路径原格式：该行不可点击且整行降透明，
+                    // 值静默切换为「跟随原图」——所见即实际行为，无需文字解释。
                     ListItem(
                         headlineContent = { Text(stringResource(R.string.config_output_format)) },
                         supportingContent = {
-                            // 等宽字体无 CJK 字形：中文标签走系统字体，仅拉丁格式名用 mono。
-                            Text(
-                                text = outputFormatLabel,
-                                style = if (outputFormatLabel.any { it.code > 127 }) {
-                                    MaterialTheme.typography.titleSmall
+                            Column {
+                                // 等宽字体无 CJK 字形：中文标签走系统字体，仅拉丁格式名用 mono。
+                                val displayLabel = if (overwriteOriginal) {
+                                    outputFormatFollowLabel
                                 } else {
-                                    ValueMono
-                                },
-                                color = MaterialTheme.colorScheme.onSurface
-                            )
+                                    outputFormatLabel
+                                }
+                                Text(
+                                    text = displayLabel,
+                                    style = if (displayLabel.any { it.code > 127 }) {
+                                        MaterialTheme.typography.titleSmall
+                                    } else {
+                                        ValueMono
+                                    },
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                            }
                         },
                         leadingContent = {
                             Icon(
@@ -282,12 +301,17 @@ internal fun ParameterCard(
                             )
                         },
                         colors = transparent,
-                        modifier = Modifier.pressable(enabled = !overwriteOriginal, onClick = onPickFormat)
+                        modifier = Modifier
+                            .alpha(if (overwriteOriginal) LockedRowAlpha else 1f)
+                            .pressable(enabled = !overwriteOriginal, onClick = onPickFormat)
                     )
+                    // 手动选了具体输出格式（非跟随原图）时与覆盖原图冲突：开关锁定为关，
+                    // 整行降透明；已开启时保持可用以便关闭（兼容旧版持久化的冲突组合）。
                     SwitchListItem(
                         icon = Icons.Outlined.Save,
                         title = stringResource(R.string.common_overwrite_original),
                         checked = overwriteOriginal,
+                        enabled = overwriteUsable,
                         onCheckedChange = onToggleOverwriteOriginal
                     )
                     SwitchListItem(
@@ -316,7 +340,7 @@ internal fun ParameterCard(
     }
 }
 
-/** 开关行：整行 toggleable（M3 官方模式），Switch 只作状态指示。 */
+/** 开关行：整行 toggleable（M3 官方模式），Switch 只作状态指示；禁用时整行降透明。 */
 @Composable
 private fun SwitchListItem(
     icon: ImageVector,
@@ -338,11 +362,25 @@ private fun SwitchListItem(
             Switch(checked = checked, onCheckedChange = null, enabled = enabled)
         },
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-        modifier = Modifier.toggleable(
-            value = checked,
-            enabled = enabled,
-            role = Role.Switch,
-            onValueChange = onCheckedChange
-        )
+        modifier = Modifier
+            .alpha(if (enabled) 1f else LockedRowAlpha)
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Switch,
+                onValueChange = onCheckedChange
+            )
     )
 }
+
+/** M3 禁用态内容透明度：冲突锁定的行整行降透明，视觉即语义，不写解释文字。 */
+private const val LockedRowAlpha = 0.38f
+
+/**
+ * 覆盖原图开关可用性：手动选了具体输出格式（非跟随原图）时冲突锁定；
+ * 已开启时保持可用，让用户能关回去（也兼容旧版本持久化的冲突组合）。
+ */
+internal fun overwriteSwitchEnabled(
+    outputFormatFollowsOriginal: Boolean,
+    overwriteOriginal: Boolean
+): Boolean = outputFormatFollowsOriginal || overwriteOriginal

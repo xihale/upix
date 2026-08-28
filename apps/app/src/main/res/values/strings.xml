@@ -54,6 +54,9 @@
     <string name="hero_add_folder_cd">添加文件夹</string>
     <string name="hero_clear_all_cd">清空已选</string>
     <string name="hero_thumbnail_remove_cd">移除此图片</string>
+    <string name="hero_thumbnail_folder_cd">文件夹</string>
+    <string name="hero_folder_badge">文件夹</string>
+    <string name="hero_folder_badge_count">文件夹 · %1$d 张图片</string>
 
     <!-- Home parameter card -->
     <string name="config_mode_local">本地</string>

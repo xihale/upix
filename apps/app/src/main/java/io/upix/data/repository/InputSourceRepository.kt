@@ -229,18 +229,6 @@ class InputSourceRepository(
         }
     }
 
-    private fun isImageMimeOrName(
-        mimeType: String?,
-        name: String
-    ): Boolean {
-        val lowerMime = mimeType?.lowercase(Locale.US)
-        if (lowerMime != null && lowerMime.startsWith("image/")) {
-            return true
-        }
-        val lowerName = name.lowercase(Locale.US)
-        return IMAGE_EXTENSIONS.any { extension -> lowerName.endsWith(extension) }
-    }
-
     private fun isDecodableImage(
         uri: Uri,
         displayName: String
@@ -266,23 +254,6 @@ class InputSourceRepository(
         }.getOrDefault(false)
     }
 
-    companion object {
-        private val IMAGE_EXTENSIONS = setOf(
-            ".jpg",
-            ".jpeg",
-            ".png",
-            ".webp",
-            ".bmp",
-            ".gif",
-            ".tif",
-            ".tiff",
-            // HEIF/HEIC 照片（部分机型默认格式）
-            ".heic",
-            ".heif",
-            ".avif"
-        )
-    }
-
     private fun resolvedImageComparator(): Comparator<ResolvedImageInput> {
         return compareBy(
             { input -> input.displayName.lowercase(Locale.US) },
@@ -290,3 +261,31 @@ class InputSourceRepository(
         )
     }
 }
+
+/** 可处理图片判定：MIME 前缀或已知扩展名（文件夹角标计数与完整解析共用同一语义）。 */
+internal fun isImageMimeOrName(
+    mimeType: String?,
+    name: String
+): Boolean {
+    val lowerMime = mimeType?.lowercase(Locale.US)
+    if (lowerMime != null && lowerMime.startsWith("image/")) {
+        return true
+    }
+    val lowerName = name.lowercase(Locale.US)
+    return ImageExtensions.any { extension -> lowerName.endsWith(extension) }
+}
+
+private val ImageExtensions = setOf(
+    ".jpg",
+    ".jpeg",
+    ".png",
+    ".webp",
+    ".bmp",
+    ".gif",
+    ".tif",
+    ".tiff",
+    // HEIF/HEIC 照片（部分机型默认格式）
+    ".heic",
+    ".heif",
+    ".avif"
+)
