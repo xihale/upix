@@ -13,6 +13,9 @@ composeBom = "2026.08.00"
 # newer Compose releases (they only contain ImageVector definitions).
 materialIcons = "1.7.8"
 navigationCompose = "2.9.7"
+# Expressive API (MaterialExpressiveTheme/MotionScheme) is internal in material3
+# 1.4; pin the 1.5 alpha line. BOM keeps managing the other Compose artifacts.
+material3 = "1.5.0-alpha26"
 coroutines = "1.10.2"
 camerax = "1.5.3"
 zxing = "3.5.3"
@@ -38,7 +41,7 @@ androidx-compose-ui = { module = "androidx.compose.ui:ui" }
 androidx-compose-ui-graphics = { module = "androidx.compose.ui:ui-graphics" }
 androidx-compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
 androidx-compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
-androidx-compose-material3 = { module = "androidx.compose.material3:material3" }
+androidx-compose-material3 = { module = "androidx.compose.material3:material3", version.ref = "material3" }
 # Window size classes for MD3 adaptive layouts (bar/rail/drawer, list-detail)
 androidx-compose-adaptive = { module = "androidx.compose.material3.adaptive:adaptive", version.ref = "adaptive" }
 androidx-compose-adaptive-layout = { module = "androidx.compose.material3.adaptive:adaptive-layout", version.ref = "adaptive" }

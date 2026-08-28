@@ -1,6 +1,5 @@
 package io.upix.viewmodel
 
-import android.net.Uri
 import io.upix.data.model.ModelInfo
 import io.upix.data.repository.BatchOutputStore
 import io.upix.data.repository.InputSourceResolver
@@ -11,6 +10,7 @@ import io.upix.data.repository.ProcessingFailureDetail
 import io.upix.data.repository.ProcessingPendingItem
 import io.upix.data.repository.ResolvedImageInput
 import io.upix.data.repository.SrMarkerInfo
+import androidx.core.net.toUri
 
 // Run planning and checkpoint bookkeeping extracted from ProcessingViewModel.
 // The planner owns no state: every function is a computation over its arguments
@@ -92,7 +92,7 @@ class ProcessingRunPlanner(
 
         if (resumeCheckpoint != null && resumeCheckpoint.pendingItems.isNotEmpty()) {
             val pendingImagesFromCheckpoint = resumeCheckpoint.pendingItems.mapNotNull { pendingItem ->
-                val parsedUri = runCatching { Uri.parse(pendingItem.uri) }.getOrNull()
+                val parsedUri = runCatching { pendingItem.uri.toUri() }.getOrNull()
                 if (parsedUri == null || parsedUri.toString().isBlank()) {
                     logRepository.warning(
                         "ProcessingViewModel",

@@ -2,6 +2,7 @@ package io.upix.data.repository
 
 import android.content.Context
 import kotlinx.serialization.json.Json
+import androidx.core.content.edit
 
 /**
  * App 级设置的小仓储（SharedPreferences 持久化）。
@@ -26,9 +27,7 @@ class AppSettingsRepository(context: Context) {
     }
 
     fun saveEncoderSettings(settings: EncoderSettings) {
-        prefs.edit()
-            .putString(KEY_ENCODER_SETTINGS, json.encodeToString(settings))
-            .apply()
+        prefs.edit { putString(KEY_ENCODER_SETTINGS, json.encodeToString(settings)) }
     }
 
     private companion object {

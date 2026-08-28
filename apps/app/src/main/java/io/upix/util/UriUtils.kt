@@ -8,6 +8,7 @@ import android.os.Build
 import androidx.core.content.FileProvider
 import io.upix.data.repository.LogRepository
 import java.io.File
+import androidx.core.net.toUri
 
 /**
  * URI / intent 相关的纯工具（无 Compose 依赖），从 UpixApp.kt 原样迁出：
@@ -58,7 +59,7 @@ private fun resolveOutputViewUri(
         return fileViewUri(context, File(rawOutput))
     }
 
-    val parsedUri = runCatching { Uri.parse(rawOutput) }.getOrNull() ?: return null
+    val parsedUri = runCatching { rawOutput.toUri() }.getOrNull() ?: return null
     return when (parsedUri.scheme?.lowercase()) {
         null -> fileViewUri(context, File(rawOutput))
         "content" -> parsedUri
@@ -133,7 +134,7 @@ internal fun isImageSourceDecodable(
         val inputStream = when {
             normalizedSource.startsWith("/") -> File(normalizedSource).inputStream()
             else -> {
-                val uri = Uri.parse(normalizedSource)
+                val uri = normalizedSource.toUri()
                 when (uri.scheme?.lowercase()) {
                     null -> File(normalizedSource).inputStream()
                     "file" -> {

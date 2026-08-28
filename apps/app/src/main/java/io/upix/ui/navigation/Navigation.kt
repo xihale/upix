@@ -145,7 +145,6 @@ fun UpixNavigation(
                             processingViewModel.removeQueuedBatchesBySource(source)
                         },
                         onSelectOutputFolder = inputSelection::pickOutputFolder,
-                        onUseDefaultOutputFolder = mainViewModel::useDefaultOutputDirectory,
                         onToggleOverwriteOriginal = mainViewModel::setOverwriteOriginalImage,
                         onToggleBackupOriginal = mainViewModel::setBackupOriginalImage,
                         onToggleProcessNestedFolders = mainViewModel::setProcessNestedFolders,
@@ -248,7 +247,6 @@ fun UpixNavigation(
             val encoderSettings by mainViewModel.encoderSettings.collectAsStateWithLifecycle()
             DestinationContainer {
                 SettingsScreen(
-                    selectedModelName = mainUiState.selectedModel?.name,
                     onOpenModels = {
                         navController.navigate(AppScreen.SettingsModels.route)
                     },

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- 豁免项均为 by-design；代码级问题（InlinedApi/SdCardPath/UseKtx 等）在代码内修复，
+     不在此处压制。 -->
+<lint>
+    <!-- 依赖/AGP 版本提示：升级需整体回归验证，不跟随 lint 的滚动建议
+         （material3 钉 1.5 透明版线、material-icons 1.7.8 为终版，均属刻意）。 -->
+    <issue id="AndroidGradlePluginVersion" severity="ignore" />
+    <issue id="GradleDependency" severity="ignore" />
+    <issue id="NewerVersionAvailable" severity="ignore" />
+    <!-- 仅分发 arm64-v8a（native kernel 只编 arm64），不走 ChromeOS 商店。 -->
+    <issue id="ChromeOsAbiSupport" severity="ignore" />
+    <!-- 中文文案里的连字符是数值范围（0-9），不是破折号；英文排版检查不适用。 -->
+    <issue id="TypographyDashes" severity="ignore" />
+</lint>

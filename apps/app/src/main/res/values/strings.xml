@@ -4,7 +4,6 @@
     <!-- Shared across screens -->
     <string name="common_cancel">取消</string>
     <string name="common_retry">重试</string>
-    <string name="common_not_selected">未选择</string>
     <string name="common_settings">设置</string>
     <string name="common_help">帮助</string>
     <string name="common_logs">日志</string>
@@ -29,9 +28,7 @@
     <string name="home_snackbar_connecting">正在连接 PC…</string>
     <string name="home_snackbar_connected">已连接 PC，将使用 PC 处理</string>
     <string name="home_snackbar_pc_unreachable_local">PC 不可达，本次使用本地处理</string>
-    <string name="home_model_setting_label">超分模型</string>
-    <string name="home_output_path_label">输出路径</string>
-    <string name="home_use_default_output">使用默认</string>
+    <string name="home_model_select">选择模型</string>
     <string name="home_backup_original">备份原图</string>
     <string name="home_include_subdirectories">包含子目录</string>
     <string name="home_skip_sr_marked">跳过已超分图片</string>
@@ -190,18 +187,16 @@
     <string name="processing_error_unknown_failure">发生未知错误</string>
 
     <!-- Settings screen -->
-    <string name="settings_current_model">当前模型：%1$s</string>
     <string name="settings_section_general">通用</string>
     <string name="settings_section_about">关于</string>
     <string name="settings_about_version">版本 %1$s</string>
     <string name="settings_about_project">项目地址</string>
+    <string name="settings_battery_policy">电池优化</string>
     <string name="common_encoder_settings">编码设置</string>
-    <string name="settings_encoder_summary">输出质量、PNG 级别、子采样等高级参数</string>
     <string name="settings_encoder_quality">输出质量</string>
     <string name="settings_encoder_quality_hint">JPEG / WebP / AVIF 共用（默认 90）</string>
     <string name="settings_encoder_png_level">PNG 压缩级别</string>
     <string name="settings_encoder_png_level_hint">0-9；默认跟随输出质量自动推导</string>
-    <string name="settings_encoder_custom">自定义</string>
     <string name="settings_encoder_jpeg_subsampling">JPEG 色度子采样</string>
     <string name="settings_encoder_webp_method">WebP 编码力度</string>
     <string name="settings_encoder_webp_method_hint">0-6，越大体积越小但越慢；默认自动（4）</string>
@@ -210,7 +205,6 @@
     <string name="settings_encoder_avif_speed">编码速度</string>
     <string name="settings_encoder_avif_speed_hint">0-10，越大越快、体积越大（默认 6）</string>
     <string name="settings_encoder_avif_subsampling">色度子采样</string>
-    <string name="settings_encoder_auto">自动</string>
     <string name="home_output_format_avif_remote_only">本地未内置 AVIF 编码器，需连接 PC 远程处理</string>
 
     <!-- Help screen -->
@@ -223,15 +217,8 @@
     <string name="help_step_3_desc">确认参数后点击开始，结果会保存到所选输出目录</string>
 
     <!-- Logs screen -->
-    <string name="logs_result_count">共 %1$d 条</string>
     <string name="logs_search_label">搜索</string>
     <string name="logs_filter_all">全部</string>
-    <!-- 级别筛选 chip 显示名（枚举/过滤管线不动；日志正文保持原始枚举，见 §9.11 修订） -->
-    <string name="log_level_debug">调试</string>
-    <string name="log_level_info">信息</string>
-    <string name="log_level_warning">警告</string>
-    <string name="log_level_error">错误</string>
-    <string name="log_level_critical">严重</string>
     <string name="logs_clear">清空日志</string>
     <string name="logs_copy">复制</string>
     <string name="logs_empty">无日志</string>

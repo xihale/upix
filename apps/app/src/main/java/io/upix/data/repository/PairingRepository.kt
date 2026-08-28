@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
+import androidx.core.content.edit
 
 data class TrustedPC(
     val identityPubKey: String,
@@ -58,7 +59,7 @@ class PairingRepository(
             put("pk", pc.identityPubKey)
             put("fp", pc.fingerprint)
         }.toString()
-        prefs.edit().putString(keyFor(normalizedHost, port), blob).apply()
+        prefs.edit { putString(keyFor(normalizedHost, port), blob) }
         logRepository.info("PairingRepository", "Saved trusted PC $normalizedHost:$port (fp=${pc.fingerprint})")
     }
 
@@ -96,7 +97,7 @@ class PairingRepository(
             put("pk", identityPubKey)
             put("fp", fingerprint ?: "")
         }.toString()
-        prefs.edit().putString(KEY_LAST_PAIRED_PC, blob).apply()
+        prefs.edit { putString(KEY_LAST_PAIRED_PC, blob) }
         logRepository.info(
             "PairingRepository",
             "Saved last paired PC $normalizedHost:$port (fp=$fingerprint)"

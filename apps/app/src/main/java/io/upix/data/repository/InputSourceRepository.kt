@@ -8,6 +8,7 @@ import android.provider.OpenableColumns
 import java.io.File
 import java.util.LinkedHashMap
 import java.util.Locale
+import androidx.core.net.toUri
 
 data class ResolvedImageInput(
     val uri: Uri,
@@ -56,7 +57,7 @@ class InputSourceRepository(
             return mergedInputs.values.toList()
         }
 
-        val parsedUri = runCatching { Uri.parse(source) }.getOrNull()
+        val parsedUri = runCatching { source.toUri() }.getOrNull()
         if (parsedUri != null && !parsedUri.scheme.isNullOrBlank()) {
             return resolveUriSource(uri = parsedUri, nested = nested)
         }

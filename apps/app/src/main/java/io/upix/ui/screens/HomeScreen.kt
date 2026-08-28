@@ -40,7 +40,8 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
-import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.SheetValue
+import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -100,7 +101,6 @@ data class HomeCallbacks(
     val onClearInputSources: () -> Unit,
     val onRemoveInputSource: (String) -> Unit,
     val onSelectOutputFolder: () -> Unit,
-    val onUseDefaultOutputFolder: () -> Unit,
     val onToggleOverwriteOriginal: (Boolean) -> Unit,
     val onToggleBackupOriginal: (Boolean) -> Unit,
     val onToggleProcessNestedFolders: (Boolean) -> Unit,
@@ -150,7 +150,6 @@ fun HomeScreen(
         onClearInputSources,
         onRemoveInputSource,
         onSelectOutputFolder,
-        onUseDefaultOutputFolder,
         onToggleOverwriteOriginal,
         onToggleBackupOriginal,
         onToggleProcessNestedFolders,
@@ -177,7 +176,7 @@ fun HomeScreen(
         onCancelDownload,
         onResolveQueuedBatchOutputUri
     ) = callbacks
-    val notSelectedLabel = stringResource(R.string.common_not_selected)
+    val selectModelLabel = stringResource(R.string.home_model_select)
     val snackbarConnectingMessage = stringResource(R.string.home_snackbar_connecting)
     val snackbarConnectedMessage = stringResource(R.string.home_snackbar_connected)
     val snackbarPcUnreachableSwitchedMessage = stringResource(R.string.processing_remote_fallback)
@@ -185,10 +184,6 @@ fun HomeScreen(
 
     val selectedInputs = state.selectedInputSources
     val corruptedSources = state.corruptedInputSources
-    // remember 持稳定实例：输入未变时不重建 List/String，恢复下游可跳过性。
-    val selectedOutput = remember(state.selectedOutputDirectoryUri) {
-        prettyOutputPath(state.selectedOutputDirectoryUri ?: "/sdcard/Pictures/Upix")
-    }
     val queueItems = processingUiState.queueItems
     // 倍率针对当前模型：只列出同系列（名称去掉 -xN 后缀）的倍率；
     // 系列内没有其他倍率时为空，参数卡即隐藏倍率选择。
@@ -219,7 +214,11 @@ fun HomeScreen(
     var previewSource by rememberSaveable { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val openOutputFailedMessage = stringResource(R.string.queue_open_output_failed)
-    val queueSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    // 新版 BottomSheet API：skipPartiallyExpanded=true 等价于启用集不含 PartiallyExpanded。
+    val queueSheetState = rememberBottomSheetState(
+        initialValue = SheetValue.Hidden,
+        enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
+    )
 
     val snackbarHostState = remember { SnackbarHostState() }
     val prevConnectionState = remember { mutableStateOf(connectionState) }
@@ -314,8 +313,9 @@ fun HomeScreen(
             val followFormatLabel = stringResource(R.string.config_output_format_follow)
             ParameterCard(
                 selectedModel = state.selectedModel,
-                notSelectedLabel = notSelectedLabel,
-                outputDirectoryLabel = selectedOutput,
+                selectModelLabel = selectModelLabel,
+                outputDirectoryLabel = state.selectedOutputDirectoryUri?.let { prettyOutputPath(it) }
+                    ?: DefaultOutputPathLabel,
                 overwriteOriginal = state.overwriteOriginalImage,
                 backupOriginal = state.backupOriginalImage,
                 processNestedFolders = state.processNestedFolders,
@@ -327,12 +327,10 @@ fun HomeScreen(
                 outputFormatFollowsOriginal = state.outputImageFormat == OutputImageFormat.FOLLOW,
                 outputFormatFollowLabel = followFormatLabel,
                 availableScales = availableScales,
-                hasCustomOutputDirectory = state.selectedOutputDirectoryUri != null,
                 onPickModel = { showModelSheet = true },
                 onPickScale = onSelectScale,
                 onPickFormat = { showFormatSheet = true },
                 onSelectOutputFolder = onSelectOutputFolder,
-                onUseDefaultOutputFolder = onUseDefaultOutputFolder,
                 onToggleOverwriteOriginal = onToggleOverwriteOriginal,
                 onToggleBackupOriginal = onToggleBackupOriginal,
                 onToggleProcessNestedFolders = onToggleProcessNestedFolders,
@@ -387,7 +385,10 @@ fun HomeScreen(
         // 自动限宽居中展示（不拉伸全宽），作为侧栏方案的过渡实现。
         ModalBottomSheet(
             onDismissRequest = { showModelSheet = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            sheetState = rememberBottomSheetState(
+                initialValue = SheetValue.Hidden,
+                enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
+            ),
             shape = MaterialTheme.shapes.extraLarge,
             containerColor = MaterialTheme.colorScheme.surface
         ) {
@@ -430,7 +431,10 @@ fun HomeScreen(
         val followLabel = stringResource(R.string.config_output_format_follow)
         ModalBottomSheet(
             onDismissRequest = { showFormatSheet = false },
-            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            sheetState = rememberBottomSheetState(
+                initialValue = SheetValue.Hidden,
+                enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
+            ),
             shape = MaterialTheme.shapes.extraLarge,
             containerColor = MaterialTheme.colorScheme.surface
         ) {
@@ -539,9 +543,6 @@ private fun SelectSheetItem(
     onClick: () -> Unit
 ) {
     ListItem(
-        headlineContent = {
-            Text(text = label, style = labelStyle ?: MaterialTheme.typography.bodyLarge)
-        },
         supportingContent = if (sublabel != null) {
             {
                 Text(
@@ -559,7 +560,9 @@ private fun SelectSheetItem(
             // clickable 自带 mergeDescendants：行内文字与 RadioButton 的选中态
             // 合并为一个可聚焦项；role 让 TalkBack 以单选项语义播报。
             .clickable(role = Role.RadioButton, onClick = onClick)
-    )
+    ) {
+        Text(text = label, style = labelStyle ?: MaterialTheme.typography.bodyLarge)
+    }
 }
 
 /** 舞台处理 scrim/覆盖层：出现/消失做 fade。只接收 task，避免整包 UI state 参与 overlay 重组。 */
@@ -630,9 +633,13 @@ private fun HomeConnectionStatus(
     }
 }
 
+/** 默认输出目录展示名（未自选目录时参数卡路径行显示）。 */
+private const val DefaultOutputPathLabel = "Pictures/Upix"
+
 /**
- * SAF tree URI 转可读路径：取 tree/ 后的路径并 URL 解码，
- * primary: 前缀表示内部存储根目录，替换为 /。解析失败时原样返回。
+ * SAF tree URI 转可读路径：取 tree/ 后的路径并 URL 解码，primary: 前缀
+ * 表示内部存储根目录，剥去前缀（与默认展示一致，不带前导 /）。
+ * 解析失败时原样返回。
  */
 private fun prettyOutputPath(uri: String): String {
     val marker = "/tree/"
@@ -647,8 +654,8 @@ private fun prettyOutputPath(uri: String): String {
         return uri
     }
     return when {
-        decoded.startsWith("primary:") -> "/" + decoded.removePrefix("primary:")
-        else -> decoded
+        decoded.startsWith("primary:") -> decoded.removePrefix("primary:")
+        else -> decoded.trimStart('/')
     }
 }
 

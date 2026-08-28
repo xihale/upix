@@ -26,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -56,7 +57,7 @@ fun LogsScreen(
     onClearLogs: () -> Unit
 ) {
     // 枚举不可直接 Bundle 序列化：存 ordinal（-1 = 全部），映射回枚举。
-    var selectedLevelOrdinal by rememberSaveable { mutableStateOf(-1) }
+    var selectedLevelOrdinal by rememberSaveable { mutableIntStateOf(-1) }
     val selectedLevel = remember(selectedLevelOrdinal) {
         LogLevel.entries.getOrNull(selectedLevelOrdinal)
     }

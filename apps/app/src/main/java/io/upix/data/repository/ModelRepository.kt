@@ -1,5 +1,6 @@
 package io.upix.data.repository
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.Uri
 import android.os.Environment
@@ -426,6 +427,9 @@ class ModelRepository(
      * importModels 的 finally 负责清理 staging —— 用户看到明确失败而非
      * OOM/塞满磁盘。
      */
+    // usableSpace 的保守下限检查足够：allocatableBytes 需 API 26+ 的
+    // StorageManager 且语义含“可清理缓存”，这里只关心硬剩余量。
+    @SuppressLint("UsableSpace")
     private fun ensureZipExtractionBudget(
         totalExtractedBytes: Long,
         nextEntryBytes: Long,

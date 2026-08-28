@@ -13,6 +13,7 @@ import java.io.FileOutputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.security.MessageDigest
+import androidx.core.net.toUri
 
 data class BatchOutputDirectory(
     val batchId: String,
@@ -1157,7 +1158,7 @@ class BatchOutputRepository(
         if (rawValue.isBlank()) {
             return null
         }
-        return runCatching { Uri.parse(rawValue) }.getOrNull()
+        return runCatching { rawValue.toUri() }.getOrNull()
     }
 
     private fun defaultOutputRootDir(): File {

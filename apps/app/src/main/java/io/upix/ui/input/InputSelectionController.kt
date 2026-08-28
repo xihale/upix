@@ -10,6 +10,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.ActivityResultLauncher
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.ChecksSdkIntAtLeast
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.MutableState
@@ -309,6 +310,8 @@ internal class InputSelectionController(
         startQueueWithWritePermissionCheckInternal(preferredBatchId)
     }
 
+    // 蕴含 SDK >= 33：POST_NOTIFICATIONS 常量仅在真值分支触达，非 InlinedApi。
+    @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.TIRAMISU)
     private fun needsNotificationPermissionRequest(): Boolean {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || notificationPermissionAsked) {
             return false

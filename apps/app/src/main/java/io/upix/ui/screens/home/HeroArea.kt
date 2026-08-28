@@ -1,6 +1,5 @@
 package io.upix.ui.screens.home
 
-import android.net.Uri
 import androidx.compose.animation.animateContentSize
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -41,7 +40,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.SheetValue
+import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
@@ -67,6 +67,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
@@ -83,6 +84,7 @@ import io.upix.ui.theme.Spacing
 import io.upix.ui.theme.pressable
 import io.upix.ui.theme.valueStyleFor
 import kotlin.math.abs
+import androidx.core.net.toUri
 
 // 320dp 舞台 / 全屏预览 sheet 的解码目标：默认 192px 缩略图在放大 3-5 倍后
 // 明显发糊；按展示区域给更高的解码尺寸（缓存 key 已含尺寸，互不污染）。
@@ -522,10 +524,10 @@ internal fun PreviewBottomSheet(
     onDismiss: () -> Unit
 ) {
     val context = LocalContext.current
-    // 全出血铺满屏宽：固定 960px 档会被拉伸发糊，解码目标至少取屏幕物理宽度。
+    // 全出血铺满屏宽：固定 960px 档会被拉伸发糊，解码目标至少取窗口物理宽度。
     val previewTargetPx = maxOf(
         PREVIEW_THUMBNAIL_TARGET_SIZE_PX,
-        context.resources.displayMetrics.widthPixels
+        LocalWindowInfo.current.containerSize.width
     )
     val previewResult by produceState(
         initialValue = ThumbnailResult(bitmap = null, settled = false),
@@ -545,7 +547,10 @@ internal fun PreviewBottomSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = rememberBottomSheetState(
+            initialValue = SheetValue.Hidden,
+            enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
+        ),
         shape = MaterialTheme.shapes.extraLarge,
         containerColor = MaterialTheme.colorScheme.surface
     ) {
@@ -767,7 +772,7 @@ internal fun PreviewBottomSheet(
 
 /** 预览信息栏的显示名：URI 取最后段并 URL 解码，路径取文件名，失败回落「image」。 */
 private fun previewDisplayName(source: String): String {
-    val raw = runCatching { Uri.parse(source.trim()).lastPathSegment }
+    val raw = runCatching { source.trim().toUri().lastPathSegment }
         .getOrNull()
         ?: source.trim().substringAfterLast('/')
     return runCatching { java.net.URLDecoder.decode(raw, "UTF-8") }

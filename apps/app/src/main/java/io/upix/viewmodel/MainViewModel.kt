@@ -460,11 +460,6 @@ class MainViewModel(
         logRepository.info("MainViewModel", "Selected output directory: $outputLabel")
     }
 
-    fun useDefaultOutputDirectory() {
-        _selectedOutputDirectoryUri.value = null
-        logRepository.info("MainViewModel", "Using default output directory")
-    }
-
     fun setOverwriteOriginalImage(enabled: Boolean) {
         _overwriteOriginalImage.value = enabled
     }

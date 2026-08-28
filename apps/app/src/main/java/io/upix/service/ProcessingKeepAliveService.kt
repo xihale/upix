@@ -88,6 +88,8 @@ class ProcessingKeepAliveService : Service() {
         }
     }
 
+    // ServiceCompat 内部按 SDK 分派 type 参数（<29 忽略），常量内联无害。
+    @android.annotation.SuppressLint("InlinedApi")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // 5 秒窗口内必须 startForeground：用协调器当前快照立即挂出前台通知。
         val snapshot = coordinator.state.value

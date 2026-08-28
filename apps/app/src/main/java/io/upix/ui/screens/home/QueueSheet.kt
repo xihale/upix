@@ -1,6 +1,5 @@
 package io.upix.ui.screens.home
 
-import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
@@ -68,6 +67,7 @@ import io.upix.ui.theme.pressable
 import io.upix.ui.theme.valueStyleFor
 import io.upix.viewmodel.ProcessingQueueItemSummary
 import io.upix.viewmodel.ProcessingUiState
+import androidx.core.net.toUri
 
 internal fun countPendingQueueItems(queueItems: List<ProcessingQueueItemSummary>): Int {
     return queueItems.count { item -> item.status == PersistedQueueItemStatus.PENDING }
@@ -360,14 +360,6 @@ private fun QueueItemCard(
         Column {
             ListItem(
                 leadingContent = { QueueItemThumbnail(source = queueItem.source) },
-                headlineContent = {
-                    Text(
-                        text = "#${index + 1} $sourceLabel",
-                        style = valueStyleFor(sourceLabel),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
-                },
                 supportingContent = {
                     Column {
                         Text(
@@ -390,7 +382,14 @@ private fun QueueItemCard(
                 },
                 trailingContent = { QueueStatusPill(status = queueItem.status) },
                 colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-            )
+            ) {
+                Text(
+                    text = "#${index + 1} $sourceLabel",
+                    style = valueStyleFor(sourceLabel),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
 
             if (isFailed || canOpenOutput) {
                 Row(
@@ -593,7 +592,7 @@ private fun inputSourceLabel(source: String, unnamedInputLabel: String): String 
         val remainingCount = decodedSources.size - 1
         return if (remainingCount > 0) "$firstLabel +$remainingCount" else firstLabel
     }
-    val parsedUri = runCatching { Uri.parse(source) }.getOrNull()
+    val parsedUri = runCatching { source.toUri() }.getOrNull()
     val lastSegment = parsedUri?.lastPathSegment
     if (!lastSegment.isNullOrBlank()) {
         return lastSegment

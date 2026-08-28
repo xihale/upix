@@ -1,6 +1,10 @@
 package io.upix.ui.screens
 
+import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
+import android.os.PowerManager
+import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContent
@@ -25,6 +29,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
+import androidx.compose.material.icons.outlined.BatterySaver
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Link
@@ -48,9 +53,16 @@ import androidx.compose.material3.adaptive.layout.ListDetailPaneScaffoldRole
 import androidx.compose.material3.adaptive.navigation.ThreePaneScaffoldNavigator
 import androidx.compose.material3.adaptive.navigation.rememberListDetailPaneScaffoldNavigator
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -70,6 +82,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
+import androidx.core.net.toUri
 
 /** 设置详情子页：medium+ 双栏时的 detail pane 内容键 + 子页标题资源。 */
 enum class SettingsDetail(@StringRes val titleRes: Int) {
@@ -91,7 +104,6 @@ private const val EXPANDED_BREAKPOINT_DP = 840
 @OptIn(ExperimentalMaterial3AdaptiveApi::class)
 @Composable
 fun SettingsScreen(
-    selectedModelName: String?,
     onOpenModels: () -> Unit,
     onOpenLogs: () -> Unit,
     onOpenHelp: () -> Unit,
@@ -145,7 +157,6 @@ fun SettingsScreen(
                     .padding(innerPadding)
             ) { openDetail ->
                 SettingsListBody(
-                    selectedModelName = selectedModelName,
                     onOpenModels = { openDetail(SettingsDetail.MODELS) },
                     onOpenLogs = { openDetail(SettingsDetail.LOGS) },
                     onOpenHelp = { openDetail(SettingsDetail.HELP) },
@@ -178,7 +189,6 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(Spacing.md)
                 ) {
                     SettingsListBody(
-                        selectedModelName = selectedModelName,
                         onOpenModels = onOpenModels,
                         onOpenLogs = onOpenLogs,
                         onOpenHelp = onOpenHelp,
@@ -305,7 +315,6 @@ private fun SettingsListDetailPane(
 /** 设置列表主体：compact 单栏与 medium+ list pane 共用。节间留白 > 卡内行距。 */
 @Composable
 private fun SettingsListBody(
-    selectedModelName: String?,
     onOpenModels: () -> Unit,
     onOpenLogs: () -> Unit,
     onOpenHelp: () -> Unit,
@@ -315,18 +324,35 @@ private fun SettingsListBody(
         SettingsEntryRow(
             icon = Icons.Outlined.Memory,
             title = stringResource(R.string.common_model_management),
-            subtitle = stringResource(
-                R.string.settings_current_model,
-                selectedModelName ?: stringResource(R.string.common_not_selected)
-            ),
             onClick = onOpenModels
         )
         SettingsEntryRow(
             icon = Icons.Outlined.Tune,
             title = stringResource(R.string.common_encoder_settings),
-            subtitle = stringResource(R.string.settings_encoder_summary),
             onClick = onOpenEncoder
         )
+        // 电池策略入口：远程批处理靠后台 Wi-Fi 收发，屏灭后厂商电源管理
+        // （HarmonyOS/MIUI）会掐断传输，须在系统设置里设为不受限。
+        // 已不受限时整行不显示；状态每次回到前台重读，从系统设置页返回即生效。
+        val context = LocalContext.current
+        var batteryUnrestricted by remember { mutableStateOf(isBatteryUnrestricted(context)) }
+        val lifecycleOwner = LocalLifecycleOwner.current
+        DisposableEffect(lifecycleOwner) {
+            val observer = LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_RESUME) {
+                    batteryUnrestricted = isBatteryUnrestricted(context)
+                }
+            }
+            lifecycleOwner.lifecycle.addObserver(observer)
+            onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        }
+        if (!batteryUnrestricted) {
+            SettingsEntryRow(
+                icon = Icons.Outlined.BatterySaver,
+                title = stringResource(R.string.settings_battery_policy),
+                onClick = { openBatteryPolicySettings(context) }
+            )
+        }
         SettingsEntryRow(
             icon = Icons.AutoMirrored.Outlined.ReceiptLong,
             title = stringResource(R.string.common_logs),
@@ -361,7 +387,7 @@ private fun SettingsListBody(
             onClick = {
                 runCatching {
                     context.startActivity(
-                        Intent(Intent.ACTION_VIEW, android.net.Uri.parse(PROJECT_URL))
+                        Intent(Intent.ACTION_VIEW, PROJECT_URL.toUri())
                     )
                 }
             }
@@ -371,6 +397,35 @@ private fun SettingsListBody(
 
 /** 开源项目地址（关于页展示并可跳转）。 */
 private const val PROJECT_URL = "https://github.com/xihale/upix"
+
+/** 当前应用是否已加入电池优化白名单（不受限）。 */
+private fun isBatteryUnrestricted(context: Context): Boolean {
+    val powerManager = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+        ?: return false
+    return powerManager.isIgnoringBatteryOptimizations(context.packageName)
+}
+
+/**
+ * 跳转本应用电池策略设置：优先拉起单应用「忽略电池优化」确认框（AOSP
+ * 直达不受限开关；厂商 ROM 多路由到自家启动/省电管理页），不可用再退
+ * 全局电池优化列表、应用详情页。逐个尝试，首个能拉起的生效。
+ *
+ * BatteryLife 为 Play 上架政策提示：本应用 GitHub 分发，此入口即保活
+ * （防屏灭掉线）方案的组成部分，属预期用法。
+ */
+@SuppressLint("BatteryLife")
+private fun openBatteryPolicySettings(context: Context) {
+    val packageUri = "package:${context.packageName}".toUri()
+    listOf(
+        Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, packageUri),
+        Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS),
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri)
+    ).forEach { intent ->
+        if (runCatching { context.startActivity(intent) }.isSuccess) {
+            return
+        }
+    }
+}
 
 /** 一个设置分区：小节标题 + 紧随其后的分组卡。 */
 @Composable

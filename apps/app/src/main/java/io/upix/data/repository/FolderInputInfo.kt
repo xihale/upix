@@ -1,10 +1,10 @@
 package io.upix.data.repository
 
 import android.content.Context
-import android.net.Uri
 import android.provider.DocumentsContract
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import androidx.core.net.toUri
 
 /**
  * 文件夹输入源的轻量查询：给 UI 的「这是整个文件夹」标识（舞台角标、
@@ -16,7 +16,7 @@ object FolderInputInfo {
 
     /** 源是否为「添加文件夹」选入的 SAF 树 URI。 */
     fun isFolderSource(source: String): Boolean {
-        val uri = runCatching { Uri.parse(source.trim()) }.getOrNull() ?: return false
+        val uri = runCatching { source.trim().toUri() }.getOrNull() ?: return false
         return uri.scheme?.lowercase() == "content" && DocumentsContract.isTreeUri(uri)
     }
 
@@ -30,7 +30,7 @@ object FolderInputInfo {
             return null
         }
         return withContext(Dispatchers.IO) {
-            val treeUri = Uri.parse(source.trim())
+            val treeUri = source.trim().toUri()
             val rootDocumentId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }
                 .getOrNull() ?: return@withContext null
             val pendingDocumentIds = ArrayDeque<String>().apply { add(rootDocumentId) }

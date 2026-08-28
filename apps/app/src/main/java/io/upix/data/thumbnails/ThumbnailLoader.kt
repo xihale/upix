@@ -3,7 +3,6 @@ package io.upix.data.thumbnails
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -13,6 +12,7 @@ import io.upix.data.repository.readExifOrientationDegrees
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import androidx.core.net.toUri
 
 private const val THUMBNAIL_TARGET_SIZE_PX = 192
 
@@ -128,7 +128,7 @@ private fun resolveTreeSourceThumbnail(
     context: Context,
     source: String
 ): String? {
-    val sourceUri = runCatching { Uri.parse(source) }.getOrNull() ?: return null
+    val sourceUri = runCatching { source.toUri() }.getOrNull() ?: return null
     if (sourceUri.scheme?.lowercase() != "content") {
         return null
     }
@@ -183,7 +183,7 @@ private fun openThumbnailInputStream(
         return@runCatching File(source).inputStream()
     }
 
-    val parsedUri = Uri.parse(source)
+    val parsedUri = source.toUri()
     when (parsedUri.scheme?.lowercase()) {
         null -> File(source).inputStream()
         "file" -> {

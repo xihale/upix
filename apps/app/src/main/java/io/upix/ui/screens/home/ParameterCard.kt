@@ -34,7 +34,6 @@ import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -69,7 +68,7 @@ import io.upix.ui.theme.valueStyleFor
 @Composable
 internal fun ParameterCard(
     selectedModel: ModelInfo?,
-    notSelectedLabel: String,
+    selectModelLabel: String,
     outputDirectoryLabel: String,
     overwriteOriginal: Boolean,
     backupOriginal: Boolean,
@@ -79,12 +78,10 @@ internal fun ParameterCard(
     outputFormatFollowsOriginal: Boolean = true,
     outputFormatFollowLabel: String = "",
     availableScales: List<Int> = emptyList(),
-    hasCustomOutputDirectory: Boolean = false,
     onPickModel: () -> Unit,
     onPickScale: (Int) -> Unit = {},
     onPickFormat: () -> Unit = {},
     onSelectOutputFolder: () -> Unit,
-    onUseDefaultOutputFolder: () -> Unit,
     onToggleOverwriteOriginal: (Boolean) -> Unit,
     onToggleBackupOriginal: (Boolean) -> Unit,
     onToggleProcessNestedFolders: (Boolean) -> Unit,
@@ -112,9 +109,9 @@ internal fun ParameterCard(
         color = MaterialTheme.colorScheme.surfaceContainer
     ) {
         Column {
-            // 模型 + 倍率是一个联动整体：倍率分段紧贴模型名下方（无独立标题块），
-            // 点倍率即换模型，模型名用统一纯 fade 过渡，联动不突兀。
-            // 点击区域只覆盖名称行；倍率分段独立响应，不触发打开模型 sheet。
+            // 模型 + 倍率是一个联动整体：倍率分段紧贴模型行下方，点倍率即换模型。
+            // 单行自述：选中显模型名，未选显「选择模型」（CTA 弱色）——
+            // 内容即标签，不再叠加「超分模型」标题。
             Column(modifier = Modifier.fillMaxWidth()) {
                 Row(
                     modifier = Modifier
@@ -128,29 +125,28 @@ internal fun ParameterCard(
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Column(
+                    val modelLabel = selectedModel?.name ?: selectModelLabel
+                    Text(
+                        text = modelLabel,
+                        style = valueStyleFor(modelLabel),
+                        color = if (selectedModel == null) {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        } else {
+                            Color.Unspecified
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                         modifier = Modifier
                             .weight(1f)
-                            .padding(start = Spacing.md),
-                    ) {
-                        Text(
-                            text = stringResource(R.string.home_model_setting_label),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        val modelLabel = selectedModel?.name ?: notSelectedLabel
-                        Text(
-                            text = modelLabel,
-                            style = valueStyleFor(modelLabel),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
+                            .padding(start = Spacing.md)
+                    )
                     Icon(
                         imageVector = Icons.Outlined.ChevronRight,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp)
+                        modifier = Modifier
+                            .padding(start = Spacing.sm)
+                            .size(20.dp)
                     )
                 }
 
@@ -187,64 +183,44 @@ internal fun ParameterCard(
                 }
             }
 
-            // 输出路径：标题 + 路径副行的标准两行行样式，点击整行选目录；
-            // 自定义目录时提供「使用默认」快捷操作，不再挤在行尾按钮里。
-            // 覆盖原图开启时输出写回原图位置，该行不生效：不可点击且整行降透明。
-            Column(
-                modifier = Modifier.fillMaxWidth()
+            // 输出路径：单行自述，显当前生效目录——未自选时即默认 Pictures/Upix，
+            // 自选后显所选路径（与默认同样不带前导 /）。覆盖原图开启时输出
+            // 写回原图位置，该行不生效：不可点击且整行降透明。
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .pressable(enabled = !overwriteOriginal, onClick = onSelectOutputFolder)
+                    .alpha(if (overwriteOriginal) LockedRowAlpha else 1f)
+                    .padding(horizontal = Spacing.lg, vertical = Spacing.md),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(
+                Icon(
+                    imageVector = Icons.Outlined.FolderOpen,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Text(
+                    text = outputDirectoryLabel,
+                    style = valueStyleFor(outputDirectoryLabel),
+                    // 与模型名同色：默认值也是真实生效目录，不做弱化；
+                    // 弱色只留给「选择模型」这类纯 CTA 占位。
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .pressable(enabled = !overwriteOriginal, onClick = onSelectOutputFolder)
-                        .alpha(if (overwriteOriginal) LockedRowAlpha else 1f)
-                        .padding(horizontal = Spacing.lg, vertical = Spacing.sm),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(
-                        imageVector = Icons.Outlined.FolderOpen,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(start = Spacing.md),
-                    ) {
-                        Text(
-                            text = stringResource(R.string.home_output_path_label),
-                            style = MaterialTheme.typography.bodyLarge
-                        )
-                        Text(
-                            text = outputDirectoryLabel,
-                            style = valueStyleFor(outputDirectoryLabel),
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    Icon(
-                        imageVector = Icons.Outlined.ChevronRight,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier
-                            .padding(start = Spacing.sm)
-                            .size(20.dp)
-                    )
-                }
-                if (hasCustomOutputDirectory) {
-                    TextButton(
-                        onClick = onUseDefaultOutputFolder,
-                        enabled = !overwriteOriginal,
-                        modifier = Modifier.padding(start = Spacing.lg)
-                    ) {
-                        Text(stringResource(R.string.home_use_default_output))
-                    }
-                }
+                        .weight(1f)
+                        .padding(start = Spacing.md)
+                )
+                Icon(
+                    imageVector = Icons.Outlined.ChevronRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .padding(start = Spacing.sm)
+                        .size(20.dp)
+                )
             }
 
             ListItem(
-                headlineContent = { Text(stringResource(R.string.config_advanced_title)) },
                 leadingContent = {
                     Icon(
                         imageVector = Icons.Outlined.Tune,
@@ -266,14 +242,15 @@ internal fun ParameterCard(
                 },
                 colors = transparent,
                 modifier = Modifier.pressable { advancedExpanded = !advancedExpanded }
-            )
+            ) {
+                Text(stringResource(R.string.config_advanced_title))
+            }
 
             if (advancedExpanded) {
                 Column {
                     // 覆盖原图开启时输出写回原路径原格式：该行不可点击且整行降透明，
                     // 值静默切换为「跟随原图」——所见即实际行为，无需文字解释。
                     ListItem(
-                        headlineContent = { Text(stringResource(R.string.config_output_format)) },
                         supportingContent = {
                             Column {
                                 // 等宽字体无 CJK 字形：中文标签走系统字体，仅拉丁格式名用 mono。
@@ -304,7 +281,9 @@ internal fun ParameterCard(
                         modifier = Modifier
                             .alpha(if (overwriteOriginal) LockedRowAlpha else 1f)
                             .pressable(enabled = !overwriteOriginal, onClick = onPickFormat)
-                    )
+                    ) {
+                        Text(stringResource(R.string.config_output_format))
+                    }
                     // 手动选了具体输出格式（非跟随原图）时与覆盖原图冲突：开关锁定为关，
                     // 整行降透明；已开启时保持可用以便关闭（兼容旧版持久化的冲突组合）。
                     SwitchListItem(
@@ -350,7 +329,6 @@ private fun SwitchListItem(
     onCheckedChange: (Boolean) -> Unit
 ) {
     ListItem(
-        headlineContent = { Text(text = title) },
         leadingContent = {
             Icon(
                 imageVector = icon,
@@ -370,7 +348,9 @@ private fun SwitchListItem(
                 role = Role.Switch,
                 onValueChange = onCheckedChange
             )
-    )
+    ) {
+        Text(text = title)
+    }
 }
 
 /** M3 禁用态内容透明度：冲突锁定的行整行降透明，视觉即语义，不写解释文字。 */
