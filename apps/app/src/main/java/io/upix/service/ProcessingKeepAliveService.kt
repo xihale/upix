@@ -8,6 +8,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
@@ -46,6 +48,11 @@ class ProcessingKeepAliveService : Service() {
     private lateinit var serviceScope: CoroutineScope
 
     private var wakeLock: PowerManager.WakeLock? = null
+
+    // PARTIAL_WAKE_LOCK 只保 CPU 不保 Wi-Fi：屏灭后 Wi-Fi 进省电态，厂商电源
+    // 管理（HarmonyOS/MIUI）会直接掐掉 TCP——远程批处理“Connection lost while
+    // task(s) were running”的根因。与 WakeLock 同生命周期持有低延迟 WifiLock。
+    private var wifiLock: WifiManager.WifiLock? = null
 
     // 通知节流：≥1s 才重发一次进度通知；换文件/换批次/active 翻转立即重发。
     private var lastProgressNotifyAtMs = 0L
@@ -144,6 +151,7 @@ class ProcessingKeepAliveService : Service() {
         // 与批处理时长对齐（不受 lint 建议的 10 分钟上限约束）。
         lock.acquire()
         wakeLock = lock
+        acquireWifiLock()
     }
 
     private fun releaseWakeLock() {
@@ -153,6 +161,34 @@ class ProcessingKeepAliveService : Service() {
             }
         }
         wakeLock = null
+        releaseWifiLock()
+    }
+
+    private fun acquireWifiLock() {
+        val existing = wifiLock
+        if (existing?.isHeld == true) {
+            return
+        }
+        val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+        } else {
+            @Suppress("DEPRECATION")
+            WifiManager.WIFI_MODE_FULL_HIGH_PERF
+        }
+        val lock = wifiManager.createWifiLock(mode, WIFI_LOCK_TAG)
+        lock.setReferenceCounted(false)
+        lock.acquire()
+        wifiLock = lock
+    }
+
+    private fun releaseWifiLock() {
+        wifiLock?.let { lock ->
+            if (lock.isHeld) {
+                lock.release()
+            }
+        }
+        wifiLock = null
     }
 
     // ---- 自停 ----
@@ -292,6 +328,7 @@ class ProcessingKeepAliveService : Service() {
         private const val NOTIFICATION_ID_PROGRESS = 1001
         private const val NOTIFICATION_ID_COMPLETION = 1002
         private const val WAKE_LOCK_TAG = "upix:processing-keepalive"
+        private const val WIFI_LOCK_TAG = "upix:processing-wifilock"
         private const val PROGRESS_NOTIFY_MIN_INTERVAL_MS = 1_000L
         private const val SEPARATOR = " · "
     }

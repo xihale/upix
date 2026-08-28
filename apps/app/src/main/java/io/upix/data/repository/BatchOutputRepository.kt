@@ -498,11 +498,18 @@ class BatchOutputRepository(
                 "Internal output directory is missing for ${outputDirectory.batchId}"
             }
 
-            if (targetDirectory.exists() && !targetDirectory.isDirectory) {
-                throw IOException("Output parent is not directory: ${targetDirectory.absolutePath}")
-            }
-            if (!targetDirectory.exists() && !targetDirectory.mkdirs()) {
-                throw IOException("Failed to create output directory: ${targetDirectory.absolutePath}")
+            val useMediaStore = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
+                targetDirectory.absolutePath.startsWith(publicRootOutputDir.absolutePath)
+            // MediaStore 后端不依赖 File API：目录由 MediaProvider 创建，且厂商
+            // ROM 上对公共 Pictures 的 exists/mkdirs 会失败，这里不得做 File 门禁；
+            // 私有目录（或 Q 以下）才走传统 File 写。
+            if (!useMediaStore) {
+                if (targetDirectory.exists() && !targetDirectory.isDirectory) {
+                    throw IOException("Output parent is not directory: ${targetDirectory.absolutePath}")
+                }
+                if (!targetDirectory.exists() && !targetDirectory.mkdirs()) {
+                    throw IOException("Failed to create output directory: ${targetDirectory.absolutePath}")
+                }
             }
 
             val targetFile = resolveAvailableTargetFile(
@@ -515,8 +522,6 @@ class BatchOutputRepository(
                 }
             }
 
-            val useMediaStore = Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q &&
-                targetDirectory.absolutePath.startsWith(publicRootOutputDir.absolutePath)
             if (useMediaStore) {
                 val mediaStoreUri = commitToMediaStore(
                     targetDirectory = targetDirectory,
@@ -1156,6 +1161,14 @@ class BatchOutputRepository(
     }
 
     private fun defaultOutputRootDir(): File {
+        // Q+ 上公共 Pictures 由 MediaStore 后端提交（见 commitToFilesystem）：
+        // RELATIVE_PATH 目录由 MediaProvider 在插入时隐式创建。File API 的
+        // exists/mkdirs 探测在不少厂商 ROM（HarmonyOS/MIUI 实测）会失败，
+        // 不能作为可用性依据——否则默认输出会静默退到 app 私有目录。
+        // Q 以下无 MediaStore RELATIVE_PATH，仍走传统 File 写（权限仅申请到 P）。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            return publicRootOutputDir
+        }
         val publicReady = runCatching {
             publicRootOutputDir.exists() || publicRootOutputDir.mkdirs()
         }.getOrDefault(false)
