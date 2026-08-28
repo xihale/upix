@@ -1296,6 +1296,37 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
         return {0, 0};
     }
 
+    auto NCNNEngineImpl::hardware_id() const -> std::string {
+        if (!initialized_) {
+            return {};
+        }
+        if (current_device_ == DeviceType::GPU_VULKAN) {
+#if NCNN_VULKAN
+            if (vkdev_ == nullptr) {
+                return {};
+            }
+            // Device name + driver version: a driver update can shift Vulkan
+            // performance as much as a card swap, so both belong in the
+            // auto-tile cache key.
+            const char* name = vkdev_->info.device_name();
+            return std::format("vulkan|{}|driver-{}", name ? name : "unknown",
+                               vkdev_->info.driver_version());
+#else
+            return {};
+#endif
+        }
+        // CPU: physical core count plus the SIMD feature bits ncnn dispatches
+        // on (feature functions return 0 on foreign architectures, so the
+        // same expression is portable x86/ARM). A same-core-count CPU without
+        // AVX2 measures differently anyway; the flags catch that class.
+        return std::format("cpu|cores-{}|avx2-{}|fma-{}|avx512-{}|fp16-{}",
+                           ncnn::get_physical_cpu_count(),
+                           ncnn::cpu_support_x86_avx2(),
+                           ncnn::cpu_support_x86_fma(),
+                           ncnn::cpu_support_x86_avx512(),
+                           ncnn::cpu_support_arm_asimdhp());
+    }
+
     int NCNNEngineImpl::get_recommended_tile_size() const {
         if (current_device_ != DeviceType::GPU_VULKAN) {
             return 128;  // CPU: small tiles to limit memory on mobile

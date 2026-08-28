@@ -3,12 +3,21 @@
 #include "config.hpp"
 #include "utils/logger.hpp"
 #include "utils/benchmark.hpp"
+#include "glaze/glaze.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <limits>
 #include <mutex>
+#include <sstream>
 #include <string>
+#include <system_error>
 #include <unordered_map>
+#include <vector>
 
 namespace upix {
 
@@ -88,50 +97,218 @@ inline auto TileSizeOptimizer::profile_device(Engine& engine) -> DevicePerforman
 }
 
 // ---------------------------------------------------------------------------
-// Auto-tile probe cache
+// Auto-tile probe cache (in-memory + disk)
 //
-// The probe benchmarks up to 8 tile sizes with (2 warmup + 5 timed) full
-// forward passes each — a large fixed cost that dominates wall time when a
-// directory contains many images of the same shape (screenshots, anime
-// frames). Tile size only affects performance, never output correctness, so
-// the probe decision is cached per (model, device type, dimension bucket)
-// and reused. Dimensions are bucketed by rounding up to multiples of 256:
-// images in the same bucket produce the same tile grid at every candidate
-// size, so the probe result transfers. Inline functions with function-local
-// statics are shared across translation units (ODR), and the mutex guards
-// the multi-threaded batch path.
+// The probe benchmarks up to 8 tile sizes with (2 warmup + 10 timed) full
+// forward passes each — a large fixed cost (~28s on CPU). What it measures is
+// a property of (hardware, model, tile size) alone: the synthetic benchmark
+// input never varies with the image being processed. The only image-dependent
+// term in the size choice is the tile count, which is O(1) to recompute per
+// image. So the per-size benchmark results are cached under
+// (hardware_id, model, device, tile_size) and reused across every image —
+// portrait vs landscape, or any resolution change, never re-measures hardware
+// performance a sibling image just measured.
+//
+// The cache persists to $XDG_CACHE_HOME (or ~/.cache)/upix/auto_tile_cache.json
+// so a warm entry survives process restarts. hardware_id() (GPU name + driver,
+// CPU cores + SIMD flags) is part of the key: swapping the card or the driver
+// invalidates the affected rows automatically instead of feeding timings from
+// different silicon.
+//
+// Load policy: external contention can only depress a measurement, never
+// inflate it, so re-measures keep the faster value (max-merge); a re-measure
+// landing far below the cached rate is treated as a busy/throttled device —
+// warn and keep the cached timing rather than persisting the polluted one.
+// Entries carry a timestamp and revalidate after kProbeTtlSec so even a
+// first-ever probe measured under load self-heals within the TTL window.
+// Failed benchmarks stay process-local (a failure can be a transient OOM
+// under external memory pressure, which must not freeze the size out across
+// runs). Inline functions with function-local statics are shared across
+// translation units (ODR); the mutex also serializes benchmarking, because
+// concurrent probes would contend for the device and pollute each other.
 // ---------------------------------------------------------------------------
 namespace detail {
 
-struct TileProbeKey {
+// Probe results older than this are re-measured (and max-merged) once, so a
+// measurement polluted by load, or a machine that genuinely changed under the
+// same fingerprint, cannot persist forever.
+constexpr int64_t kProbeTtlSec = 14 * 24 * 3600;
+
+struct TileBenchKey {
+    std::string hw;          // Engine::hardware_id(); empty = unknown device
     std::string model_name;
     int device = 0;          // DeviceType as int
-    int width_bucket = 0;    // ceil(width / 256)
-    int height_bucket = 0;   // ceil(height / 256)
+    int tile_size = 0;
 
-    bool operator==(const TileProbeKey& o) const {
-        return device == o.device
-            && width_bucket == o.width_bucket
-            && height_bucket == o.height_bucket
-            && model_name == o.model_name;
+    bool operator==(const TileBenchKey& o) const {
+        return tile_size == o.tile_size
+            && device == o.device
+            && model_name == o.model_name
+            && hw == o.hw;
     }
 };
 
-struct TileProbeKeyHash {
-    size_t operator()(const TileProbeKey& k) const {
-        size_t h = std::hash<int>{}((k.device * 31 + k.width_bucket) * 31 + k.height_bucket);
-        return h ^ (std::hash<std::string>{}(k.model_name) << 1);
+struct TileBenchKeyHash {
+    size_t operator()(const TileBenchKey& k) const {
+        size_t h = std::hash<int>{}(k.device * 31 + k.tile_size);
+        h ^= std::hash<std::string>{}(k.model_name) << 1;
+        return h ^ (std::hash<std::string>{}(k.hw) << 2);
     }
 };
 
-inline auto tile_probe_cache() -> std::unordered_map<TileProbeKey, int, TileProbeKeyHash>& {
-    static std::unordered_map<TileProbeKey, int, TileProbeKeyHash> cache;
+// On-disk row. Kept in a named (non-anonymous) namespace: glaze's reflection
+// requires external linkage. Only successful measurements are written.
+struct TileCacheEntry {
+    std::string hw;
+    std::string model;
+    int device = 0;
+    int tile = 0;
+    float tps = 0.0f;
+    size_t mem_mb = 0;
+    int64_t t = 0;
+};
+
+struct TileCacheFile {
+    int version = 1;
+    std::vector<TileCacheEntry> entries;
+};
+
+using TileBenchCache = std::unordered_map<TileBenchKey, DevicePerformanceProfile::TileBenchmark, TileBenchKeyHash>;
+
+inline auto tile_bench_cache() -> TileBenchCache& {
+    static TileBenchCache cache;
     return cache;
 }
 
-inline auto tile_probe_cache_mutex() -> std::mutex& {
+inline auto tile_bench_mutex() -> std::mutex& {
     static std::mutex mutex;
     return mutex;
+}
+
+// $UPIX_TILE_CACHE overrides (tests), else $XDG_CACHE_HOME/upix/, else
+// $HOME/.cache/upix/. An empty return disables persistence silently.
+inline auto tile_cache_path() -> std::filesystem::path {
+    if (const char* env = std::getenv("UPIX_TILE_CACHE"); env && *env) {
+        return {env};
+    }
+    const char* xdg = std::getenv("XDG_CACHE_HOME");
+    std::filesystem::path base = (xdg && *xdg) ? std::filesystem::path(xdg)
+                                               : std::filesystem::path();
+    if (base.empty()) {
+        const char* home = std::getenv("HOME");
+        if (!home || !*home) {
+            return {};
+        }
+        base = std::filesystem::path(home) / ".cache";
+    }
+    return base / "upix" / "auto_tile_cache.json";
+}
+
+inline auto unix_now_sec() -> int64_t {
+    return std::chrono::duration_cast<std::chrono::seconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+}
+
+// Merge disk rows into the cache. Once per process, under the probe mutex.
+// Unparsable or foreign-version files are ignored and rewritten on save.
+inline auto tile_bench_load_once() -> void {
+    static bool loaded = false;
+    if (loaded) {
+        return;
+    }
+    loaded = true;
+
+    const auto path = tile_cache_path();
+    if (path.empty()) {
+        return;
+    }
+
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec) || ec) {
+        return;
+    }
+    std::ifstream file(path, std::ios::binary);
+    if (!file.is_open()) {
+        return;
+    }
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    const std::string json = buffer.str();
+
+    TileCacheFile parsed;
+    if (auto err = glz::read<glz::opts{.error_on_unknown_keys = false}>(parsed, json); err) {
+        LOG_DEBUG("TileOptimizer", "Auto-tile cache unreadable ({}), starting fresh",
+                  glz::format_error(err, json));
+        return;
+    }
+    if (parsed.version != 1) {
+        return;
+    }
+
+    size_t merged = 0;
+    auto& cache = tile_bench_cache();
+    for (const auto& e : parsed.entries) {
+        TileBenchKey key{e.hw, e.model, e.device, e.tile};
+        if (cache.contains(key)) {
+            continue;  // a measurement taken this process is fresher
+        }
+        cache.emplace(std::move(key), DevicePerformanceProfile::TileBenchmark{
+            e.tile, e.tps, e.mem_mb, true, e.t});
+        ++merged;
+    }
+    if (merged > 0) {
+        LOG_DEBUG("TileOptimizer", "Auto-tile cache: {} entries loaded from {}",
+                  merged, path.string());
+    }
+}
+
+// Rewrite the whole file from the in-memory map (atomic tmp+rename). Any
+// failure is debug-logged only — the cache is a pure optimization and must
+// never fail a job. Called under the probe mutex.
+inline auto tile_bench_save() -> void {
+    const auto path = tile_cache_path();
+    if (path.empty()) {
+        return;
+    }
+
+    TileCacheFile out;
+    out.entries.reserve(tile_bench_cache().size());
+    for (const auto& [key, bench] : tile_bench_cache()) {
+        if (!bench.success || key.hw.empty()) {
+            continue;  // failures / fingerprint-less devices stay process-local
+        }
+        out.entries.push_back({key.hw, key.model_name, key.device, key.tile_size,
+                               bench.tiles_per_second, bench.memory_usage_mb,
+                               bench.measured_at_sec});
+    }
+    auto json = glz::write_json(out);
+    if (!json) {
+        return;
+    }
+
+    std::error_code ec;
+    std::filesystem::create_directories(path.parent_path(), ec);
+
+    const std::string tmp = path.string() + ".tmp";
+    {
+        std::ofstream file(tmp, std::ios::binary | std::ios::trunc);
+        if (!file.is_open()) {
+            LOG_DEBUG("TileOptimizer", "Auto-tile cache: cannot open {} for writing", tmp);
+            return;
+        }
+        file << *json;
+    }
+    std::filesystem::rename(tmp, path, ec);
+    if (ec) {
+        // rename-over-existing is not portable everywhere; fall back once.
+        std::error_code rm_ec;
+        std::filesystem::remove(path, rm_ec);
+        std::filesystem::rename(tmp, path, ec);
+    }
+    if (ec) {
+        LOG_DEBUG("TileOptimizer", "Auto-tile cache: failed to store {}: {}",
+                  path.string(), ec.message());
+    }
 }
 
 } // namespace detail
@@ -143,32 +320,6 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
     int image_width,
     int image_height
 ) -> int {
-
-    // Probe cache lookup: (model, device type, quantized dimensions).
-    constexpr int DIM_BUCKET = 256;
-    detail::TileProbeKey key{
-        model.model_name,
-        static_cast<int>(engine.current_device()),
-        (image_width + DIM_BUCKET - 1) / DIM_BUCKET,
-        (image_height + DIM_BUCKET - 1) / DIM_BUCKET,
-    };
-
-    {
-        std::lock_guard<std::mutex> lock(detail::tile_probe_cache_mutex());
-        auto& cache = detail::tile_probe_cache();
-        if (auto it = cache.find(key); it != cache.end()) {
-            LOG_DEBUG("TileOptimizer", "Auto-tile cache HIT: model={} bucket={}x{} -> tile_size={}",
-                      key.model_name, key.width_bucket, key.height_bucket, it->second);
-            return it->second;
-        }
-    }
-    LOG_DEBUG("TileOptimizer", "Auto-tile cache MISS: model={} bucket={}x{} -> running probe",
-              key.model_name, key.width_bucket, key.height_bucket);
-
-    LOG_INFO("TileOptimizer", "Finding optimal tile size...");
-
-    // 获取设备信息
-    auto profile = profile_device(engine);
 
     // 测试的 tile 大小列表
     std::vector<int> test_sizes = {64, 128, 192, 256, 320, 384, 448, 512};
@@ -199,6 +350,16 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
         return 256;
     }
 
+    // Probe + selection run under one lock: benchmarking must be serialized
+    // process-wide (concurrent probes would contend for the device and
+    // pollute each other's timings), and a worker that loses that race
+    // re-finds the cache filled here and measures nothing.
+    const int device = static_cast<int>(engine.current_device());
+    const std::string hw = engine.hardware_id();
+
+    // 获取设备信息
+    auto profile = profile_device(engine);
+
     // 计算可用内存上限 (MB)
     size_t usable_memory_mb = static_cast<size_t>(profile.available_memory_mb * 0.8);
 
@@ -210,43 +371,105 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
         size_t memory_mb;
     };
     std::vector<Candidate> candidates;
+    bool probed = false;
+    bool dirty = false;
 
-    for (int size : test_sizes) {
-        LOG_INFO("TileOptimizer", "Benchmarking tile_size={}", size);
+    {
+        std::lock_guard<std::mutex> lock(detail::tile_bench_mutex());
+        detail::tile_bench_load_once();
+        auto& cache = detail::tile_bench_cache();
+        const int64_t now_sec = detail::unix_now_sec();
 
-        auto bench = benchmark_tile_size(engine, size);
+        for (int size : test_sizes) {
+            auto key = detail::TileBenchKey{hw, model.model_name, device, size};
+            auto it = cache.find(key);
+            const bool revalidate = it != cache.end() && it->second.success
+                && now_sec - it->second.measured_at_sec > detail::kProbeTtlSec;
 
-        if (!bench.success) {
-            LOG_WARNING("TileOptimizer", "Tile size {} failed", size);
-            continue;
+            if (it == cache.end() || revalidate) {
+                if (!probed) {
+                    LOG_INFO("TileOptimizer", "Finding optimal tile size (model={})...",
+                             model.model_name);
+                    probed = true;
+                }
+                LOG_INFO("TileOptimizer", "Benchmarking tile_size={}{}", size,
+                         revalidate ? " (cached timing stale, revalidating)" : "");
+
+                auto bench = benchmark_tile_size(engine, size);
+                bench.measured_at_sec = now_sec;
+
+                if (!bench.success) {
+                    if (revalidate) {
+                        // Keep the previously measured rate (still the best
+                        // data we have); just re-arm the TTL.
+                        it->second.measured_at_sec = now_sec;
+                        dirty = true;
+                    } else {
+                        LOG_WARNING("TileOptimizer", "Tile size {} failed", size);
+                        // Failures are process-local: never written to disk
+                        // (a benchmark OOM under external memory pressure
+                        // must not freeze the size out across runs).
+                        it = cache.emplace(std::move(key), std::move(bench)).first;
+                    }
+                } else if (revalidate) {
+                    const float cached_tps = it->second.tiles_per_second;
+                    if (bench.tiles_per_second < cached_tps * 0.7f) {
+                        LOG_WARNING("TileOptimizer",
+                                    "Tile size {} re-measured at {:.0f}% of the cached rate — "
+                                    "device busy or throttled, keeping the cached timing",
+                                    size, 100.0f * bench.tiles_per_second / cached_tps);
+                        it->second.measured_at_sec = now_sec;
+                    } else {
+                        // Contention can only depress a measurement, never
+                        // inflate it, so keep the faster of the two.
+                        bench.tiles_per_second = std::max(bench.tiles_per_second, cached_tps);
+                        it->second = std::move(bench);
+                    }
+                    dirty = true;
+                } else {
+                    it = cache.emplace(std::move(key), std::move(bench)).first;
+                    dirty = true;
+                }
+            }
+
+            const auto& bench = it->second;
+            if (!bench.success) {
+                // Measured-failed earlier in this process; retried never.
+                continue;
+            }
+
+            // 内存约束检查：必须不超过可用内存的 80%
+            if (bench.memory_usage_mb > usable_memory_mb) {
+                LOG_WARNING("TileOptimizer", "  Skipping tile_size={}: memory usage {}MB exceeds usable {}MB",
+                            size, bench.memory_usage_mb, usable_memory_mb);
+                continue;
+            }
+
+            // 计算该尺寸下的 tile 数量（考虑重叠）
+            int step = size - config.tile_overlap;
+            if (step <= 0) {
+                LOG_WARNING("TileOptimizer", "  Skipping tile_size={}: invalid step (tile_size <= overlap)",
+                            size);
+                continue;
+            }
+
+            int tiles_x = (image_width + step - 1) / step;
+            int tiles_y = (image_height + step - 1) / step;
+            int total_tiles = tiles_x * tiles_y;
+
+            // 估算总处理时间（秒）
+            float estimated_time_sec = total_tiles / bench.tiles_per_second;
+
+            LOG_DEBUG("TileOptimizer", "  tile_size={} tiles/sec={} memory={}MB total_tiles={} est_time={}s",
+                      size, bench.tiles_per_second, bench.memory_usage_mb, total_tiles,
+                      estimated_time_sec);
+
+            candidates.push_back({size, estimated_time_sec, bench.tiles_per_second, bench.memory_usage_mb});
         }
 
-        // 内存约束检查：必须不超过可用内存的 80%
-        if (bench.memory_usage_mb > usable_memory_mb) {
-            LOG_WARNING("TileOptimizer", "  Skipping: memory usage {}MB exceeds usable {}MB",
-                        bench.memory_usage_mb, usable_memory_mb);
-            continue;
+        if (dirty) {
+            detail::tile_bench_save();
         }
-
-        // 计算该尺寸下的 tile 数量（考虑重叠）
-        int step = size - config.tile_overlap;
-        if (step <= 0) {
-            LOG_WARNING("TileOptimizer", "  Skipping: invalid step (tile_size <= overlap)");
-            continue;
-        }
-
-        int tiles_x = (image_width + step - 1) / step;
-        int tiles_y = (image_height + step - 1) / step;
-        int total_tiles = tiles_x * tiles_y;
-
-        // 估算总处理时间（秒）
-        float estimated_time_sec = total_tiles / bench.tiles_per_second;
-
-        LOG_INFO("TileOptimizer", "  tiles/sec={} memory={}MB total_tiles={} est_time={}s",
-                 bench.tiles_per_second, bench.memory_usage_mb, total_tiles,
-                 estimated_time_sec);
-
-        candidates.push_back({size, estimated_time_sec, bench.tiles_per_second, bench.memory_usage_mb});
     }
 
     if (candidates.empty()) {
@@ -277,12 +500,14 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
             break;
         }
     }
-    LOG_INFO("TileOptimizer", "Optimal tile size: {} (min_time={}s, penalty={}%)",
-             best_tile, min_time, actual_penalty);
-
-    {
-        std::lock_guard<std::mutex> lock(detail::tile_probe_cache_mutex());
-        detail::tile_probe_cache().emplace(key, best_tile);
+    // Callers log the chosen size per image already; this stays INFO only on
+    // the run that actually benchmarked.
+    if (probed) {
+        LOG_INFO("TileOptimizer", "Optimal tile size: {} (min_time={}s, penalty={}%)",
+                 best_tile, min_time, actual_penalty);
+    } else {
+        LOG_DEBUG("TileOptimizer", "Optimal tile size: {} (min_time={}s, penalty={}%)",
+                  best_tile, min_time, actual_penalty);
     }
 
     return best_tile;

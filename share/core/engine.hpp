@@ -195,6 +195,13 @@ public:
         return {0, 0};
     }
 
+    // Stable hardware identity for the auto-tile benchmark cache: the string
+    // must change whenever inference performance could change (different GPU,
+    // GPU driver update, different CPU core count / SIMD feature set). An
+    // empty string means "unknown" — callers then keep the benchmark cache
+    // process-local instead of persisting it to disk.
+    virtual auto hardware_id() const -> std::string { return {}; }
+
     virtual bool supports_gpu_tile_pipeline() const { return false; }
     virtual bool supports_gpu_tile_pipeline_u8() const { return false; }
     virtual bool supports_gpu_tile_pipeline_u8_queue() const { return false; }

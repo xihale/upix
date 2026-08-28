@@ -64,6 +64,7 @@ public:
     void set_scale_factor(int scale) override;
     void set_inference_threads(int threads) override;
     auto get_memory_info() const -> std::pair<size_t, size_t> override;
+    auto hardware_id() const -> std::string override;
     int get_recommended_tile_size() const override;
     size_t get_device_memory_budget_mb() const override;
 

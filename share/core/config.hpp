@@ -90,6 +90,10 @@ struct DevicePerformanceProfile {
         float tiles_per_second = 0.0f;
         size_t memory_usage_mb = 0;
         bool success = false;
+        // Unix seconds of the measurement; 0 = unknown, treated as stale so
+        // the size gets revalidated on the next probe instead of a legacy
+        // entry living forever.
+        int64_t measured_at_sec = 0;
     };
 };
 

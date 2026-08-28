@@ -261,11 +261,13 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
 
         // tile_size 0 = remote auto: the phone did not pin a size, so the PC
         // picks one with the same TileSizeOptimizer probe the CLI's
-        // --auto-tile uses. The probe result is cached per (model, device,
-        // dimension bucket) process-wide, so the one-time measurement cost
-        // (~8 sizes x 7 single-tile forwards) is paid on the first submit of
-        // a model, not per task; the engine recommendation is the fallback
-        // if the probe cannot produce a usable size.
+        // --auto-tile uses. The per-size benchmarks are cached per
+        // (hardware, model, device, tile size) — in memory and persisted to
+        // disk (~/.cache/upix/auto_tile_cache.json) — so the one-time
+        // measurement cost (~8 sizes x (2 warmup + 10 timed) single-tile
+        // forwards) is paid once per hardware+model, not per task or
+        // process; the engine recommendation is the fallback if the probe
+        // cannot produce a usable size.
         int tile_size = config.tile_size;
         if (tile_size == 0) {
             TileSizeOptimizer optimizer;
