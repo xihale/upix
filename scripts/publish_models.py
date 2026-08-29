@@ -149,6 +149,9 @@ LICENSES = {
     "DeJPG-RealPLKSR-x1": "CC-BY-4.0",
     "DeNoise-RealPLKSR-x1": "CC-BY-4.0",
     "DeH264-RealPLKSR-x1": "CC-BY-4.0",
+    "Parimg-Compact-x2": "CC-BY-4.0",
+    "Archivist-Medium-Compact-x1": "MIT",
+    "Archivist-Rough-Compact-x1": "MIT",
 }
 
 

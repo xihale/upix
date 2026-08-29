@@ -7,7 +7,7 @@ and downloaded on demand.
 
 ## Model Catalog
 
-The release ships 34 models covering six families. Sizes are the
+The release ships 38 models covering six families. Sizes are the
 on-disk `.param + .bin` download (zipped); "phone" vs "PC" is a rough
 speed class for a recent flagship at 256–384 tiles — the heavy models
 are fine anywhere but can take tens of seconds per 12 MP image on a
@@ -33,6 +33,7 @@ PC side of a paired offload, or when quality matters more than time.
 | Model | Size | Use it for |
 |---|---|---|
 | `Real-ESRGAN-x4plus` | 31 MB | Photos, 4x. The classic general restoration net; strongest detail reconstruction of the catalog. First pick for PC-offloaded photo jobs. |
+| `Real-ESRGAN-x2plus` | 31 MB | Photos, 2x. The same recipe one rung down — for 2x jobs where the v3 compacts' capacity is visible but 4x would overshoot. Pixel-unshuffle head (the net runs an x4 trunk on a 2×2-rearranged input). |
 | `Real-ESRGAN-x4plus-anime` | 8.3 MB | Anime/illustration, 4x, reference quality when the v3 anime net's smaller capacity is visible (dense detail, large canvases). |
 
 ### Real-CUGAN — anime specialist (bilibili)
@@ -59,15 +60,16 @@ generalize better; prefer them over the same-variant `se` model.
 
 ### Community photo models (OpenModelDB, CC-BY-4.0)
 
-Six curated picks from [OpenModelDB](https://openmodeldb.info) by Helaman
+Seven curated picks from [OpenModelDB](https://openmodeldb.info) by Helaman
 (Phhofm), all CC-BY-4.0 (commercial use allowed). These fill the gaps
-the Real-ESRGAN/CUGAN families leave: two photo 2x compacts and two
-fast 4x compacts, plus two 4x nets tuned for real-world photo
+the Real-ESRGAN/CUGAN families leave: photo 2x compacts and two
+fast 4x compacts, plus 4x nets tuned for real-world photo
 degradation rather than anime — one classic RRDB, one modern RealPLKSR.
 
 | Model | Size | Use it for |
 |---|---|---|
 | `NomosUni-Compact-x2` | 1.1 MB | Photos at 2x — SRVGG compact (the `multijpg` variant, trained across many JPEG quality levels with mixed downscaling kernels); restores social-media / messenger-compressed images. Fast enough for on-phone batch. |
+| `Parimg-Compact-x2` | 1.1 MB | Photos at 2x on Microsoft's image-pairs corpus (Phhofm's earliest training project, released 2025) — the same fast compact arch with a heavier-cleanup character than `NomosUni-Compact-x2`. |
 | `NomosUni-SPAN-x2` | 0.8 MB | Photos at 2x on the same JPEG-degraded NomosUni corpus, in the lightweight SPAN arch (Swift Parameter-free Attention) — the lightest net in the catalog; pairs with the 2x compact for when every kilobyte counts. |
 | `LSDIR-Compact-v2-x4` | 1.2 MB | Photos at 4x on the phone. Newer-generation SRVGG compact (LSDIR training, v2 multi-degradation): visibly stronger JPEG/blur cleanup than `v3-general-x4` at the same speed class. |
 | `NomosUni-SPAN-x4` | 0.8 MB | Photos at 4x on modest hardware. SPAN (Swift Parameter-free Attention) — the lightest photo 4x in the catalog, trained on the same JPEG-degraded NomosUni corpus as the 2x compact (mixed downscale kernels, JPEG quality down to 40); a quality step above plain bicubic-style upscaling at batch-friendly speed. |
@@ -76,18 +78,20 @@ degradation rather than anime — one classic RRDB, one modern RealPLKSR.
 
 ### Community 1x restoration nets (OpenModelDB)
 
-Three same-recipe RealPLKSR nets that clean an image **in place** —
-scale 1, output size equals input size, the catalog's first no-resize
-models. All three are Phhofm nets trained on the NomosV2 photo corpus
-(DeNoise and DeH264 fine-tuned from the DeJPG weights), CC-BY-4.0, and
-run faster than any upscaler since they emit no extra pixels. Reach for
-them when a source is already the right size but degraded.
+Five nets that clean an image **in place** — scale 1, output size equals
+input size, no resize. All run faster than any upscaler since they emit
+no extra pixels; reach for them when a source is already the right size
+but degraded. Three are Phhofm RealPLKSR nets for photos (DeNoise and
+DeH264 fine-tuned from the DeJPG weights, CC-BY-4.0); two are
+Loganavter's Archivist compacts for anime/video frames (MIT).
 
 | Model | Size | Use it for |
 |---|---|---|
 | `DeJPG-RealPLKSR-x1` | 14 MB | JPEG artifact removal at original size. OTF-trained on degradations down to JPEG quality 40 — chat-app/messenger re-compressions, re-saved downloads. Flattens 8×8 blocking while keeping texture (blocking-energy ratio 1.15 → 1.00 in our checks). |
 | `DeNoise-RealPLKSR-x1` | 14 MB | Denoise at original size (200k iterations on OTF noise; also handles mild JPEG) — noisy phone-camera shots, high-ISO stills. |
 | `DeH264-RealPLKSR-x1` | 14 MB | H.264 compression removal — video frames, screen recordings, streamed screenshots. |
+| `Archivist-Medium-Compact-x1` | 0.6 MB | Anime/video-frame restoration at original size. The Archivist suite's balanced setting — removes common film grain and dirt while preserving line texture; the recommended starting point for most footage. |
+| `Archivist-Rough-Compact-x1` | 0.6 MB | The suite's aggressive setting for severely degraded footage — reconstructs heavily damaged or lost detail (more hallucination-prone; Medium first). |
 
 ### Community anime SPAN nets (OpenModelDB)
 
@@ -137,7 +141,9 @@ on GPU.
   license reasons — the catalog simply stays curated. Still not shipped:
   AnimeJaNai v1/v3 and the UltraCompact variants, IllustrationJaNai,
   the remaining SPAN and RealPLKSR siblings of the shipped nets, the
-  bigger LSDIR variants, … Import any ncnn `.param`/`.bin`
+  bigger LSDIR variants, the remaining Archivist variants (`Soft`,
+  `RGB`, `AntiLines` — same recipe as the shipped two, narrower niches),
+  … Import any ncnn `.param`/`.bin`
   pair yourself via `upix model import` — but check the upstream license
   before redistributing.
 - **Anime4K** (and ArtCNN): not usable here by design — these are
@@ -255,10 +261,12 @@ upstream license:
 | Family | Source | License |
 |---|---|---|
 | Real-ESRGAN v3 compacts + x4plus | [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN), official ncnn pack (`realesrgan-ncnn-vulkan`) | BSD 3-Clause © Xintao Wang and contributors |
+| `Real-ESRGAN-x2plus` | RealESRGAN_x2plus.pth from the official [Real-ESRGAN release](https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.1) (the official ncnn pack carries no x2plus; converted with pnnx — the pixel-unshuffle head lowers to ncnn Reorg — sha256-matched against the OpenModelDB record and verified against spandrel, 0 LSB) | BSD 3-Clause © Xintao Wang, Kaiwen Zhou and contributors |
 | `Real-ESRGANv3-general-x4` | realesr-general-x4v3 weights (BSD 3-Clause); ncnn conversion via [tumuyan2/realsr-models](https://huggingface.co/tumuyan2/realsr-models) (RealSR-NCNN-Android) | BSD 3-Clause (weights) |
 | Real-CUGAN (se + pro) | [bilibili ailab Real-CUGAN](https://github.com/bilibili/ailab/tree/main/Real-CUGAN), ncnn pack [realcugan-ncnn-vulkan](https://github.com/nihui/realcugan-ncnn-vulkan) | MIT (ncnn pack, © nihui); model weights follow the upstream Real-CUGAN release terms |
 | `Nomos8kSC-x4` | 4x-Nomos8kSC by [Helaman / Phhofm](https://github.com/Phhofm/models); ncnn conversion from [upscayl/custom-models](https://github.com/upscayl/custom-models) | CC-BY-4.0 (weights); upscayl pack license applies to its conversion |
 | `NomosUni-Compact-x2` | 2x-NomosUni-compact-multijpg by [Helaman / Phhofm](https://github.com/Phhofm/models) (SRVGGNetCompact, `learn_residual=True`); converted to ncnn with pnnx and verified against a fp32 PyTorch reference | CC-BY-4.0 (weights) |
+| `Parimg-Compact-x2` | 2x-ParimgCompact by [Helaman / Phhofm](https://github.com/Phhofm/models) (SRVGGNetCompact, `learn_residual=True`); pth from the OpenModelDB-linked storage, sha256-matched against the record; converted to ncnn with pnnx and verified against spandrel, 0 LSB | CC-BY-4.0 (weights) |
 | `UltraSharp-x4` | 4x-UltraSharp by [Kim2091](https://github.com/Kim2091) (ESRGAN RRDB arch); pth from the author's [HuggingFace mirror](https://huggingface.co/Kim2091/UltraSharp), converted to ncnn with pnnx and verified against a fp32 PyTorch reference | CC-BY-NC-SA-4.0 (weights and ncnn adaptation) |
 | `AnimeSharp-x4` | 4x-AnimeSharp by [Kim2091](https://github.com/Kim2091) (ESRGAN RRDB arch); pth from the author's [HuggingFace mirror](https://huggingface.co/Kim2091/AnimeSharp), converted to ncnn with pnnx and verified against a fp32 PyTorch reference | CC-BY-NC-SA-4.0 (weights and ncnn adaptation) |
 | `AnimeJaNai-v2-Compact-x2` | 2x_AnimeJaNai_V2 Compact by [torphedo / the-database](https://github.com/the-database/AnimeJaNai) (SRVGGNetCompact, `learn_residual=True`, `params_ema`); converted to ncnn with pnnx and verified against a fp32 PyTorch reference | CC-BY-NC-SA-4.0 (weights and ncnn adaptation) |
@@ -271,6 +279,7 @@ upstream license:
 | `NMKD-Siax-x4` | 4x_NMKD-Siax_200k by [NMKD](https://nmkd.de) (ESRGAN RRDB arch); pth via a HuggingFace mirror, sha256-matched against the OpenModelDB record; converted to ncnn with pnnx and verified against spandrel's fp32 output | WTFPL (weights) |
 | `NomosWebPhoto-RealPLKSR-x4` | 4xNomosWebPhoto_RealPLKSR by [Helaman / Phhofm](https://github.com/Phhofm/models) (RealPLKSR arch); pth from the author's [models release](https://github.com/Phhofm/models), byte-matched to its recorded sha256; converted to ncnn with pnnx (the channel-repeat residual rewritten as nearest-interp, bitwise identical) and verified against a fp32 PyTorch reference | CC-BY-4.0 (weights) |
 | `DeJPG` / `DeNoise` / `DeH264-RealPLKSR-x1` | 1xDeJPG_realplksr_otf, 1xDeNoise_realplksr_otf and 1xDeH264_realplksr by [Helaman / Phhofm](https://github.com/Phhofm/models) (RealPLKSR at scale 1 — the upsampler degenerates to identity, so the net is a pure conv stack with a global residual); pth sha256-matched against the OpenModelDB records; converted to ncnn with pnnx and verified against spandrel's fp32 output (0 LSB) | CC-BY-4.0 (weights) |
+| `Archivist-Medium` / `Archivist-Rough-Compact-x1` | 1x-Archivist_Medium and 1x-Archivist_Rough by [Loganavter](https://github.com/Loganavter/Archivist-Project-Denoiser) (Archivist suite; SRVGGNetCompact at scale 1 — the upsampler degenerates to identity, net = conv stack + global residual); pth sha256-matched against the OpenModelDB records; converted to ncnn with pnnx and verified against spandrel, 0 LSB | MIT (weights) |
 
 See the root [LICENSE](../LICENSE) for the Upix code license. When
 redistributing the models release, retain the notices above.

@@ -148,6 +148,8 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
     (void)blob_count;
 
     bool inferred_input_channels = false;
+    bool seen_net_conv = false;
+    int head_reorg_stride = 0;
     std::unordered_set<std::string> input_dependent_blobs;
 
     auto read_param_int = [](const std::vector<std::string>& param_tokens, int key) -> std::optional<int> {
@@ -256,6 +258,20 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
         if (inferred_input_channels) {
             continue;
         }
+        if (type == "Reorg") {
+            // pnnx lowers torch.pixel_unshuffle to Reorg mode 0 (space-to-depth).
+            // As a head op it widens the first conv's channels relative to the
+            // image: conv_C = image_C * stride^2 (Real-ESRGAN x2plus feeds
+            // 12 = 3 * 2^2), so the image-facing count divides the conv count.
+            // Only track it before the first conv; later Reorgs are internal.
+            const auto stride = read_param_int(param_tokens, 0);
+            const auto mode = read_param_int(param_tokens, 1);
+            if (depends_on_input && !seen_net_conv && stride.has_value() &&
+                stride.value() > 1 && (!mode.has_value() || mode.value() == 0)) {
+                head_reorg_stride = stride.value();
+            }
+            continue;
+        }
         if (type != "Convolution" && type != "ConvolutionDepthWise") {
             continue;
         }
@@ -292,7 +308,13 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
             continue;
         }
 
-        info.input_channels = inferred_channels;
+        seen_net_conv = true;
+        if (head_reorg_stride > 1 &&
+            inferred_channels % (head_reorg_stride * head_reorg_stride) == 0) {
+            info.input_channels = inferred_channels / (head_reorg_stride * head_reorg_stride);
+        } else {
+            info.input_channels = inferred_channels;
+        }
         inferred_input_channels = true;
     }
     

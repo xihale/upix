@@ -182,6 +182,13 @@ std::mutex g_vulkan_init_mutex;
         //      Real-ESRGANv3-anime x2: 4x Interp then 0.5x downsample -> 2.
         double interp_product = 1.0;
         bool found_interp = false;
+        // A space-to-depth Reorg head (pnnx's lowering of torch.pixel_unshuffle,
+        // e.g. Real-ESRGAN x2plus) shrinks the net's working resolution by its
+        // stride before the upsamplers run; the image-facing scale divides the
+        // upsampler product by that stride. Only a Reorg before any upsampler
+        // op counts — later Reorgs are internal reshapes.
+        int head_reorg_stride = 0;
+        bool upsampler_seen = false;
         // Deconvolution-upsampler nets (Real-CUGAN): the final deconv that
         // restores image channels (0=3) carries the net scale in its stride.
         int deconv_scale = 0;
@@ -226,12 +233,24 @@ std::mutex g_vulkan_init_mutex;
                                 return -1;
                             }
                         };
-                        if (type == "Deconvolution") {
+                        if (type == "Reorg") {
+                            const int stride = param_i(" 0=");
+                            const int mode = param_i(" 1=");
+                            if (!upsampler_seen && stride > 1 && mode <= 0) {
+                                head_reorg_stride = stride;
+                            }
+                        } else if (type == "Deconvolution") {
                             const int stride = param_i(" 3=");
-                            if (stride >= 1) deconvs.push_back({tops.empty() ? "" : tops.back(), stride});
+                            if (stride >= 1) {
+                                deconvs.push_back({tops.empty() ? "" : tops.back(), stride});
+                                upsampler_seen = upsampler_seen || stride > 1;
+                            }
                         } else if (type == "PixelShuffle") {
                             const int ratio = param_i(" 0=");
-                            if (ratio >= 1) pixelshuffles.push_back({tops.empty() ? "" : tops.back(), ratio});
+                            if (ratio >= 1) {
+                                pixelshuffles.push_back({tops.empty() ? "" : tops.back(), ratio});
+                                upsampler_seen = upsampler_seen || ratio > 1;
+                            }
                         }
                     }
                 }
@@ -250,6 +269,7 @@ std::mutex g_vulkan_init_mutex;
                 found_interp = true;
                 const double h_scale = param(" 1=");
                 if (h_scale > 0.0) interp_product *= h_scale;
+                if (h_scale > 1.0) upsampler_seen = true;
             }
             if (line.rfind("Crop", 0) == 0) {
                 has_crop_layer = true;
@@ -371,6 +391,9 @@ std::mutex g_vulkan_init_mutex;
                     ps_trunk_detected = true;
                 }
             }
+        }
+        if (head_reorg_stride > 1 && scale_factor_ % head_reorg_stride == 0) {
+            scale_factor_ /= head_reorg_stride;
         }
         scale_detected_ = found_interp || deconv_scale >= 1 || ps_trunk_detected;
 
