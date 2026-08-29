@@ -194,6 +194,7 @@ std::mutex g_vulkan_init_mutex;
         // last layer's top blob.
         struct UpsampleOp { std::string top; int ratio = 1; };
         std::vector<UpsampleOp> deconvs, pixelshuffles;
+        bool ps_trunk_detected = false;
         std::unordered_map<std::string, char> blob_consumers;  // bit 1: consumed, bit 2: by Split
         std::string net_output_blob;
         while (std::getline(file, line)) {
@@ -294,6 +295,7 @@ std::mutex g_vulkan_init_mutex;
                     if (ps.top == net_output_blob) {
                         trunk *= ps.ratio;
                         scale_factor_ = static_cast<int>(trunk);
+                        ps_trunk_detected = true;
                         // Real-CUGAN se/pro x4 nets are known to execute to
                         // garbage on the pinned ncnn (both CPU and Vulkan;
                         // upstream ncnn 2022 runs them fine) — x2/x3 from the
@@ -305,9 +307,71 @@ std::mutex g_vulkan_init_mutex;
                         break;
                     }
                 }
+            } else {
+                // Pure PixelShuffle-trunk nets (SPAN family): no Interp and no
+                // deconv trunk — the upsampling is a PixelShuffle chain feeding
+                // the output, possibly through trailing pointwise ops. Net
+                // scale = product of the ratios of the PixelShuffles reachable
+                // backwards from the output blob.
+                std::unordered_map<std::string, std::pair<std::string, int>> producer_type_ratio;
+                std::unordered_map<std::string, std::vector<std::string>> producer_bottoms;
+                file.clear();
+                file.seekg(0);
+                while (std::getline(file, line)) {
+                    std::istringstream iss(line);
+                    std::string type, name;
+                    int bottom_count = -1, top_count = -1;
+                    if (!(iss >> type >> name >> bottom_count >> top_count)
+                        || bottom_count < 0 || top_count < 0) {
+                        continue;
+                    }
+                    std::vector<std::string> bottoms(static_cast<size_t>(bottom_count));
+                    std::vector<std::string> tops(static_cast<size_t>(top_count));
+                    bool tokens_ok = true;
+                    for (auto& b : bottoms) { if (!(iss >> b)) { tokens_ok = false; break; } }
+                    for (auto& t : tops) { if (!(iss >> t)) { tokens_ok = false; break; } }
+                    if (!tokens_ok) continue;
+                    int ratio = 0;
+                    if (type == "PixelShuffle") {
+                        size_t pos = line.find(" 0=");
+                        try {
+                            if (pos != std::string::npos) ratio = std::stoi(line.substr(pos + 3));
+                        } catch (const std::exception&) {
+                            ratio = 0;
+                        }
+                    }
+                    for (const auto& t : tops) {
+                        producer_type_ratio[t] = {type, ratio};
+                        producer_bottoms[t] = bottoms;
+                    }
+                }
+                std::vector<std::string> frontier{net_output_blob};
+                std::unordered_map<std::string, bool> seen_blob;
+                long long ps_scale = 1;
+                bool any_trunk_ps = false;
+                while (!frontier.empty()) {
+                    const std::string blob = frontier.back();
+                    frontier.pop_back();
+                    if (seen_blob.count(blob)) continue;
+                    seen_blob[blob] = true;
+                    const auto type_it = producer_type_ratio.find(blob);
+                    if (type_it == producer_type_ratio.end()) continue;
+                    if (type_it->second.first == "PixelShuffle" && type_it->second.second >= 1) {
+                        ps_scale *= type_it->second.second;
+                        any_trunk_ps = true;
+                    }
+                    const auto bottom_it = producer_bottoms.find(blob);
+                    if (bottom_it != producer_bottoms.end()) {
+                        for (const auto& b : bottom_it->second) frontier.push_back(b);
+                    }
+                }
+                if (any_trunk_ps && ps_scale >= 1 && ps_scale <= 16) {
+                    scale_factor_ = static_cast<int>(ps_scale);
+                    ps_trunk_detected = true;
+                }
             }
         }
-        scale_detected_ = found_interp || deconv_scale >= 1 || scale_factor_ > 2;
+        scale_detected_ = found_interp || deconv_scale >= 1 || ps_trunk_detected;
 
         if (has_crop_layer) {
             model_has_border_crop_ = true;

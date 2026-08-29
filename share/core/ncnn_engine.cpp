@@ -109,7 +109,16 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
         if (!initialized_) {
             return std::unexpected(EngineError{1, "Engine not initialized"});
         }
-        
+
+        // A reload into the same engine (daemon warm-swap, Android model
+        // switch) must drop the previous net first: ncnn's Net::load_param
+        // never clears, and it re-resolves bottom-blob indices BY NAME, so
+        // overlapping blob names between the old and new net (pnnx params are
+        // full of in0/out0/numeric names) entangle the two nets' blob tables
+        // and inference walks a corrupt graph — silent wrong output or
+        // "Failed to extract Vulkan output (error -1)", depending on the pair.
+        unload_model();
+
         LOG_INFO("Engine", "Loading model: {}", param_path);
         
         model_loaded_ = false;
