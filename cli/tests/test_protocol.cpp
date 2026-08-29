@@ -203,15 +203,19 @@ int main() {
         r.trusted = 0;
         r.avif_decode = 1;
         r.avif_encode = 0;  // lean host without a system encoder-capable libavif
+        r.pipeline_depth = 2;
         ClientConnectResponse back{};
         std::vector<uint8_t> buf(sizeof(r));
         std::memcpy(buf.data(), &r, sizeof(r));
         std::memcpy(&back, buf.data(), sizeof(back));
         CHECK(std::memcmp(&r, &back, sizeof(r)) == 0);
         CHECK(back.approved == 1 && back.trusted == 0);
-        // Capability bits ride the pairing frame: 4×uint8, no padding.
-        CHECK(sizeof(ClientConnectResponse) == 4);
+        // Capability bits + pipeline depth ride the pairing frame: 5×uint8,
+        // no padding. Receivers keep a legacy 4-byte floor (older PCs omit
+        // the depth byte), so growing this struct must stay append-only.
+        CHECK(sizeof(ClientConnectResponse) == 5);
         CHECK(back.avif_decode == 1 && back.avif_encode == 0);
+        CHECK(back.pipeline_depth == 2);
     }
     {
         ClientTaskResponse r{};

@@ -48,7 +48,8 @@ private data class HelpGuideEntry(
 private val HelpScenarioEntries = listOf(
     HelpGuideEntry(R.string.help_scenario_anime, listOf(R.string.help_scenario_anime_desc)),
     HelpGuideEntry(R.string.help_scenario_photo_2x, listOf(R.string.help_scenario_photo_2x_desc)),
-    HelpGuideEntry(R.string.help_scenario_photo_4x, listOf(R.string.help_scenario_photo_4x_desc))
+    HelpGuideEntry(R.string.help_scenario_photo_4x, listOf(R.string.help_scenario_photo_4x_desc)),
+    HelpGuideEntry(R.string.help_scenario_restore, listOf(R.string.help_scenario_restore_desc))
 )
 
 /** 「使用提示」：模型相关的使用方法要点。 */
@@ -64,6 +65,7 @@ private val HelpFamilyEntries = listOf(
     HelpGuideEntry(R.string.help_family_x4plus, listOf(R.string.help_family_x4plus_desc)),
     HelpGuideEntry(R.string.help_family_cugan, listOf(R.string.help_family_cugan_desc)),
     HelpGuideEntry(R.string.help_family_photo, listOf(R.string.help_family_photo_desc)),
+    HelpGuideEntry(R.string.help_family_restore, listOf(R.string.help_family_restore_desc)),
     HelpGuideEntry(R.string.help_family_classics, listOf(R.string.help_family_classics_desc))
 )
 

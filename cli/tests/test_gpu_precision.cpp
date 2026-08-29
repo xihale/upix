@@ -18,7 +18,13 @@ int main() {
 
     ncnn::Option dgpu;
     upix::apply_profile(dgpu, GpuPrecisionProfile::Discrete);
-    if (!dgpu.use_fp16_arithmetic || !dgpu.use_shader_local_memory || dgpu.use_fp16_uniform) {
+    // Frozen-pack contract (gpu_precision.hpp): discrete adds fp16 arithmetic
+    // on top of packed+storage; uniform-as-fp16 and shader local memory stay
+    // OFF in BOTH profiles (missing-VkFeature pack desync / shader compile
+    // holes in the frozen SPIR-V dump).
+    if (!dgpu.use_fp16_arithmetic || !dgpu.use_fp16_packed || !dgpu.use_fp16_storage ||
+        dgpu.use_fp16_uniform || dgpu.use_shader_local_memory ||
+        dgpu.use_cooperative_matrix || dgpu.use_subgroup_ops || !dgpu.use_int8_storage) {
         std::cerr << "discrete profile bits wrong\n";
         return 1;
     }
