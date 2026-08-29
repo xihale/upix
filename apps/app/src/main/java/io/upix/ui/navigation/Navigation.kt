@@ -216,7 +216,10 @@ fun UpixNavigation(
                             )
                         },
                         onCancelDownload = modelsViewModel::cancelDownload,
-                        onResolveQueuedBatchOutputUri = processingViewModel::outputUriForQueuedBatch
+                        onResolveQueuedBatchOutputUri = processingViewModel::outputUriForQueuedBatch,
+                        onOpenHelp = {
+                            navController.navigate(AppScreen.Help.route)
+                        }
                     )
                 )
             }

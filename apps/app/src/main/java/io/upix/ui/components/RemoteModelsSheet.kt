@@ -8,34 +8,45 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import io.upix.R
 import io.upix.data.model.RemoteModel
 import io.upix.ui.theme.Spacing
+import io.upix.ui.theme.valueStyleFor
 import io.upix.viewmodel.RemoteModelDownloadState
 
 /**
- * 远程模型下载对话框：列出 GitHub "models" release 中的模型，
- * 支持逐个下载（进度条）与失败重试。
+ * 远程模型下载 sheet：列出 GitHub "models" release 中的模型，按家族分组
+ * （与模型选择 sheet 同一语言），支持逐个下载（进度条）、取消与失败重试。
+ * 行状态全部收进行内：未安装=容量+下载钮；下载中=进度条+取消；失败=错误
+ * 行+重试；已安装=弱色「已安装」徽标。§9.10：picker/queue 类走
+ * ModalBottomSheet，不再用 AlertDialog。
  */
 @Composable
-fun RemoteModelsDialog(
+@OptIn(ExperimentalMaterial3Api::class)
+fun RemoteModelsSheet(
     remoteModels: List<RemoteModel>,
     installedModelNames: Set<String>,
     downloads: Map<String, RemoteModelDownloadState>,
@@ -47,182 +58,212 @@ fun RemoteModelsDialog(
     onDismissError: (String) -> Unit = {},
     onCancelDownload: (String) -> Unit = {}
 ) {
-    AlertDialog(
+    val groups = remember(remoteModels) { groupByFamilyPrefix(remoteModels) { it.name } }
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        title = {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(stringResource(R.string.models_remote_title))
-                // 加载中不再用 spinner 整个替换刷新钮（避免同一位置控件跳变）：
-                // 刷新钮常驻、加载时禁用，忙碌指示器并列展示在左侧。
-                // 忙碌指示器占位常驻（不可见时也保留 20dp 槽位），
-                // 避免加载开始/结束时标题行高度跳变。
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Box(modifier = Modifier.size(20.dp)) {
-                        if (isLoading) {
-                            BusyIndicator()
-                        }
-                    }
-                    IconButton(onClick = onRefresh, enabled = !isLoading) {
-                        Icon(
-                            imageVector = Icons.Outlined.Refresh,
-                            contentDescription = stringResource(R.string.models_refresh)
-                        )
-                    }
-                }
-            }
-        },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
-                if (errorMessage != null) {
-                    Text(
-                        text = errorMessage,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
-                when {
-                    remoteModels.isEmpty() && isLoading -> Text(
-                        text = stringResource(R.string.models_remote_loading),
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-
-                    remoteModels.isEmpty() -> Text(
-                        text = stringResource(R.string.models_remote_empty),
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-
-                    else -> LazyColumn(
-                        // 限高 + 保底高度：列表很长时对话框不会撑到接近全屏，
-                        // 加载完成前后内容区高度稳定，弹出不再出现二次跳变。
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(min = 160.dp, max = 360.dp),
-                        verticalArrangement = Arrangement.spacedBy(Spacing.sm)
-                    ) {
-                        items(items = remoteModels, key = { it.name }) { model ->
-                            RemoteModelRow(
-                                model = model,
-                                installed = model.name in installedModelNames,
-                                downloadState = downloads[model.name],
-                                onDownload = onDownload,
-                                onDismissError = onDismissError,
-                                onCancelDownload = onCancelDownload
-                            )
-                        }
+        sheetState = rememberBottomSheetState(
+            initialValue = SheetValue.Hidden,
+            enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
+        ),
+        shape = MaterialTheme.shapes.extraLarge,
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = Spacing.xl, end = Spacing.sm),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = stringResource(R.string.models_remote_title),
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.padding(vertical = Spacing.sm)
+            )
+            // 加载中不用 spinner 整个替换刷新钮（避免同一位置控件跳变）：
+            // 刷新钮常驻、加载时禁用，忙碌指示器并列展示在左侧；
+            // 20dp 占位常驻，避免忙碌指示器出现/消失时标题行高度跳变。
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier.size(20.dp)) {
+                    if (isLoading) {
+                        BusyIndicator()
                     }
                 }
-            }
-        },
-        confirmButton = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.common_cancel))
+                IconButton(onClick = onRefresh, enabled = !isLoading) {
+                    Icon(
+                        imageVector = Icons.Outlined.Refresh,
+                        contentDescription = stringResource(R.string.models_refresh)
+                    )
+                }
             }
         }
-    )
+        if (errorMessage != null) {
+            Text(
+                text = errorMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier
+                    .padding(horizontal = Spacing.xl)
+                    .padding(bottom = Spacing.sm)
+            )
+        }
+        // 分组列表限高约七成窗口，与模型选择 sheet 一致。
+        val listMaxHeight = with(LocalDensity.current) {
+            (LocalWindowInfo.current.containerSize.height * 0.7f).toDp()
+        }
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = listMaxHeight)
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = Spacing.xl)
+                .padding(bottom = Spacing.xl),
+            verticalArrangement = Arrangement.spacedBy(Spacing.md)
+        ) {
+            when {
+                remoteModels.isEmpty() && isLoading -> Text(
+                    text = stringResource(R.string.models_remote_loading),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = Spacing.lg)
+                )
+
+                remoteModels.isEmpty() -> ModelFamilyEmptyCard(
+                    text = stringResource(R.string.models_remote_empty)
+                )
+
+                else -> groups.forEach { group ->
+                    Column(verticalArrangement = Arrangement.spacedBy(Spacing.sm)) {
+                        if (group.label != null) {
+                            SectionHeader(text = group.label)
+                        }
+                        ModelFamilyCard {
+                            group.items.forEach { entry ->
+                                RemoteModelRow(
+                                    model = entry.value,
+                                    label = entry.label,
+                                    installed = entry.value.name in installedModelNames,
+                                    downloadState = downloads[entry.value.name],
+                                    onDownload = onDownload,
+                                    onDismissError = onDismissError,
+                                    onCancelDownload = onCancelDownload
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 @Composable
 private fun RemoteModelRow(
     model: RemoteModel,
+    label: String,
     installed: Boolean,
     downloadState: RemoteModelDownloadState?,
     onDownload: (RemoteModel) -> Unit,
     onDismissError: (String) -> Unit,
     onCancelDownload: (String) -> Unit
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    text = model.name,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1
-                )
-                Text(
-                    text = stringResource(
-                        R.string.models_remote_item_summary,
-                        model.scale,
-                        formatSizeBytes(model.sizeBytes)
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-            when {
-                installed -> Text(
-                    text = stringResource(R.string.models_remote_installed),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary
-                )
-
-                downloadState != null && !downloadState.failed -> Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
-                ) {
-                    if (downloadState.indeterminate) {
-                        // 总大小未知（如服务端不返回 Content-Length）：不确定进度 + 已下载字节提示。
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(Spacing.xs)
-                        ) {
-                            LinearProgressIndicator(
-                                modifier = Modifier.fillMaxWidth(0.35f)
-                            )
-                            Text(
-                                text = stringResource(
-                                    R.string.download_downloaded_bytes,
-                                    formatSizeBytes(downloadState.downloadedBytes)
-                                ),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    } else {
-                        LinearProgressIndicator(
-                            progress = { downloadState.progress },
-                            modifier = Modifier.fillMaxWidth(0.35f)
-                        )
-                    }
-                    TextButton(onClick = { onCancelDownload(model.name) }) {
+    // 就地接住可空态：supporting/trailing 闭包里直接用这个局部 val 保住 smart cast。
+    val state = downloadState
+    ModelListRow(
+        label = label,
+        supporting = when {
+            state != null && !state.failed && state.indeterminate -> {
+                // 总大小未知（如服务端不返回 Content-Length）：不确定进度 + 已下载字节提示。
+                {
+                    Column(verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                        LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                         Text(
-                            text = stringResource(R.string.models_download_cancel),
-                            style = MaterialTheme.typography.labelMedium
+                            text = stringResource(
+                                R.string.download_downloaded_bytes,
+                                formatSizeBytes(state.downloadedBytes)
+                            ),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
+            }
 
-                downloadState != null && downloadState.failed -> TextButton(
+            state != null && !state.failed -> {
+                {
+                    LinearProgressIndicator(
+                        progress = { state.progress },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+
+            state != null && state.failed && state.errorMessage != null -> {
+                {
+                    Text(
+                        text = state.errorMessage,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                }
+            }
+
+            else -> null
+        },
+        trailing = {
+            when {
+                installed -> Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
+                ) {
+                    Text(
+                        text = formatSizeBytes(model.sizeBytes),
+                        style = valueStyleFor(formatSizeBytes(model.sizeBytes)),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = stringResource(R.string.models_remote_installed),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                state != null && !state.failed -> TextButton(onClick = { onCancelDownload(model.name) }) {
+                    Text(
+                        text = stringResource(R.string.models_download_cancel),
+                        style = MaterialTheme.typography.labelMedium
+                    )
+                }
+
+                state != null && state.failed -> TextButton(
                     onClick = {
                         onDismissError(model.name)
                         onDownload(model)
                     }
                 ) {
-                    Text(stringResource(R.string.models_remote_retry))
+                    Text(
+                        text = stringResource(R.string.models_remote_retry),
+                        style = MaterialTheme.typography.labelMedium
+                    )
                 }
 
-                else -> IconButton(onClick = { onDownload(model) }) {
-                    Icon(
-                        imageVector = Icons.Outlined.CloudDownload,
-                        contentDescription = stringResource(R.string.models_download)
+                else -> Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(Spacing.sm)
+                ) {
+                    Text(
+                        text = formatSizeBytes(model.sizeBytes),
+                        style = valueStyleFor(formatSizeBytes(model.sizeBytes)),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    IconButton(onClick = { onDownload(model) }) {
+                        Icon(
+                            imageVector = Icons.Outlined.CloudDownload,
+                            contentDescription = stringResource(R.string.models_download)
+                        )
+                    }
                 }
             }
         }
-        if (downloadState != null && downloadState.failed && downloadState.errorMessage != null) {
-            Text(
-                text = downloadState.errorMessage,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.error
-            )
-        }
-    }
+    )
 }
-

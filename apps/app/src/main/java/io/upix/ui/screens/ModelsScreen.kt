@@ -46,7 +46,7 @@ import io.upix.data.model.ModelInfo
 import io.upix.data.model.ModelLibraryEntry
 import io.upix.data.model.RemoteModel
 import io.upix.ui.components.ModelCard
-import io.upix.ui.components.RemoteModelsDialog
+import io.upix.ui.components.RemoteModelsSheet
 import io.upix.ui.theme.LocalScreenMargin
 import io.upix.ui.theme.Spacing
 import io.upix.viewmodel.ModelsUiState
@@ -59,7 +59,7 @@ private val ModelColumnMinWidth = 320.dp
  * 头部元数据（数量摘要 + 模型目录）→ 操作行（导入 / 远程下载 / 刷新）
  * → 模型库自适应网格（手机单列即列表，medium+ 宽面板自动多列）
  * 或居中空态引导卡。
- * 删除确认与远程下载对话框逻辑不变；所有回调由调用方原样注入。
+ * 删除确认与远程下载 sheet 逻辑不变；所有回调由调用方原样注入。
  */
 @Composable
 fun ModelsScreen(
@@ -147,7 +147,7 @@ fun ModelsScreen(
     }
 
     if (showRemoteDialog) {
-        RemoteModelsDialog(
+        RemoteModelsSheet(
             remoteModels = remoteUiState.remoteModels,
             installedModelNames = phoneModelNames,
             downloads = remoteUiState.downloads,

@@ -34,7 +34,6 @@
     <string name="home_skip_sr_marked">跳过已超分图片</string>
     <string name="processing_progress_skipped">已跳过 %1$d（超分标记）</string>
     <string name="home_select_model_sheet_title">选择模型</string>
-    <string name="home_model_subtitle">x%1$d</string>
     <string name="home_restore_backup">恢复备份</string>
     <string name="home_restore_backup_result_success">成功恢复 %1$d 个备份</string>
     <string name="home_restore_backup_result_partial">已恢复 %1$d 个，失败 %2$d 个</string>
@@ -137,7 +136,6 @@
     <string name="models_remote_loading">正在获取模型列表…</string>
     <string name="models_remote_empty">远程模型列表为空</string>
     <string name="models_remote_error">获取模型列表失败</string>
-    <string name="models_remote_item_summary">%1$d 倍率 · %2$s</string>
     <string name="models_remote_installed">已安装</string>
     <string name="models_remote_retry">重试</string>
 
@@ -215,6 +213,31 @@
     <string name="help_step_1_desc">从相册挑选图片，或导入整个文件夹批量处理</string>
     <string name="help_step_2_desc">选择合适的超分模型，并指定结果保存位置</string>
     <string name="help_step_3_desc">确认参数后点击开始，结果会保存到所选输出目录</string>
+
+    <!-- Help screen：模型指南（内容与 models/README.md 目录对齐） -->
+    <string name="help_section_model_pick">怎么选模型</string>
+    <string name="help_scenario_anime">动漫 / 插画 / 游戏截图</string>
+    <string name="help_scenario_anime_desc">首选 Real-ESRGANv3-anime，轻快、线条干净；压缩噪点重（老番、流媒体截图）改用 Real-CUGAN pro 的 denoise 变体；想要 4x 锐利线条选 AnimeSharp-x4。</string>
+    <string name="help_scenario_photo_2x">照片 · 轻度放大（x2）</string>
+    <string name="help_scenario_photo_2x_desc">NomosUni-Compact-x2：专为聊天软件、社交媒体的压缩照片训练，手机本地批量也快。</string>
+    <string name="help_scenario_photo_4x">照片 · 大幅放大（x4）</string>
+    <string name="help_scenario_photo_4x_desc">求快选 Real-ESRGANv3-general-x4 或 LSDIR-Compact-v2-x4，手机轻松跑；求画质（推荐连接 PC）用 NomosWebPhoto-RealPLKSR、Remacri、UltraSharp 或 Real-ESRGAN-x4plus。</string>
+    <string name="help_model_tips_title">使用提示</string>
+    <string name="help_model_tip_scale">放大倍率跟随模型：名字末尾的 x2 / x3 / x4 即倍率，选模型就是选倍率；参数卡上的倍率切换只在本系列内换档。</string>
+    <string name="help_model_tip_weight">1–2 MB 的轻量模型手机本地批量无压力；31 MB 级的重量模型画质更高，连接 PC 处理更省时。</string>
+    <string name="help_model_tip_get">模型不随应用附带：在「模型管理」页或选择模型面板右上角下载，也可以导入自己的 .param / .bin。</string>
+    <string name="help_section_model_families">模型家族</string>
+    <string name="help_family_v3">Real-ESRGAN v3 · 轻量全能</string>
+    <string name="help_family_v3_desc">1–2 MB 的轻量网络，速度足够手机批量处理：anime 系列是动漫内容的默认首选，general-x4 是照片的默认首选。</string>
+    <string name="help_family_x4plus">Real-ESRGAN x4plus · 重量级参考画质</string>
+    <string name="help_family_x4plus_desc">完整 RRDB 网络，纹理重建是全目录最强，但计算量高出数十倍，适合连接 PC 卸载时使用；x4plus-anime 是动漫 4x 的参考画质。</string>
+    <string name="help_family_cugan">Real-CUGAN · 动漫专精</string>
+    <string name="help_family_cugan_desc">面向真实劣化的动漫源训练，重度 JPEG / 视频压缩的番剧截图常比 Real-ESRGAN 更好。三个变体：conservative 尽量少改动、denoise 强力去压缩噪点、no-denoise 不做去噪；pro 系是新一代、泛化更好，优先选 pro。</string>
+    <string name="help_family_photo">社区照片系列 · Nomos 等</string>
+    <string name="help_family_photo_desc">补齐 Real-ESRGAN 系空缺的照片专用模型：NomosUni-Compact-x2 是目录里唯一的照片 x2；SPAN-x4 最轻；LSDIR-Compact-v2-x4 同速更干净；Nomos8kSC-x4 去压缩与模糊更狠；NomosWebPhoto-RealPLKSR-x4 是网络照片的画质/体积均衡之选。</string>
+    <string name="help_family_classics">社区经典 · UltraSharp / Remacri / AnimeSharp / AnimeJaNai</string>
+    <string name="help_family_classics_desc">社区多年默认的全能老牌：UltraSharp-x4 锐利、Remacri-x4 自然、AnimeSharp-x4 动漫线条 4x、AnimeJaNai-v2-Compact-x2 动漫轻量 2x。注意：这四款权重为非商用许可（CC-BY-NC-SA），个人使用不受影响。</string>
+    <string name="home_model_picker_help">不知道怎么选？查看模型指南</string>
 
     <!-- Logs screen -->
     <string name="logs_search_label">搜索</string>

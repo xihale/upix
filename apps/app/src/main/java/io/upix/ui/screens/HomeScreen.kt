@@ -25,7 +25,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.CloudDownload
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -67,12 +66,13 @@ import io.upix.data.model.RemoteModel
 import io.upix.data.repository.OutputImageFormat
 import io.upix.data.repository.PersistedQueueItemStatus
 import io.upix.ui.components.UpixTopAppBar
-import io.upix.ui.components.RemoteModelsDialog
+import io.upix.ui.components.RemoteModelsSheet
 import io.upix.ui.components.StageProgressOverlay
 import io.upix.ui.screens.home.BottomActionDock
 import io.upix.ui.screens.home.CheckpointSection
 import io.upix.ui.screens.home.DockCtaHeight
 import io.upix.ui.screens.home.ImageStage
+import io.upix.ui.screens.home.ModelPickerSheet
 import io.upix.ui.screens.home.ParameterCard
 import io.upix.ui.screens.home.PreviewBottomSheet
 import io.upix.ui.screens.home.QueueBottomSheetContent
@@ -125,7 +125,8 @@ data class HomeCallbacks(
     val onDiscardCheckpoint: () -> Unit,
     val onRestoreBackup: () -> Unit = {},
     val onCancelDownload: (String) -> Unit = {},
-    val onResolveQueuedBatchOutputUri: (String) -> String? = { null }
+    val onResolveQueuedBatchOutputUri: (String) -> String? = { null },
+    val onOpenHelp: () -> Unit = {}
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -174,7 +175,8 @@ fun HomeScreen(
         onDiscardCheckpoint,
         onRestoreBackup,
         onCancelDownload,
-        onResolveQueuedBatchOutputUri
+        onResolveQueuedBatchOutputUri,
+        onOpenHelp
     ) = callbacks
     val selectModelLabel = stringResource(R.string.home_model_select)
     val snackbarConnectingMessage = stringResource(R.string.home_snackbar_connecting)
@@ -209,7 +211,7 @@ fun HomeScreen(
 
     var showModelSheet by rememberSaveable { mutableStateOf(false) }
     var showFormatSheet by rememberSaveable { mutableStateOf(false) }
-    var showRemoteModelsDialog by rememberSaveable { mutableStateOf(false) }
+    var showRemoteModelsSheet by rememberSaveable { mutableStateOf(false) }
     var queueSheetVisible by rememberSaveable { mutableStateOf(false) }
     var previewSource by rememberSaveable { mutableStateOf<String?>(null) }
     val context = LocalContext.current
@@ -383,48 +385,23 @@ fun HomeScreen(
         }
         // 大屏取舍：官方暂无 SideSheet 组件，medium+ 上 ModalBottomSheet
         // 自动限宽居中展示（不拉伸全宽），作为侧栏方案的过渡实现。
-        ModalBottomSheet(
-            onDismissRequest = { showModelSheet = false },
-            sheetState = rememberBottomSheetState(
-                initialValue = SheetValue.Hidden,
-                enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
-            ),
-            shape = MaterialTheme.shapes.extraLarge,
-            containerColor = MaterialTheme.colorScheme.surface
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = Spacing.xl, end = Spacing.sm),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = stringResource(R.string.home_select_model_sheet_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(vertical = Spacing.sm)
-                )
-                // 右上角下载入口：与设置页相同的远程模型下载对话框。
-                IconButton(onClick = { showRemoteModelsDialog = true }) {
-                    Icon(
-                        imageVector = Icons.Outlined.CloudDownload,
-                        contentDescription = stringResource(R.string.models_download),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
+        ModelPickerSheet(
+            models = state.models,
+            selectedModelName = state.selectedModel?.name,
+            onDismiss = { showModelSheet = false },
+            onSelectModel = onSelectModel,
+            // 打开下载 sheet 前先收起选择 sheet：两个 ModalBottomSheet 不叠放；
+            // 下载 sheet 关闭时回到选择 sheet（Home 里下载唯一入口在此）。
+            onOpenDownload = {
+                showModelSheet = false
+                showRemoteModelsSheet = true
+            },
+            // 指南是页面导航而非 sheet：同样先收起本 sheet，避免叠放。
+            onOpenHelp = {
+                showModelSheet = false
+                onOpenHelp()
             }
-            state.models.forEach { model ->
-                SelectSheetItem(
-                    label = model.name,
-                    sublabel = stringResource(R.string.home_model_subtitle, model.scaleFactor),
-                    selected = state.selectedModel?.name == model.name
-                ) {
-                    showModelSheet = false
-                    onSelectModel(model)
-                }
-            }
-            Spacer(modifier = Modifier.height(Spacing.xl))
-        }
+        )
     }
 
     if (showFormatSheet) {
@@ -507,8 +484,8 @@ fun HomeScreen(
         )
     }
 
-    if (showRemoteModelsDialog) {
-        RemoteModelsDialog(
+    if (showRemoteModelsSheet) {
+        RemoteModelsSheet(
             remoteModels = remoteUiState.remoteModels,
             installedModelNames = state.models.map { it.name }.toSet(),
             downloads = remoteUiState.downloads,
@@ -516,7 +493,11 @@ fun HomeScreen(
             errorMessage = remoteUiState.remoteError,
             onRefresh = onRefreshRemoteModels,
             onDownload = onDownloadRemoteModel,
-            onDismiss = { showRemoteModelsDialog = false },
+            onDismiss = {
+                showRemoteModelsSheet = false
+                // 下载完/取消后回到选择 sheet，选刚下好的模型不用再点开一层。
+                showModelSheet = true
+            },
             onDismissError = onDismissDownloadError,
             onCancelDownload = onCancelDownload
         )
