@@ -16,6 +16,7 @@
 #include "spirv_pack.hpp"
 #endif
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
@@ -372,6 +373,39 @@ std::mutex g_vulkan_init_mutex;
             }
         }
         scale_detected_ = found_interp || deconv_scale >= 1 || ps_trunk_detected;
+
+        // A graph with no upsampler op at all is either a scale-1 restoration
+        // net or a net whose upsampler we don't recognize. Read the filename
+        // scale convention ("-x2", "-x1") as the tiebreaker — the same source
+        // scripts/publish_models.py generates the manifest from. Android
+        // loads models by bare path with no manifest at hand, so without this
+        // fallback a 1x model would run under the 2x default and fail with a
+        // shape mismatch.
+        if (!scale_detected_) {
+            const auto slash = param_path.find_last_of("/\\");
+            const std::string base = slash == std::string::npos
+                                         ? param_path
+                                         : param_path.substr(slash + 1);
+            int from_name = 0;
+            for (size_t i = 0; i + 1 < base.size(); ++i) {
+                if (base[i] != 'x' && base[i] != 'X') continue;
+                if (!std::isdigit(static_cast<unsigned char>(base[i + 1]))) continue;
+                int n = 0;
+                size_t j = i + 1;
+                while (j < base.size() && std::isdigit(static_cast<unsigned char>(base[j]))) {
+                    n = n * 10 + (base[j] - '0');
+                    ++j;
+                }
+                if (n >= 1 && n <= 8) from_name = n;
+            }
+            if (from_name >= 1) {
+                scale_factor_ = from_name;
+                scale_detected_ = true;
+                LOG_INFO("Engine",
+                         "No upsampler op in graph; scale {}x from model filename",
+                         from_name);
+            }
+        }
 
         if (has_crop_layer) {
             model_has_border_crop_ = true;

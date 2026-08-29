@@ -7,7 +7,7 @@ and downloaded on demand.
 
 ## Model Catalog
 
-The release ships 31 models covering five families. Sizes are the
+The release ships 34 models covering six families. Sizes are the
 on-disk `.param + .bin` download (zipped); "phone" vs "PC" is a rough
 speed class for a recent flagship at 256–384 tiles — the heavy models
 are fine anywhere but can take tens of seconds per 12 MP image on a
@@ -73,6 +73,21 @@ degradation rather than anime — one classic RRDB, one modern RealPLKSR.
 | `NomosUni-SPAN-x4` | 0.8 MB | Photos at 4x on modest hardware. SPAN (Swift Parameter-free Attention) — the lightest photo 4x in the catalog, trained on the same JPEG-degraded NomosUni corpus as the 2x compact (mixed downscale kernels, JPEG quality down to 40); a quality step above plain bicubic-style upscaling at batch-friendly speed. |
 | `Nomos8kSC-x4` | 31 MB | Photos at 4x with strong JPEG-compression and blur removal (OTF-trained on Nomos8k). Fuller texture reconstruction than `v3-general-x4`; sits between it and `x4plus` in weight/compute, with a sharper, dehazed signature. |
 | `NomosWebPhoto-RealPLKSR-x4` | 13.7 MB | Photos at 4x on web/social sources. RealPLKSR — a modern convnet (partial large-kernel blocks) at half the weight of the RRDB nets, with stronger cleanup of heavy web JPEG; the quality/size sweet spot of the photo 4x row. |
+
+### Community 1x restoration nets (OpenModelDB)
+
+Three same-recipe RealPLKSR nets that clean an image **in place** —
+scale 1, output size equals input size, the catalog's first no-resize
+models. All three are Phhofm nets trained on the NomosV2 photo corpus
+(DeNoise and DeH264 fine-tuned from the DeJPG weights), CC-BY-4.0, and
+run faster than any upscaler since they emit no extra pixels. Reach for
+them when a source is already the right size but degraded.
+
+| Model | Size | Use it for |
+|---|---|---|
+| `DeJPG-RealPLKSR-x1` | 14 MB | JPEG artifact removal at original size. OTF-trained on degradations down to JPEG quality 40 — chat-app/messenger re-compressions, re-saved downloads. Flattens 8×8 blocking while keeping texture (blocking-energy ratio 1.15 → 1.00 in our checks). |
+| `DeNoise-RealPLKSR-x1` | 14 MB | Denoise at original size (200k iterations on OTF noise; also handles mild JPEG) — noisy phone-camera shots, high-ISO stills. |
+| `DeH264-RealPLKSR-x1` | 14 MB | H.264 compression removal — video frames, screen recordings, streamed screenshots. |
 
 ### Community anime SPAN nets (OpenModelDB)
 
@@ -255,6 +270,7 @@ upstream license:
 | `ModernSpanimation-x2` | 2x-ModernSpanimationV1 by [TNTwise](https://github.com/TNTwise) (SPAN, 64nf); pth from the author's GitHub release, sha256-matched against the OpenModelDB record; converted to ncnn with pnnx and verified against spandrel's fp32 output | MIT (weights) |
 | `NMKD-Siax-x4` | 4x_NMKD-Siax_200k by [NMKD](https://nmkd.de) (ESRGAN RRDB arch); pth via a HuggingFace mirror, sha256-matched against the OpenModelDB record; converted to ncnn with pnnx and verified against spandrel's fp32 output | WTFPL (weights) |
 | `NomosWebPhoto-RealPLKSR-x4` | 4xNomosWebPhoto_RealPLKSR by [Helaman / Phhofm](https://github.com/Phhofm/models) (RealPLKSR arch); pth from the author's [models release](https://github.com/Phhofm/models), byte-matched to its recorded sha256; converted to ncnn with pnnx (the channel-repeat residual rewritten as nearest-interp, bitwise identical) and verified against a fp32 PyTorch reference | CC-BY-4.0 (weights) |
+| `DeJPG` / `DeNoise` / `DeH264-RealPLKSR-x1` | 1xDeJPG_realplksr_otf, 1xDeNoise_realplksr_otf and 1xDeH264_realplksr by [Helaman / Phhofm](https://github.com/Phhofm/models) (RealPLKSR at scale 1 — the upsampler degenerates to identity, so the net is a pure conv stack with a global residual); pth sha256-matched against the OpenModelDB records; converted to ncnn with pnnx and verified against spandrel's fp32 output (0 LSB) | CC-BY-4.0 (weights) |
 
 See the root [LICENSE](../LICENSE) for the Upix code license. When
 redistributing the models release, retain the notices above.

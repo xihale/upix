@@ -118,10 +118,11 @@ def build_zip(name: str, param: Path, bin_path: Path, out_dir: Path) -> Path:
 
 def scale_from_name(name: str) -> int:
     """Infer scale from the trailing -xN / _xN / xN convention. The number
-    may be followed by non-digits (e.g. "Real-ESRGAN-x4plus", "…-x4v3")."""
+    may be followed by non-digits (e.g. "Real-ESRGAN-x4plus", "…-x4v3").
+    1..8 so 1x restoration nets ("…-x1") classify too."""
     scale = 2
     for m in re.finditer(r"[xX](\d+)(?!\d)", name):
-        if 2 <= int(m.group(1)) <= 8:
+        if 1 <= int(m.group(1)) <= 8:
             scale = int(m.group(1))
     return scale
 
@@ -145,6 +146,9 @@ LICENSES = {
     "HFA2k-LUDVAE-SPAN-x2": "CC-BY-4.0",
     "ModernSpanimation-x2": "MIT",
     "NMKD-Siax-x4": "WTFPL",
+    "DeJPG-RealPLKSR-x1": "CC-BY-4.0",
+    "DeNoise-RealPLKSR-x1": "CC-BY-4.0",
+    "DeH264-RealPLKSR-x1": "CC-BY-4.0",
 }
 
 
