@@ -206,7 +206,8 @@ Quick guidance:
 Most models are ncnn conversions of BSD/MIT-licensed upstream releases
 (Real-ESRGAN, Real-CUGAN); the rest are OpenModelDB community models —
 two CC-BY-4.0 photo picks and three CC-BY-NC-SA classics (UltraSharp,
-AnimeSharp, AnimeJaNai), matching Upix's own noncommercial license. See
+AnimeSharp, AnimeJaNai) whose noncommercial terms apply to the weights
+themselves regardless of the code license. See
 the attribution table in [models/README.md](models/README.md).
 
 ### SR Marker (idempotent re-runs)
@@ -342,15 +343,18 @@ and known pitfalls.
 
 ## License
 
-Upix is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+Upix is licensed under the [GNU AGPL-3.0](LICENSE).
 
-Required Notice: Copyright (c) 2026 xihale
+Copyright (c) 2026 xihale
 
-You may use, modify, and redistribute Upix for any **noncommercial** purpose —
-personal study, hobby projects, research, nonprofit, and similar uses. Commercial
-use requires a separate license from the author. Releases up to and including
-commit `d98c461` (2026-08-29) were distributed under the MIT License; recipients
-of those versions keep their MIT rights to those versions.
+You may use, modify, and redistribute Upix freely, including for commercial
+purposes — but derivative works (including a modified version offered as a
+network service) must be released under AGPL-3.0 with source. If you want to
+build a closed-source product on Upix, contact the author for a commercial
+license. Version history: releases up to and including `d98c461` (2026-08-29)
+were MIT; `a502cd5` was PolyForm Noncommercial 1.0.0; later versions are
+AGPL-3.0. Recipients keep their rights under the terms those versions were
+distributed under.
 
 ### Third-party components
 
@@ -371,6 +375,7 @@ list lives in [xmake.lua](xmake.lua).
 
 Third-party code dependencies are permissive-licensed and remain under their own
 terms; their copyright notices must be retained in distributions. The bundled
-models carry their own licenses — see [models/README.md](models/README.md); the
-community models in the catalog are CC-BY-NC-SA, matching Upix's noncommercial
-terms.
+models are separate works carrying their own licenses — see
+[models/README.md](models/README.md); the community picks include CC-BY-NC-SA
+models whose noncommercial terms bind whoever uses those weights, independent
+of the code license.

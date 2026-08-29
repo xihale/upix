@@ -128,8 +128,9 @@ def scale_from_name(name: str) -> int:
 
 # Per-model license, surfaced as an informational "license" field in
 # manifest.json (both clients ignore unknown fields; terms live in
-# models/README.md). Upix itself is PolyForm-NC, so CC-BY-NC-SA community
-# models are distributable here — a commercial fork must drop them.
+# models/README.md). The Upix code is AGPL-3.0, but these CC-BY-NC-SA
+# weights stay noncommercial-only — a commercial user of the code must
+# drop or replace them.
 LICENSES = {
     "UltraSharp-x4": "CC-BY-NC-SA-4.0",
     "AnimeSharp-x4": "CC-BY-NC-SA-4.0",

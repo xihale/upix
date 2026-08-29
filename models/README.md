@@ -71,9 +71,9 @@ tuned for real-world photo degradation rather than anime.
 
 ### Community classics (OpenModelDB, CC-BY-NC-SA-4.0)
 
-The three most-requested community nets, redistributed under Upix's own
-noncommercial terms (see [LICENSE](../LICENSE)): commercial use of the
-catalog is off the table either way, so these fit right in. Each ncnn
+The three most-requested community nets. The Upix code is AGPL-3.0, but
+these weights keep their own CC-BY-NC-SA-4.0 license: noncommercial use
+only, so a commercial user of the code must swap them out. Each ncnn
 file is an adaptation of the upstream weights and keeps the same
 CC-BY-NC-SA-4.0 license; conversions were verified against fp32 PyTorch
 references (49–53 dB PSNR on CPU, with GPU agreeing within the family's
@@ -112,8 +112,9 @@ fp16 baseline).
   strictly outdated in quality by everything above; not worth the
   catalog weight.
 - Community ESRGAN nets beyond the curated picks are covered above;
-  license mixing is no longer a blocker (Upix is PolyForm-NC), curation
-  and verification bandwidth is.
+  what limits the catalog is curation and verification bandwidth, not
+  license mixing — each shipped model gets its license classified and
+  documented either way.
 
 ## Model Format
 
