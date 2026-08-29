@@ -7,7 +7,7 @@ and downloaded on demand.
 
 ## Model Catalog
 
-The release ships 28 models covering five families. Sizes are the
+The release ships 31 models covering five families. Sizes are the
 on-disk `.param + .bin` download (zipped); "phone" vs "PC" is a rough
 speed class for a recent flagship at 256–384 tiles — the heavy models
 are fine anywhere but can take tens of seconds per 12 MP image on a
@@ -74,15 +74,29 @@ degradation rather than anime — one classic RRDB, one modern RealPLKSR.
 | `Nomos8kSC-x4` | 31 MB | Photos at 4x with strong JPEG-compression and blur removal (OTF-trained on Nomos8k). Fuller texture reconstruction than `v3-general-x4`; sits between it and `x4plus` in weight/compute, with a sharper, dehazed signature. |
 | `NomosWebPhoto-RealPLKSR-x4` | 13.7 MB | Photos at 4x on web/social sources. RealPLKSR — a modern convnet (partial large-kernel blocks) at half the weight of the RRDB nets, with stronger cleanup of heavy web JPEG; the quality/size sweet spot of the photo 4x row. |
 
-### Community classics (OpenModelDB, CC-BY-NC-SA-4.0)
+### Community anime SPAN nets (OpenModelDB)
 
-The four most-requested community nets. The Upix code is AGPL-3.0, but
-these weights keep their own CC-BY-NC-SA-4.0 license: noncommercial use
-only, so a commercial user of the code must swap them out. Each ncnn
-file is an adaptation of the upstream weights and keeps the same
-CC-BY-NC-SA-4.0 license; conversions were verified against fp32 PyTorch
-references (49–53 dB PSNR on CPU, with GPU agreeing within the family's
-fp16 baseline).
+Two SPAN nets for anime at 2x from different trainers, filling the
+ladder between the ~1 MB compacts and the heavy 4x classics: a 0.8 MB
+restoration net for rough sources, and a 1.4 MB mid-weight net for
+modern animation.
+
+| Model | Size | Use it for |
+|---|---|---|
+| `HFA2k-LUDVAE-SPAN-x2` | 0.8 MB | Anime at 2x from rough sources. Trained on the HFA2k-LUDVAE corpus with realistic degradations (compression, noise, blur) — the anime counterpart of `NomosUni-Compact-x2`'s photo niche, and the lightest anime restoration net in the catalog. |
+| `ModernSpanimation-x2` | 1.4 MB | Modern anime at 2x. TNTwise's Spanimation — a wider 64-channel SPAN trained on compression/blur/un-sharpening degradations; the quality step up from the 1.2 MB compacts while staying ~20× lighter than the 4x classics. |
+
+### Community classics (OpenModelDB)
+
+The five most-requested community nets. The Upix code is AGPL-3.0, but
+four of these weights keep their own CC-BY-NC-SA-4.0 license:
+noncommercial use only, so a commercial user of the code must swap them
+out; `NMKD-Siax-x4` is WTFPL, the most permissive license in the
+catalog. Each ncnn file is an adaptation of the upstream weights and
+keeps the same license; conversions were verified against spandrel —
+the community's reference PyTorch loader — with the ncnn nets matching
+within uint8 quantization on CPU and inside each family's fp16 baseline
+on GPU.
 
 | Model | Size | Use it for |
 |---|---|---|
@@ -90,6 +104,7 @@ fp16 baseline).
 | `Remacri-x4` | 31 MB | Photos at 4x. foolhardy's Remacri — alongside UltraSharp, the community's other long-time default all-rounder: natural mid-ground texture, gentle sharpening, tolerant of clean and compressed sources alike. |
 | `AnimeSharp-x4` | 32 MB | Anime at 4x. Kim2091's line-art specialist — sharpens edges and flattens compression noise on illustrations; the 4x complement to the CUGAN/v3 anime sets when you want crisper lines rather than CUGAN's restoration character. |
 | `AnimeJaNai-v2-Compact-x2` | 1.2 MB | Anime at 2x. torphedo's compact SRVGG net (traiNNer `learn_residual` arch) trained for mpv realtime playback — the anime counterpart of `NomosUni-Compact-x2`'s photo niche. Fast enough for on-phone batch. |
+| `NMKD-Siax-x4` | 32 MB | Photos & textures at 4x. NMKD's 2020 classic ESRGAN-arch net, made for clean-to-mildly-compressed sources (JPEG quality 75+): strong texture and detail preservation with little smoothing — the detail-preserving counterpoint to the restoration-heavy nets, same era and weight class as UltraSharp. |
 
 ### Known exclusions
 
@@ -106,8 +121,8 @@ fp16 baseline).
   noncommercially licensed, CC-BY-NC models are no longer excluded for
   license reasons — the catalog simply stays curated. Still not shipped:
   AnimeJaNai v1/v3 and the UltraCompact variants, IllustrationJaNai,
-  NMKD-Siax, the remaining SPAN and RealPLKSR siblings of the shipped
-  nets, the bigger LSDIR variants, … Import any ncnn `.param`/`.bin`
+  the remaining SPAN and RealPLKSR siblings of the shipped nets, the
+  bigger LSDIR variants, … Import any ncnn `.param`/`.bin`
   pair yourself via `upix model import` — but check the upstream license
   before redistributing.
 - **Anime4K** (and ArtCNN): not usable here by design — these are
@@ -234,8 +249,11 @@ upstream license:
 | `AnimeJaNai-v2-Compact-x2` | 2x_AnimeJaNai_V2 Compact by [torphedo / the-database](https://github.com/the-database/AnimeJaNai) (SRVGGNetCompact, `learn_residual=True`, `params_ema`); converted to ncnn with pnnx and verified against a fp32 PyTorch reference | CC-BY-NC-SA-4.0 (weights and ncnn adaptation) |
 | `Remacri-x4` | 4x_foolhardy_Remacri by foolhardy (ESRGAN RRDB arch); pth from the [HuggingFace mirror](https://huggingface.co/FacehugmanIII/4x_foolhardy_Remacri) listed on OpenModelDB, byte-matched to its recorded sha256; converted to ncnn with pnnx and verified against a fp32 PyTorch reference | CC-BY-NC-SA-4.0 (weights and ncnn adaptation) |
 | `LSDIR-Compact-v2-x4` | 4x-LSDIRCompact-v2 by [Helaman / Phhofm](https://github.com/Phhofm/models) (SRVGGNetCompact, `learn_residual=True`); fp16 safetensors from the author's own [HuggingFace](https://huggingface.co/Phips/4xLSDIRCompact2), converted to ncnn with pnnx and verified against a fp32 PyTorch reference | CC-BY-4.0 (weights) |
-| `NomosUni-SPAN-x4` | 4x-NomosUni_span_multijpg by [Helaman / Phhofm](https://github.com/Phhofm/models) (SPAN — Swift Parameter-free Attention); pth sha256-matched against the OpenModelDB record; the eval-path reparameterization (1x1-sk + bottleneck → single 3x3) was replicated bit-exactly and the net converted to ncnn with pnnx, verified against a fp32 PyTorch reference | CC-BY-4.0 (weights) |
-| `NomosUni-SPAN-x2` | 2x-NomosUni_span_multijpg by [Helaman / Phhofm](https://github.com/Phhofm/models), same SPAN recipe and conversion path as the 4x above (pth sha256-matched against the OpenModelDB record) | CC-BY-4.0 (weights) |
+| `NomosUni-SPAN-x4` | 4x-NomosUni_span_multijpg by [Helaman / Phhofm](https://github.com/Phhofm/models) (SPAN — Swift Parameter-free Attention); pth sha256-matched against the OpenModelDB record; the eval-path Conv3XC reparameterization (1x1-sk + bottleneck → single 3x3, spandrel's eval semantics) replicated exactly, converted to ncnn with pnnx, and verified against spandrel's own fp32 output (the traiNNer nets normalize input by (x−mean)·255 but return [0,1]-scale output — the graph replicates that verbatim) | CC-BY-4.0 (weights) |
+| `NomosUni-SPAN-x2` | 2x-NomosUni_span_multijpg by [Helaman / Phhofm](https://github.com/Phhofm/models), same SPAN recipe and conversion path as the 4x above (pth sha256-matched against the OpenModelDB record, verified against spandrel's fp32 output) | CC-BY-4.0 (weights) |
+| `HFA2k-LUDVAE-SPAN-x2` | 2x-HFA2k-LUDVAE-SPAN by [Helaman / Phhofm](https://github.com/Phhofm/models) (SPAN); pth from the OpenModelDB-linked Google Drive, sha256-matched against the record; converted to ncnn with pnnx and verified against spandrel's fp32 output | CC-BY-4.0 (weights) |
+| `ModernSpanimation-x2` | 2x-ModernSpanimationV1 by [TNTwise](https://github.com/TNTwise) (SPAN, 64nf); pth from the author's GitHub release, sha256-matched against the OpenModelDB record; converted to ncnn with pnnx and verified against spandrel's fp32 output | MIT (weights) |
+| `NMKD-Siax-x4` | 4x_NMKD-Siax_200k by [NMKD](https://nmkd.de) (ESRGAN RRDB arch); pth via a HuggingFace mirror, sha256-matched against the OpenModelDB record; converted to ncnn with pnnx and verified against spandrel's fp32 output | WTFPL (weights) |
 | `NomosWebPhoto-RealPLKSR-x4` | 4xNomosWebPhoto_RealPLKSR by [Helaman / Phhofm](https://github.com/Phhofm/models) (RealPLKSR arch); pth from the author's [models release](https://github.com/Phhofm/models), byte-matched to its recorded sha256; converted to ncnn with pnnx (the channel-repeat residual rewritten as nearest-interp, bitwise identical) and verified against a fp32 PyTorch reference | CC-BY-4.0 (weights) |
 
 See the root [LICENSE](../LICENSE) for the Upix code license. When

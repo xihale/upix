@@ -193,21 +193,23 @@ pulled, and pushed from there too.
 
 #### Which model to pick
 
-The release carries 28 models in five families — the full catalog with
+The release carries 31 models in five families — the full catalog with
 per-model descriptions lives in [models/README.md](models/README.md).
 Quick guidance:
 
 | Content | Light (phone-fast) | Heavy (best quality, PC-offload friendly) |
 |---|---|---|
-| Anime / illustration / game art | `Real-ESRGANv3-anime-x{2,3,4}` (1.2 MB), `AnimeJaNai-v2-Compact-x2` (1.2 MB, realtime-grade anime 2x), or `Real-CUGAN-pro-*-x{2,3}` (2.4 MB, best on compressed sources; `-conservative` keeps detail, `-denoise` cleans compression) | `AnimeSharp-x4` (32 MB, crisp line-art 4x) or `Real-ESRGAN-x4plus-anime` (8.3 MB, 4x) |
+| Anime / illustration / game art | `Real-ESRGANv3-anime-x{2,3,4}` (1.2 MB), `AnimeJaNai-v2-Compact-x2` (1.2 MB, realtime-grade anime 2x), `HFA2k-LUDVAE-SPAN-x2` (0.8 MB, lightest, built for rough compressed sources), `ModernSpanimation-x2` (1.4 MB, modern-anime quality step-up), or `Real-CUGAN-pro-*-x{2,3}` (2.4 MB, best on compressed sources; `-conservative` keeps detail, `-denoise` cleans compression) | `AnimeSharp-x4` (32 MB, crisp line-art 4x) or `Real-ESRGAN-x4plus-anime` (8.3 MB, 4x) |
 | Photos, 2x | `NomosUni-Compact-x2` (1.1 MB, trained across JPEG quality levels — best for chat-app/social-media images) or `NomosUni-SPAN-x2` (0.8 MB, same JPEG-degraded corpus in the SPAN arch — the lightest net in the catalog) | — |
-| Photos, 4x | `Real-ESRGANv3-general-x4` (2.3 MB), `NomosUni-SPAN-x4` (0.8 MB, lightest photo 4x, JPEG-degraded training), `LSDIR-Compact-v2-x4` (1.2 MB, newer and stronger cleanup at the same speed), or `Nomos8kSC-x4` (31 MB, heavier JPEG/blur cleanup and texture) | `NomosWebPhoto-RealPLKSR-x4` (13.7 MB, best cleanup-per-MB on web sources), `Remacri-x4` (31 MB, the community's other classic all-rounder), `UltraSharp-x4` (32 MB, sharp classic), or `Real-ESRGAN-x4plus` (31 MB) |
+| Photos, 4x | `Real-ESRGANv3-general-x4` (2.3 MB), `NomosUni-SPAN-x4` (0.8 MB, lightest photo 4x, JPEG-degraded training), `LSDIR-Compact-v2-x4` (1.2 MB, newer and stronger cleanup at the same speed), or `Nomos8kSC-x4` (31 MB, heavier JPEG/blur cleanup and texture) | `NomosWebPhoto-RealPLKSR-x4` (13.7 MB, best cleanup-per-MB on web sources), `Remacri-x4` (31 MB, the community's other classic all-rounder), `UltraSharp-x4` (32 MB, sharp classic), `NMKD-Siax-x4` (32 MB, texture-preserving classic for clean sources), or `Real-ESRGAN-x4plus` (31 MB) |
 
 Most models are ncnn conversions of BSD/MIT-licensed upstream releases
 (Real-ESRGAN, Real-CUGAN); the rest are OpenModelDB community models —
-six CC-BY-4.0 photo picks and four CC-BY-NC-SA classics (UltraSharp,
-AnimeSharp, AnimeJaNai, Remacri) whose noncommercial terms apply to the
-weights themselves regardless of the code license. See
+seven CC-BY-4.0 picks by Phhofm, two permissively-licensed nets
+(`ModernSpanimation-x2`, MIT; `NMKD-Siax-x4`, WTFPL), and four
+CC-BY-NC-SA classics (UltraSharp, AnimeSharp, AnimeJaNai, Remacri)
+whose noncommercial terms apply to the weights themselves regardless of
+the code license. See
 the attribution table in [models/README.md](models/README.md).
 
 ### SR Marker (idempotent re-runs)

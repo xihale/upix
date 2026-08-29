@@ -142,6 +142,9 @@ LICENSES = {
     "NomosWebPhoto-RealPLKSR-x4": "CC-BY-4.0",
     "NomosUni-SPAN-x4": "CC-BY-4.0",
     "NomosUni-SPAN-x2": "CC-BY-4.0",
+    "HFA2k-LUDVAE-SPAN-x2": "CC-BY-4.0",
+    "ModernSpanimation-x2": "MIT",
+    "NMKD-Siax-x4": "WTFPL",
 }
 
 
