@@ -7,7 +7,7 @@ and downloaded on demand.
 
 ## Model Catalog
 
-The release ships 20 models covering four families. Sizes are the
+The release ships 23 models covering five families. Sizes are the
 on-disk `.param + .bin` download (zipped); "phone" vs "PC" is a rough
 speed class for a recent flagship at 256–384 tiles — the heavy models
 are fine anywhere but can take tens of seconds per 12 MP image on a
@@ -69,6 +69,22 @@ tuned for real-world photo degradation rather than anime.
 | `NomosUni-Compact-x2` | 1.1 MB | Photos at 2x — the catalog's only photo 2x. SRVGG compact trained against heavy JPEG degradation (down to quality 40) and mixed downscaling kernels; restores social-media / messenger-compressed images. Fast enough for on-phone batch. |
 | `Nomos8kSC-x4` | 31 MB | Photos at 4x with strong JPEG-compression and blur removal (OTF-trained on Nomos8k). Fuller texture reconstruction than `v3-general-x4`; sits between it and `x4plus` in weight/compute, with a sharper, dehazed signature. |
 
+### Community classics (OpenModelDB, CC-BY-NC-SA-4.0)
+
+The three most-requested community nets, redistributed under Upix's own
+noncommercial terms (see [LICENSE](../LICENSE)): commercial use of the
+catalog is off the table either way, so these fit right in. Each ncnn
+file is an adaptation of the upstream weights and keeps the same
+CC-BY-NC-SA-4.0 license; conversions were verified against fp32 PyTorch
+references (49–53 dB PSNR on CPU, with GPU agreeing within the family's
+fp16 baseline).
+
+| Model | Size | Use it for |
+|---|---|---|
+| `UltraSharp-x4` | 32 MB | Photos at 4x. Kim2091's classic ESRGAN-arch net — for years the community's default all-rounder: sharp, texture-preserving, low over-smoothing. The middle ground between `Nomos8kSC-x4` (stronger cleanup) and `x4plus` (strongest reconstruction). |
+| `AnimeSharp-x4` | 32 MB | Anime at 4x. Kim2091's line-art specialist — sharpens edges and flattens compression noise on illustrations; the 4x complement to the CUGAN/v3 anime sets when you want crisper lines rather than CUGAN's restoration character. |
+| `AnimeJaNai-v2-Compact-x2` | 1.2 MB | Anime at 2x. torphedo's compact SRVGG net (traiNNer `learn_residual` arch) trained for mpv realtime playback — the anime counterpart of `NomosUni-Compact-x2`'s photo niche. Fast enough for on-phone batch. |
+
 ### Known exclusions
 
 - **Real-CUGAN se x4** (official `up4x-*`): deliberately not shipped. The
@@ -80,11 +96,13 @@ tuned for real-world photo degradation rather than anime.
 - **Real-CUGAN se x2 denoise1x/2x**: the release only carries the strong
   (`denoise3x`) variant; import the milder ones yourself via
   `upix model import` if you want finer denoise control.
-- **Community models with non-commercial licenses**: the popular picks
-  are mostly CC-BY-NC(-SA) and are deliberately not redistributed —
-  4x-UltraSharp and 4x-AnimeSharp (Kim2091), AnimeJaNai v1–v3
-  (torphedo), IllustrationJaNai. Import any ncnn `.param`/`.bin` pair
-  yourself via `upix model import` for private use.
+- **Community models beyond the curated picks**: with Upix itself now
+  noncommercially licensed, CC-BY-NC models are no longer excluded for
+  license reasons — the catalog simply stays curated. Still not shipped:
+  AnimeJaNai v1/v3 and the UltraCompact variants, IllustrationJaNai,
+  Remacri, NMKD-Siax, the LSDIR series, … Import any ncnn `.param`/`.bin`
+  pair yourself via `upix model import` — but check the upstream license
+  before redistributing.
 - **Anime4K** (and ArtCNN): not usable here by design — these are
   real-time GLSL shader pipelines for mpv with weights baked into
   shader code, not neural nets with importable weights; their niche
@@ -93,9 +111,9 @@ tuned for real-world photo degradation rather than anime.
 - **waifu2x / SRMD**: available in ncnn form (nihui packs, MIT) but
   strictly outdated in quality by everything above; not worth the
   catalog weight.
-- Community ESRGAN nets beyond the two curated above (Remacri,
-  NMKD-Siax, LSDIR series, …): mixed licensing, not redistributed;
-  import them yourself.
+- Community ESRGAN nets beyond the curated picks are covered above;
+  license mixing is no longer a blocker (Upix is PolyForm-NC), curation
+  and verification bandwidth is.
 
 ## Model Format
 
@@ -171,6 +189,7 @@ pruned unless `--no-prune`.
     {
       "name": "realesrganv3-anime-x2",
       "scale": 2,
+      "license": "BSD-3-Clause",
       "size_bytes": 17825792,
       "sha256": "…",
       "url": "https://github.com/xihale/upix/releases/download/models/realesrganv3-anime-x2.zip"
@@ -178,6 +197,11 @@ pruned unless `--no-prune`.
   ]
 }
 ```
+
+The `license` field is informational (SPDX id; both clients ignore it —
+full terms in the attribution table above). `license_from_name` refuses
+to classify an unknown model, so a new catalog entry cannot ship with
+its license silently unset.
 
 ## Model Metadata
 
@@ -197,6 +221,9 @@ upstream license:
 | Real-CUGAN (se + pro) | [bilibili ailab Real-CUGAN](https://github.com/bilibili/ailab/tree/main/Real-CUGAN), ncnn pack [realcugan-ncnn-vulkan](https://github.com/nihui/realcugan-ncnn-vulkan) | MIT (ncnn pack, © nihui); model weights follow the upstream Real-CUGAN release terms |
 | `Nomos8kSC-x4` | 4x-Nomos8kSC by [Helaman / Phhofm](https://github.com/Phhofm/models); ncnn conversion from [upscayl/custom-models](https://github.com/upscayl/custom-models) | CC-BY-4.0 (weights); upscayl pack license applies to its conversion |
 | `NomosUni-Compact-x2` | 2x-NomosUni-compact-multijpg by [Helaman / Phhofm](https://github.com/Phhofm/models) (SRVGGNetCompact, `learn_residual=True`); converted to ncnn with pnnx and verified against a fp32 PyTorch reference | CC-BY-4.0 (weights) |
+| `UltraSharp-x4` | 4x-UltraSharp by [Kim2091](https://github.com/Kim2091) (ESRGAN RRDB arch); pth from the author's [HuggingFace mirror](https://huggingface.co/Kim2091/UltraSharp), converted to ncnn with pnnx and verified against a fp32 PyTorch reference | CC-BY-NC-SA-4.0 (weights and ncnn adaptation) |
+| `AnimeSharp-x4` | 4x-AnimeSharp by [Kim2091](https://github.com/Kim2091) (ESRGAN RRDB arch); pth from the author's [HuggingFace mirror](https://huggingface.co/Kim2091/AnimeSharp), converted to ncnn with pnnx and verified against a fp32 PyTorch reference | CC-BY-NC-SA-4.0 (weights and ncnn adaptation) |
+| `AnimeJaNai-v2-Compact-x2` | 2x_AnimeJaNai_V2 Compact by [torphedo / the-database](https://github.com/the-database/AnimeJaNai) (SRVGGNetCompact, `learn_residual=True`, `params_ema`); converted to ncnn with pnnx and verified against a fp32 PyTorch reference | CC-BY-NC-SA-4.0 (weights and ncnn adaptation) |
 
 See the root [LICENSE](../LICENSE) for the Upix code license. When
 redistributing the models release, retain the notices above.

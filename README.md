@@ -193,20 +193,21 @@ pulled, and pushed from there too.
 
 #### Which model to pick
 
-The release carries 20 models in four families — the full catalog with
+The release carries 23 models in five families — the full catalog with
 per-model descriptions lives in [models/README.md](models/README.md).
 Quick guidance:
 
 | Content | Light (phone-fast) | Heavy (best quality, PC-offload friendly) |
 |---|---|---|
-| Anime / illustration / game art | `Real-ESRGANv3-anime-x{2,3,4}` (1.2 MB) or `Real-CUGAN-pro-*-x{2,3}` (2.4 MB, best on compressed sources; `-conservative` keeps detail, `-denoise` cleans compression) | `Real-ESRGAN-x4plus-anime` (8.3 MB, 4x) |
+| Anime / illustration / game art | `Real-ESRGANv3-anime-x{2,3,4}` (1.2 MB), `AnimeJaNai-v2-Compact-x2` (1.2 MB, realtime-grade anime 2x), or `Real-CUGAN-pro-*-x{2,3}` (2.4 MB, best on compressed sources; `-conservative` keeps detail, `-denoise` cleans compression) | `AnimeSharp-x4` (32 MB, crisp line-art 4x) or `Real-ESRGAN-x4plus-anime` (8.3 MB, 4x) |
 | Photos, 2x | `NomosUni-Compact-x2` (1.1 MB, trained on heavily JPEG-compressed sources — best for chat-app/social-media images) | — |
-| Photos, 4x | `Real-ESRGANv3-general-x4` (2.3 MB) or `Nomos8kSC-x4` (31 MB, stronger JPEG/blur cleanup and texture) | `Real-ESRGAN-x4plus` (31 MB, 4x) |
+| Photos, 4x | `Real-ESRGANv3-general-x4` (2.3 MB) or `Nomos8kSC-x4` (31 MB, stronger JPEG/blur cleanup and texture) | `UltraSharp-x4` (32 MB, the community's classic all-rounder) or `Real-ESRGAN-x4plus` (31 MB) |
 
 Most models are ncnn conversions of BSD/MIT-licensed upstream releases
-(Real-ESRGAN, Real-CUGAN); the two photo picks above are CC-BY-4.0
-community models from OpenModelDB. See the attribution table in
-[models/README.md](models/README.md).
+(Real-ESRGAN, Real-CUGAN); the rest are OpenModelDB community models —
+two CC-BY-4.0 photo picks and three CC-BY-NC-SA classics (UltraSharp,
+AnimeSharp, AnimeJaNai), matching Upix's own noncommercial license. See
+the attribution table in [models/README.md](models/README.md).
 
 ### SR Marker (idempotent re-runs)
 
@@ -341,7 +342,15 @@ and known pitfalls.
 
 ## License
 
-Upix is licensed under the [MIT License](LICENSE).
+Upix is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
+
+Required Notice: Copyright (c) 2026 xihale
+
+You may use, modify, and redistribute Upix for any **noncommercial** purpose —
+personal study, hobby projects, research, nonprofit, and similar uses. Commercial
+use requires a separate license from the author. Releases up to and including
+commit `d98c461` (2026-08-29) were distributed under the MIT License; recipients
+of those versions keep their MIT rights to those versions.
 
 ### Third-party components
 
@@ -360,5 +369,8 @@ Upix is licensed under the [MIT License](LICENSE).
 Android dependencies are declared in `apps/app/build.gradle.kts`; the full C++ dependency
 list lives in [xmake.lua](xmake.lua).
 
-All third-party licenses are permissive and compatible with redistribution under MIT;
-the respective copyright notices above must be retained in distributions.
+Third-party code dependencies are permissive-licensed and remain under their own
+terms; their copyright notices must be retained in distributions. The bundled
+models carry their own licenses — see [models/README.md](models/README.md); the
+community models in the catalog are CC-BY-NC-SA, matching Upix's noncommercial
+terms.

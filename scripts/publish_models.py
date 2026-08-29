@@ -126,6 +126,31 @@ def scale_from_name(name: str) -> int:
     return scale
 
 
+# Per-model license, surfaced as an informational "license" field in
+# manifest.json (both clients ignore unknown fields; terms live in
+# models/README.md). Upix itself is PolyForm-NC, so CC-BY-NC-SA community
+# models are distributable here — a commercial fork must drop them.
+LICENSES = {
+    "UltraSharp-x4": "CC-BY-NC-SA-4.0",
+    "AnimeSharp-x4": "CC-BY-NC-SA-4.0",
+    "AnimeJaNai-v2-Compact-x2": "CC-BY-NC-SA-4.0",
+    "Nomos8kSC-x4": "CC-BY-4.0",
+    "NomosUni-Compact-x2": "CC-BY-4.0",
+}
+
+
+def license_from_name(name: str) -> str:
+    """License for a model; refuses to guess so a new model can never ship
+    with its license silently unclassified."""
+    if name in LICENSES:
+        return LICENSES[name]
+    if name.startswith("Real-CUGAN"):
+        return "MIT"
+    if name.startswith("Real-ESRGAN"):
+        return "BSD-3-Clause"
+    raise ValueError(f"license not classified for {name!r}; add it to LICENSES")
+
+
 def fetch_release_assets(repo: str, tag: str) -> dict[str, dict] | None:
     """Existing release assets as {name: asset}; None if the release
     itself doesn't exist yet (distinct from an empty-asset release)."""
@@ -205,6 +230,7 @@ def main() -> int:
         return {
             "name": name,
             "scale": scale_from_name(name),
+            "license": license_from_name(name),
             "size_bytes": size,
             "sha256": sha256,
             "url": f"https://github.com/{args.repo}/releases/download/{args.tag}/{name}.zip",
