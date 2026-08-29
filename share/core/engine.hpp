@@ -168,11 +168,18 @@ public:
     
     virtual int get_scale_factor() const { return 2; }
 
-    // Override the scale factor detected from the param file. The authoritative
-    // source is the model filename (parsed by model_manager, e.g. "x4" -> 4),
-    // which is more reliable than the engine's heuristic scan of the param
-    // content (which mishandles multi-stage Interp and case sensitivity).
-    // Called after load_model(). No-op for engines without a mutable scale.
+    // True when the engine inferred the scale from the param graph itself
+    // (Interp chain, image-channel deconv, or PixelShuffle trunk). In that
+    // case the engine's value describes what the net actually outputs and
+    // callers must not overwrite it with a filename-derived guess; the
+    // filename is the fallback for engines that cannot detect (CPU) or
+    // params whose upsampling structure defeats the scan.
+    virtual bool scale_factor_detected() const { return false; }
+
+    // Provide the scale factor parsed from the model filename (parsed by
+    // model_manager, e.g. "x4" -> 4). Called after load_model(); engines
+    // with a successful param-graph detection ignore it. No-op for engines
+    // without a mutable scale.
     virtual void set_scale_factor(int /*scale*/) {}
 
     // Cap inference threads for CPU engines. A pool of engines divides the

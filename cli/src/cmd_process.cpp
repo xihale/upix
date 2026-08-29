@@ -416,9 +416,12 @@ int cmd_process(const args::Process& a) {
     int model_input_channels = std::max(1, selected_model->input_channels);
     LOG_INFO("Engine", "Using model: {} ({}x)", model_name_resolved,
              selected_model->scale_factor);
-    // Override engine's heuristic scale detection with the authoritative value
-    // parsed from the model filename.
-    engine->set_scale_factor(selected_model->scale_factor);
+    // Fall back to the filename-parsed scale only when the engine could not
+    // detect it from the param graph — a detected value describes what the
+    // net actually outputs; the filename is just a convention.
+    if (!engine->scale_factor_detected()) {
+        engine->set_scale_factor(selected_model->scale_factor);
+    }
 
     // No explicit output → derive `img_<model>.png` next to the input.
     const std::string eff_output =

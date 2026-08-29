@@ -35,6 +35,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -116,15 +117,13 @@ def build_zip(name: str, param: Path, bin_path: Path, out_dir: Path) -> Path:
 
 
 def scale_from_name(name: str) -> int:
-    """Infer scale from the trailing -xN / _xN / xN convention."""
-    lowered = name.lower()
-    for sep in ("-x", "_x", "x"):
-        idx = lowered.rfind(sep)
-        if idx != -1:
-            digits = lowered[idx + len(sep):]
-            if digits.isdigit() and 2 <= int(digits) <= 8:
-                return int(digits)
-    return 2
+    """Infer scale from the trailing -xN / _xN / xN convention. The number
+    may be followed by non-digits (e.g. "Real-ESRGAN-x4plus", "…-x4v3")."""
+    scale = 2
+    for m in re.finditer(r"[xX](\d+)(?!\d)", name):
+        if 2 <= int(m.group(1)) <= 8:
+            scale = int(m.group(1))
+    return scale
 
 
 def fetch_release_assets(repo: str, tag: str) -> dict[str, dict] | None:

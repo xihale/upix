@@ -191,6 +191,21 @@ On Android, the Models page offers the same download list plus local import
 of your own `.param`/`.bin`/`.zip` files; models on a paired PC can be listed,
 pulled, and pushed from there too.
 
+#### Which model to pick
+
+The release carries 18 models in three families — the full catalog with
+per-model descriptions lives in [models/README.md](models/README.md).
+Quick guidance:
+
+| Content | Light (phone-fast) | Heavy (best quality, PC-offload friendly) |
+|---|---|---|
+| Anime / illustration / game art | `Real-ESRGANv3-anime-x{2,3,4}` (1.2 MB) or `Real-CUGAN-pro-*-x{2,3}` (2.4 MB, best on compressed sources; `-conservative` keeps detail, `-denoise` cleans compression) | `Real-ESRGAN-x4plus-anime` (8.3 MB, 4x) |
+| Photos | `Real-ESRGANv3-general-x4` (2.3 MB) | `Real-ESRGAN-x4plus` (31 MB, 4x) |
+
+All models are ncnn conversions of BSD/MIT-licensed upstream releases
+(Real-ESRGAN, Real-CUGAN); see the attribution table in
+[models/README.md](models/README.md).
+
 ### SR Marker (idempotent re-runs)
 
 Every output embeds an XMP marker (`urn:upix:sr:1`) recording that — and with
@@ -331,7 +346,8 @@ Upix is licensed under the [MIT License](LICENSE).
 | Component | License | Notes |
 |-----------|---------|-------|
 | [ncnn](https://github.com/Tencent/ncnn) | BSD 3-Clause | Inference engine (Tencent). Copyright © 2017 Tencent |
-| [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) | BSD 3-Clause | Source of the bundled super-resolution models (converted to ncnn format) |
+| [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) | BSD 3-Clause | Source of the Real-ESRGAN model weights (converted to ncnn format) |
+| [Real-CUGAN](https://github.com/bilibili/ailab/tree/main/Real-CUGAN) / [realcugan-ncnn-vulkan](https://github.com/nihui/realcugan-ncnn-vulkan) | MIT (ncnn pack) | Source of the Real-CUGAN model weights (bilibili) and their ncnn conversion (nihui) |
 | libpng / libjpeg / libwebp / libdeflate | libpng / IJG / BSD 3-Clause / MIT | Image codecs, SPIR-V pack decompression |
 | glaze | MIT | JSON serialization |
 | libsodium | ISC | Encrypted pairing channel |

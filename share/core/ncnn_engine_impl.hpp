@@ -58,6 +58,7 @@ public:
     bool is_initialized() const override;
     std::string model_name() const override;
     int get_scale_factor() const override;
+    bool scale_factor_detected() const override;
 
     std::string debug_blob_scan(const uint8_t* input, int width, int height, int channels) override;
 
@@ -128,6 +129,10 @@ private:
     bool model_loaded_ = false;
     std::string model_name_;
     int scale_factor_ = 2;
+    // True when detect_model_info inferred the scale from the param graph
+    // (Interp chain, image-channel deconv, or PixelShuffle trunk); callers
+    // should trust the engine over a filename guess only in that case.
+    bool scale_detected_ = false;
     int input_channels_ = 3;
     // Fixed replicate-border prepadding required by the loaded model
     // (Real-CUGAN "se" family crops its receptive-field border internally;

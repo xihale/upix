@@ -1245,6 +1245,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
     bool NCNNEngineImpl::is_initialized() const { return initialized_; }
     std::string NCNNEngineImpl::model_name() const { return model_name_; }
     int NCNNEngineImpl::get_scale_factor() const { return scale_factor_; }
+    bool NCNNEngineImpl::scale_factor_detected() const { return scale_detected_; }
 
     void NCNNEngineImpl::set_scale_factor(int scale) {
         if (scale > 0) scale_factor_ = scale;

@@ -21,8 +21,11 @@
 #include <fstream>
 #include <limits>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
+#include <vector>
 
 namespace upix {
 
@@ -128,6 +131,8 @@ std::mutex g_vulkan_init_mutex;
         // misroute the next one's pipelines.
         model_prepadding_ = 0;
         model_has_border_crop_ = false;
+        scale_factor_ = 2;
+        scale_detected_ = false;
 
         // Parse param file to detect input/output shapes
         std::ifstream file(param_path);
@@ -184,7 +189,51 @@ std::mutex g_vulkan_init_mutex;
         // the out == in*scale contract holds (margins from upstream
         // realcugan-ncnn-vulkan: x2=18, x3=14, x4=19).
         bool has_crop_layer = false;
+        // PixelShuffle-trunk bookkeeping (Real-CUGAN x4): trunk deconvs feed a
+        // Split; auxiliary deconvs feed residual adds. The net output is the
+        // last layer's top blob.
+        struct UpsampleOp { std::string top; int ratio = 1; };
+        std::vector<UpsampleOp> deconvs, pixelshuffles;
+        std::unordered_map<std::string, char> blob_consumers;  // bit 1: consumed, bit 2: by Split
+        std::string net_output_blob;
         while (std::getline(file, line)) {
+            {
+                // Tokenized pass for graph bookkeeping: type name n_b n_t [bottoms] [tops] ...
+                std::istringstream iss(line);
+                std::string type, name;
+                int bottom_count = -1, top_count = -1;
+                if (iss >> type >> name >> bottom_count >> top_count
+                    && bottom_count >= 0 && top_count >= 0) {
+                    std::vector<std::string> bottoms(static_cast<size_t>(bottom_count));
+                    std::vector<std::string> tops(static_cast<size_t>(top_count));
+                    bool tokens_ok = true;
+                    for (auto& b : bottoms) { if (!(iss >> b)) { tokens_ok = false; break; } }
+                    for (auto& t : tops) { if (!(iss >> t)) { tokens_ok = false; break; } }
+                    if (tokens_ok) {
+                        net_output_blob = tops.empty() ? net_output_blob : tops.back();
+                        for (const auto& b : bottoms) blob_consumers[b] |= 1;
+                        if (type == "Split") {
+                            for (const auto& b : bottoms) blob_consumers[b] |= 2;
+                        }
+                        auto param_i = [&line](const std::string& key) -> int {
+                            try {
+                                size_t pos = line.find(key);
+                                if (pos == std::string::npos) return -1;
+                                return std::stoi(line.substr(pos + key.size()));
+                            } catch (const std::exception&) {
+                                return -1;
+                            }
+                        };
+                        if (type == "Deconvolution") {
+                            const int stride = param_i(" 3=");
+                            if (stride >= 1) deconvs.push_back({tops.empty() ? "" : tops.back(), stride});
+                        } else if (type == "PixelShuffle") {
+                            const int ratio = param_i(" 0=");
+                            if (ratio >= 1) pixelshuffles.push_back({tops.empty() ? "" : tops.back(), ratio});
+                        }
+                    }
+                }
+            }
             if (line.rfind("Interp", 0) == 0) {
                 auto param = [&line](const std::string& key) -> double {
                     try {
@@ -226,7 +275,39 @@ std::mutex g_vulkan_init_mutex;
             if (detected >= 1) scale_factor_ = detected;
         } else if (deconv_scale >= 1) {
             scale_factor_ = deconv_scale;
+        } else if (!pixelshuffles.empty()) {
+            // PixelShuffle-trunk nets (Real-CUGAN x4): the trunk upsampler is
+            // the Deconvolution feeding a Split (auxiliary deconvs feed
+            // residual adds), and the RGB merge happens in a trailing
+            // PixelShuffle. Net scale = trunk deconv strides x PS ratio.
+            long long trunk = 1;
+            bool found_trunk = false;
+            for (const auto& op : deconvs) {
+                const char consumers = blob_consumers[op.top];
+                if ((consumers & 1) && (consumers & 2)) {
+                    trunk *= op.ratio;
+                    found_trunk = true;
+                }
+            }
+            if (found_trunk) {
+                for (const auto& ps : pixelshuffles) {
+                    if (ps.top == net_output_blob) {
+                        trunk *= ps.ratio;
+                        scale_factor_ = static_cast<int>(trunk);
+                        // Real-CUGAN se/pro x4 nets are known to execute to
+                        // garbage on the pinned ncnn (both CPU and Vulkan;
+                        // upstream ncnn 2022 runs them fine) — x2/x3 from the
+                        // same families are unaffected. Warn so a garbage
+                        // result from a custom-imported model is explainable.
+                        LOG_WARNING("Engine",
+                            "PixelShuffle-trunk model (Real-CUGAN x4 family): "
+                            "known broken on this ncnn build; output may be garbage");
+                        break;
+                    }
+                }
+            }
         }
+        scale_detected_ = found_interp || deconv_scale >= 1 || scale_factor_ > 2;
 
         if (has_crop_layer) {
             model_has_border_crop_ = true;

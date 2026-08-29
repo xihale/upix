@@ -3,6 +3,7 @@
 #include <cctype>
 #include <format>
 #include <fstream>
+#include <regex>
 #include <sstream>
 #include <algorithm>
 #include <unordered_set>
@@ -116,11 +117,18 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
     info.name = in_models_root ? param_stem : (parent_name + "-" + param_stem);
     info.param_path = path;
     
-    // Infer scale factor from param filename (x2 -> 2, x3 -> 3, etc.)
+    // Infer scale factor from the param stem. Nested layouts name the file
+    // "x4.param"; flat layouts carry the full model name where the trailing
+    // "x4" may be followed by more characters ("Real-ESRGAN-x4plus"). Match
+    // the LAST "x<digits>" run; default 2 when nothing matches.
     info.scale_factor = 2;  // default
-    if (param_stem.size() > 1 && param_stem[0] == 'x') {
+    static const std::regex scale_pattern("[xX](\\d+)(?!\\d)");
+    for (std::regex_iterator<std::string::iterator> it(param_stem.begin(), param_stem.end(), scale_pattern), end; it != end; ++it) {
         try {
-            info.scale_factor = std::stoi(param_stem.substr(1));
+            const int candidate = std::stoi((*it)[1]);
+            if (candidate >= 2 && candidate <= 8) {
+                info.scale_factor = candidate;
+            }
         } catch (...) {
             // keep default
         }

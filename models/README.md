@@ -5,6 +5,73 @@ bundled** with the CLI or the Android app — they are distributed via the
 [models GitHub release](https://github.com/xihale/upix/releases/tag/models)
 and downloaded on demand.
 
+## Model Catalog
+
+The release ships 18 models covering three families. Sizes are the
+on-disk `.param + .bin` download (zipped); "phone" vs "PC" is a rough
+speed class for a recent flagship at 256–384 tiles — the heavy models
+are fine anywhere but can take tens of seconds per 12 MP image on a
+phone, where the PC-offload path shines.
+
+### Real-ESRGAN v3 — tiny general-purpose workhorses
+
+Converted from [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)
+(BSD 3-Clause). SRVGGNetCompact nets, 1–2 MB each — fast enough for
+on-phone batch use and the default recommendation in both apps.
+
+| Model | Size | Use it for |
+|---|---|---|
+| `Real-ESRGANv3-anime-x2` / `-x3` / `-x4` | 1.2 MB | Anime, illustrations, game art, screenshots. Trained for anime video frames, so it keeps line art crisp and cleans compression noise. The best first choice for any drawn content. |
+| `Real-ESRGANv3-general-x4` | 2.3 MB | Real-world photos at 4x (the animevideov3 net's general-scene sibling, `realesr-general-x4v3`). Small, robust to JPEG/WEBP source noise. Best photo default on the phone. |
+
+### Real-ESRGAN x4plus — heavy reference quality
+
+Full RRDBNet models, BSD 3-Clause. Noticeably better texture
+restoration than the v3 compacts, at 7–25× the compute — ideal for the
+PC side of a paired offload, or when quality matters more than time.
+
+| Model | Size | Use it for |
+|---|---|---|
+| `Real-ESRGAN-x4plus` | 31 MB | Photos, 4x. The classic general restoration net; strongest detail reconstruction of the catalog. First pick for PC-offloaded photo jobs. |
+| `Real-ESRGAN-x4plus-anime` | 8.3 MB | Anime/illustration, 4x, reference quality when the v3 anime net's smaller capacity is visible (dense detail, large canvases). |
+
+### Real-CUGAN — anime specialist (bilibili)
+
+Weights © bilibili (ailab); ncnn conversion from
+[realcugan-ncnn-vulkan](https://github.com/nihui/realcugan-ncnn-vulkan)
+(MIT). Trained specifically on anime with real-world degradations
+(compression, blurring); often beats Real-ESRGAN on heavy JPEG/H.264
+anime sources. Each scale ships three denoise variants:
+
+| Variant | Behavior | Use it for |
+|---|---|---|
+| `-conservative` | alters the image as little as possible | Sources you trust; preserving original grain and detail verbatim. |
+| `-denoise` | strong denoise (upstream denoise3x) | Heavily compressed or noisy anime (old rips, streamed screenshots). |
+| `-no-denoise` | no denoising | Clean sources where any smoothing is unwanted. |
+
+| Model | Size |
+|---|---|
+| `Real-CUGAN-{conservative,denoise,no-denoise}-x2` / `-x3` | 2.4 MB |
+| `Real-CUGAN-pro-{conservative,denoise,no-denoise}-x2` / `-x3` | 2.4 MB |
+
+The `pro` models are bilibili's second-generation release (2022-07) and
+generalize better; prefer them over the same-variant `se` model.
+
+### Known exclusions
+
+- **Real-CUGAN se x4** (official `up4x-*`): deliberately not shipped. The
+  net uses a PixelShuffle-trunk topology that the currently pinned ncnn
+  (20260113) executes to garbage on both CPU and Vulkan, while upstream
+  ncnn 2022 ran it fine; x2/x3 from the same families are unaffected.
+  The engine logs a warning when it detects this topology from an
+  imported model. Revisit when the ncnn pin moves.
+- **Real-CUGAN se x2 denoise1x/2x**: the release only carries the strong
+  (`denoise3x`) variant; import the milder ones yourself via
+  `upix model import` if you want finer denoise control.
+- Community ESRGAN nets (UltraSharp, Remacri, AnimeJaNai, …) are mostly
+  non-commercial or unclear licensed and are not redistributed; import
+  any ncnn `.param`/`.bin` pair yourself.
+
 ## Model Format
 
 Each model is a pair of files:
@@ -95,7 +162,14 @@ Upix automatically infers:
 
 ## Attribution & Licensing
 
-Bundled models are converted from [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)
-(© Xintao Wang and contributors, BSD 3-Clause License) to ncnn format. The Real-ESRGAN
-license applies to the model weights; see the root [LICENSE](../LICENSE) for the
-Upix code license.
+Model weights are redistributed in ncnn format; each family keeps its
+upstream license:
+
+| Family | Source | License |
+|---|---|---|
+| Real-ESRGAN v3 compacts + x4plus | [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN), official ncnn pack (`realesrgan-ncnn-vulkan`) | BSD 3-Clause © Xintao Wang and contributors |
+| `Real-ESRGANv3-general-x4` | realesr-general-x4v3 weights (BSD 3-Clause); ncnn conversion via [tumuyan2/realsr-models](https://huggingface.co/tumuyan2/realsr-models) (RealSR-NCNN-Android) | BSD 3-Clause (weights) |
+| Real-CUGAN (se + pro) | [bilibili ailab Real-CUGAN](https://github.com/bilibili/ailab/tree/main/Real-CUGAN), ncnn pack [realcugan-ncnn-vulkan](https://github.com/nihui/realcugan-ncnn-vulkan) | MIT (ncnn pack, © nihui); model weights follow the upstream Real-CUGAN release terms |
+
+See the root [LICENSE](../LICENSE) for the Upix code license. When
+redistributing the models release, retain the notices above.
