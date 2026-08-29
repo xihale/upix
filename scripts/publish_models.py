@@ -140,6 +140,7 @@ LICENSES = {
     "NomosUni-Compact-x2": "CC-BY-4.0",
     "LSDIR-Compact-v2-x4": "CC-BY-4.0",
     "NomosWebPhoto-RealPLKSR-x4": "CC-BY-4.0",
+    "NomosUni-SPAN-x4": "CC-BY-4.0",
 }
 
 
