@@ -7,7 +7,7 @@ and downloaded on demand.
 
 ## Model Catalog
 
-The release ships 18 models covering three families. Sizes are the
+The release ships 20 models covering four families. Sizes are the
 on-disk `.param + .bin` download (zipped); "phone" vs "PC" is a rough
 speed class for a recent flagship at 256–384 tiles — the heavy models
 are fine anywhere but can take tens of seconds per 12 MP image on a
@@ -57,6 +57,18 @@ anime sources. Each scale ships three denoise variants:
 The `pro` models are bilibili's second-generation release (2022-07) and
 generalize better; prefer them over the same-variant `se` model.
 
+### Community photo models (OpenModelDB, CC-BY-4.0)
+
+Two curated picks from [OpenModelDB](https://openmodeldb.info) by Helaman
+(Phhofm), both CC-BY-4.0 (commercial use allowed). These fill the gaps
+the Real-ESRGAN/CUGAN families leave: a dedicated photo 2x, and a 4x
+tuned for real-world photo degradation rather than anime.
+
+| Model | Size | Use it for |
+|---|---|---|
+| `NomosUni-Compact-x2` | 1.1 MB | Photos at 2x — the catalog's only photo 2x. SRVGG compact trained against heavy JPEG degradation (down to quality 40) and mixed downscaling kernels; restores social-media / messenger-compressed images. Fast enough for on-phone batch. |
+| `Nomos8kSC-x4` | 31 MB | Photos at 4x with strong JPEG-compression and blur removal (OTF-trained on Nomos8k). Fuller texture reconstruction than `v3-general-x4`; sits between it and `x4plus` in weight/compute, with a sharper, dehazed signature. |
+
 ### Known exclusions
 
 - **Real-CUGAN se x4** (official `up4x-*`): deliberately not shipped. The
@@ -68,9 +80,22 @@ generalize better; prefer them over the same-variant `se` model.
 - **Real-CUGAN se x2 denoise1x/2x**: the release only carries the strong
   (`denoise3x`) variant; import the milder ones yourself via
   `upix model import` if you want finer denoise control.
-- Community ESRGAN nets (UltraSharp, Remacri, AnimeJaNai, …) are mostly
-  non-commercial or unclear licensed and are not redistributed; import
-  any ncnn `.param`/`.bin` pair yourself.
+- **Community models with non-commercial licenses**: the popular picks
+  are mostly CC-BY-NC(-SA) and are deliberately not redistributed —
+  4x-UltraSharp and 4x-AnimeSharp (Kim2091), AnimeJaNai v1–v3
+  (torphedo), IllustrationJaNai. Import any ncnn `.param`/`.bin` pair
+  yourself via `upix model import` for private use.
+- **Anime4K** (and ArtCNN): not usable here by design — these are
+  real-time GLSL shader pipelines for mpv with weights baked into
+  shader code, not neural nets with importable weights; their niche
+  (live video on modest GPUs) is already covered by the CUGAN/v3
+  compacts for offline images.
+- **waifu2x / SRMD**: available in ncnn form (nihui packs, MIT) but
+  strictly outdated in quality by everything above; not worth the
+  catalog weight.
+- Community ESRGAN nets beyond the two curated above (Remacri,
+  NMKD-Siax, LSDIR series, …): mixed licensing, not redistributed;
+  import them yourself.
 
 ## Model Format
 
@@ -170,6 +195,8 @@ upstream license:
 | Real-ESRGAN v3 compacts + x4plus | [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN), official ncnn pack (`realesrgan-ncnn-vulkan`) | BSD 3-Clause © Xintao Wang and contributors |
 | `Real-ESRGANv3-general-x4` | realesr-general-x4v3 weights (BSD 3-Clause); ncnn conversion via [tumuyan2/realsr-models](https://huggingface.co/tumuyan2/realsr-models) (RealSR-NCNN-Android) | BSD 3-Clause (weights) |
 | Real-CUGAN (se + pro) | [bilibili ailab Real-CUGAN](https://github.com/bilibili/ailab/tree/main/Real-CUGAN), ncnn pack [realcugan-ncnn-vulkan](https://github.com/nihui/realcugan-ncnn-vulkan) | MIT (ncnn pack, © nihui); model weights follow the upstream Real-CUGAN release terms |
+| `Nomos8kSC-x4` | 4x-Nomos8kSC by [Helaman / Phhofm](https://github.com/Phhofm/models); ncnn conversion from [upscayl/custom-models](https://github.com/upscayl/custom-models) | CC-BY-4.0 (weights); upscayl pack license applies to its conversion |
+| `NomosUni-Compact-x2` | 2x-NomosUni-compact-multijpg by [Helaman / Phhofm](https://github.com/Phhofm/models) (SRVGGNetCompact, `learn_residual=True`); converted to ncnn with pnnx and verified against a fp32 PyTorch reference | CC-BY-4.0 (weights) |
 
 See the root [LICENSE](../LICENSE) for the Upix code license. When
 redistributing the models release, retain the notices above.

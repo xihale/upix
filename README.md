@@ -193,17 +193,19 @@ pulled, and pushed from there too.
 
 #### Which model to pick
 
-The release carries 18 models in three families — the full catalog with
+The release carries 20 models in four families — the full catalog with
 per-model descriptions lives in [models/README.md](models/README.md).
 Quick guidance:
 
 | Content | Light (phone-fast) | Heavy (best quality, PC-offload friendly) |
 |---|---|---|
 | Anime / illustration / game art | `Real-ESRGANv3-anime-x{2,3,4}` (1.2 MB) or `Real-CUGAN-pro-*-x{2,3}` (2.4 MB, best on compressed sources; `-conservative` keeps detail, `-denoise` cleans compression) | `Real-ESRGAN-x4plus-anime` (8.3 MB, 4x) |
-| Photos | `Real-ESRGANv3-general-x4` (2.3 MB) | `Real-ESRGAN-x4plus` (31 MB, 4x) |
+| Photos, 2x | `NomosUni-Compact-x2` (1.1 MB, trained on heavily JPEG-compressed sources — best for chat-app/social-media images) | — |
+| Photos, 4x | `Real-ESRGANv3-general-x4` (2.3 MB) or `Nomos8kSC-x4` (31 MB, stronger JPEG/blur cleanup and texture) | `Real-ESRGAN-x4plus` (31 MB, 4x) |
 
-All models are ncnn conversions of BSD/MIT-licensed upstream releases
-(Real-ESRGAN, Real-CUGAN); see the attribution table in
+Most models are ncnn conversions of BSD/MIT-licensed upstream releases
+(Real-ESRGAN, Real-CUGAN); the two photo picks above are CC-BY-4.0
+community models from OpenModelDB. See the attribution table in
 [models/README.md](models/README.md).
 
 ### SR Marker (idempotent re-runs)
