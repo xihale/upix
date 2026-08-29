@@ -135,8 +135,11 @@ LICENSES = {
     "UltraSharp-x4": "CC-BY-NC-SA-4.0",
     "AnimeSharp-x4": "CC-BY-NC-SA-4.0",
     "AnimeJaNai-v2-Compact-x2": "CC-BY-NC-SA-4.0",
+    "Remacri-x4": "CC-BY-NC-SA-4.0",
     "Nomos8kSC-x4": "CC-BY-4.0",
     "NomosUni-Compact-x2": "CC-BY-4.0",
+    "LSDIR-Compact-v2-x4": "CC-BY-4.0",
+    "NomosWebPhoto-RealPLKSR-x4": "CC-BY-4.0",
 }
 
 
