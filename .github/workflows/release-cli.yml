@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: read
 
 concurrency:
   group: release-cli-${{ github.ref }}
@@ -143,20 +144,21 @@ jobs:
     needs: [meta, smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           pattern: cli-*
           merge-multiple: true
-      - name: Create release and upload
-        env:
-          GH_TOKEN: ${{ github.token }}
-          VER: ${{ needs.meta.outputs.version }}
-        run: |
-          TAG="cli-v${VER}"
-          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" 2>/dev/null \
-            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
-                 --title "Upix CLI ${VER}" --generate-notes --target "$GITHUB_SHA"
-          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-            upix-cli-"${VER}"-linux-x86_64.tar.gz \
-            upix-cli-"${VER}"-macos-arm64.tar.gz
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: cli-v${{ needs.meta.outputs.version }}
+          name: Upix CLI ${{ needs.meta.outputs.version }}
+          files: |
+            upix-cli-*-linux-x86_64.tar.gz
+            upix-cli-*-macos-arm64.tar.gz
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          target_commitish: ${{ github.sha }}
