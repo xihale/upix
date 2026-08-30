@@ -120,8 +120,14 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: cli-${{ matrix.artifact }}
-      - name: Runtime libs (no compiler)
+      - name: Unpack and --version
         run: |
+          tar xzf upix-cli-*.tar.gz
+          chmod +x upix-cli
+          if ./upix-cli --version; then
+            exit 0
+          fi
+          # Dynamic deps if the binary is not fully static.
           case "${RUNNER_OS}" in
             Linux)
               sudo apt-get update -qq
@@ -130,13 +136,9 @@ jobs:
                 libcurl4-openssl-dev libzip-dev libomp-dev
               ;;
             macOS)
-              brew install libdeflate libpng libjpeg libwebp curl libzip libomp
+              brew install libdeflate libpng jpeg webp libzip libomp
               ;;
           esac
-      - name: Unpack and --version
-        run: |
-          tar xzf upix-cli-*.tar.gz
-          chmod +x upix-cli
           ./upix-cli --version
 
   publish:
