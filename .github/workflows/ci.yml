@@ -12,6 +12,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # libdeflate is system-only on desktop platforms (see root xmake.lua);
+      # runners don't ship it.
+      - name: Install system deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libdeflate-dev
+
       - name: Install xmake
         run: |
           curl -fsSL https://xmake.io/shget.text | bash
