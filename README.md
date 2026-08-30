@@ -193,22 +193,24 @@ pulled, and pushed from there too.
 
 #### Which model to pick
 
-The release carries 38 models in six families — the full catalog with
+The release carries 44 models in six families — the full catalog with
 per-model descriptions lives in [models/README.md](models/README.md).
 Quick guidance:
 
 | Content | Light (phone-fast) | Heavy (best quality, PC-offload friendly) |
 |---|---|---|
-| Anime / illustration / game art | `Real-ESRGANv3-anime-x{2,3,4}` (1.2 MB), `AnimeJaNai-v2-Compact-x2` (1.2 MB, realtime-grade anime 2x), `HFA2k-LUDVAE-SPAN-x2` (0.8 MB, lightest, built for rough compressed sources), `ModernSpanimation-x2` (1.4 MB, modern-anime quality step-up), or `Real-CUGAN-pro-*-x{2,3}` (2.4 MB, best on compressed sources; `-conservative` keeps detail, `-denoise` cleans compression) | `AnimeSharp-x4` (32 MB, crisp line-art 4x) or `Real-ESRGAN-x4plus-anime` (8.3 MB, 4x) |
-| Photos, 2x | `NomosUni-Compact-x2` (1.1 MB, trained across JPEG quality levels — best for chat-app/social-media images) or `NomosUni-SPAN-x2` (0.8 MB, same JPEG-degraded corpus in the SPAN arch — the lightest net in the catalog) | `Parimg-Compact-x2` (1.1 MB, trained on Microsoft's image pairs — heavier cleanup in the same fast compact arch) or `Real-ESRGAN-x2plus` (31 MB, the classic general-purpose restorer at 2x) |
-| Photos, 4x | `Real-ESRGANv3-general-x4` (2.3 MB), `NomosUni-SPAN-x4` (0.8 MB, lightest photo 4x, JPEG-degraded training), `LSDIR-Compact-v2-x4` (1.2 MB, newer and stronger cleanup at the same speed), or `Nomos8kSC-x4` (31 MB, heavier JPEG/blur cleanup and texture) | `NomosWebPhoto-RealPLKSR-x4` (13.7 MB, best cleanup-per-MB on web sources), `Remacri-x4` (31 MB, the community's other classic all-rounder), `UltraSharp-x4` (32 MB, sharp classic), `NMKD-Siax-x4` (32 MB, texture-preserving classic for clean sources), or `Real-ESRGAN-x4plus` (31 MB) |
+| Anime / illustration / game art | `Real-ESRGANv3-anime-x{2,3,4}` (1.2 MB), `AnimeJaNai-v2-Compact-x2` (1.2 MB, realtime-grade anime 2x), `HFA2k-LUDVAE-SPAN-x2` (0.8 MB, lightest, built for rough compressed sources), `ModernSpanimation-x2` (1.4 MB, modern-anime quality step-up), or `Real-CUGAN-pro-*-x{2,3}` (2.4 MB, best on compressed sources; `-conservative` keeps detail, `-denoise` cleans compression) | `AnimeSharp-x4` (32 MB, crisp line-art 4x), `HFA2k-x4` (32 MB, restoration-heavy anime 4x for rough sources), or `Real-ESRGAN-x4plus-anime` (8.3 MB, 4x) |
+| Photos, 2x | `NomosUni-Compact-x2` (1.1 MB, trained across JPEG quality levels — best for chat-app/social-media images) or `NomosUni-SPAN-x2` (0.8 MB, same JPEG-degraded corpus in the SPAN arch — the lightest net in the catalog) | `Parimg-Compact-x2` (1.1 MB, trained on Microsoft's image pairs — heavier cleanup in the same fast compact arch), `BSRGAN-x2` (32 MB, Apache-2.0 academic multi-degradation restorer), or `Real-ESRGAN-x2plus` (31 MB, the classic general-purpose restorer at 2x) |
+| Photos, 4x | `Real-ESRGANv3-general-x4` (2.3 MB), `NomosUni-SPAN-x4` (0.8 MB, lightest photo 4x, JPEG-degraded training), `LSDIR-Compact-v2-x4` (1.2 MB, newer and stronger cleanup at the same speed), or `Nomos8kSC-x4` (31 MB, heavier JPEG/blur cleanup and texture) | `NomosWebPhoto-RealPLKSR-x4` (13.7 MB, best cleanup-per-MB on web sources), `Nomos2-OTF-x4` (32 MB, newest Phhofm real-world recipe), `BSRGAN-x4` (32 MB, Apache-2.0 academic multi-degradation restorer), `Remacri-x4` (31 MB, the community's other classic all-rounder), `UltraSharp-x4` (32 MB, sharp classic), `NMKD-Siax-x4` (32 MB, texture-preserving classic for clean sources), or `Real-ESRGAN-x4plus` (31 MB) |
 | Photos, cleanup at original size (1x, no resize) | `DeJPG-RealPLKSR-x1` / `DeNoise-RealPLKSR-x1` / `DeH264-RealPLKSR-x1` (14 MB each — strip JPEG blocking, sensor noise, or H.264/video compression in place) | — |
 | Anime / video frames, cleanup at original size (1x, no resize) | `Archivist-Medium-Compact-x1` (0.6 MB, balanced film-grain/dirt removal — the suite's starting point) or `Archivist-Rough-Compact-x1` (0.6 MB, aggressive reconstruction for severely degraded sources) | — |
+| Retro console / composite-video captures, cleanup at original size (1x, no resize) | `NES-Composite-RGB-Compact-x1` (4 MB, decodes composite/RF color artifacts back to clean RGB) or `Genesis-Cleanup-Compact-x1` (4 MB, composite blur + carrier-noise removal for Genesis/Mega Drive footage) | — |
 
-Most models are ncnn conversions of BSD/MIT-licensed upstream releases
-(Real-ESRGAN, Real-CUGAN); the rest are OpenModelDB community models —
-eleven CC-BY-4.0 picks by Phhofm, four permissively-licensed
-nets (`ModernSpanimation-x2` and the two Archivist restorers, MIT;
+Most models are ncnn conversions of BSD/MIT/Apache-licensed upstream releases
+(Real-ESRGAN, Real-CUGAN, BSRGAN); the rest are OpenModelDB community models —
+thirteen CC-BY-4.0 picks by Phhofm, eight permissively-licensed
+nets (`ModernSpanimation-x2`, the two Archivist restorers and the two
+pokepress retro-console restorers, MIT; `BSRGAN-x4`/`-x2`, Apache-2.0;
 `NMKD-Siax-x4`, WTFPL), and four CC-BY-NC-SA classics (UltraSharp,
 AnimeSharp, AnimeJaNai, Remacri) whose noncommercial terms apply to the
 weights themselves regardless of the code license. See

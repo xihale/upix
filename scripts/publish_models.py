@@ -152,6 +152,12 @@ LICENSES = {
     "Parimg-Compact-x2": "CC-BY-4.0",
     "Archivist-Medium-Compact-x1": "MIT",
     "Archivist-Rough-Compact-x1": "MIT",
+    "HFA2k-x4": "CC-BY-4.0",
+    "BSRGAN-x4": "Apache-2.0",
+    "BSRGAN-x2": "Apache-2.0",
+    "Nomos2-OTF-x4": "CC-BY-4.0",
+    "Genesis-Cleanup-Compact-x1": "MIT",
+    "NES-Composite-RGB-Compact-x1": "MIT",
 }
 
 

@@ -217,13 +217,13 @@
     <!-- Help screen：模型指南（内容与 models/README.md 目录对齐） -->
     <string name="help_section_model_pick">怎么选模型</string>
     <string name="help_scenario_anime">动漫 / 插画 / 游戏截图</string>
-    <string name="help_scenario_anime_desc">首选 Real-ESRGANv3-anime，轻快、线条干净；压缩噪点重（老番、流媒体截图）改用 Real-CUGAN pro 的 denoise 变体；想要 4x 锐利线条选 AnimeSharp-x4；HFA2k-LUDVAE-SPAN-x2 是最轻的动漫修复网，ModernSpanimation-x2 面向现代动画再升一档。</string>
+    <string name="help_scenario_anime_desc">首选 Real-ESRGANv3-anime，轻快、线条干净；压缩噪点重（老番、流媒体截图）改用 Real-CUGAN pro 的 denoise 变体；想要 4x 锐利线条选 AnimeSharp-x4，源太糙要重修复选 HFA2k-x4；HFA2k-LUDVAE-SPAN-x2 是最轻的动漫修复网，ModernSpanimation-x2 面向现代动画再升一档。</string>
     <string name="help_scenario_photo_2x">照片 · 轻度放大（x2）</string>
     <string name="help_scenario_photo_2x_desc">NomosUni-Compact-x2：专为聊天软件、社交媒体的压缩照片训练，手机本地批量也快；Parimg-Compact-x2 同为轻量档案、清理更重；追求参考画质选 Real-ESRGAN-x2plus（推荐连接 PC）。</string>
     <string name="help_scenario_photo_4x">照片 · 大幅放大（x4）</string>
-    <string name="help_scenario_photo_4x_desc">求快选 Real-ESRGANv3-general-x4 或 LSDIR-Compact-v2-x4，手机轻松跑；求画质（推荐连接 PC）用 NomosWebPhoto-RealPLKSR、Remacri、UltraSharp 或 Real-ESRGAN-x4plus。</string>
+    <string name="help_scenario_photo_4x_desc">求快选 Real-ESRGANv3-general-x4 或 LSDIR-Compact-v2-x4，手机轻松跑；求画质（推荐连接 PC）用 NomosWebPhoto-RealPLKSR、Nomos2-OTF、BSRGAN、Remacri、UltraSharp 或 Real-ESRGAN-x4plus。</string>
     <string name="help_scenario_restore">原尺寸修复（1x，不放大）</string>
-    <string name="help_scenario_restore_desc">源图尺寸已经合适、只是有劣化时用：DeJPG / DeNoise / DeH264-RealPLKSR-x1 分别去 JPEG 块、噪点、视频压缩痕迹（照片向）；动漫 / 视频帧用 Archivist-Medium（均衡起步）或 Archivist-Rough（重损修复）。输出与输入同尺寸，比任何放大网都快。</string>
+    <string name="help_scenario_restore_desc">源图尺寸已经合适、只是有劣化时用：DeJPG / DeNoise / DeH264-RealPLKSR-x1 分别去 JPEG 块、噪点、视频压缩痕迹（照片向）；动漫 / 视频帧用 Archivist-Medium（均衡起步）或 Archivist-Rough（重损修复）；红白机 / 世嘉等复古主机采集画面用 NES-Composite-RGB 或 Genesis-Cleanup（解复合视频色痕）。输出与输入同尺寸，比任何放大网都快。</string>
     <string name="help_model_tips_title">使用提示</string>
     <string name="help_model_tip_scale">放大倍率跟随模型：名字末尾的 x1 / x2 / x3 / x4 即倍率（x1 为原尺寸修复、不放大），选模型就是选倍率；参数卡上的倍率切换只在本系列内换档。</string>
     <string name="help_model_tip_weight">1–2 MB 的轻量模型手机本地批量无压力；31 MB 级的重量模型画质更高，连接 PC 处理更省时。</string>
@@ -236,11 +236,11 @@
     <string name="help_family_cugan">Real-CUGAN · 动漫专精</string>
     <string name="help_family_cugan_desc">面向真实劣化的动漫源训练，重度 JPEG / 视频压缩的番剧截图常比 Real-ESRGAN 更好。三个变体：conservative 尽量少改动、denoise 强力去压缩噪点、no-denoise 不做去噪；pro 系是新一代、泛化更好，优先选 pro。</string>
     <string name="help_family_photo">社区照片系列 · Nomos 等</string>
-    <string name="help_family_photo_desc">补齐 Real-ESRGAN 系空缺的照片专用模型：NomosUni-Compact-x2 与 Parimg-Compact-x2 是两只轻量照片 x2（后者清理更重）；SPAN-x4 最轻；LSDIR-Compact-v2-x4 同速更干净；Nomos8kSC-x4 去压缩与模糊更狠；NomosWebPhoto-RealPLKSR-x4 是网络照片的画质/体积均衡之选。</string>
+    <string name="help_family_photo_desc">补齐 Real-ESRGAN 系空缺的照片专用模型：NomosUni-Compact-x2 与 Parimg-Compact-x2 是两只轻量照片 x2（后者清理更重）；SPAN-x4 最轻；LSDIR-Compact-v2-x4 同速更干净；Nomos8kSC-x4 去压缩与模糊更狠；Nomos2-OTF-x4 是更新的真实劣化配方；NomosWebPhoto-RealPLKSR-x4 是网络照片的画质/体积均衡之选。</string>
     <string name="help_family_restore">原尺寸修复 · 1x 不放大</string>
-    <string name="help_family_restore_desc">输出与输入同尺寸的修复网，速度比任何放大网都快：照片向的 DeJPG / DeNoise / DeH264-RealPLKSR-x1（14 MB）分别治 JPEG 块、噪点、视频压缩痕；动漫 / 视频帧向的 Archivist-Medium / Rough-Compact-x1（0.6 MB，MIT）清胶片颗粒与污损。源图尺寸合适、只是有劣化时用。</string>
-    <string name="help_family_classics">社区经典 · UltraSharp / Remacri / AnimeSharp / AnimeJaNai</string>
-    <string name="help_family_classics_desc">社区多年默认的全能老牌：UltraSharp-x4 锐利、Remacri-x4 自然、AnimeSharp-x4 动漫线条 4x、AnimeJaNai-v2-Compact-x2 动漫轻量 2x、NMKD-Siax-x4 专保纹理。注意：除 NMKD（WTFPL）外，这四款权重为非商用许可（CC-BY-NC-SA），个人使用不受影响。</string>
+    <string name="help_family_restore_desc">输出与输入同尺寸的修复网，速度比任何放大网都快：照片向的 DeJPG / DeNoise / DeH264-RealPLKSR-x1（14 MB）分别治 JPEG 块、噪点、视频压缩痕；动漫 / 视频帧向的 Archivist-Medium / Rough-Compact-x1（0.6 MB，MIT）清胶片颗粒与污损；复古主机的复合视频采集用 NES-Composite-RGB / Genesis-Cleanup（4 MB，MIT）。源图尺寸合适、只是有劣化时用。</string>
+    <string name="help_family_classics">社区经典 · UltraSharp / Remacri / BSRGAN 等</string>
+    <string name="help_family_classics_desc">社区多年默认的全能老牌：UltraSharp-x4 锐利、Remacri-x4 自然、AnimeSharp-x4 动漫线条 4x、AnimeJaNai-v2-Compact-x2 动漫轻量 2x、NMKD-Siax-x4 专保纹理、BSRGAN-x4/x2 是学术界的多劣化修复经典（Apache-2.0）。注意：除 NMKD（WTFPL）与 BSRGAN（Apache-2.0）外，其余四款权重为非商用许可（CC-BY-NC-SA），个人使用不受影响。</string>
     <string name="home_model_picker_help">不知道怎么选？查看模型指南</string>
 
     <!-- Logs screen -->
