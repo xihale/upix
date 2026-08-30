@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Launcher icon background: deep slate from ui/theme/Color.kt (Slate900) -->
-    <color name="ic_launcher_background">#0F172A</color>
+    <!-- Light fallback (pre-31): teal container + on-container, matching Color.kt. -->
+    <color name="ic_launcher_background">#D4EDEB</color>
+    <color name="ic_launcher_fg">#1A6B68</color>
 </resources>
