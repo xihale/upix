@@ -16,7 +16,9 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#ifdef __linux__
 #include <malloc.h>
+#endif
 #include <sys/socket.h>
 #include <thread>
 #include <unistd.h>
@@ -408,11 +410,11 @@ auto ServeDaemon::run() -> void {
         ct.watch_fd = watch_fd;
         ct.thread = std::jthread([this, c = std::move(sock)]() mutable {
             handle_client(std::move(c));
-            // A served request leaves hundreds of MB of freed heap (result
-            // buffer, staging) that glibc keeps for reuse. Hand it back to
-            // the OS so the daemon's RSS tracks what it is actually holding,
-            // not the largest request it ever saw.
+            // glibc keeps freed heap for reuse; hand it back so RSS tracks
+            // live allocations, not the largest request ever served.
+#ifdef __linux__
             malloc_trim(0);
+#endif
         });
         conn_threads_.push_back(std::move(ct));
     }
