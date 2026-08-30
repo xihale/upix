@@ -31,7 +31,6 @@
 #include <cstdlib>
 #include <future>
 #include <limits>
-#include <mdspan>
 #include <mutex>
 #include <optional>
 #include <ranges>
@@ -2685,16 +2684,12 @@ void replicate_pad_hwc(const float* src, int w, int h, int c, int pad,
     const int ow = w + 2 * pad;
     const int oh = h + 2 * pad;
     dst.resize(static_cast<size_t>(ow) * oh * c);
-    // Gather view over the source in HWC order; the per-pixel channel run
-    // stays a memcpy on raw bytes (hot path).
-    const auto& src_px = std::mdspan(src, static_cast<size_t>(h),
-                                     static_cast<size_t>(w), static_cast<size_t>(c));
     for (int y = 0; y < oh; ++y) {
         const int sy = std::clamp(y - pad, 0, h - 1);
         for (int x = 0; x < ow; ++x) {
             const int sx = std::clamp(x - pad, 0, w - 1);
             std::memcpy(dst.data() + (static_cast<size_t>(y) * ow + x) * c,
-                        &src_px[static_cast<size_t>(sy), static_cast<size_t>(sx), 0],
+                        src + (static_cast<size_t>(sy) * w + sx) * c,
                         static_cast<size_t>(c) * sizeof(float));
         }
     }

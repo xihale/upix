@@ -13,7 +13,6 @@
 #include <mutex>
 #include <condition_variable>
 #include <thread>
-#include <mdspan>
 
 namespace upix {
 
@@ -765,11 +764,6 @@ void TileProcessor::bicubic_scale_u8(
     float scale_x = static_cast<float>(src_w) / dst_w;
     float scale_y = static_cast<float>(src_h) / dst_h;
 
-    // 2D mdspan views over the single-channel planes: [row, col] indexing
-    // replaces manual y*width+x arithmetic in the gather/scatter kernels.
-    const auto src_plane = std::mdspan(src, static_cast<size_t>(src_h), static_cast<size_t>(src_w));
-    auto dst_plane = std::mdspan(dst, static_cast<size_t>(dst_h), static_cast<size_t>(dst_w));
-
     for (uint32_t dy = 0; dy < dst_h; ++dy) {
         float sy = (dy + 0.5f) * scale_y - 0.5f;
         int sy0 = static_cast<int>(std::floor(sy));
@@ -790,12 +784,12 @@ void TileProcessor::bicubic_scale_u8(
                     float wx = bicubic_kernel(sx - (sx0 + n));
 
                     float w = wx * wy;
-                    sum += src_plane[static_cast<size_t>(cy), static_cast<size_t>(cx)] * w;
+                    sum += src[static_cast<size_t>(cy) * src_w + static_cast<size_t>(cx)] * w;
                     weight_sum += w;
                 }
             }
 
-            dst_plane[static_cast<size_t>(dy), static_cast<size_t>(dx)] = static_cast<uint8_t>(
+            dst[static_cast<size_t>(dy) * dst_w + static_cast<size_t>(dx)] = static_cast<uint8_t>(
                 std::clamp(sum / weight_sum, 0.0f, 255.0f));
         }
     }
