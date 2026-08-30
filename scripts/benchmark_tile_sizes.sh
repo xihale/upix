@@ -5,10 +5,15 @@
 
 set -e
 
-PROJECT_ROOT="/home/xihale/Desktop/learning/android/upix"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$PROJECT_ROOT/build/linux/x86_64/release"
 CLI="$BUILD_DIR/upix-cli"
-TEST_IMAGE="/home/xihale/Desktop/learning/android/upscaler/Upix/cli/tests/imgs/0.webp"
+TEST_IMAGE="${1:-${UPIX_BENCH_IMAGE:-}}"
+if [ -z "$TEST_IMAGE" ] || [ ! -f "$TEST_IMAGE" ]; then
+    echo "Usage: $0 <test-image>   (or set UPIX_BENCH_IMAGE)" >&2
+    echo "Generate one with: python3 scripts/gen_test_images.py" >&2
+    exit 1
+fi
 MODEL="Real-ESRGANv3-anime-x2"
 OUTPUT_DIR="/tmp/benchmark_results"
 

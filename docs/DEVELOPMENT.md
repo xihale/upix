@@ -175,7 +175,8 @@ release，不打新 tag）。
 2. 打 tag：`cli-v0.x.y` 或 `android-v0.x.y` 并推送。
 3. CLI 附件二进制（如有 CI/手动）：`scripts/build_cli.sh release` 产物上传 release。
 4. 模型：`./scripts/publish_models.py`（见 `models/README.md`，`--overwrite` 覆盖，
-   默认跳过已存在的）。
+   默认跳过已存在的）。新增/转换模型走 `models/CONVERTING.md` 的完整规程
+   （来源对账 → spandrel 锚定 → pnnx 转换 → 验证门 → 文档同提交）。
 
 ### 5.3 Android release 签名
 
@@ -238,6 +239,7 @@ release 构建强制独立 keystore，环境变量 `UPIX_RELEASE_*`（store 文�
 | `docs/DESIGN_LANGUAGE.md` | 一切 UI token/组件规范变化（含 amendment 记录） |
 | 根 `README.md` | 用户可见行为、CLI 面、构建说明变化 |
 | `models/README.md` | 模型目录/发版流程变化 |
+| `models/CONVERTING.md` | 模型转换/验收规程变化（新架构、新 pnnx/ncnn 坑） |
 
 历史文档（serve daemon 设计、ADR、性能报告）已删除，需要时从 git 历史找回；
 不要重新往 `docs/` 堆一次性报告。

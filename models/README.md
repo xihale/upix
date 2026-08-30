@@ -220,7 +220,10 @@ default resolution no longer depends on any cwd-relative path.
 
 ## Publishing (maintainers)
 
-Models live in the git tag `models` / release `models`. Use
+To add a brand-new model — source vetting, pth → ncnn conversion, the
+verification gate, and the docs that must move together — follow
+[CONVERTING.md](CONVERTING.md). This section is about the release
+mechanics. Models live in the git tag `models` / release `models`. Use
 `scripts/publish_models.py` to (re)build the release: it packs each model
 directory into a zip, computes sha256/size, and writes `manifest.json`:
 

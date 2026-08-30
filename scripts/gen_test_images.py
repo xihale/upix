@@ -3,7 +3,7 @@
 
 Covers four content types (photo / anime / portrait / high-freq detail) at
 varied sizes, so perf runs exercise different tile layouts and frequency
-profiles. Output is reproducible (fixed seed) — see PERF_REPORT_REAL_IMAGES.md.
+profiles. Output is reproducible (fixed seed).
 
 Usage:
     python3 scripts/gen_test_images.py [out_dir] [--sizes all|small|large]
