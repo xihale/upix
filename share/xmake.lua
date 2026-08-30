@@ -55,7 +55,7 @@ target("upix-core")
             local envs = {XMAKE_CONFIGDIR = cfgdir}
             os.execv(os.programfile(), {
                 "-P", os.projectdir(), "config", "-p", os.host(), "-a", os.arch(),
-                "-m", "release", "-y"
+                "-m", "release", "--yes"
             }, {envs = envs})
             os.execv(os.programfile(), {
                 "-P", os.projectdir(), "build", "dump-spirv"
