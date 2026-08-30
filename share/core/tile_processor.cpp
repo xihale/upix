@@ -3,7 +3,9 @@
 #include "utils/logger.hpp"
 #include <cmath>
 #include <algorithm>
+#include <atomic>
 #include <format>
+#include <functional>
 #include <future>
 #include <optional>
 #include <cstring>
@@ -11,7 +13,6 @@
 #include <mutex>
 #include <condition_variable>
 #include <thread>
-#include <stop_token>
 #include <mdspan>
 
 namespace upix {
@@ -182,29 +183,48 @@ auto run_tiled_cpu_pipeline(
     };
 
     // Proc → blend handoff queue.
-    // condition_variable_any (not condition_variable) so the stage threads can
-    // wait with a std::stop_token and wake automatically on request_stop().
+    // condition_variable_any so a stage stop wakes the wait regardless of the
+    // queue predicate.
     std::deque<CompletedBatch> completed_queue;
     std::mutex completed_mutex;
     std::condition_variable_any completed_cv;
     bool process_done = false;
+    std::atomic<bool> blend_stop{false};
     std::string process_error;
     std::string blend_error;
 
+    // NDK libc++ ships without std::jthread/std::stop_token, so the stage
+    // threads poll a stop flag instead. This shell keeps the jthread contract
+    // that matters here: if the main thread throws between spawn and the
+    // explicit joins below, the destructor signals stop and joins instead of
+    // leaving an unjoined thread to std::terminate during unwind.
+    struct StageThread {
+        std::thread thread{};
+        std::function<void()> request_stop{};
+        ~StageThread() {
+            if (thread.joinable()) {
+                request_stop();
+                thread.join();
+            }
+        }
+    };
+
     // --- Blend stage (blend/save thread) ---
-    // jthread RAII: if anything below throws on the main thread, the destructor
-    // requests stop and joins, instead of leaving an unjoined thread running
-    // during exception unwind (previously called std::terminate and killed the
-    // process). The lambda also catch-and-records so a throwing stage degrades
-    // to a reported error rather than a crash.
-    std::jthread blend_thread([&](std::stop_token stoken) {
+    // The lambda catch-and-records so a throwing stage degrades to a reported
+    // error rather than a crash.
+    StageThread blend_stage{.request_stop = [&] {
+        blend_stop.store(true, std::memory_order_relaxed);
+        completed_cv.notify_all();
+    }};
+    blend_stage.thread = std::thread([&] {
         try {
             while (true) {
                 CompletedBatch completed_batch;
                 {
                     std::unique_lock<std::mutex> lock(completed_mutex);
-                    completed_cv.wait(lock, stoken, [&]() {
-                        return !completed_queue.empty() || process_done;
+                    completed_cv.wait(lock, [&]() {
+                        return !completed_queue.empty() || process_done ||
+                               blend_stop.load(std::memory_order_relaxed);
                     });
                     if (completed_queue.empty()) {
                         // Queue drained and producer done, or stop requested
@@ -247,16 +267,21 @@ auto run_tiled_cpu_pipeline(
         std::mutex ready_mutex;
         std::condition_variable_any ready_cv;
         bool load_done = false;
+        std::atomic<bool> load_stop{false};
         std::string load_error;
 
         // --- Stage 1: Load thread (tile extraction) ---
-        // jthread + stop_token-aware wait: an exception on the main thread no
-        // longer strands this thread during unwind (jthread RAII stops+joins,
-        // and the stop token wakes the bounded-queue wait without notify_all).
-        std::jthread load_thread([&](std::stop_token stoken) {
+        // Stop-flag-aware wait: an exception on the main thread no longer
+        // strands this thread during unwind (StageThread's destructor sets the
+        // flag and joins, and the flag wakes the bounded-queue wait).
+        StageThread load_stage{.request_stop = [&] {
+            load_stop.store(true, std::memory_order_relaxed);
+            ready_cv.notify_all();
+        }};
+        load_stage.thread = std::thread([&] {
             size_t next_idx = 0;
             try {
-                while (!cancel_flag && !stoken.stop_requested()) {
+                while (!cancel_flag && !load_stop.load(std::memory_order_relaxed)) {
                     auto batch = build_batch(next_idx);
                     if (!batch.has_value()) {
                         break;
@@ -265,10 +290,11 @@ auto run_tiled_cpu_pipeline(
 
                     {
                         std::unique_lock<std::mutex> lock(ready_mutex);
-                        ready_cv.wait(lock, stoken, [&]() {
-                            return ready_queue.size() < kReadyQueueCapacity || cancel_flag;
+                        ready_cv.wait(lock, [&]() {
+                            return ready_queue.size() < kReadyQueueCapacity || cancel_flag ||
+                                   load_stop.load(std::memory_order_relaxed);
                         });
-                        if (cancel_flag || stoken.stop_requested()) break;
+                        if (cancel_flag || load_stop.load(std::memory_order_relaxed)) break;
                         ready_queue.emplace_back(std::move(batch));
                     }
                     ready_cv.notify_one();
@@ -338,7 +364,7 @@ auto run_tiled_cpu_pipeline(
             process_done = true;
         }
         completed_cv.notify_all();
-        load_thread.join();
+        load_stage.thread.join();
         {
             std::lock_guard<std::mutex> lock(ready_mutex);
             if (!load_error.empty() && process_error.empty()) {
@@ -393,7 +419,7 @@ auto run_tiled_cpu_pipeline(
         completed_cv.notify_all();
     }
 
-    blend_thread.join();
+    blend_stage.thread.join();
     {
         std::lock_guard<std::mutex> lock(completed_mutex);
         if (!blend_error.empty() && process_error.empty()) {
