@@ -16,8 +16,8 @@ android {
         targetSdk = libs.versions.targetSdk.get().toInt()
         // Android release channel — independent of the CLI version (root
         // xmake.lua). Release tags: android-v*.
-        versionCode = 3
-        versionName = "0.2.1"
+        versionCode = 1
+        versionName = "0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -149,11 +149,25 @@ tasks.register<Exec>("xmakeNative") {
         "--avif-decoder=" + if (findProperty("upix.avifDecoder")?.toString()?.equals("true", ignoreCase = true) == true) "y" else "n"
     )
     commandLine(nativeArgs)
+    inputs.files(
+        repoRoot.resolve("xmake.lua"),
+        repoRoot.resolve("apps/xmake.lua"),
+        repoRoot.resolve("scripts/build_native.sh"),
+        buildNativeScript,
+    )
+    inputs.dir(repoRoot.resolve("share"))
+    inputs.dir(repoRoot.resolve("packages"))
+    inputs.dir(file("src/main/cpp"))
+    outputs.dir(file("src/main/jniLibs/arm64-v8a"))
 }
 
-afterEvaluate {
-    tasks.named("preDebugBuild").configure { dependsOn("xmakeNative") }
-    tasks.named("preReleaseBuild").configure { dependsOn("xmakeNative") }
+// Package-time only. Hooking preDebugBuild pulled a full NDK/xmake compile
+// into testDebugUnitTest (and every other debug compile), which is why CI
+// could not run Kotlin unit tests without rebuilding ncnn.
+tasks.matching {
+    it.name == "mergeDebugJniLibFolders" || it.name == "mergeReleaseJniLibFolders"
+}.configureEach {
+    dependsOn("xmakeNative")
 }
 
 kotlin {

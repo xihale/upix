@@ -1,0 +1,101 @@
+name: Release Android
+
+on:
+  push:
+    tags: ["android-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-android-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    environment: release
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-android
+        with:
+          install-ndk: "true"
+      - uses: ./.github/actions/setup-xmake
+        with:
+          cache-kind: android
+      - uses: ./.github/actions/spirv-pack
+      - name: Decode keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          [[ -n "$ANDROID_KEYSTORE_BASE64" ]] || {
+            echo "ANDROID_KEYSTORE_BASE64 secret missing (Environment: release)" >&2
+            exit 1
+          }
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upix-release.jks"
+          echo "UPIX_RELEASE_STORE_FILE=$RUNNER_TEMP/upix-release.jks" >> "$GITHUB_ENV"
+      - name: assembleRelease
+        env:
+          UPIX_RELEASE_STORE_PASSWORD: ${{ secrets.UPIX_RELEASE_STORE_PASSWORD }}
+          UPIX_RELEASE_KEY_ALIAS: ${{ secrets.UPIX_RELEASE_KEY_ALIAS }}
+          UPIX_RELEASE_KEY_PASSWORD: ${{ secrets.UPIX_RELEASE_KEY_PASSWORD }}
+        working-directory: apps
+        run: ./gradlew assembleRelease --no-daemon
+      - name: Name APK
+        run: |
+          VER="${GITHUB_REF_NAME#android-v}"
+          cp apps/app/build/outputs/apk/release/app-release.apk \
+            "upix-android-${VER}.apk"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apk
+          path: upix-android-*.apk
+          if-no-files-found: error
+          retention-days: 7
+      - name: ccache stats
+        if: always()
+        run: ccache -s || true
+
+  smoke:
+    name: run smoke
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+      - name: Verify signed APK
+        run: |
+          set -euo pipefail
+          apk="$(ls upix-android-*.apk)"
+          unzip -l "$apk" | grep -F 'lib/arm64-v8a/libupix-native.so'
+          jarsigner -verify "$apk"
+
+  publish:
+    name: upload release
+    needs: smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-apk
+      - name: Create release and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VER="${TAG#android-v}"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" 2>/dev/null \
+            || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+                 --title "Upix Android ${VER}" --generate-notes --target "$GITHUB_SHA"
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
+            "upix-android-${VER}.apk"

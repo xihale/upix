@@ -1,0 +1,100 @@
+name: CI android-apk
+
+# Build the debug APK; inspect it in a separate job that does not compile.
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "share/**"
+      - "packages/**"
+      - "xmake.lua"
+      - "scripts/build_native.sh"
+      - "scripts/gen_spirv_pack.sh"
+      - "apps/xmake.lua"
+      - "apps/scripts/build_native.sh"
+      - "apps/app/src/main/cpp/**"
+      - "apps/app/src/main/res/**"
+      - "apps/app/src/main/AndroidManifest.xml"
+      - "apps/app/build.gradle.kts"
+      - "apps/app/proguard-rules.pro"
+      - "apps/gradle/**"
+      - "apps/settings.gradle.kts"
+      - "apps/gradle.properties"
+      - "apps/build.gradle.kts"
+      - ".github/actions/setup-xmake/**"
+      - ".github/actions/setup-android/**"
+      - ".github/actions/spirv-pack/**"
+      - ".github/workflows/ci-android-apk.yml"
+  pull_request:
+    paths:
+      - "share/**"
+      - "packages/**"
+      - "xmake.lua"
+      - "scripts/build_native.sh"
+      - "scripts/gen_spirv_pack.sh"
+      - "apps/xmake.lua"
+      - "apps/scripts/build_native.sh"
+      - "apps/app/src/main/cpp/**"
+      - "apps/app/src/main/res/**"
+      - "apps/app/src/main/AndroidManifest.xml"
+      - "apps/app/build.gradle.kts"
+      - "apps/app/proguard-rules.pro"
+      - "apps/gradle/**"
+      - "apps/settings.gradle.kts"
+      - "apps/gradle.properties"
+      - "apps/build.gradle.kts"
+      - ".github/actions/setup-xmake/**"
+      - ".github/actions/setup-android/**"
+      - ".github/actions/spirv-pack/**"
+      - ".github/workflows/ci-android-apk.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-android-apk-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-android
+        with:
+          install-ndk: "true"
+      - uses: ./.github/actions/setup-xmake
+        with:
+          cache-kind: android
+      - uses: ./.github/actions/spirv-pack
+      - name: assembleDebug
+        working-directory: apps
+        run: ./gradlew assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upix-debug-apk
+          path: apps/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 3
+      - name: ccache stats
+        if: always()
+        run: ccache -s || true
+
+  test:
+    name: inspect APK
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: upix-debug-apk
+      - name: APK contains native lib
+        run: |
+          set -euo pipefail
+          apk="$(find . -name 'app-debug.apk' -print -quit)"
+          [[ -n "$apk" ]] || { echo "APK missing from artifact"; exit 1; }
+          unzip -l "$apk" | grep -F 'lib/arm64-v8a/libupix-native.so'

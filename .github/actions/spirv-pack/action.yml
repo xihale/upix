@@ -1,0 +1,19 @@
+name: spirv-pack
+description: Restore the frozen SPIR-V pack, or generate it (needs Vulkan ICD + host ncnn-glslang).
+
+runs:
+  using: composite
+  steps:
+    - name: Cache spirv_pack.bin
+      id: spirv
+      uses: actions/cache@v4
+      with:
+        path: share/core/spirv_pack.bin
+        key: spirv-${{ hashFiles('share/core/vulkan_shaders.hpp', 'share/core/spirv_pack.cpp', 'share/core/spirv_pack.hpp', 'share/core/spirv_pack.S', 'tools/dump_spirv.cpp', 'packages/n/ncnn/xmake.lua', 'xmake.lua') }}
+
+    - name: Generate spirv pack
+      if: steps.spirv.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        sudo apt-get update -qq && sudo apt-get install -y -qq mesa-vulkan-drivers
+        scripts/gen_spirv_pack.sh --force

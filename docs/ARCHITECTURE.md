@@ -384,8 +384,9 @@ UI → ProcessingViewModel → NativeImageProcessingRepository
 
 ### 6.1 xmake 工程结构
 
-根 `xmake.lua` 是唯一工程：`set_project("upix")`、`set_version("0.2.0")`（**版本唯一
-真源**）、C++23。option：`native_isa`（默认开）、`upx`（默认关）、`avif-encoder` /
+根 `xmake.lua` 是唯一工程：`set_project("upix")`、`set_version()` 是 **CLI
+版本真源**（与 `apps/app/build.gradle.kts` 的 Android `versionName` 独立），
+C++23。option：`native_isa`（默认开）、`upx`（默认关）、`avif-encoder` /
 `avif-decoder`（默认关，见下）。ncnn 钉 `20260113` runtime 变体（不带在线编译器）。
 
 | target | 定义于 | 说明 |
@@ -413,10 +414,13 @@ before_build 注册只有第一个生效）负责两件事：Android 配置下 p
 
 ### 6.3 Android Gradle 接线
 
-- `apps/app/build.gradle.kts` 注册 Exec 任务 `xmakeNative`（preBuild 依赖）：调用
-  `scripts/build_native.sh <mode> arm64-v8a --avif-encoder=? --avif-decoder=?`，AVIF
-  状态由 gradle 属性 `-Pupix.avifEncoder=true` / `-Pupix.avifDecoder=true` 决定——
-  **属性是唯一事实来源**，避免 xmake option 粘连。
+- `apps/app/build.gradle.kts` 注册 Exec 任务 `xmakeNative`，挂在
+  `merge{Debug,Release}JniLibFolders` 上（打包期，**不是** `preDebugBuild`——否则
+  `testDebugUnitTest` 会拖一整条 NDK/xmake/ncnn 编译）。调用
+  `apps/scripts/build_native.sh <mode> arm64-v8a --avif-encoder=? --avif-decoder=?`，
+  AVIF 状态由 gradle 属性 `-Pupix.avifEncoder=true` / `-Pupix.avifDecoder=true`
+  决定——**属性是唯一事实来源**，避免 xmake option 粘连。任务声明了 share/cpp
+  输入和 `jniLibs/arm64-v8a` 输出，本地增量构建可跳过未变的 native。
 - 版本钉死在 `apps/gradle/libs.versions.toml`：AGP 9.3.0、Kotlin 2.4.10、Gradle
   9.7.1、compileSdk/targetSdk 37、minSdk 26、Compose BOM 2026.08.00、material3
   显式钉 `1.5.0-alpha26`（Expressive API 所需）、adaptive 1.2.0、NDK 29.0.14206865。

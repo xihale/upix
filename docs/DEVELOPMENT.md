@@ -49,10 +49,10 @@ cd apps
 ./gradlew -Pupix.avifEncoder=true -Pupix.avifDecoder=true assembleRelease
 ```
 
-`xmakeNative`（`app/build.gradle.kts`）在每次构建前调用
-`scripts/build_native.sh <mode> arm64-v8a --avif-encoder=? --avif-decoder=?`，
-产物 `.so` 自动拷入 `app/src/main/jniLibs/arm64-v8a/`。AVIF 开关以 gradle 属性为
-唯一事实来源（见 §7 坑 1）。
+`xmakeNative`（`app/build.gradle.kts`）挂在 `merge{Debug,Release}JniLibFolders`
+上，只在打 APK 时调用 `apps/scripts/build_native.sh`；`testDebugUnitTest` 不编
+native。产物 `.so` 拷入 `app/src/main/jniLibs/arm64-v8a/`。AVIF 开关以 gradle
+属性为唯一事实来源（见 §7 坑 1）。CI 分组、缓存与本地 `act` 打通见 §9。
 
 ### 2.3 主机工具
 
@@ -166,24 +166,39 @@ GPU 管线改动要求 md5/PSNR 双端验证输出不变（性能优化不得改
 | Android | `apps/app/build.gradle.kts` `versionName/versionCode` | 与 CLI 版本独立演进 |
 | 模型 | release `manifest.json` `version` 字段 | `scripts/publish_models.py` 维护 |
 
-两条产品线独立发版，tag 前缀分离：`cli-v*`、`android-v*`、`models`（模型滚动
-release，不打新 tag）。项目级统一发版推裸 `v*` tag：CI 自动构建 Linux CLI
-二进制并挂到对应 GitHub release（`.github/workflows/release.yml`）。
+两条产品线独立发版，**不要**再打裸 `v*` tag：
+
+| tag | 工作流 | 产物 |
+|-----|--------|------|
+| `cli-v0.x.y` | `.github/workflows/release-cli.yml` | portable Linux `upix-cli-{ver}-linux-x86_64.tar.gz` |
+| `android-v0.x.y` | `.github/workflows/release-android.yml` | 签名 `upix-android-{ver}.apk` |
+| `models` | 手动 `publish_models.py` | 模型 zip（滚动 release，不打新 tag） |
+
+CLI `0.1.0` 和 Android `0.1.0` 只是数字碰巧相同，互不绑定。
 
 ### 5.2 发版清单
 
-1. 改版本号（对应真源），提交。
-2. 打 tag：`cli-v0.x.y` 或 `android-v0.x.y` 并推送。
-3. CLI 附件二进制（如有 CI/手动）：`scripts/build_cli.sh release` 产物上传 release。
-4. 模型：`./scripts/publish_models.py`（见 `models/README.md`，`--overwrite` 覆盖，
-   默认跳过已存在的）。新增/转换模型走 `models/CONVERTING.md` 的完整规程
-   （来源对账 → spandrel 锚定 → pnnx 转换 → 验证门 → 文档同提交）。
+1. 改对应真源版本号，提交并推到 `main`。
+2. 打 **一条** 产品线的 tag：`cli-v0.x.y` **或** `android-v0.x.y`，推送。
+3. CI 编译 → 冒烟 → 建 GitHub release 并上传附件。
+4. 模型：`./scripts/publish_models.py`（见 `models/README.md`）。
 
 ### 5.3 Android release 签名
 
-release 构建强制独立 keystore，环境变量 `UPIX_RELEASE_*`（store 文件、密码、alias）；
-缺失时构建失败，除非显式 `-Pupix.allowDebugSignedRelease`——不要用 debug key
-发 release（MIUI 等会因签名不一致拒绝覆盖安装，见坑 7）。
+release 构建强制独立 keystore。本地：
+
+```bash
+source ~/.config/upix/android-release.env   # 导出 UPIX_RELEASE_*
+cd apps && ./gradlew assembleRelease
+```
+
+GitHub Actions 走 Environment `release` 的 secrets（`ANDROID_KEYSTORE_BASE64`、
+`UPIX_RELEASE_STORE_PASSWORD`、`UPIX_RELEASE_KEY_ALIAS`、
+`UPIX_RELEASE_KEY_PASSWORD`）。缺失时构建失败，除非显式
+`-Pupix.allowDebugSignedRelease`——不要用 debug key 发 release（MIUI 等会因
+签名不一致拒绝覆盖安装，见坑 7）。
+
+keystore 文件在 `~/.config/upix/android-release.jks`，**不进 git**。
 
 ---
 
@@ -236,7 +251,8 @@ release 构建强制独立 keystore，环境变量 `UPIX_RELEASE_*`（store 文�
 | 文档 | 何时更新 |
 |------|----------|
 | `docs/ARCHITECTURE.md` | 模块增删、调用链变化、协议变化——它是权威，过期即 bug |
-| `docs/DEVELOPMENT.md`（本文） | 流程/环境/坑清单变化 |
+| `docs/DEVELOPMENT.md`（本文） | 流程/环境/坑清单/CI 分组变化 |
+| `.github/workflows/` + `.github/actions/` | CI 分组、路径过滤、缓存键变化 |
 | `docs/DESIGN_LANGUAGE.md` | 一切 UI token/组件规范变化（含 amendment 记录） |
 | 根 `README.md` | 用户可见行为、CLI 面、构建说明变化 |
 | `models/README.md` | 模型目录/发版流程变化 |
@@ -244,3 +260,95 @@ release 构建强制独立 keystore，环境变量 `UPIX_RELEASE_*`（store 文�
 
 历史文档（serve daemon 设计、ADR、性能报告）已删除，需要时从 git 历史找回；
 不要重新往 `docs/` 堆一次性报告。
+
+---
+
+## 9. CI
+
+分组独立、路径过滤、缓存分层。**编译和测试是不同 job**：编译 job 只出
+artifact，测试 job 只下载再跑，不再调 xmake / 不再编 Kotlin。改文档不跑
+任何编译，dump-spirv 只在 SPIR-V 缓存未命中时出现。每组可用
+`workflow_dispatch` 或本地 `act` 单独打通。
+
+### 9.1 分组
+
+| 工作流 | 编译 job | 测试 job | 触发路径（摘要） |
+|--------|----------|----------|------------------|
+| `ci-static.yml` | — | UI token grep | `apps/.../ui/**` |
+| `ci-host.yml` | `build_cli.sh` + `build_host_tests.sh` → `host-bins` | 无编译器，直跑 `test_*` + `upix-cli --version` | `share/` `cli/` `tools/` `packages/` `xmake.lua` |
+| `ci-android-unit.yml` | `compileDebugUnitTestSources` + runtime-jar → `android-unit-build` | `testDebugUnitTest`，`-x` compile/bundle | Kotlin / res / 单测 / gradle |
+| `ci-android-apk.yml` | NDK + xmake + `assembleDebug` → APK | `unzip -l` 确认含 `libupix-native.so` | native 源、JNI、manifest/res |
+| `release-cli.yml` | portable CLI tarball | `--version` smoke；通过后才 `publish` | tag `cli-v*` |
+| `release-android.yml` | 签名 `assembleRelease` | `jarsigner -verify`；通过后才 `publish` | tag `android-v*` |
+
+GitHub 默认分支是 `main`，本地常见 `master`，两组都听。
+
+### 9.2 缓存
+
+| 层 | 键 | 作用 |
+|----|----|------|
+| `~/.xmake/packages` | `xmake-{host\|android}-...-${{ hashFiles(xmake 工程) }}` | ncnn 等预编译包；host / android **分键**（plat 不同，混存会导致后写的组永远存不进去） |
+| `share/core/spirv_pack.bin` | 源 shader / dump-spirv / ncnn overlay 的 hash | 命中则跳过 dump-spirv、glslang 变体 ncnn、lavapipe |
+| `~/.ccache` | 按组 + ref | 工程源码增量；xmake 默认 `--ccache=y`（runner 装了 ccache） |
+| Gradle | `setup-java` `cache: gradle` | 依赖与 wrapper |
+
+`spirv_pack.bin` 仍 gitignore（`*.bin`）。CI 用 cache 恢复；未命中才走
+`scripts/gen_spirv_pack.sh`（隔离 `XMAKE_CONFIGDIR`，需要 Vulkan ICD）。
+
+GitHub-hosted runner 跳过 Aliyun Maven（`apps/settings.gradle.kts`：
+`GITHUB_ACTIONS && !ACT`）。本地和 `act` 仍走阿里云。
+
+### 9.3 本地用 act 按组打通
+
+先校验 YAML，再按组跑。**不要**一上来 `act push` 全仓库——会拉大型
+runner 镜像并冷编译两份 ncnn。
+
+```bash
+act -l                                          # 列出组
+act -n --pull=false -W .github/workflows/ci-static.yml
+act -n --pull=false -W .github/workflows/ci-host.yml
+act -n --pull=false -W .github/workflows/ci-android-unit.yml
+act -n --pull=false -W .github/workflows/ci-android-apk.yml   # 会 git clone upload-artifact
+act -n --pull=false -W .github/workflows/release-cli.yml
+act -n --pull=false -W .github/workflows/release-android.yml
+
+# 真跑：从最便宜的组开始。不要 `act push` 一次全开。
+act --pull=false -W .github/workflows/ci-static.yml
+scripts/check_ui_tokens.sh                      # 等价，不用容器
+
+# host / android 真跑很重（要 catthehacker 镜像）。等价的无容器路径：
+# 编译
+scripts/gen_spirv_pack.sh
+scripts/build_cli.sh release
+scripts/build_host_tests.sh
+scripts/compile_android_unit.sh
+# 测试（不再编译）
+scripts/run_host_tests.sh
+scripts/run_android_unit.sh
+cd apps && ./gradlew assembleDebug              # apk 编译组
+```
+
+`ci-android-apk` 在 act 下还要 Android SDK + 钉死的 NDK，镜像体积最大，
+放到最后打通。
+
+### 9.4 为什么不把构建器换成 zig build
+
+**现在不要换。** CI 翻车来自工作流设计（厨房水槽 job、单测绑 preBuild、
+pack 每次现编、无路径过滤、`main`/`master` 不一致、Aliyun 对美国 runner），
+不是 xmake 作为构建器的能力上限。
+
+换成 zig build 解决不了这些问题，还会新开一摊：
+
+- ncnn 是 CMake 工程（SIMD kernel、Vulkan、glslang），`packages/n/ncnn`
+  里有一大块 overlay。Zig 要么继续包一层 CMake（变成 Zig+CMake+Gradle），
+  要么重写 ncnn 的构建。
+- C++23（CLI `<print>` 目前绑 GCC 14）要跟 zig 自带 Clang 版本对齐。
+- glaze / cli11 / libavif+aom+dav1d / libwebp / libsodium / libcurl /
+  openssl / libzip 已经在 xmake-repo。Zig package manager 要逐个包。
+- Android 壳仍然是 Gradle + AGP + Compose，Zig 替不掉。
+- xmake 的真实痛点（全局一份配置、option 粘连、钩子不累积）已经用脚本每次
+  显式 `xmake f`、隔离 `XMAKE_CONFIGDIR`、CI 分 plat 缓存接住。
+
+若以后只想要更好的交叉编译器，可以试验 `xmake f --cxx="zig c++"` 当
+toolchain，而不是换构建系统。评估标准：能否在不碰 ncnn overlay 的前提下
+让 `scripts/build_native.sh` 更短，而不是“先重写工程再修 CI”。

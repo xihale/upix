@@ -1,0 +1,42 @@
+name: setup-xmake
+description: Install pinned xmake, host C++ deps, ccache, and the per-plat package cache.
+
+inputs:
+  cache-kind:
+    description: "host or android — xmake packages are plat-specific; keys must not mix"
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Install host C++ deps
+      shell: bash
+      run: sudo apt-get update -qq && sudo apt-get install -y -qq libdeflate-dev g++-14 ccache
+
+    - uses: xmake-io/github-action-setup-xmake@v1
+      with:
+        xmake-version: "3.1.0"
+
+    - name: Cache xmake packages
+      uses: actions/cache@v4
+      with:
+        path: ~/.xmake/packages
+        key: xmake-${{ inputs.cache-kind }}-${{ runner.os }}-${{ hashFiles('xmake.lua', 'share/xmake.lua', 'cli/xmake.lua', 'apps/xmake.lua', 'tools/xmake.lua', 'packages/**') }}
+        restore-keys: |
+          xmake-${{ inputs.cache-kind }}-${{ runner.os }}-
+
+    - name: Cache ccache
+      uses: actions/cache@v4
+      with:
+        path: ~/.ccache
+        key: ccache-${{ inputs.cache-kind }}-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+        restore-keys: |
+          ccache-${{ inputs.cache-kind }}-${{ runner.os }}-${{ github.ref_name }}-
+          ccache-${{ inputs.cache-kind }}-${{ runner.os }}-
+
+    - name: ccache env
+      shell: bash
+      run: |
+        echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
+        echo "CCACHE_MAXSIZE=1G" >> "$GITHUB_ENV"
+        ccache -z

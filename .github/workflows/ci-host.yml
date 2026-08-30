@@ -1,0 +1,90 @@
+name: CI host
+
+# Build and test are separate jobs. The test job has no xmake, no compiler.
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "share/**"
+      - "cli/**"
+      - "tools/**"
+      - "packages/**"
+      - "xmake.lua"
+      - "scripts/build_cli.sh"
+      - "scripts/build_host_tests.sh"
+      - "scripts/run_host_tests.sh"
+      - "scripts/gen_spirv_pack.sh"
+      - ".github/actions/setup-xmake/**"
+      - ".github/actions/spirv-pack/**"
+      - ".github/workflows/ci-host.yml"
+  pull_request:
+    paths:
+      - "share/**"
+      - "cli/**"
+      - "tools/**"
+      - "packages/**"
+      - "xmake.lua"
+      - "scripts/build_cli.sh"
+      - "scripts/build_host_tests.sh"
+      - "scripts/run_host_tests.sh"
+      - "scripts/gen_spirv_pack.sh"
+      - ".github/actions/setup-xmake/**"
+      - ".github/actions/spirv-pack/**"
+      - ".github/workflows/ci-host.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-host-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-xmake
+        with:
+          cache-kind: host
+      - uses: ./.github/actions/spirv-pack
+      - name: Build CLI
+        run: scripts/build_cli.sh release --cc=gcc-14 --cxx=g++-14
+      - name: Build host tests
+        run: scripts/build_host_tests.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: host-bins
+          path: |
+            build/linux/x86_64/release/upix-cli
+            cli/build/test_*
+          if-no-files-found: error
+          retention-days: 3
+      - name: ccache stats
+        if: always()
+        run: ccache -s || true
+
+  test:
+    name: run tests
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: host-bins
+      - name: Runtime libs (no compiler)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libdeflate-dev libpng-dev libjpeg-dev libwebp-dev \
+            libcurl4-openssl-dev libzip-dev libomp-dev \
+            mesa-vulkan-drivers
+      - name: Make binaries executable
+        run: chmod +x build/linux/x86_64/release/upix-cli cli/build/test_*
+      - name: Run host tests
+        run: scripts/run_host_tests.sh

@@ -67,6 +67,11 @@ test_output/
 !docs/*.png
 !docs/*.jpg
 
+# Release signing (never commit; lives in ~/.config/upix and GH secrets)
+*.jks
+*.keystore
+*.p12
+
 # Temporary files
 tmp/
 temp/

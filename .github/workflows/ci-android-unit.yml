@@ -1,0 +1,81 @@
+name: CI android-unit
+
+# Compile and test are separate jobs. Neither job builds native / NDK.
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - "apps/app/src/main/java/**"
+      - "apps/app/src/main/res/**"
+      - "apps/app/src/main/AndroidManifest.xml"
+      - "apps/app/src/test/**"
+      - "apps/app/build.gradle.kts"
+      - "apps/app/lint.xml"
+      - "apps/gradle/**"
+      - "apps/settings.gradle.kts"
+      - "apps/gradle.properties"
+      - "apps/build.gradle.kts"
+      - "scripts/compile_android_unit.sh"
+      - "scripts/run_android_unit.sh"
+      - ".github/actions/setup-android/**"
+      - ".github/workflows/ci-android-unit.yml"
+  pull_request:
+    paths:
+      - "apps/app/src/main/java/**"
+      - "apps/app/src/main/res/**"
+      - "apps/app/src/main/AndroidManifest.xml"
+      - "apps/app/src/test/**"
+      - "apps/app/build.gradle.kts"
+      - "apps/app/lint.xml"
+      - "apps/gradle/**"
+      - "apps/settings.gradle.kts"
+      - "apps/gradle.properties"
+      - "apps/build.gradle.kts"
+      - "scripts/compile_android_unit.sh"
+      - "scripts/run_android_unit.sh"
+      - ".github/actions/setup-android/**"
+      - ".github/workflows/ci-android-unit.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ci-android-unit-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    name: compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-android
+        with:
+          install-ndk: "false"
+      - name: Compile unit-test sources
+        run: scripts/compile_android_unit.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-unit-build
+          path: apps/app/build
+          if-no-files-found: error
+          retention-days: 3
+
+  test:
+    name: run tests
+    needs: compile
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-android
+        with:
+          install-ndk: "false"
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-unit-build
+          path: apps/app/build
+      - name: Run unit tests (no compile)
+        run: scripts/run_android_unit.sh
