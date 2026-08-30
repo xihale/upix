@@ -1,52 +1,7 @@
 name: CI android-apk
 
-# Build the debug APK; inspect it in a separate job that does not compile.
+# Manual only. Cross-compile android-arm64-v8a debug APK; inspect separately.
 on:
-  push:
-    branches: [main, master]
-    paths:
-      - "share/**"
-      - "packages/**"
-      - "xmake.lua"
-      - "scripts/build_native.sh"
-      - "scripts/gen_spirv_pack.sh"
-      - "apps/xmake.lua"
-      - "apps/scripts/build_native.sh"
-      - "apps/app/src/main/cpp/**"
-      - "apps/app/src/main/res/**"
-      - "apps/app/src/main/AndroidManifest.xml"
-      - "apps/app/build.gradle.kts"
-      - "apps/app/proguard-rules.pro"
-      - "apps/gradle/**"
-      - "apps/settings.gradle.kts"
-      - "apps/gradle.properties"
-      - "apps/build.gradle.kts"
-      - ".github/actions/setup-xmake/**"
-      - ".github/actions/setup-android/**"
-      - ".github/actions/spirv-pack/**"
-      - ".github/workflows/ci-android-apk.yml"
-  pull_request:
-    paths:
-      - "share/**"
-      - "packages/**"
-      - "xmake.lua"
-      - "scripts/build_native.sh"
-      - "scripts/gen_spirv_pack.sh"
-      - "apps/xmake.lua"
-      - "apps/scripts/build_native.sh"
-      - "apps/app/src/main/cpp/**"
-      - "apps/app/src/main/res/**"
-      - "apps/app/src/main/AndroidManifest.xml"
-      - "apps/app/build.gradle.kts"
-      - "apps/app/proguard-rules.pro"
-      - "apps/gradle/**"
-      - "apps/settings.gradle.kts"
-      - "apps/gradle.properties"
-      - "apps/build.gradle.kts"
-      - ".github/actions/setup-xmake/**"
-      - ".github/actions/setup-android/**"
-      - ".github/actions/spirv-pack/**"
-      - ".github/workflows/ci-android-apk.yml"
   workflow_dispatch:
 
 concurrency:
@@ -58,7 +13,7 @@ permissions:
 
 jobs:
   build:
-    name: compile
+    name: compile (android-arm64-v8a)
     runs-on: ubuntu-latest
     timeout-minutes: 75
     steps:

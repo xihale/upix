@@ -31,7 +31,7 @@ fi
 
 mkdir -p build/host-dump-config
 export XMAKE_CONFIGDIR="$PWD/build/host-dump-config"
-xmake f -p linux -a x86_64 -m release "${CC_ARGS[@]}" --yes
+xmake f -p linux -a x86_64 -m release "${CC_ARGS[@]}" --check --yes
 xmake -y dump-spirv
 DUMP="./build/linux/x86_64/release/dump-spirv"
 [[ -x "$DUMP" ]] || { echo "dump-spirv missing: $DUMP" >&2; exit 1; }

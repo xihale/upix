@@ -1,40 +1,7 @@
 name: CI android-unit
 
-# Compile and test are separate jobs. Neither job builds native / NDK.
+# Manual only. Compile and test are separate jobs. No NDK / xmake.
 on:
-  push:
-    branches: [main, master]
-    paths:
-      - "apps/app/src/main/java/**"
-      - "apps/app/src/main/res/**"
-      - "apps/app/src/main/AndroidManifest.xml"
-      - "apps/app/src/test/**"
-      - "apps/app/build.gradle.kts"
-      - "apps/app/lint.xml"
-      - "apps/gradle/**"
-      - "apps/settings.gradle.kts"
-      - "apps/gradle.properties"
-      - "apps/build.gradle.kts"
-      - "scripts/compile_android_unit.sh"
-      - "scripts/run_android_unit.sh"
-      - ".github/actions/setup-android/**"
-      - ".github/workflows/ci-android-unit.yml"
-  pull_request:
-    paths:
-      - "apps/app/src/main/java/**"
-      - "apps/app/src/main/res/**"
-      - "apps/app/src/main/AndroidManifest.xml"
-      - "apps/app/src/test/**"
-      - "apps/app/build.gradle.kts"
-      - "apps/app/lint.xml"
-      - "apps/gradle/**"
-      - "apps/settings.gradle.kts"
-      - "apps/gradle.properties"
-      - "apps/build.gradle.kts"
-      - "scripts/compile_android_unit.sh"
-      - "scripts/run_android_unit.sh"
-      - ".github/actions/setup-android/**"
-      - ".github/workflows/ci-android-unit.yml"
   workflow_dispatch:
 
 concurrency:

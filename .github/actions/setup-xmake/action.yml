@@ -11,7 +11,22 @@ runs:
   steps:
     - name: Install host C++ deps
       shell: bash
-      run: sudo apt-get update -qq && sudo apt-get install -y -qq libdeflate-dev g++-14 ccache
+      run: |
+        case "${RUNNER_OS}" in
+          Linux)
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq libdeflate-dev g++-14 ccache
+            echo "CC=gcc-14" >> "$GITHUB_ENV"
+            echo "CXX=g++-14" >> "$GITHUB_ENV"
+            ;;
+          macOS)
+            brew install libdeflate ccache
+            ;;
+          *)
+            echo "unsupported RUNNER_OS=${RUNNER_OS}" >&2
+            exit 1
+            ;;
+        esac
 
     - uses: xmake-io/github-action-setup-xmake@v1
       with:

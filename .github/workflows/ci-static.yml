@@ -1,20 +1,7 @@
 name: CI static
 
-# Cheap, no compilers. UI token greps from DESIGN_LANGUAGE.md §11.
+# Manual only. UI token greps from DESIGN_LANGUAGE.md §11.
 on:
-  push:
-    branches: [main, master]
-    paths:
-      - "apps/app/src/main/java/io/upix/ui/**"
-      - "docs/DESIGN_LANGUAGE.md"
-      - "scripts/check_ui_tokens.sh"
-      - ".github/workflows/ci-static.yml"
-  pull_request:
-    paths:
-      - "apps/app/src/main/java/io/upix/ui/**"
-      - "docs/DESIGN_LANGUAGE.md"
-      - "scripts/check_ui_tokens.sh"
-      - ".github/workflows/ci-static.yml"
   workflow_dispatch:
 
 concurrency:

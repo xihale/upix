@@ -170,8 +170,8 @@ GPU 管线改动要求 md5/PSNR 双端验证输出不变（性能优化不得改
 
 | tag | 工作流 | 产物 |
 |-----|--------|------|
-| `cli-v0.x.y` | `.github/workflows/release-cli.yml` | portable Linux `upix-cli-{ver}-linux-x86_64.tar.gz` |
-| `android-v0.x.y` | `.github/workflows/release-android.yml` | 签名 `upix-android-{ver}.apk` |
+| `cli-v0.x.y` | `.github/workflows/release-cli.yml` | `upix-cli-{ver}-linux-x86_64.tar.gz` + `upix-cli-{ver}-macos-arm64.tar.gz` |
+| `android-v0.x.y` | `.github/workflows/release-android.yml` | 签名 `upix-android-{ver}-arm64-v8a.apk` |
 | `models` | 手动 `publish_models.py` | 模型 zip（滚动 release，不打新 tag） |
 
 CLI `0.1.0` 和 Android `0.1.0` 只是数字碰巧相同，互不绑定。
@@ -180,7 +180,8 @@ CLI `0.1.0` 和 Android `0.1.0` 只是数字碰巧相同，互不绑定。
 
 1. 改对应真源版本号，提交并推到 `main`。
 2. 打 **一条** 产品线的 tag：`cli-v0.x.y` **或** `android-v0.x.y`，推送。
-3. CI 编译 → 冒烟 → 建 GitHub release 并上传附件。
+   也可在 Actions 里 `workflow_dispatch` 填 version。
+3. 发版工作流编译对应平台 → 冒烟 → 建 GitHub release 并上传附件。
 4. 模型：`./scripts/publish_models.py`（见 `models/README.md`）。
 
 ### 5.3 Android release 签名
@@ -265,23 +266,28 @@ keystore 文件在 `~/.config/upix/android-release.jks`，**不进 git**。
 
 ## 9. CI
 
-分组独立、路径过滤、缓存分层。**编译和测试是不同 job**：编译 job 只出
-artifact，测试 job 只下载再跑，不再调 xmake / 不再编 Kotlin。改文档不跑
-任何编译，dump-spirv 只在 SPIR-V 缓存未命中时出现。每组可用
-`workflow_dispatch` 或本地 `act` 单独打通。
+`ci-*` **默认关掉**（无 push/PR），全部可在 Actions 里 `workflow_dispatch`。
+日常自动跑的只有发版：`cli-v*` / `android-v*` tag，同样也能手动触发。
+
+**编译和测试是不同 job**：编译 job 只出 artifact，测试 job 只下载再跑。
+
+平台分开，互不混编：
+
+| 产品 | 平台 |
+|------|------|
+| CLI | `linux-x86_64`、`macos-arm64` |
+| Android | `android-arm64-v8a` |
 
 ### 9.1 分组
 
-| 工作流 | 编译 job | 测试 job | 触发路径（摘要） |
-|--------|----------|----------|------------------|
-| `ci-static.yml` | — | UI token grep | `apps/.../ui/**` |
-| `ci-host.yml` | `build_cli.sh` + `build_host_tests.sh` → `host-bins` | 无编译器，直跑 `test_*` + `upix-cli --version` | `share/` `cli/` `tools/` `packages/` `xmake.lua` |
-| `ci-android-unit.yml` | `compileDebugUnitTestSources` + runtime-jar → `android-unit-build` | `testDebugUnitTest`，`-x` compile/bundle | Kotlin / res / 单测 / gradle |
-| `ci-android-apk.yml` | NDK + xmake + `assembleDebug` → APK | `unzip -l` 确认含 `libupix-native.so` | native 源、JNI、manifest/res |
-| `release-cli.yml` | portable CLI tarball | `--version` smoke；通过后才 `publish` | tag `cli-v*` |
-| `release-android.yml` | 签名 `assembleRelease` | `jarsigner -verify`；通过后才 `publish` | tag `android-v*` |
-
-GitHub 默认分支是 `main`，本地常见 `master`，两组都听。
+| 工作流 | 编译 job | 测试 job | 自动触发 |
+|--------|----------|----------|----------|
+| `ci-static.yml` | — | UI token grep | 否（手动） |
+| `ci-host.yml` | linux-x86_64 CLI + tests | 直跑 `test_*` | 否（手动） |
+| `ci-android-unit.yml` | Kotlin unit-test classes | `testDebugUnitTest` | 否（手动） |
+| `ci-android-apk.yml` | android-arm64-v8a debug APK | `unzip -l` 含 `.so` | 否（手动） |
+| `release-cli.yml` | linux-x86_64 + macos-arm64 | 各平台 `--version` | tag `cli-v*` |
+| `release-android.yml` | android-arm64-v8a 签名 APK | `jarsigner -verify` | tag `android-v*` |
 
 ### 9.2 缓存
 

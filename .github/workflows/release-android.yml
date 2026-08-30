@@ -1,9 +1,16 @@
 name: Release Android
 
+# Phone APK, android-arm64-v8a only. Desktop CLI is release-cli.yml.
 on:
   push:
     tags: ["android-v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without prefix (e.g. 0.1.0). Ignored on tag push."
+        required: true
+        type: string
+        default: "0.1.0"
 
 permissions:
   contents: write
@@ -13,8 +20,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  meta:
+    name: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/android-v* ]]; then
+            echo "version=${GITHUB_REF_NAME#android-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
-    name: compile
+    name: compile (android-arm64-v8a)
+    needs: meta
     runs-on: ubuntu-latest
     timeout-minutes: 75
     environment: release
@@ -45,14 +68,15 @@ jobs:
         working-directory: apps
         run: ./gradlew assembleRelease --no-daemon
       - name: Name APK
+        env:
+          VER: ${{ needs.meta.outputs.version }}
         run: |
-          VER="${GITHUB_REF_NAME#android-v}"
           cp apps/app/build/outputs/apk/release/app-release.apk \
-            "upix-android-${VER}.apk"
+            "upix-android-${VER}-arm64-v8a.apk"
       - uses: actions/upload-artifact@v4
         with:
           name: android-apk
-          path: upix-android-*.apk
+          path: upix-android-*-arm64-v8a.apk
           if-no-files-found: error
           retention-days: 7
       - name: ccache stats
@@ -60,7 +84,7 @@ jobs:
         run: ccache -s || true
 
   smoke:
-    name: run smoke
+    name: smoke (android-arm64-v8a)
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -75,13 +99,13 @@ jobs:
       - name: Verify signed APK
         run: |
           set -euo pipefail
-          apk="$(ls upix-android-*.apk)"
+          apk="$(ls upix-android-*-arm64-v8a.apk)"
           unzip -l "$apk" | grep -F 'lib/arm64-v8a/libupix-native.so'
           jarsigner -verify "$apk"
 
   publish:
     name: upload release
-    needs: smoke
+    needs: [meta, smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -91,11 +115,11 @@ jobs:
       - name: Create release and upload
         env:
           GH_TOKEN: ${{ github.token }}
+          VER: ${{ needs.meta.outputs.version }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          VER="${TAG#android-v}"
+          TAG="android-v${VER}"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" 2>/dev/null \
             || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
                  --title "Upix Android ${VER}" --generate-notes --target "$GITHUB_SHA"
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-            "upix-android-${VER}.apk"
+            "upix-android-${VER}-arm64-v8a.apk"

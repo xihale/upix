@@ -1,36 +1,7 @@
 name: CI host
 
-# Build and test are separate jobs. The test job has no xmake, no compiler.
+# Manual only. Build and test are separate jobs; the test job has no compiler.
 on:
-  push:
-    branches: [main, master]
-    paths:
-      - "share/**"
-      - "cli/**"
-      - "tools/**"
-      - "packages/**"
-      - "xmake.lua"
-      - "scripts/build_cli.sh"
-      - "scripts/build_host_tests.sh"
-      - "scripts/run_host_tests.sh"
-      - "scripts/gen_spirv_pack.sh"
-      - ".github/actions/setup-xmake/**"
-      - ".github/actions/spirv-pack/**"
-      - ".github/workflows/ci-host.yml"
-  pull_request:
-    paths:
-      - "share/**"
-      - "cli/**"
-      - "tools/**"
-      - "packages/**"
-      - "xmake.lua"
-      - "scripts/build_cli.sh"
-      - "scripts/build_host_tests.sh"
-      - "scripts/run_host_tests.sh"
-      - "scripts/gen_spirv_pack.sh"
-      - ".github/actions/setup-xmake/**"
-      - ".github/actions/spirv-pack/**"
-      - ".github/workflows/ci-host.yml"
   workflow_dispatch:
 
 concurrency:
@@ -42,7 +13,7 @@ permissions:
 
 jobs:
   build:
-    name: compile
+    name: compile (linux-x86_64)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:

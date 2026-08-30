@@ -1,9 +1,17 @@
 name: Release CLI
 
+# Desktop CLI for linux-x86_64 and macos-arm64. Android is a separate product
+# (release-android.yml → android-arm64-v8a).
 on:
   push:
     tags: ["cli-v*"]
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without prefix (e.g. 0.1.0). Ignored on tag push."
+        required: true
+        type: string
+        default: "0.1.0"
 
 permissions:
   contents: write
@@ -13,8 +21,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: compile
+  meta:
+    name: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - id: v
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/cli-v* ]]; then
+            echo "version=${GITHUB_REF_NAME#cli-v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  spirv:
+    name: spirv pack (linux)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -23,58 +46,117 @@ jobs:
         with:
           cache-kind: host
       - uses: ./.github/actions/spirv-pack
-      - name: Build (portable release)
-        run: scripts/build_cli.sh release --cc=gcc-14 --cxx=g++-14 --native_isa=n
-      - name: Pack
-        run: |
-          VER="${GITHUB_REF_NAME#cli-v}"
-          tar czf "upix-cli-${VER}-linux-x86_64.tar.gz" \
-            -C build/linux/x86_64/release upix-cli
       - uses: actions/upload-artifact@v4
         with:
-          name: cli-tarball
-          path: upix-cli-*-linux-x86_64.tar.gz
+          name: spirv-pack
+          path: share/core/spirv_pack.bin
+          if-no-files-found: error
+          retention-days: 3
+
+  build:
+    name: compile (${{ matrix.artifact }})
+    needs: [meta, spirv]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            plat: linux
+            arch: x86_64
+            artifact: linux-x86_64
+            extra: --cc=gcc-14 --cxx=g++-14 --native_isa=n
+          - os: macos-latest
+            plat: macosx
+            arch: arm64
+            artifact: macos-arm64
+            extra: --native_isa=n
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: spirv-pack
+          path: share/core
+      - uses: ./.github/actions/setup-xmake
+        with:
+          cache-kind: host-${{ matrix.artifact }}
+      - name: Build CLI
+        env:
+          UPIX_PLAT: ${{ matrix.plat }}
+          UPIX_ARCH: ${{ matrix.arch }}
+        run: scripts/build_cli.sh release ${{ matrix.extra }}
+      - name: Pack
+        env:
+          VER: ${{ needs.meta.outputs.version }}
+        run: |
+          tar czf "upix-cli-${VER}-${{ matrix.artifact }}.tar.gz" \
+            -C "build/${{ matrix.plat }}/${{ matrix.arch }}/release" upix-cli
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.artifact }}
+          path: upix-cli-*.tar.gz
           if-no-files-found: error
           retention-days: 7
+      - name: ccache stats
+        if: always()
+        run: ccache -s || true
 
   smoke:
-    name: run smoke
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
+    name: smoke (${{ matrix.artifact }})
+    needs: [meta, build]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: linux-x86_64
+          - os: macos-latest
+            artifact: macos-arm64
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: cli-tarball
+          name: cli-${{ matrix.artifact }}
       - name: Runtime libs (no compiler)
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libdeflate-dev libpng-dev libjpeg-dev libwebp-dev \
-            libcurl4-openssl-dev libzip-dev libomp-dev
+          case "${RUNNER_OS}" in
+            Linux)
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq \
+                libdeflate-dev libpng-dev libjpeg-dev libwebp-dev \
+                libcurl4-openssl-dev libzip-dev libomp-dev
+              ;;
+            macOS)
+              brew install libdeflate libpng libjpeg libwebp curl libzip libomp
+              ;;
+          esac
       - name: Unpack and --version
         run: |
-          tar xzf upix-cli-*-linux-x86_64.tar.gz
+          tar xzf upix-cli-*.tar.gz
           chmod +x upix-cli
           ./upix-cli --version
 
   publish:
     name: upload release
-    needs: smoke
+    needs: [meta, smoke]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: cli-tarball
+          pattern: cli-*
+          merge-multiple: true
       - name: Create release and upload
         env:
           GH_TOKEN: ${{ github.token }}
+          VER: ${{ needs.meta.outputs.version }}
         run: |
-          TAG="${GITHUB_REF_NAME}"
-          VER="${TAG#cli-v}"
+          TAG="cli-v${VER}"
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" 2>/dev/null \
             || gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
                  --title "Upix CLI ${VER}" --generate-notes --target "$GITHUB_SHA"
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber \
-            "upix-cli-${VER}-linux-x86_64.tar.gz"
+            upix-cli-"${VER}"-linux-x86_64.tar.gz \
+            upix-cli-"${VER}"-macos-arm64.tar.gz
