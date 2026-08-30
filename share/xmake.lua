@@ -6,6 +6,9 @@ target("upix-core")
 
     add_packages("ncnn~runtime", "libwebp", "libpng", "libjpeg", "glaze", "libsodium")
     add_packages("libdeflate")
+    -- image.cpp post-muxes XMP via libwebpmux; xmake-repo does not always
+    -- propagate that extra lib to dependents on macosx.
+    add_links("webpmux")
     -- Optional AVIF codecs (root xmake.lua options): the defines gate the
     -- static-libavif branch of utils/image_avif.cpp; the package provides
     -- avif/avif.h + the static libs for everything that links upix-core.

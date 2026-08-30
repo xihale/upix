@@ -31,11 +31,14 @@ if is_plat("android") then
     add_ldflags("-Wl,--gc-sections", "-Wl,--exclude-libs,ALL", "-Wl,--as-needed")
 end
 
--- Security hardening flags
-if is_plat("linux") or is_plat("macosx") then
+-- Security hardening flags. -pie / -z relro are ELF; Mach-O PIE is the
+-- default and clang errors on unused -pie with -Werror.
+if is_plat("linux") then
     add_cxflags("-fstack-protector-strong", "-D_FORTIFY_SOURCE=2")
     add_cxflags("-fPIE")
     add_ldflags("-pie", "-Wl,-z,relro,-z,now")
+elseif is_plat("macosx") then
+    add_cxflags("-fstack-protector-strong", "-D_FORTIFY_SOURCE=2")
 end
 
 -- Compiler warnings
