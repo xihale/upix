@@ -12,7 +12,7 @@
 | 工具 | 版本 | 说明 |
 |------|------|------|
 | xmake | ≥ 3.0 | 双端 C++ 构建唯一入口 |
-| C++ 编译器 | GCC 11+ / Clang 13+ | C++23（JNI 桥为 C++17） |
+| C++ 编译器 | GCC 14+ / Clang 18+ | C++23（JNI 桥为 C++17）；CLI 用 `<print>`，GCC 14 才有 |
 | JDK / Android SDK / NDK | NDK `29.0.14206865` | NDK 版本钉死在 `apps/app/build.gradle.kts` |
 | Gradle | 9.7.1（wrapper） | `./gradlew` 自动拉取，镜像已配阿里云 |
 | gh CLI | — | 发版（models release）用，`gh auth login` |

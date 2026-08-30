@@ -15,9 +15,9 @@ jobs:
       - uses: actions/checkout@v4
 
       # libdeflate is system-only on desktop platforms (see root xmake.lua);
-      # runners don't ship it.
+      # runners don't ship it. std::print (<print>) needs GCC 14+.
       - name: Install system deps
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libdeflate-dev
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libdeflate-dev g++-14
 
       - name: Install xmake
         run: |
@@ -32,13 +32,13 @@ jobs:
           restore-keys: release-cli-${{ runner.os }}-
 
       - name: Build (release)
-        run: scripts/build_cli.sh release
+        run: scripts/build_cli.sh release --cc=gcc-14 --cxx=g++-14
 
       - name: Pack
         run: |
           TAG="${{ github.ref_name }}"
           tar czf "upix-cli-${TAG}-linux-x86_64.tar.gz" \
-            -C build/linux/x86_64/release upix-cli upix-perf
+            -C build/linux/x86_64/release upix-cli
 
       - name: Create release and upload
         env:
