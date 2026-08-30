@@ -167,7 +167,8 @@ GPU 管线改动要求 md5/PSNR 双端验证输出不变（性能优化不得改
 | 模型 | release `manifest.json` `version` 字段 | `scripts/publish_models.py` 维护 |
 
 两条产品线独立发版，tag 前缀分离：`cli-v*`、`android-v*`、`models`（模型滚动
-release，不打新 tag）。
+release，不打新 tag）。项目级统一发版推裸 `v*` tag：CI 自动构建 Linux CLI
+二进制并挂到对应 GitHub release（`.github/workflows/release.yml`）。
 
 ### 5.2 发版清单
 

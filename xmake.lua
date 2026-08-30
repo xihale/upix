@@ -2,7 +2,7 @@ set_project("upix")
 -- CLI/desktop release channel: feeds upix-cli --version (on_load in
 -- cli/xmake.lua). The Android app versions independently in
 -- apps/app/build.gradle.kts. Release tags: cli-v*, android-v*, models.
-set_version("0.2.0")
+set_version("0.2.1")
 set_languages("c++23")
 
 add_repositories("upix-local " .. os.scriptdir())
