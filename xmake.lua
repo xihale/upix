@@ -146,7 +146,11 @@ local ncnn_x86_isa = has_config("native_isa") and is_plat("linux") and "auto" or
 -- 20260113 is the newest ncnn version with a matching glslang-nihui release.
 -- Runtime ncnn looks up a frozen SPIR-V pack and does not link glslang.
 -- dump-spirv (glslang-linked ncnn) generates share/core/spirv_pack.bin if missing.
-add_requires("ncnn~runtime 20260113", {configs = {vulkan = true, online_spirv = false, x86_isa = ncnn_x86_isa}})
+-- Desktop builds use ncnn's built-in minimal omp runtime (simpleomp): host
+-- binaries (release tarballs, dump-spirv) run directly with no rpath into
+-- xmake package dirs, so the real libomp shared runtime must not be a
+-- dependency. Android keeps real libomp (packaged inside the APK).
+add_requires("ncnn~runtime 20260113", {configs = {vulkan = true, online_spirv = false, x86_isa = ncnn_x86_isa, simpleomp = not is_plat("android")}})
 -- libwebpmux: XMP marker chunks for WebP outputs (image.cpp post-mux).
 add_requires("libwebp", {configs = {libwebpmux = true}})
 add_requires("libpng", "libjpeg", "glaze", "libsodium")
@@ -169,7 +173,7 @@ if is_plat("android") then
 end
 
 if not is_plat("android") then
-    add_requires("ncnn~glslang 20260113", {configs = {vulkan = true, online_spirv = true, skip_device_defines = true, x86_isa = ncnn_x86_isa}})
+    add_requires("ncnn~glslang 20260113", {configs = {vulkan = true, online_spirv = true, skip_device_defines = true, x86_isa = ncnn_x86_isa, simpleomp = true}})
     add_requires("qr-code-generator-cpp")
     add_requires("cli11")
     add_requires("libcurl")

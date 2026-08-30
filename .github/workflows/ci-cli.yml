@@ -1,0 +1,47 @@
+name: CI CLI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  cli:
+    name: CLI build + host tests (linux-x86_64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # libdeflate is system-only on desktop platforms (see root xmake.lua);
+      # runners don't ship it. std::print (<print>) needs GCC 14+.
+      - name: Install system deps
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libdeflate-dev g++-14
+
+      - name: Install xmake
+        run: |
+          curl -fsSL https://xmake.io/shget.text | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Cache xmake packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.xmake/packages
+          key: xmake-cli-${{ runner.os }}-${{ hashFiles('xmake.lua', 'cli/xmake.lua', 'share/xmake.lua', 'packages/**') }}
+          restore-keys: xmake-cli-${{ runner.os }}-
+
+      - name: Build (release)
+        run: scripts/build_cli.sh release --cc=gcc-14 --cxx=g++-14
+
+      # All host-built binaries are self-contained (libomp is linked
+      # statically on desktop), so tests run through xmake purely for
+      # uniformity — direct exec would work too.
+      - name: Host tests
+        run: |
+          set -e
+          for t in test_crypto test_protocol test_distributed_session test_sr_marker \
+                   test_exif test_gpu_precision test_model_downloader test_image_avif; do
+            echo "::group::$t"
+            xmake build -y "$t"
+            xmake run "$t"
+            echo "::endgroup::"
+          done

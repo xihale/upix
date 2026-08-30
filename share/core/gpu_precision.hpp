@@ -22,6 +22,7 @@
 
 #include <platform.h>
 #include <option.h>
+#include <cstdint>
 #include <optional>
 #include <string_view>
 #if NCNN_VULKAN

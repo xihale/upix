@@ -4,6 +4,7 @@
 
 #include "utils/logger.hpp"
 #include <libdeflate.h>
+#include <cstdint>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
