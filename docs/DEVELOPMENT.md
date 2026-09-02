@@ -88,6 +88,30 @@ xmake build test_model_downloader
 改动加密、协议、图像编解码、sr_marker 后必须跑对应测试。改 GPU kernel 后跑
 `UPIX_KERNEL_SELFTEST=1` 冒烟（见坑 4）。
 
+### 3.1b serve daemon E2E 套件
+
+黑盒打 daemon 全链路（协议健壮性 / 并发 / 生命周期 / 输入输出滥用）。改
+`share/core/serve`、`share/utils/unix_socket.cpp`、`cli/src/cmd_process.cpp`
+守护路径、pid 护栏、保存管线后**必跑**：
+
+```bash
+scripts/run_serve_tests.sh                    # CPU 档（~3 分钟，默认）
+scripts/run_serve_tests.sh --device gpu       # GPU 档（~2 分钟）
+scripts/run_serve_tests.sh --suite lifecycle  # 单套件
+scripts/run_serve_tests.sh --keep-work        # 保留现场调试
+```
+
+前提：`scripts/build_cli.sh release` 已产出二进制；模型在
+`~/.local/share/upix/models`（`upix-cli model download NomosUni-SPAN-x2
+HFA2k-LUDVAE-SPAN-x2`）。依赖 python3 + numpy + Pillow。每条用例锚定的
+分支、以及并发 fp16 漂移等**非确定性断言的定标依据**见
+`docs/serve-tests-design.md`——不要收紧回位级比较。
+
+ASAN 档：`xmake f -m debug && xmake build -y upix-cli`（debug 自带
+ASAN），跑
+`scripts/run_serve_tests.sh --binary build/linux/x86_64/debug/upix-cli --device cpu`，
+跑完切回 release。
+
 ### 3.2 Android
 
 ```bash
@@ -283,7 +307,7 @@ keystore 文件在 `~/.config/upix/android-release.jks`，**不进 git**。
 | 工作流 | 编译 job | 测试 job | 自动触发 |
 |--------|----------|----------|----------|
 | `ci-static.yml` | — | UI token grep | 否（手动） |
-| `ci-host.yml` | linux-x86_64 CLI + tests | 直跑 `test_*` | 否（手动） |
+| `ci-host.yml` | linux-x86_64 CLI + tests | 直跑 `test_*` + serve E2E（CPU） | 否（手动） |
 | `ci-android-unit.yml` | Kotlin unit-test classes | `testDebugUnitTest` | 否（手动） |
 | `ci-android-apk.yml` | android-arm64-v8a debug APK | `unzip -l` 含 `.so` | 否（手动） |
 | `release-cli.yml` | linux-x86_64 + macos-arm64 | 各平台 `--version` | tag `cli-v*` |

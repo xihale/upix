@@ -82,3 +82,6 @@ temp/
 gpu_*.csv
 gpu_*.txt
 gpu_*.log
+
+# python
+__pycache__/

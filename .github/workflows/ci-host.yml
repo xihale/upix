@@ -42,7 +42,7 @@ jobs:
     name: run tests
     needs: build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -59,3 +59,10 @@ jobs:
         run: chmod +x build/linux/x86_64/release/upix-cli cli/build/test_*
       - name: Run host tests
         run: scripts/run_host_tests.sh
+      - name: Fetch test models
+        run: build/linux/x86_64/release/upix-cli model download \
+          NomosUni-SPAN-x2 HFA2k-LUDVAE-SPAN-x2
+      - name: Serve E2E suite (CPU)
+        run: |
+          sudo apt-get install -y -qq python3-numpy python3-pil
+          scripts/run_serve_tests.sh --device cpu
