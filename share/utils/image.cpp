@@ -9,6 +9,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <format>
 #include <stdexcept>
 #include <memory>
 #include <print>
@@ -17,6 +19,8 @@
 #include <thread>
 #include <fstream>
 #include <string_view>
+
+#include <unistd.h>
 
 extern "C" {
 #include <png.h>
@@ -89,16 +93,51 @@ namespace {
         return buffer;
     }
 
-    auto write_file(const std::filesystem::path& path, std::span<const uint8_t> data) -> expected<void, ImageError> {
-        std::ofstream file(path, std::ios::binary);
-        if (!file.is_open()) {
-            return std::unexpected(ImageError{3, "Cannot open file for writing: " + path.string()});
-        }
-        if (!file.write(reinterpret_cast<const char*>(data.data()),
-                        static_cast<std::streamsize>(data.size()))) {
-            return std::unexpected(ImageError{4, "Failed to write file: " + path.string()});
+    // Unique same-directory staging path; the directory placement keeps the
+    // publishing rename same-filesystem (atomic). PID + thread id keep two
+    // writers — even two threads of one daemon process — off each other's
+    // staging file.
+    auto staging_path_for(const std::filesystem::path& path) -> std::filesystem::path {
+        auto tmp = path;
+        tmp += std::format(".upix-tmp-{}-{}", static_cast<long>(::getpid()),
+                           std::hash<std::thread::id>{}(std::this_thread::get_id()));
+        return tmp;
+    }
+
+    auto publish_staged_file(const std::filesystem::path& tmp,
+                             const std::filesystem::path& path) -> expected<void, ImageError> {
+        std::error_code ec;
+        std::filesystem::rename(tmp, path, ec);
+        if (ec) {
+            std::error_code rm_ec;
+            std::filesystem::remove(tmp, rm_ec);
+            return std::unexpected(ImageError{22, "Failed to publish output: " + ec.message()});
         }
         return {};
+    }
+
+    auto write_file(const std::filesystem::path& path, std::span<const uint8_t> data) -> expected<void, ImageError> {
+        // Publish via rename: two writers can target the same output path
+        // concurrently (two daemon connections deriving one default name, or a
+        // daemon racing an inline run), and in-place ofstream writes would
+        // interleave their streams into a corrupt file both sides report as
+        // saved. Readers only ever see complete files; the last publisher
+        // wins. POSIX/macOS rename replaces existing targets (no Windows CLI
+        // target).
+        const std::filesystem::path tmp = staging_path_for(path);
+        {
+            std::ofstream file(tmp, std::ios::binary | std::ios::trunc);
+            if (!file.is_open()) {
+                return std::unexpected(ImageError{3, "Cannot open file for writing: " + tmp.string()});
+            }
+            if (!file.write(reinterpret_cast<const char*>(data.data()),
+                            static_cast<std::streamsize>(data.size()))) {
+                std::error_code rm_ec;
+                std::filesystem::remove(tmp, rm_ec);
+                return std::unexpected(ImageError{4, "Failed to write file: " + tmp.string()});
+            }
+        }
+        return publish_staged_file(tmp, path);
     }
 
     auto png_compression_level_from_quality(int quality) -> int {
@@ -307,18 +346,26 @@ namespace {
 
     auto save_png_streaming(const Image& image, const std::filesystem::path& path, int level,
                             const std::string& xmp) -> expected<void, ImageError> {
-        std::ofstream file(path, std::ios::binary);
+        // Stage + rename like write_file: concurrent writers of the same path
+        // must not interleave their libpng byte streams into a file both sides
+        // report as saved.
+        const std::filesystem::path tmp = staging_path_for(path);
+        std::ofstream file(tmp, std::ios::binary);
         if (!file.is_open()) {
-            return std::unexpected(ImageError{3, "Cannot open file for writing: " + path.string()});
+            return std::unexpected(ImageError{3, "Cannot open file for writing: " + tmp.string()});
         }
 
         png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
         if (!png) {
+            std::error_code rm_ec;
+            std::filesystem::remove(tmp, rm_ec);
             return std::unexpected(ImageError{5, "Failed to create PNG write struct"});
         }
         png_infop info = png_create_info_struct(png);
         if (!info) {
             png_destroy_write_struct(&png, nullptr);
+            std::error_code rm_ec;
+            std::filesystem::remove(tmp, rm_ec);
             return std::unexpected(ImageError{5, "Failed to create PNG info struct"});
         }
 
@@ -367,9 +414,11 @@ namespace {
 
         file.close();
         if (encode_failed || !file) {
+            std::error_code rm_ec;
+            std::filesystem::remove(tmp, rm_ec);
             return std::unexpected(ImageError{4, "Failed to write file: " + path.string()});
         }
-        return {};
+        return publish_staged_file(tmp, path);
     }
 
     auto load_png(const std::vector<uint8_t>& buffer) -> expected<Image, ImageError> {

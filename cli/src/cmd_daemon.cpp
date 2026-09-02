@@ -130,7 +130,16 @@ int cmd_daemon(const args::Daemon& a) {
                           a.force_cpu ? upix::ServeDevice::CPU
                                       : upix::ServeDevice::GPU);
     if (rc != 0) {
-        std::filesystem::remove(pid_path);
+        // We never wrote the pid file on a failed start, so whatever sits
+        // there belongs to someone else. Remove it only when it describes no
+        // live process: a lost start race (bind refused because another
+        // daemon holds the socket) must not unlink the winner's pid file.
+        std::ifstream pf(pid_path);
+        pid_t owner = 0;
+        if (pf) pf >> owner;
+        if (owner <= 0 || ::kill(owner, 0) != 0) {
+            std::filesystem::remove(pid_path);
+        }
         return rc;
     }
 

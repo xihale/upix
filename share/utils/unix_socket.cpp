@@ -99,22 +99,58 @@ auto UnixServer::listen(const std::string& path, int backlog) -> expected<void, 
         return std::unexpected(NetworkError{errno, "Failed to create socket"});
     }
 
-    // Remove any stale socket file left by a crashed previous instance. Ignore
-    // ENOENT; other unlink errors are fatal (the bind below would fail anyway).
-    if (::unlink(path.c_str()) < 0 && errno != ENOENT) {
-        int e = errno;
-        stop();
-        return std::unexpected(NetworkError{e, "Failed to unlink stale socket"});
-    }
-
     sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
     std::strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
 
-    if (::bind(server_socket_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    // Bind first, without unlinking an existing socket file: that file may
+    // belong to a live daemon, and blind unlink+bind would silently steal its
+    // accept queue, leaving two "running" daemons where only one is reachable
+    // (and both serve files with independent engines). Only remove the file
+    // after a probe proves nothing live is behind it.
+    auto try_bind = [&]() -> bool {
+        return ::bind(server_socket_, reinterpret_cast<const sockaddr*>(&addr),
+                      sizeof(addr)) == 0;
+    };
+    if (!try_bind()) {
         int e = errno;
-        stop();
-        return std::unexpected(NetworkError{e, "Bind failed"});
+        if (e != EADDRINUSE) {
+            stop();
+            return std::unexpected(NetworkError{e, "Bind failed"});
+        }
+        int probe = ::socket(AF_UNIX, SOCK_STREAM, 0);
+        if (probe < 0) {
+            int pe = errno;
+            stop();
+            return std::unexpected(NetworkError{pe, "Probe socket failed"});
+        }
+        if (::connect(probe, reinterpret_cast<const sockaddr*>(&addr),
+                      sizeof(addr)) == 0) {
+            ::close(probe);
+            stop();
+            return std::unexpected(NetworkError{EADDRINUSE,
+                "Socket already served by a live process"});
+        }
+        int pe = errno;
+        ::close(probe);
+        if (pe != ECONNREFUSED) {
+            // Not connectable and not refused (EACCES, ENOENT race, ...) —
+            // refuse to touch a file we cannot understand.
+            stop();
+            return std::unexpected(NetworkError{pe,
+                "Socket path in use by unconnectable file"});
+        }
+        // Stale file from a crashed instance: clean it up and retry once.
+        if (::unlink(path.c_str()) < 0 && errno != ENOENT) {
+            int ue = errno;
+            stop();
+            return std::unexpected(NetworkError{ue, "Failed to unlink stale socket"});
+        }
+        if (!try_bind()) {
+            e = errno;
+            stop();
+            return std::unexpected(NetworkError{e, "Bind failed"});
+        }
     }
 
     // Restrict to owner-only: local auth via filesystem permissions.
