@@ -56,25 +56,28 @@ namespace fs = std::filesystem;
 namespace {
 
 // Probe the daemon socket. Returns true when a daemon accepts connections.
-// Removes a stale socket file (daemon died without cleanup) so a fresh spawn
-// isn't blocked by it.
+// Never removes the file on failure: a refused/unconnectable socket may be a
+// live daemon still starting up (between bind and listen), and deleting it
+// would orphan that daemon from its path (split-brain). Stale-file cleanup is
+// the daemon-side listener's job — it probes and only ever unlinks paths that
+// really are socket files.
 auto try_connect_daemon(const std::string& sock_path) -> bool {
     std::error_code ec;
     if (!std::filesystem::exists(sock_path, ec)) return false;
     upix::UnixSocket sock;
-    if (sock.connect(sock_path).has_value()) return true;
-    std::filesystem::remove(sock_path, ec);
-    return false;
+    return sock.connect(sock_path).has_value();
 }
 
 // Is a daemon alive per its pid file? Race guard: a concurrent process that
-// already spawned a daemon gets to finish; we only wait below.
+// already spawned a daemon gets to finish; we only wait below. The pid must
+// actually be an upix daemon — zombies and recycled pids pass kill(0) and
+// would cost every invocation the full spawn-wait before the inline fallback.
 auto daemon_pid_alive(const std::string& sock_path) -> bool {
     std::ifstream pf(sock_path + ".pid");
     if (!pf) return false;
     pid_t pid = 0;
     pf >> pid;
-    return pid > 0 && ::kill(pid, 0) == 0;
+    return pid_is_upix_daemon(pid);
 }
 
 // Re-exec ourselves as `upix daemon` in the background, then wait until
@@ -558,6 +561,12 @@ int cmd_process(const args::Process& a) {
     }
 
     const auto final_output_path = upix::resolve_output_path(eff_output, config);
+    // Match the daemon path: an explicit -o into a not-yet-existing directory
+    // creates it instead of failing at open() time.
+    if (!final_output_path.parent_path().empty()) {
+        std::error_code mk_ec;
+        std::filesystem::create_directories(final_output_path.parent_path(), mk_ec);
+    }
     LOG_INFO("Engine", "Inference done, encoding and saving output...");
     const auto sr_xmp = upix::sr_marker::build_xmp(
         model_name_resolved, scale, static_cast<int64_t>(std::time(nullptr)));

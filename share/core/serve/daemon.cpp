@@ -33,6 +33,20 @@ namespace {
 // Path length cap for the path-driven request (client sends absolute paths).
 constexpr uint32_t MAX_SERVE_PATH_BYTES = 4096u;
 
+// Payload can never legitimately exceed the fixed struct plus both capped
+// paths. Without this bound, a corrupt or hostile client declares a ~4 GB
+// payload_length and the vector below either OOMs the daemon or throws an
+// uncaught bad_alloc inside the connection thread (→ terminate).
+constexpr uint32_t MAX_SERVE_PAYLOAD_BYTES =
+    static_cast<uint32_t>(sizeof(ServeRequest)) + 2u * MAX_SERVE_PATH_BYTES;
+
+// Fixed-width wire fields are not guaranteed NUL-terminated; std::string
+// construction from a bare char* would read past the struct. Copy with an
+// explicit bound instead.
+auto bounded_string(const char* src, size_t capacity) -> std::string {
+    return {src, ::strnlen(src, capacity)};  // POSIX: not in std:: on glibc
+}
+
 // Write a framed message (header + payload) over a UnixSocket.
 auto send_via(UnixSocket& sock, MessageType type, const void* payload, size_t len)
     -> bool {
@@ -170,7 +184,8 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     if (!sock->receive_all(hdr_buf.data(), hdr_buf.size())) return;
     auto parsed = Protocol::parse_header(hdr_buf);
     if (!parsed || parsed->type != MessageType::MSG_SERVE_REQUEST ||
-        parsed->payload_length < sizeof(ServeRequest)) {
+        parsed->payload_length < sizeof(ServeRequest) ||
+        parsed->payload_length > MAX_SERVE_PAYLOAD_BYTES) {
         // Malformed: send a minimal error response and bail.
         send_serve_error(*sock, "expected MSG_SERVE_REQUEST");
         return;
@@ -232,7 +247,8 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     Image out_image;
     {
         std::lock_guard<std::mutex> lk(engine_mutex_);
-        if (ensure_model_loaded(req.model_name) != 0) {
+        if (ensure_model_loaded(bounded_string(req.model_name,
+                                               sizeof(req.model_name))) != 0) {
             send_serve_error(*sock, "model load failed");
             return;
         }
@@ -303,7 +319,8 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     // input extension when it maps to a known encoder (same rule as the CLI's
     // derive_default_output).
     ProcessingConfig out_cfg;
-    out_cfg.output_format = req.output_format;
+    out_cfg.output_format = bounded_string(req.output_format,
+                                           sizeof(req.output_format));
     const std::filesystem::path eff_out = [&]() -> std::filesystem::path {
         if (!output_path.empty()) return output_path;
         std::filesystem::path in(input_path);

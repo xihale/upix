@@ -12,6 +12,8 @@
 #include <optional>
 #include <string>
 
+#include <sys/types.h>  // pid_t
+
 #include "utils/image.hpp"
 #include "utils/network.hpp"  // MAX_NETWORK_PAYLOAD
 
@@ -48,6 +50,13 @@ void daemon_signal_handler(int);
 // never cwd-relative; the --models-dir flag wins by being bound directly to
 // each subcommand's models_dir field).
 auto default_models_dir() -> std::string;
+
+// Is `pid` a live process that is actually our serve daemon? kill(pid, 0)
+// alone also succeeds for zombies and for an unrelated process that recycled
+// the pid, and both make every `upix process` pay the full daemon-spawn wait
+// before falling back inline. Verifies the executable (and on Linux the
+// command line) so pid files can be trusted.
+auto pid_is_upix_daemon(pid_t pid) -> bool;
 
 // ── Image / format helpers ──────────────────────────────────────────────────
 // Infer output format ("png"/"jpg"/"webp"/"avif") from a file extension; "" if unknown.

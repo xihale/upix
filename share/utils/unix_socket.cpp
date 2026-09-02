@@ -140,6 +140,16 @@ auto UnixServer::listen(const std::string& path, int backlog) -> expected<void, 
             return std::unexpected(NetworkError{pe,
                 "Socket path in use by unconnectable file"});
         }
+        // ECONNREFUSED alone is not proof of a dead daemon: Linux reports it
+        // for connect() to any existing non-socket file too. Only ever remove
+        // the path when it really is (was) a socket — never a user file that
+        // happens to sit on our path.
+        struct stat st{};
+        if (::stat(path.c_str(), &st) == 0 && !S_ISSOCK(st.st_mode)) {
+            stop();
+            return std::unexpected(NetworkError{EEXIST,
+                "Socket path exists but is not a socket file"});
+        }
         // Stale file from a crashed instance: clean it up and retry once.
         if (::unlink(path.c_str()) < 0 && errno != ENOENT) {
             int ue = errno;

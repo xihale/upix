@@ -6,11 +6,19 @@
 #include <cstdlib>
 #include <filesystem>
 #include <format>
+#include <fstream>
+#include <iterator>
 #include <print>
 #include <ranges>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <signal.h>
+#include <unistd.h>
+#ifdef __APPLE__
+#include <libproc.h>
+#endif
 
 #include "qrcodegen.hpp"
 
@@ -69,6 +77,36 @@ auto default_models_dir() -> std::string {
         return std::format("{}/.local/share/upix/models", home);
     }
     return "./models";  // no HOME/XDG at all (degenerate): keep something usable
+}
+
+auto pid_is_upix_daemon(pid_t pid) -> bool {
+    if (pid <= 0 || ::kill(pid, 0) != 0) {
+        return false;
+    }
+#if defined(__linux__)
+    // A zombie (parent not reaping) and any process that recycled this pid
+    // both pass kill(0). The exe symlink is the reliable check: it fails for
+    // zombies and names the real binary otherwise.
+    std::error_code ec;
+    const auto exe = std::filesystem::read_symlink(
+        std::format("/proc/{}/exe", pid), ec);
+    if (ec || exe.string().find("upix") == std::string::npos) {
+        return false;
+    }
+    // And it must be the daemon subcommand, not an unrelated upix process.
+    std::ifstream cmd(std::format("/proc/{}/cmdline", pid), std::ios::binary);
+    const std::string argv((std::istreambuf_iterator<char>(cmd)),
+                           std::istreambuf_iterator<char>());
+    return argv.find("daemon") != std::string::npos;
+#elif defined(__APPLE__)
+    char path[PROC_PIDPATHINFO_MAXSIZE];
+    if (::proc_pidpath(pid, path, sizeof(path)) <= 0) {
+        return false;  // zombies fail here too
+    }
+    return std::string_view(path).find("upix") != std::string_view::npos;
+#else
+    return true;  // no executable probe on this platform: keep kill(0) semantics
+#endif
 }
 
 // ── Image / format helpers ──────────────────────────────────────────────────

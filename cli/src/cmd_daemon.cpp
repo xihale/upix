@@ -63,7 +63,7 @@ int cmd_daemon(const args::Daemon& a) {
         // on the next poll tick (~500 ms), so returning immediately would
         // leave `daemon status` reporting "running" for a moment after stop.
         for (int i = 0; i < 60; ++i) {  // up to 3 s
-            if (::kill(pid, 0) != 0 && errno == ESRCH) {
+            if (!pid_is_upix_daemon(pid)) {
                 std::println("stopped (pid {})", pid);
                 return 0;
             }
@@ -86,7 +86,7 @@ int cmd_daemon(const args::Daemon& a) {
             std::println(stderr, "status: corrupt pid file at {}", pid_path);
             return 1;
         }
-        if (::kill(pid, 0) != 0) {
+        if (!pid_is_upix_daemon(pid)) {
             std::println("not running (stale pid file)");
             return 1;
         }
@@ -99,13 +99,15 @@ int cmd_daemon(const args::Daemon& a) {
     }
 
     // ── start ────────────────────────────────────────────────────────────────
-    // Guard: if a pid file exists and the pid is alive, refuse (already running).
+    // Guard: if a pid file exists and names a live upix daemon, refuse
+    // (already running). kill(0) alone would also bless zombies and recycled
+    // pids and wedge every future start.
     {
         std::ifstream pf(pid_path);
         if (pf) {
             pid_t existing = 0;
             pf >> existing;
-            if (existing > 0 && ::kill(existing, 0) == 0) {
+            if (pid_is_upix_daemon(existing)) {
                 std::println(stderr, "daemon already running (pid {})", existing);
                 return 1;
             }
@@ -132,12 +134,12 @@ int cmd_daemon(const args::Daemon& a) {
     if (rc != 0) {
         // We never wrote the pid file on a failed start, so whatever sits
         // there belongs to someone else. Remove it only when it describes no
-        // live process: a lost start race (bind refused because another
+        // live upix daemon: a lost start race (bind refused because another
         // daemon holds the socket) must not unlink the winner's pid file.
         std::ifstream pf(pid_path);
         pid_t owner = 0;
         if (pf) pf >> owner;
-        if (owner <= 0 || ::kill(owner, 0) != 0) {
+        if (!pid_is_upix_daemon(owner)) {
             std::filesystem::remove(pid_path);
         }
         return rc;
