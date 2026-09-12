@@ -578,6 +578,164 @@ void main()
 }
 )";
 
+// GroupNorm over a CHW blob in elempack-1 storage: fp16-as-u32-words when the
+// pack variant has NCNN_fp16_storage, plain fp32 words otherwise. Upstream
+// ncnn ships no Vulkan GroupNorm (CPU-only layer), so every GroupNorm inside a
+// GPU graph forces a device round-trip plus a full queue drain per call —
+// RealPLKSR carries 28 per tile. The engine registers a Layer that runs this
+// shader in-place instead.
+//
+// Two dispatch modes share one pipeline, selected by p.mode:
+//   0 = reduce:    one workgroup per (group, row) -> sum/sqsum partials
+//   1 = normalize: one workgroup per (group, row) reduces its group's
+//                  partials, then rewrites its row in place
+// Dispatch grid (both modes): x = 2 (a single 64-wide workgroup per
+// (group,row)), y = h, z = group. Runs must stay race-free when bottom and
+// top alias (in-place): reads only touch the invoking workgroup's own words,
+// cross-workgroup facts travel exclusively through the stats buffer, and the
+// barrier between the two recorded dispatches orders stats behind reduce.
+// Whole-word write ownership is kept over absolute buffer elements, so words
+// that straddle a row boundary (odd w) are still written exactly once — by
+// the earlier row — with both lanes normalized identically (group stats do
+// not depend on the row) and per-element channel weights.
+inline constexpr const char* kGroupNormComp = R"(
+#version 450
+
+layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) readonly buffer bottom_blob { uint bottom_data[]; };
+layout (binding = 1) writeonly buffer top_blob { uint top_data[]; };
+layout (binding = 2) buffer stats_blob { float stats_data[]; };            // 2 floats per (group,row)
+layout (binding = 3) readonly buffer weight_blob { float weight_data[]; }; // gamma[channels] ++ beta[channels]
+
+layout (push_constant) uniform parameter
+{
+    uint w;
+    uint h;
+    uint cstep;
+    uint channels_g;
+    uint mode;
+    uint affine;
+    float eps;
+    float inv_count;
+} p;
+
+shared float s_sum[64];
+shared float s_sq[64];
+
+float load_elem(uint e)
+{
+#if NCNN_fp16_storage
+    const uint word = bottom_data[e >> 1];
+    return unpackHalf2x16((e & 1u) == 0u ? word : (word >> 16)).x;
+#else
+    return uintBitsToFloat(bottom_data[e]);
+#endif
+}
+
+void reduceShared(inout float s, inout float sq)
+{
+    s_sum[gl_LocalInvocationID.x] = s;
+    s_sq[gl_LocalInvocationID.x] = sq;
+    barrier();
+    for (uint stride = 32u; stride >= 1u; stride >>= 1)
+    {
+        if (gl_LocalInvocationID.x < stride)
+        {
+            s_sum[gl_LocalInvocationID.x] += s_sum[gl_LocalInvocationID.x + stride];
+            s_sq[gl_LocalInvocationID.x] += s_sq[gl_LocalInvocationID.x + stride];
+        }
+        barrier();
+    }
+}
+
+void main()
+{
+    const uint gx  = gl_GlobalInvocationID.x;  // thread within the workgroup
+    const uint row = gl_GlobalInvocationID.y;
+    const uint g   = gl_GlobalInvocationID.z;
+
+    const uint plane     = p.w * p.h;
+    const uint base      = g * p.channels_g * p.cstep;
+    const uint row_begin = base + row * p.w;
+    const uint row_end   = row_begin + p.w;
+
+    if (p.mode == 0u)
+    {
+        float s = 0.0;
+        float sq = 0.0;
+        for (uint e = row_begin + 2u * gx; e < row_end; e += 128u)
+        {
+            const float v0 = load_elem(e);
+            s += v0;
+            sq += v0 * v0;
+            const uint e1 = e + 1u;
+            if (e1 < row_end)
+            {
+                const float v1 = load_elem(e1);
+                s += v1;
+                sq += v1 * v1;
+            }
+        }
+        reduceShared(s, sq);
+        if (gx == 0u)
+        {
+            stats_data[(g * p.h + row) * 2u + 0u] = s_sum[0];
+            stats_data[(g * p.h + row) * 2u + 1u] = s_sq[0];
+        }
+        return;
+    }
+
+    // mode 1, phase A: fold the group's row partials into mean / rstd
+    float s = 0.0;
+    float sq = 0.0;
+    for (uint r = gx; r < p.h; r += 64u)
+    {
+        s  += stats_data[(g * p.h + r) * 2u + 0u];
+        sq += stats_data[(g * p.h + r) * 2u + 1u];
+    }
+    reduceShared(s, sq);
+    const float mean = s_sum[0] * p.inv_count;
+    const float var = max(s_sq[0] * p.inv_count - mean * mean, 0.0);
+    const float rstd = inversesqrt(var + p.eps);
+
+    // mode 1, phase B: rewrite the row in place, one whole word at a time.
+    // Words start at even element indices; a row that begins on an odd index
+    // leaves its first element to the previous row's workgroup.
+#if NCNN_fp16_storage
+    const uint e_first = row_begin + (row_begin & 1u);
+    const uint block_end = base + p.channels_g * p.cstep;
+    for (uint e0 = e_first + 2u * gx; e0 < row_end; e0 += 128u)
+    {
+        const uint c0 = e0 / p.cstep;
+        const uint off0 = e0 - c0 * p.cstep;
+        const float n0 = (load_elem(e0) - mean) * rstd *
+            (p.affine != 0u ? weight_data[c0] : 1.0);
+        uint word = packHalf2x16(vec2(n0, 0.0));
+        const uint e1 = e0 + 1u;
+        const uint c1 = e1 / p.cstep;
+        const uint off1 = e1 - c1 * p.cstep;
+        if (e1 < block_end && off1 < plane)
+        {
+            const float n1 = (load_elem(e1) - mean) * rstd *
+                (p.affine != 0u ? weight_data[c1] : 1.0);
+            word |= packHalf2x16(vec2(n1, 0.0)) << 16;
+        }
+        top_data[e0 >> 1] = word;
+    }
+#else
+    for (uint e = row_begin + gx; e < row_end; e += 64u)
+    {
+        const uint c = e / p.cstep;
+        const uint off = e - c * p.cstep;
+        const float n = (load_elem(e) - mean) * rstd *
+            (p.affine != 0u ? weight_data[c] : 1.0);
+        top_data[e] = floatBitsToUint(off < plane ? n : 0.0);
+    }
+#endif
+}
+)";
+
 enum class CustomShader : uint32_t {
     HwcToChw = 1,
     HwcU8ToChw = 2,
@@ -590,6 +748,7 @@ enum class CustomShader : uint32_t {
     BlendTile = 9,
     NormalizeByWeight = 10,
     NormalizeQuantizeByWeight = 11,
+    GroupNorm = 12,
 };
 
 // Diagnostic micro-kernels (scalar float16_t SSBO bisect).
@@ -612,6 +771,7 @@ inline constexpr CustomShaderSrc kCustomShaders[] = {
     {CustomShader::NormalizeByWeight, "normalize_by_weight", kNormalizeByWeightComp},
     {CustomShader::NormalizeQuantizeByWeight, "normalize_quantize_by_weight",
      kNormalizeQuantizeByWeightComp},
+    {CustomShader::GroupNorm, "group_norm", kGroupNormComp},
 };
 
 #endif // NCNN_VULKAN

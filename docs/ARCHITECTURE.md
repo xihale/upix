@@ -80,7 +80,8 @@ xmake 工程、同一套编译选项——编进 `libupix-native.so`，保证两
 | `ncnn_engine.cpp` | 1372 | 类骨架：initialize/load_model/process/process_u8/process_batch/benchmark + CPU 路径 |
 | `ncnn_gpu_init.cpp` | 256 | Vulkan 初始化 + GPU 枚举打分（discrete/integrated/fp16/queue）+ 重试 |
 | `ncnn_gpu_pipeline.cpp` | 2783 | GPU tile 流水线（最高档 `process_tiles_gpu_u8_queue`：整图 u8 一次上传，GPU 上 crop + 推理 + 量化 + 拼回） |
-| `vulkan_shaders.hpp` | 619 | 11 个 GLSL compute kernel 源码常量 + RAII guard |
+| `vulkan_shaders.hpp` | 779 | 12 个 GLSL compute kernel 源码常量 + RAII guard |
+| `groupnorm_layer.hpp` | 261 | 自研 GroupNorm 层（Vulkan + CPU 双路径），覆盖 ncnn 无 GPU 实现的缺口 |
 
 **关键实现细节**：
 
@@ -90,6 +91,11 @@ xmake 工程、同一套编译选项——编进 `libupix-native.so`，保证两
 - **SSBO 小类型禁令（Adreno 规避）**：Adreno 驱动会静默杀死含标量 `float16`/`uint8`
   SSBO 成员的 kernel。所有自定义 shader 的 SSBO 一律声明为 `uint` 字，fp16 载荷用
   `packHalf2x16`/`unpackHalf2x16` 显式打包（仅 core GLSL，不用扩展）。
+- **自研 GroupNorm 层（`groupnorm_layer.hpp`）**：上游 ncnn 的 GroupNorm 只有 CPU
+  实现，GPU 图里每个 GN 强制一次设备往返 + 全队列排空（RealPLKSR 每瓦片 28 次，
+  GPU 利用率掉到 ~30%）。引擎在创建 `ncnn::Net` 时用 `register_custom_layer`
+  覆盖该类型：GPU 走 `kGroupNormComp`（elempack-1 u32 字格式，reduce+normalize
+  两次 dispatch 共享一条 pipeline），CPU 路径逐位复刻内建实现。
 - 全局互斥锁串行化 Vulkan 实例/模型加载（ncnn 的 Vulkan 状态是进程级单例）。
 - alpha 通道走旁路不过神经网络（`bicubic_scale_u8`，Mitchell-Netravali），省约 25% GPU 算力。
 

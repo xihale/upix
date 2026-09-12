@@ -10,6 +10,7 @@
 #include <pipeline.h>
 #endif
 #include "ncnn_engine_impl.hpp"
+#include "groupnorm_layer.hpp"
 #if NCNN_VULKAN
 #include "vulkan_shaders.hpp"
 #include "gpu_precision.hpp"
@@ -54,7 +55,12 @@ std::mutex g_vulkan_model_load_mutex;
 // Class declaration lives in ncnn_engine_impl.hpp; only out-of-line member
 // function definitions below.
 
-NCNNEngineImpl::NCNNEngineImpl() : net_(std::make_unique<ncnn::Net>()) {}
+// The overwrite applies to every net this engine loads: ncnn 20260113 has no
+// Vulkan GroupNorm, so unpatched GN layers force a per-layer queue drain
+// (RealPLKSR: 28 per tile, ~30% GPU utilization).
+NCNNEngineImpl::NCNNEngineImpl() : net_(std::make_unique<ncnn::Net>()) {
+    detail::register_groupnorm_override(*net_);
+}
 NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
 
     auto NCNNEngineImpl::initialize(DeviceType preferred)
