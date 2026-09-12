@@ -586,9 +586,10 @@ void main()
 // shader in-place instead.
 //
 // Two dispatch modes share one pipeline, selected by p.mode:
-//   0 = reduce:    one workgroup per (group, row) -> sum/sqsum partials
-//   1 = normalize: one workgroup per (group, row) reduces its group's
-//                  partials, then rewrites its row in place
+//   0 = reduce:    one workgroup per (group,row) sums sum/sqsum over its
+//                  row across every channel of the group
+//   1 = normalize: one workgroup per (group,row) folds its group's partials
+//                  into mean/rstd, then rewrites its row in place
 // Dispatch grid (both modes): x = 2 (a single 64-wide workgroup per
 // (group,row)), y = h, z = group. Runs must stay race-free when bottom and
 // top alias (in-place): reads only touch the invoking workgroup's own words,
@@ -606,7 +607,7 @@ layout (local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 layout (binding = 0) readonly buffer bottom_blob { uint bottom_data[]; };
 layout (binding = 1) writeonly buffer top_blob { uint top_data[]; };
 layout (binding = 2) buffer stats_blob { float stats_data[]; };            // 2 floats per (group,row)
-layout (binding = 3) readonly buffer weight_blob { float weight_data[]; }; // gamma[channels] ++ beta[channels]
+layout (binding = 3) readonly buffer weight_blob { uint weight_data[]; }; // gamma[channels] ++ beta[channels]
 
 layout (push_constant) uniform parameter
 {
@@ -614,6 +615,7 @@ layout (push_constant) uniform parameter
     uint h;
     uint cstep;
     uint channels_g;
+    uint channels;
     uint mode;
     uint affine;
     float eps;
@@ -630,6 +632,19 @@ float load_elem(uint e)
     return unpackHalf2x16((e & 1u) == 0u ? word : (word >> 16)).x;
 #else
     return uintBitsToFloat(bottom_data[e]);
+#endif
+}
+
+// Weights ride the same record_upload auto-cast as every ncnn weight: the
+// buffer holds fp16 pairs under fp16-storage profiles and raw fp32 words
+// otherwise. Scalar float16_t SSBO members stay banned (Adreno).
+float load_weight(uint idx)
+{
+#if NCNN_fp16_storage
+    const uint word = weight_data[idx >> 1];
+    return unpackHalf2x16((idx & 1u) == 0u ? word : (word >> 16)).x;
+#else
+    return uintBitsToFloat(weight_data[idx]);
 #endif
 }
 
@@ -655,26 +670,34 @@ void main()
     const uint row = gl_GlobalInvocationID.y;
     const uint g   = gl_GlobalInvocationID.z;
 
-    const uint plane     = p.w * p.h;
-    const uint base      = g * p.channels_g * p.cstep;
-    const uint row_begin = base + row * p.w;
-    const uint row_end   = row_begin + p.w;
+    const uint plane = p.w * p.h;
+    const uint block_begin = g * p.channels_g * p.cstep;
+    const uint block_end = block_begin + p.channels_g * p.cstep;
 
     if (p.mode == 0u)
     {
+        // reduce: one workgroup sums its (group,row) over every channel of
+        // the group. The odd trailing element of an odd-w row is skipped per
+        // channel here (guarded) — it still lands in the row partial because
+        // the pair loop covers e and e+1 up to the row end.
         float s = 0.0;
         float sq = 0.0;
-        for (uint e = row_begin + 2u * gx; e < row_end; e += 128u)
+        for (uint q = 0u; q < p.channels_g; q++)
         {
-            const float v0 = load_elem(e);
-            s += v0;
-            sq += v0 * v0;
-            const uint e1 = e + 1u;
-            if (e1 < row_end)
+            const uint row_begin = block_begin + q * p.cstep + row * p.w;
+            const uint row_end = row_begin + p.w;
+            for (uint e = row_begin + 2u * gx; e < row_end; e += 128u)
             {
-                const float v1 = load_elem(e1);
-                s += v1;
-                sq += v1 * v1;
+                const float v0 = load_elem(e);
+                s += v0;
+                sq += v0 * v0;
+                const uint e1 = e + 1u;
+                if (e1 < row_end)
+                {
+                    const float v1 = load_elem(e1);
+                    s += v1;
+                    sq += v1 * v1;
+                }
             }
         }
         reduceShared(s, sq);
@@ -686,7 +709,7 @@ void main()
         return;
     }
 
-    // mode 1, phase A: fold the group's row partials into mean / rstd
+    // normalize, phase A: fold the group's row partials into mean / rstd
     float s = 0.0;
     float sq = 0.0;
     for (uint r = gx; r < p.h; r += 64u)
@@ -699,40 +722,38 @@ void main()
     const float var = max(s_sq[0] * p.inv_count - mean * mean, 0.0);
     const float rstd = inversesqrt(var + p.eps);
 
-    // mode 1, phase B: rewrite the row in place, one whole word at a time.
-    // Words start at even element indices; a row that begins on an odd index
-    // leaves its first element to the previous row's workgroup.
-#if NCNN_fp16_storage
-    const uint e_first = row_begin + (row_begin & 1u);
-    const uint block_end = base + p.channels_g * p.cstep;
-    for (uint e0 = e_first + 2u * gx; e0 < row_end; e0 += 128u)
+    // normalize, phase B: rewrite this (group,row) stripe, one whole word at
+    // a time. Words start at even element indices; a row that begins on an
+    // odd index leaves its first element to the previous channel's row WG —
+    // that lane is normalized identically (group stats are row-independent)
+    // with the per-element channel weight. Lanes past the group block or the
+    // image plane are padding holes and are zeroed.
+    for (uint q = 0u; q < p.channels_g; q++)
     {
-        const uint c0 = e0 / p.cstep;
-        const uint off0 = e0 - c0 * p.cstep;
-        const float n0 = (load_elem(e0) - mean) * rstd *
-            (p.affine != 0u ? weight_data[c0] : 1.0);
-        uint word = packHalf2x16(vec2(n0, 0.0));
-        const uint e1 = e0 + 1u;
-        const uint c1 = e1 / p.cstep;
-        const uint off1 = e1 - c1 * p.cstep;
-        if (e1 < block_end && off1 < plane)
+        const uint c = g * p.channels_g + q;
+        const uint row_begin = c * p.cstep + row * p.w;
+        const uint row_end = row_begin + p.w;
+        const uint chan_end = (c + 1u) * p.cstep;
+        const uint e_first = row_begin + (row_begin & 1u);
+        for (uint e0 = e_first + 2u * gx; e0 < row_end; e0 += 128u)
         {
-            const float n1 = (load_elem(e1) - mean) * rstd *
-                (p.affine != 0u ? weight_data[c1] : 1.0);
-            word |= packHalf2x16(vec2(n1, 0.0)) << 16;
+            const float n0 = (load_elem(e0) - mean) * rstd *
+                (p.affine != 0u ? load_weight(c) : 1.0) +
+                (p.affine != 0u ? load_weight(p.channels + c) : 0.0);
+            uint word = packHalf2x16(vec2(n0, 0.0));
+            const uint e1 = e0 + 1u;
+            const uint c1 = e1 / p.cstep;
+            const uint off1 = e1 - c1 * p.cstep;
+            if (e1 < chan_end && off1 < plane)
+            {
+                const float n1 = (load_elem(e1) - mean) * rstd *
+                    (p.affine != 0u ? load_weight(c1) : 1.0) +
+                    (p.affine != 0u ? load_weight(p.channels + c1) : 0.0);
+                word |= packHalf2x16(vec2(n1, 0.0)) << 16;
+            }
+            top_data[e0 >> 1] = word;
         }
-        top_data[e0 >> 1] = word;
     }
-#else
-    for (uint e = row_begin + gx; e < row_end; e += 64u)
-    {
-        const uint c = e / p.cstep;
-        const uint off = e - c * p.cstep;
-        const float n = (load_elem(e) - mean) * rstd *
-            (p.affine != 0u ? weight_data[c] : 1.0);
-        top_data[e] = floatBitsToUint(off < plane ? n : 0.0);
-    }
-#endif
 }
 )";
 

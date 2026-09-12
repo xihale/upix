@@ -249,6 +249,29 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
                             frozen_key, option_key(net_->opt))
             });
         }
+        if (expect_frozen_key) {
+            // Tripwire for silent CPU fallback: a layer without a Vulkan
+            // implementation forces a device round-trip plus a full queue
+            // drain on every call — 28 GroupNorms once cost RealPLKSR half
+            // its GPU utilization before the custom layer landed. The
+            // realistic way this reappears is a future model import of a new
+            // architecture, so surface the breakdown instead of degrading
+            // quietly (running degraded on GPU still beats the CPU engine).
+            std::unordered_map<std::string, int> cpu_layers;
+            for (const auto& layer : net_->layers()) {
+                if (!layer->support_vulkan) ++cpu_layers[layer->type];
+            }
+            if (!cpu_layers.empty()) {
+                std::string breakdown;
+                for (const auto& [type, count] : cpu_layers) {
+                    breakdown += std::format(" {}x{}", type, count);
+                }
+                LOG_WARNING("Engine",
+                    "Model has layers without Vulkan support — per-call GPU/CPU "
+                    "round-trips will degrade GPU utilization (consider a custom "
+                    "layer):{}", breakdown);
+            }
+        }
 #endif
         
         // Load model weights

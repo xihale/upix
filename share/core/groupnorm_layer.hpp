@@ -24,6 +24,7 @@
 #include "core/vulkan_shaders.hpp"
 
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -183,20 +184,22 @@ public:
 
         // Partials live on the layer so the recorded command can still be
         // in flight when forward returns (see the file comment).
-        const size_t stats_elems = 2u * channels_g * group_ * h;
+        const size_t stats_elems = 2u * group_ * h;
         if (stats_.w != static_cast<int>(stats_elems)) {
             stats_.create(static_cast<int>(stats_elems), 4u, 1, opt.workspace_vkallocator);
         }
 
-        std::vector<ncnn::vk_constant_type> constants(8);
+        opt_keep_ = opt;
+        std::vector<ncnn::vk_constant_type> constants(9);
         constants[0].i = static_cast<int>(w);
         constants[1].i = static_cast<int>(h);
         constants[2].i = static_cast<int>(cstep);
         constants[3].i = static_cast<int>(channels_g);
-        constants[4].i = 0;  // mode: reduce
-        constants[5].i = affine_;
-        constants[6].f = eps_;
-        constants[7].f = 1.0f / static_cast<float>(channels_g * w * h);
+        constants[4].i = static_cast<int>(channels);
+        constants[5].i = 0;  // mode: reduce
+        constants[6].i = affine_;
+        constants[7].f = eps_;
+        constants[8].f = 1.0f / static_cast<float>(channels_g * w * h);
 
         // Grid: one 64-wide workgroup per (group,row) for both modes.
         ncnn::VkMat dispatcher;
@@ -214,7 +217,7 @@ public:
         bindings[3] = weights_gpu_;
         cmd.record_pipeline(pipeline_, bindings, constants, dispatcher);
 
-        constants[4].i = 1;  // mode: normalize
+        constants[5].i = 1;  // mode: normalize
         cmd.record_pipeline(pipeline_, bindings, constants, dispatcher);
         return 0;
     }
@@ -251,6 +254,10 @@ private:
                 for (int i = 0; i < size; i++) {
                     ptr0[i] = (ptr0[i] * a + b) * gam + bet;
                 }
+                if (channels == 16 && size == 2244 && q == 0) {
+                    fprintf(stderr, "[GN write] out[0]=%.5f plane0=%p (input first was %.5f)\n",
+                            ptr0[0], (void*)x, x[0]);
+                }
             }
         } else {
             for (int q = 0; q < channels; q++) {
@@ -268,6 +275,22 @@ private:
     ncnn::VkMat weights_gpu_;
 #endif
 
+public:
+    // TEMP-DEBUG (removed before commit): download stats to host
+public:
+    std::vector<float> debug_read_stats() const {
+        std::vector<float> out(stats_.w, 0.f);
+        if (stats_.w == 0) return out;
+        ncnn::VkCompute cmd(vkdev);
+        ncnn::Mat host(stats_.w, static_cast<size_t>(4));
+        cmd.record_download(stats_, host, opt_keep_);
+        cmd.submit_and_wait();
+        memcpy(out.data(), host.data, stats_.w * sizeof(float));
+        return out;
+    }
+    mutable ncnn::Option opt_keep_;
+
+private:
     int group_ = 1;
     int channels_ = 0;
     float eps_ = 0.001f;
