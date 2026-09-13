@@ -52,6 +52,17 @@ int cmd_daemon(const args::Daemon& a) {
             std::println(stderr, "stop: corrupt pid file at {}", pid_path);
             return 1;
         }
+        // Same guard the start path applies: the pid file is untrusted input.
+        // Signalling whatever pid a stale or corrupted file names would turn
+        // `daemon stop` into an arbitrary-pid SIGTERM primitive.
+        if (!pid_is_upix_daemon(pid)) {
+            std::println(stderr,
+                         "stop: pid {} is not a live upix daemon — removing "
+                         "stale pid file",
+                         pid);
+            std::filesystem::remove(pid_path);
+            return 1;
+        }
         if (::kill(pid, SIGTERM) < 0) {
             std::println(stderr, "stop: kill pid {} failed: {}", pid,
                          std::strerror(errno));

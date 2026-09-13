@@ -71,7 +71,10 @@ public:
 private:
     // Handle one client connection on its own thread. Takes ownership of the
     // socket; the fd is closed exactly once when sock is destroyed on return.
+    // The body runs inside handle_client's try/catch so an allocation failure
+    // answers the client instead of terminating the daemon.
     auto handle_client(std::unique_ptr<UnixSocket> sock) -> void;
+    auto handle_client_inner(std::unique_ptr<UnixSocket>& sock) -> void;
 
     // Ensure engine has `model_name` loaded; reload if it differs. Serialized
     // by engine_mutex_. Returns the param/bin resolution error if lookup fails.
@@ -82,12 +85,19 @@ private:
     // never sent bytes cannot hang teardown forever.
     auto drain_connections() -> void;
 
+    // Join and drop connection threads whose handler already returned, closing
+    // their watch fds. Called from the accept loop: without this, every served
+    // connection would hold its watch fd (and thread handle) until process
+    // exit — a daemon serving ~ulimit-n requests would exhaust its fd table.
+    auto reap_finished_connections() -> void;
+
     // One accepted connection: its thread plus a dup() of the connection fd
     // used only to ::shutdown() it during teardown (waking a recv() that is
     // blocked on an unresponsive client). The dup is closed after shutdown.
     struct ConnThread {
         std::jthread thread;
         int watch_fd = -1;
+        std::atomic<bool> done{false};
     };
 
     std::unique_ptr<Engine> engine_;
@@ -98,7 +108,10 @@ private:
     // Single shutdown source of truth: stop() requests it, run()'s accept loop
     // and drain_connections() poll the derived token.
     std::stop_source stop_src_;
-    std::vector<ConnThread> conn_threads_;  // touched only by run()/destructor
+    // Heap-held per-connection records: each connection's thread writes its
+    // own `done` flag through a stable pointer while the accept loop erases
+    // finished entries (a plain vector<ConnThread> would reallocate).
+    std::vector<std::unique_ptr<ConnThread>> conn_threads_;
     std::atomic<int> active_conns_{0};        // connections accepted but not finished
     std::atomic<int64_t> last_active_ms_{0};  // steady-clock ms of last accept/completion
     int idle_timeout_s_ = 0;

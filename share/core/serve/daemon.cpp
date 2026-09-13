@@ -20,6 +20,7 @@
 #include <malloc.h>
 #endif
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -178,22 +179,45 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     // sock owns the fd; closed exactly once on return. The guard keeps the
     // idle-timeout accounting truthful for this connection's whole lifetime.
     ConnGuard conn{active_conns_, last_active_ms_};
+    try {
+        handle_client_inner(sock);
+    } catch (const std::exception& e) {
+        LOG_ERROR("Daemon", "request failed with exception: {}", e.what());
+        try {
+            send_serve_error(*sock, "internal error (see daemon log)");
+        } catch (...) {}  // the client may be gone; nothing left to do
+    } catch (...) {
+        try {
+            send_serve_error(*sock, "internal error (see daemon log)");
+        } catch (...) {}
+    }
+}
 
+auto ServeDaemon::handle_client_inner(std::unique_ptr<UnixSocket>& sock)
+    -> void {
     // ── 1. Read request header ──────────────────────────────────────────────
     std::vector<uint8_t> hdr_buf(Protocol::HEADER_SIZE);
-    if (!sock->receive_all(hdr_buf.data(), hdr_buf.size())) return;
+    if (!sock->receive_all(hdr_buf.data(), hdr_buf.size())) {
+        LOG_DEBUG("Daemon", "conn: EOF/err before header");
+        return;
+    }
     auto parsed = Protocol::parse_header(hdr_buf);
     if (!parsed || parsed->type != MessageType::MSG_SERVE_REQUEST ||
         parsed->payload_length < sizeof(ServeRequest) ||
         parsed->payload_length > MAX_SERVE_PAYLOAD_BYTES) {
         // Malformed: send a minimal error response and bail.
+        LOG_DEBUG("Daemon", "conn: header rejected (type/plen)");
         send_serve_error(*sock, "expected MSG_SERVE_REQUEST");
         return;
     }
+    LOG_DEBUG("Daemon", "conn: header ok plen={}", parsed->payload_length);
 
     // ── 2. Read payload = [ServeRequest][input path][output path] ───────────
     std::vector<uint8_t> req_buf(parsed->payload_length);
-    if (!sock->receive_all(req_buf.data(), req_buf.size())) return;
+    if (!sock->receive_all(req_buf.data(), req_buf.size())) {
+        LOG_DEBUG("Daemon", "conn: EOF/err before payload");
+        return;
+    }
     ServeRequest req{};
     std::memcpy(&req, req_buf.data(), sizeof(ServeRequest));
 
@@ -211,6 +235,35 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     const std::string output_path(base + req.input_path_length, req.output_path_length);
     req_buf.clear();
     req_buf.shrink_to_fit();
+
+    // A client-named output format must be validated BEFORE the (possibly
+    // minutes-long) inference: an unsupported value would otherwise burn a
+    // full upscale and then die in the encoder. Empty = derive from paths.
+    {
+        const std::string req_fmt = bounded_string(req.output_format,
+                                                   sizeof(req.output_format));
+        if (!req_fmt.empty() &&
+            !is_supported_output_format(normalize_output_format(req_fmt))) {
+            send_serve_error(*sock,
+                             ("unsupported output format: " + req_fmt).c_str());
+            return;
+        }
+    }
+
+    // FIFOs (and sockets) as input would block a connection thread inside
+    // file I/O with no deadline — request_stop/::shutdown in teardown cannot
+    // unblock it, so a single request could hang `daemon stop` forever.
+    // Character devices (/dev/null, /dev/zero) read 0 bytes and fail cleanly,
+    // so they stay allowed.
+    {
+        struct stat st{};
+        if (::stat(input_path.c_str(), &st) == 0 &&
+            (S_ISFIFO(st.st_mode) || S_ISSOCK(st.st_mode))) {
+            send_serve_error(*sock,
+                             "load failed: refusing fifo/socket input");
+            return;
+        }
+    }
 
     // ── 3. Full hot-path pipeline: read → decode → upscale → encode → write.
     // The client never touches image bytes; its own footprint stays near zero.
@@ -261,15 +314,23 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
         out_image = Image(out_w, out_h, image.channels());
 
         TileConfig tc;
-        // tile_size 0 = "auto": the client didn't pin a size, so apply the
-        // same engine recommendation the inline path uses (cmd_process's
-        // `!tile_size_explicit && !auto_tile` branch) — keeps daemon-delegated
-        // and inline output byte-identical without the client needing its own
-        // engine to ask.
-        tc.tile_size = req.tile_size > 0
-            ? req.tile_size
-            : engine_->get_recommended_tile_size();
-        tc.overlap = req.tile_overlap;
+        // Wire tile/overlap are clamped to the same envelope ProcessingConfig
+        //::validate enforces on CLI configs (tile ≤ 2048, overlap ≤ tile/2).
+        // A hostile overlap ≥ tile would degenerate the grid to step=1 — tens
+        // of thousands of full-size tiles on one request (hours of engine
+        // time); a huge tile turns a large input into a single giant forward.
+        if (req.tile_size > 0) {
+            tc.tile_size = std::clamp(req.tile_size, 1, 2048);
+        } else {
+            // tile_size 0 = "auto": the client didn't pin a size, so apply the
+            // same engine recommendation the inline path uses (cmd_process's
+            // `!tile_size_explicit && !auto_tile` branch) — keeps daemon-delegated
+            // and inline output byte-identical without the client needing its own
+            // engine to ask.
+            tc.tile_size = engine_->get_recommended_tile_size();
+        }
+        tc.overlap = static_cast<uint32_t>(std::clamp(
+            static_cast<int32_t>(req.tile_overlap), 0, tc.tile_size / 2));
         tc.batch_size = 1;
 
         std::atomic<bool> cancel{false};
@@ -369,22 +430,39 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     send_via(*sock, MessageType::MSG_SERVE_RESPONSE, head.data(), head.size());
 }
 
+auto ServeDaemon::reap_finished_connections() -> void {
+    // conn_threads_ is touched only by run()/the destructor; this runs on the
+    // accept thread. join() on a done thread returns immediately.
+    for (auto it = conn_threads_.begin(); it != conn_threads_.end();) {
+        if (!it->get()->done.load()) {
+            ++it;
+            continue;
+        }
+        if (it->get()->thread.joinable()) it->get()->thread.join();
+        if (it->get()->watch_fd >= 0) {
+            ::close(it->get()->watch_fd);
+            it->get()->watch_fd = -1;
+        }
+        it = conn_threads_.erase(it);
+    }
+}
+
 auto ServeDaemon::drain_connections() -> void {
     // Interrupt readers before joining: a client that connected but never sent
     // bytes would block recv() forever and hang the joins below. ::shutdown on
     // the dup'd watch fd wakes the blocked recv() with an error; the watch fd
     // itself is closed immediately (the connection's real fd belongs to the
     // thread's UnixSocket).
-    for (auto& ct : conn_threads_) ct.thread.request_stop();
+    for (auto& ct : conn_threads_) ct->thread.request_stop();
     for (auto& ct : conn_threads_) {
-        if (ct.watch_fd >= 0) {
-            ::shutdown(ct.watch_fd, SHUT_RDWR);
-            ::close(ct.watch_fd);
-            ct.watch_fd = -1;
+        if (ct->watch_fd >= 0) {
+            ::shutdown(ct->watch_fd, SHUT_RDWR);
+            ::close(ct->watch_fd);
+            ct->watch_fd = -1;
         }
     }
     for (auto& ct : conn_threads_) {
-        if (ct.thread.joinable()) ct.thread.join();
+        if (ct->thread.joinable()) ct->thread.join();
     }
     conn_threads_.clear();
 }
@@ -393,6 +471,7 @@ auto ServeDaemon::run() -> void {
     const std::stop_token st = stop_src_.get_token();
     last_active_ms_.store(steady_now_ms());
     while (!st.stop_requested()) {
+        reap_finished_connections();
         auto client = server_->accept();
         if (!client) {
             if (client.error().code == EAGAIN) {
@@ -423,17 +502,21 @@ auto ServeDaemon::run() -> void {
         // lets drain_connections() unstick a reader blocked on this client.
         auto sock = std::make_unique<ConnSock>(std::move(**client));
         const int watch_fd = ::dup(sock->fd());
-        ConnThread ct;
-        ct.watch_fd = watch_fd;
-        ct.thread = std::jthread([this, c = std::move(sock)]() mutable {
-            handle_client(std::move(c));
-            // glibc keeps freed heap for reuse; hand it back so RSS tracks
-            // live allocations, not the largest request ever served.
+        // Heap-held entry: the connection thread needs a stable pointer to
+        // its own record (a growing vector<ConnThread> would invalidate one).
+        auto entry = std::make_unique<ConnThread>();
+        entry->watch_fd = watch_fd;
+        entry->thread = std::jthread(
+            [this, e = entry.get(), c = std::move(sock)]() mutable {
+                handle_client(std::move(c));
+                // glibc keeps freed heap for reuse; hand it back so RSS
+                // tracks live allocations, not the largest request served.
 #ifdef __linux__
-            malloc_trim(0);
+                malloc_trim(0);
 #endif
-        });
-        conn_threads_.push_back(std::move(ct));
+                e->done.store(true);  // reaper may now join us
+            });
+        conn_threads_.push_back(std::move(entry));
     }
     // Same teardown path for stop(), fatal error, and idle exit.
     drain_connections();
