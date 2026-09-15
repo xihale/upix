@@ -306,6 +306,11 @@ int cmd_process(const args::Process& a) {
                         LOG_ERROR("Engine", "daemon connection lost mid-progress");
                         return 1;
                     }
+                    if (!upix::Protocol::verify_frame(rhdr.data(), pbuf.data(),
+                                                      pbuf.size())) {
+                        LOG_ERROR("Engine", "daemon progress frame failed checksum");
+                        return 1;
+                    }
                     upix::ServeProgress sp{};
                     std::memcpy(&sp, pbuf.data(), sizeof(sp));
                     if (sp.stage == 0) {
@@ -330,6 +335,11 @@ int cmd_process(const args::Process& a) {
             std::vector<uint8_t> rhead(rparsed->payload_length);
             if (!sock.receive_all(rhead.data(), rhead.size())) {
                 LOG_ERROR("Engine", "truncated daemon response");
+                return 1;
+            }
+            if (!upix::Protocol::verify_frame(rhdr.data(), rhead.data(),
+                                              rhead.size())) {
+                LOG_ERROR("Engine", "daemon response failed checksum");
                 return 1;
             }
             upix::ServeResponse resp{};

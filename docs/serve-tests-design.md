@@ -9,7 +9,7 @@ zombie pid 罚时 / socket 清理 / 目录创建）。原则：每条用例必�
 | 删掉 | 原因 |
 | --- | --- |
 | connect+close、garbage、wrong-magic、wrong-type、short-payload 各自独立 canary | 同属"畸形输入被拒"，合并为一批，只查存活，批末一次 canary |
-| bad-checksum | 校验和本地信任模型下故意不验——测的是不存在的约定 |
+| bad-checksum | ~~故意不验~~ 2026-09-15 起明文帧 checksum 由 daemon/客户端双向强制校验（`Protocol::verify_frame`），坏帧在解析前拒收 |
 | slow-header slowloris | 已知设计局限（单连接线程阻塞，无锁持有），本地攻击面无行动项 |
 | empty/text/png-header-only/devnull 损坏输入 | 与 truncated-png 走同一 "load failed" 分支，留 3 个代表性损坏即可 |
 | fuzz 侧 mid-inference-hangup | 与 lifecycle L5 完全重复，保留带后续验证的 L5 |

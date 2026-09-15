@@ -2,7 +2,11 @@
 
 #include "utils/logger.hpp"
 
+#include <algorithm>
+#include <cmath>
+#include <format>
 #include <string>
+#include <vector>
 
 namespace upix {
 
@@ -118,6 +122,50 @@ auto setup_engine(
     }
 
     return result;
+}
+
+auto probe_model_sanity(const std::filesystem::path& param_path,
+                        const std::filesystem::path& bin_path)
+    -> std::optional<std::string> {
+    auto init = initialize_engine(SetupDevice::CPU);
+    if (!init) {
+        return std::nullopt;  // probe unavailable — never block the import
+    }
+    auto& engine = **init;
+    auto load = engine.load_model(param_path.string(), bin_path.string());
+    if (!load) {
+        return std::format("sanity probe could not load the model ({}) — "
+                           "processing it will likely fail",
+                           load.error().message);
+    }
+
+    constexpr int kProbeSize = 64;
+    std::vector<float> input(static_cast<size_t>(kProbeSize) * kProbeSize * 3);
+    for (size_t i = 0; i < input.size(); ++i) {
+        input[i] = static_cast<float>(i % 251) / 250.0f;  // deterministic gradient
+    }
+    const int scale = std::max(engine.get_scale_factor(), 1);
+    std::vector<float> output(static_cast<size_t>(kProbeSize * scale) *
+                              (kProbeSize * scale) * 3);
+    auto run = engine.process(input.data(), output.data(),
+                              kProbeSize, kProbeSize, 3);
+    if (!run) {
+        return std::format("sanity probe forward pass failed ({}) — the model "
+                           "will likely fail on real inputs too",
+                           run.error().message);
+    }
+
+    size_t nonfinite = 0;
+    for (float v : output) {
+        if (!std::isfinite(v)) nonfinite++;
+    }
+    if (nonfinite > 0) {
+        return std::format("sanity probe produced {} non-finite output value(s) "
+                           "— this conversion likely mis-executes on the pinned "
+                           "ncnn build; upscales may come out as garbage",
+                           nonfinite);
+    }
+    return std::nullopt;
 }
 
 } // namespace upix

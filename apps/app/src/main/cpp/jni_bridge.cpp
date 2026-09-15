@@ -1,3 +1,15 @@
+// JNI bridge: Android's only entry into the shared C++ core.
+//
+// ── Boundary rule (architecture review 2026-09-15) ──────────────────────────
+// This file is Android-client glue ONLY. The reusable primitives (frame
+// protocol, EncryptedSession, sockets, engine, TileProcessor) live in share/
+// and are shared with the PC. Session POLICY — pipeline depth, chunked
+// upload, retry/downgrade, cancel polling, reconnect — also lives here today,
+// but it has exactly one consumer (Kotlin) and changes with the product.
+// Rule: no NEW session policy goes into this file; add it Kotlin-side on top
+// of the existing exports. If a second C++ client ever appears (e.g. a PC
+// CLI client), extract the client session into share/core/distributed/
+// first — do not grow this file into a second implementation.
 #include <jni.h>
 #include <string>
 #include <android/log.h>

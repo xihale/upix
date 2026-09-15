@@ -57,6 +57,22 @@ auto Protocol::parse_header(std::span<const uint8_t> data)
     return header;
 }
 
+auto Protocol::verify_frame(const uint8_t* header, const void* payload,
+                            size_t payload_size) -> bool {
+    // Mirror serialize() exactly: rebuild the frame with the slot zeroed and
+    // compare. Serve payloads are bounded (~8 KB), so the copy is free. The
+    // vector is value-initialized, so copying only the first 10 header bytes
+    // (everything before the checksum slot) leaves the slot zero.
+    std::vector<uint8_t> buffer(HEADER_SIZE + payload_size, 0);
+    std::memcpy(buffer.data(), header, 10);
+    if (payload_size > 0 && payload) {
+        std::memcpy(buffer.data() + HEADER_SIZE, payload, payload_size);
+    }
+    uint32_t expected = 0;
+    std::memcpy(&expected, header + 10, 4);
+    return compute_checksum(buffer.data(), buffer.size()) == expected;
+}
+
 auto Protocol::compute_checksum(const void* data, size_t size) -> uint32_t {
     return network_utils::crc32(data, size);
 }

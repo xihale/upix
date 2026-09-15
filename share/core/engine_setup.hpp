@@ -1,6 +1,8 @@
 #pragma once
 
+#include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -54,5 +56,16 @@ auto setup_engine(
     std::string_view models_dir,    // empty → "./models"
     std::string_view model_name     // empty → first available
 ) -> expected<EngineSetupResult, std::string>;
+
+// Import-time sanity probe: one tiny synthetic forward on a throwaway CPU
+// engine, requiring finite outputs. Non-finite values are the signature of a
+// conversion that mis-executes on the pinned ncnn build — without this gate
+// the damage only shows up later as silently corrupted upscales. Warn-only by
+// contract: returns a human-readable warning, or nullopt when the model
+// passed (or the probe itself could not run — a missing CPU engine must never
+// block importing a model the user owns).
+auto probe_model_sanity(const std::filesystem::path& param_path,
+                        const std::filesystem::path& bin_path)
+    -> std::optional<std::string>;
 
 } // namespace upix

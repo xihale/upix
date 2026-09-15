@@ -1,9 +1,9 @@
 #include "model_manager.hpp"
+#include "core/model_graph.hpp"
 #include "utils/logger.hpp"
 #include <cctype>
 #include <format>
 #include <fstream>
-#include <regex>
 #include <sstream>
 #include <algorithm>
 #include <unordered_set>
@@ -119,22 +119,13 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
     
     // Infer scale factor from the param stem. Nested layouts name the file
     // "x4.param"; flat layouts carry the full model name where the trailing
-    // "x4" may be followed by more characters ("Real-ESRGAN-x4plus"). Match
-    // the LAST "x<digits>" run; default 2 when nothing matches. 1..8 so 1x
-    // restoration nets ("…-x1") classify too — same convention as
-    // scripts/publish_models.py and the engine's filename fallback.
-    info.scale_factor = 2;  // default
-    static const std::regex scale_pattern("[xX](\\d+)(?!\\d)");
-    for (std::regex_iterator<std::string::iterator> it(param_stem.begin(), param_stem.end(), scale_pattern), end; it != end; ++it) {
-        try {
-            const int candidate = std::stoi((*it)[1]);
-            if (candidate >= 1 && candidate <= 8) {
-                info.scale_factor = candidate;
-            }
-        } catch (...) {
-            // keep default
-        }
-    }
+    // "x4" may be followed by more characters ("Real-ESRGAN-x4plus"). The
+    // shared convention implementation lives in core/model_graph.cpp — the
+    // same one the engine's no-upsampler fallback uses, and the one
+    // test_model_catalog pins against scripts/publish_models.py. No match →
+    // keep the 2 default.
+    const int from_name = scale_from_filename(param_stem);
+    info.scale_factor = from_name >= 1 ? from_name : 2;
     
     info.input_channels = 3;
 

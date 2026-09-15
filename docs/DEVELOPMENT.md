@@ -166,11 +166,24 @@ GPU 管线改动要求 md5/PSNR 双端验证输出不变（性能优化不得改
 ### 4.3 JNI 桥（`apps/app/src/main/cpp/jni_bridge.cpp`）
 
 - 单文件、C++17；新 native 能力先在 share/ 实现，桥只做参数转换与生命周期。
+- **边界规则（2026-09-15 架构评审立）**：jni_bridge 是 Android 客户端专用胶水，
+  **新会话策略（流水深度/重试/取消语义等）一律加在 Kotlin 侧消费既有导出**，
+  不进 native；出现第二个 C++ 客户端时先把客户端会话提取到
+  `share/core/distributed/`，不许在桥里长出第二份实现。
 - JNI 引用（`FindClass`/`NewStringUTF` 等）注意局部表溢出，循环里用
   `DeleteLocalRef`；已有模式照抄。
 - ncnn/引擎 stderr 在 Android 不可见——诊断走 `nativeRedirectStderr` 回传日志。
 
-### 4.4 提交纪律
+### 4.4 模型 scale 约定（单一实现）
+
+- xN 文件名约定只有一份 C++ 实现：`core/model_graph.cpp` 的 `scale_from_filename`
+  （引擎无上采样器兜底与 ModelManager 扫描共用）；图检测 `detect_model_graph`
+  是纯 param 分析，不许在别处重写。
+- 改约定/解析/图检测后必须跑 `test_model_catalog`（对 `scripts/publish_models.py`
+  的 `scale_from_name` 三方钉一致性；本机模型库全量验证图检测与文件名标签一致、
+  无模型落入静默 2x 默认）。新模型入库跑不跑得看本机有没有下载，CI 无模型时跳过。
+
+### 4.5 提交纪律
 
 - 提交信息中文/英文均可，格式 `type(scope): 摘要`（见 git log 惯例：feat/fix/build/
   refactor/ui）。

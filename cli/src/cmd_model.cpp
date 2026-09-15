@@ -17,6 +17,7 @@
 #include "common.hpp"  // default_models_dir
 #include "model_downloader.hpp"
 #include "utils/logger.hpp"
+#include "core/engine_setup.hpp"  // probe_model_sanity
 #include "core/model_manager.hpp"
 
 namespace fs = std::filesystem;
@@ -208,6 +209,12 @@ int cmd_model_import(const args::Model& a) {
         }
         std::println("Imported {}\n  {}\n  {}", param.stem().string(),
                      dst_param.string(), dst_bin.string());
+        // One synthetic forward against a throwaway CPU engine: non-finite
+        // output = conversion mis-executes on this ncnn build. Warn-only —
+        // the import stands, the user decides.
+        if (auto warning = upix::probe_model_sanity(dst_param, dst_bin)) {
+            LOG_WARNING("Model", "{}: {}", param.stem().string(), *warning);
+        }
         bins.erase(it);
     }
     for (const auto& b : bins) {

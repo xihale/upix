@@ -3,7 +3,8 @@
 > 跨平台图像超分辨率系统：PC 端 CLI 与 Android 应用共享同一份 C++ 核心（`share/`），
 > 通过局域网 TCP + 加密配对协议组成"手机提交、PC 计算"的卸载模式。
 >
-> 本文档是架构的**单一权威来源**，描述 HEAD `9920fc9`（2026-08-26）的代码状态。
+> 本文档是架构的**单一权威来源**，随代码滚动更新（最近全面核对：2026-09-15；
+> 不再钉具体 commit——曾钉 `9920fc9` 后内容先行演化、戳记失真）。
 > 与代码冲突时以代码为准，并请回来修文档。
 
 ---
@@ -140,7 +141,8 @@ storage，数学全 fp32——Adreno/Mali 残差块会溢出 fp16 范围）与 *
 |------|------|
 | `tile_optimizer.hpp` | 自动选最优 tile：候选 {64…512} 实测 tiles/sec + 内存预算淘汰，在最小耗时 ×1.05 容忍带内挑最大 tile |
 | `engine_pool.{hpp,cpp}` | N 个独立 Engine 实例 + 队列复用（CPU 目录模式 `--jobs` 并发用） |
-| `model_manager.{hpp,cpp}` | 递归扫描模型目录，解析 `.param` 推断元数据（放大倍数从文件名 `x2`/`x3`，输入通道数从首个卷积层反推） |
+| `model_manager.{hpp,cpp}` | 递归扫描模型目录，解析 `.param` 推断元数据（放大倍数从文件名 xN，输入通道数从首个卷积层反推） |
+| `model_graph.{hpp,cpp}` | 纯 param 文件图分析：xN 文件名约定单一实现（`scale_from_filename`）+ 无网络加载的放大倍数图检测（Interp 级/反卷积/PixelShuffle 主干 BFS/头部 Reorg 除子）。引擎加载与 ModelManager 扫描共用，`test_model_catalog` 对抗 publish 脚本三方钉一致性 |
 | `engine_setup.{hpp,cpp}` | `initialize_engine`（GPU/CPU/GPU_THEN_CPU/默认四策略，含回退）+ `switch_model` 懒加载换模（coordinator 与 daemon 共用） |
 | `config.{hpp,cpp}` | `ProcessingConfig` 聚合，glaze JSON 持久化 + 校验 |
 
@@ -256,8 +258,11 @@ auto_tile_size=true 时：
 `nativeOpenDistributedSession`（TCP 连接 + 握手 + 配对，每批一次）→ 每张图
 `nativeSendDistributedTask`（上传）+ `nativeReceiveDistributedResult`（收结果，
 TASK_PROGRESS 经回调透传进 UI）→ 批末 `nativeCloseDistributedSession`。
-批内为深度 1 流水线：上传 N+1 与 PC 推理 N 重叠、手机写盘/SAF 提交 N 与 PC
-解码/推理 N+1 重叠，下一张原图字节在等结果时后台预取。模型共享等其他操作仍为
+批内为 submit-ahead 流水线，深度由 PC 在 CONNECT_RESPONSE 的
+`pipeline_depth` 协商（当前固定 2：一张在算 + 一张完整在途在网线上，
+见 `coordinator.cpp` 与 `jni_bridge.cpp` 的 `g_peer_pipeline_depth`）：
+上传 N+1 与 PC 推理 N 重叠、手机写盘/SAF 提交 N 与 PC 解码/推理 N+1 重叠，
+下一张原图字节在等结果时后台预取。旧 PC 不带该字段时深度退化为 0（串行）。模型共享等其他操作仍为
 一次性独立 TCP 连接（握手 → 配对 → 单操作帧 → 收结果 → 关连接）。
 超时：连接 10s、I/O 60s。传输失败自动重开会话重发一次（容忍 PC 重启）。
 
@@ -291,7 +296,9 @@ cancel 原子（线程安全、非阻塞）。阻塞中的 `nativeReceiveDistrib
   （CLI 默认 600s，`--idle-timeout` 调整，`0` 常驻）；`--no-daemon` 跳过委托。
   拉起失败静默回退内联路径。
 - 复用 `Protocol` 帧格式与 0x0601-0x0604 号段，但**不加密**（本机 Unix socket，
-  图像字节不过 socket——只传路径与参数）。
+  图像字节不过 socket——只传路径与参数）。明文帧的头部 checksum 双向强制校验
+  （`Protocol::verify_frame`：不匹配即拒收应答），加密帧不带 checksum（防明文
+  CRC 泄密，完整性由 Poly1305 承担）。socket 文件 chmod 0600，信任边界=同用户。
 - 每连接一个 jthread，引擎访问互斥串行（Vulkan 单例硬约束）。
 
 与 coordinator 职责正交：daemon 解决"单图固定开销"（无状态 1 连接 1 请求，持引擎，
@@ -366,6 +373,13 @@ io/upix/
 手机是**提交方不是算力节点**——本地超分用本机引擎（GPU Vulkan / CPU），远程卸载把
 图发给 PC。
 
+**边界规则（2026-09-15 架构评审立）**：jni_bridge 是 Android 客户端专用胶水，
+可复用原语（协议帧/加密会话/socket/引擎/TileProcessor）都在 share/ 与 PC 共享；
+会话**策略**（流水深度/分块上传/降级重试/取消轮询）目前在 native，但只有 Kotlin
+一个消费者——**新会话策略一律加在 Kotlin 侧消费既有导出，不再进 native**；若将来
+出现第二个 C++ 客户端（如 PC CLI 客户端），先把客户端会话提取到
+`share/core/distributed/` 再接，不许让 jni_bridge 长成第二份实现。
+
 **批处理健壮性**：队列持久化、checkpoint 断点续传、failed-only 重试、备份恢复、
 OOM 预检与降级、原子写、Zip Slip 防护、payload 上限、双探针输出校验、
 前台保活+通知（`service/`：处理期间前台服务 dataSync + PARTIAL_WAKE_LOCK——锁屏/
@@ -402,7 +416,7 @@ C++23。option：`native_isa`（默认开）、`upx`（默认关）、`avif-enco
 | `upix-native` | `apps/xmake.lua` | Android shared；编 `jni_bridge.cpp` + 链 `upix-core`；`after_build` 把 .so 及依赖包 .so 拷入 `app/src/main/jniLibs/<abi>/`（含 NDK `libc++_shared.so`） |
 | `upix-perf` | `tools/xmake.lua` | 独立探针二进制（target 名 `upix-perf-tool`，basename 还原为 `upix-perf`），链接 `share/perf/` 的 `upix-perf` 静态库 |
 | `dump-spirv` | `tools/xmake.lua` | host-only，链 glslang 变体 ncnn，离线生成 `spirv_pack.bin`；默认不构建 |
-| `test_*` ×7 | `cli/xmake.lua` | test_crypto / test_protocol / test_image_avif / test_sr_marker / test_exif / test_gpu_precision / test_model_downloader |
+| `test_*` ×9 | `cli/xmake.lua` | test_crypto / test_protocol / test_distributed_session / test_image_avif / test_sr_marker / test_exif / test_gpu_precision / test_model_downloader / test_model_catalog |
 
 **SPIR-V pack 生成链**：`share/xmake.lua` 的 `before_build` 钩子（唯一钩子——多个
 before_build 注册只有第一个生效）负责两件事：Android 配置下 pack 缺失时，用隔离的
@@ -494,7 +508,7 @@ cmd_process → 探测 daemon → 连 Unix socket
 
 **远程卸载（Android → PC）**：
 ```
-UI → NativeImageProcessingRepository → CoordinatorClient（持久会话 + 深度 1 流水线）
+UI → NativeImageProcessingRepository → CoordinatorClient（持久会话 + 协商深度 submit-ahead 流水线，PC 报 pipeline_depth=2）
   → nativeOpenDistributedSession (JNI: TCP + KEY_HELLO ×2 + AUTH + CONNECT 配对，每批一次)
   → 每张图: nativeSendDistributedTask（CLIENT_SUBMIT 上传；>4MB 为 struct 帧
             + ≤8MB CLIENT_DATA 续帧，旧 PC 拒绝时自动降级单帧重发一次）

@@ -39,8 +39,12 @@ def serve_request(model=b"", fmt=b"", tile=0, overlap=16, quality=90,
 
 
 def frame(msg_type, payload):
+    # Wire rule (Protocol::serialize): CRC32 over the WHOLE frame — the 14B
+    # header with the checksum slot zeroed, then the payload. HEADER packs
+    # only the first 10 bytes; the slot joins as zeros.
     hdr = HEADER.pack(MAGIC, msg_type, len(payload))
-    return hdr + struct.pack("<I", zlib.crc32(hdr + payload) & 0xFFFFFFFF) + payload
+    body = hdr + b"\x00\x00\x00\x00" + payload
+    return hdr + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF) + payload
 
 
 def split_frames(buf):

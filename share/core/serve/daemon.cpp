@@ -48,14 +48,15 @@ auto bounded_string(const char* src, size_t capacity) -> std::string {
     return {src, ::strnlen(src, capacity)};  // POSIX: not in std:: on glibc
 }
 
-// Write a framed message (header + payload) over a UnixSocket.
+// Write a framed message (header + payload) over a UnixSocket. serialize()
+// computes the whole-frame checksum itself; anything set on h.checksum here
+// would be overwritten.
 auto send_via(UnixSocket& sock, MessageType type, const void* payload, size_t len)
     -> bool {
     MessageHeader h{};
     h.magic = Protocol::MAGIC;
     h.type = type;
     h.payload_length = static_cast<uint32_t>(len);
-    h.checksum = Protocol::compute_checksum(payload, len);
     auto buf = Protocol::serialize(h, payload);
     return sock.send_all(buf.data(), buf.size()).has_value();
 }
@@ -219,7 +220,17 @@ auto ServeDaemon::handle_client_inner(std::unique_ptr<UnixSocket>& sock)
         return;
     }
     ServeRequest req{};
-    std::memcpy(&req, req_buf.data(), sizeof(ServeRequest));
+    std::memcpy(&req, req_buf.data(), sizeof(req));
+
+    // Plaintext frames enforce the header checksum (encrypted frames carry 0
+    // and rely on Poly1305 instead — they never appear on this socket).
+    // Reject before touching the payload: a mismatch means corruption or a
+    // non-upix writer on the socket path.
+    if (!Protocol::verify_frame(hdr_buf.data(), req_buf.data(), req_buf.size())) {
+        LOG_DEBUG("Daemon", "conn: frame checksum mismatch");
+        send_serve_error(*sock, "frame checksum mismatch");
+        return;
+    }
 
     const size_t paths_bytes = static_cast<size_t>(req.input_path_length) +
                                req.output_path_length;

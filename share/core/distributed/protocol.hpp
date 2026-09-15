@@ -331,6 +331,15 @@ public:
     static auto parse_header(std::span<const uint8_t> data)
         -> std::optional<MessageHeader>;
 
+    // Integrity contract, inverse of serialize(): CRC32 over the whole
+    // plaintext frame — the 14-byte header with the checksum slot zeroed,
+    // followed by the payload — compared against the slot value. Enforced on
+    // the serve daemon path (plaintext AF_UNIX frames). Encrypted frames
+    // carry checksum 0 and MUST NOT be verified here: a plaintext CRC over
+    // ciphertext would leak bytes, and Poly1305 already covers integrity.
+    static auto verify_frame(const uint8_t* header /* HEADER_SIZE bytes */,
+                             const void* payload, size_t payload_size) -> bool;
+
     static auto compute_checksum(const void* data, size_t size) -> uint32_t;
 };
 
