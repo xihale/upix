@@ -154,9 +154,21 @@ local ncnn_x86_isa = has_config("native_isa") and is_plat("linux") and "auto" or
 -- xmake package dirs, so the real libomp shared runtime must not be a
 -- dependency. Android keeps real libomp (packaged inside the APK).
 add_requires("ncnn~runtime 20260113", {configs = {vulkan = true, online_spirv = false, x86_isa = ncnn_x86_isa, simpleomp = not is_plat("android")}})
+-- Version policy (component audit 2026-09-15): anything statically embedded
+-- in the Android APK must not resolve to a silently ancient version — xrepo
+-- ships libwebp 1.3.0 to this day (missing the CVE-2023-4863 fix), which the
+-- APK embedded for months. Security-relevant embeds get a floor pin that
+-- turns an unresolvable floor into a loud failure; the libwebp manifest is
+-- vendored into the upix-local repo (packages/l/libwebp) because xrepo
+-- upstream stopped at 1.3.0. glaze gets an exact pin: header-only static on
+-- both platforms and a history of breaking major bumps. libpng/libjpeg/
+-- libsodium/libdeflate stay unpinned — host builds link rolling system libs
+-- (libjpeg's IJG 9f vs turbo 3.x version lines are not even comparable), and
+-- none of them is currently behind a security fix.
 -- libwebpmux: XMP marker chunks for WebP outputs (image.cpp post-mux).
-add_requires("libwebp", {configs = {libwebpmux = true}})
-add_requires("libpng", "libjpeg", "glaze", "libsodium")
+add_requires("libwebp >=1.6.0", {configs = {libwebpmux = true}})
+add_requires("libpng", "libjpeg", "libsodium")
+add_requires("glaze v7.9.0")
 add_requires("libdeflate", {system = not is_plat("android")})
 -- One libavif require with the merged codec set (aom/dav1d) so both options
 -- share a single package install. Must stay in table-config form: variadic
@@ -180,6 +192,10 @@ if not is_plat("android") then
     add_requires("qr-code-generator-cpp")
     add_requires("cli11")
     add_requires("libcurl")
+    -- Test-only oracle: cli/tests/test_model_downloader.cpp hashes with
+    -- OpenSSL EVP on purpose, so the libsodium sha256 in model_downloader is
+    -- cross-validated against an independent implementation. Production code
+    -- must not add new OpenSSL includes.
     add_requires("openssl")
     add_requires("libzip")
 end

@@ -26,7 +26,7 @@ target("upix-cli")
     end)
 
     add_deps("upix-core")
-    add_packages("ncnn~runtime", "libwebp", "glaze", "qr-code-generator-cpp", "cli11", "libsodium", "libcurl", "openssl", "libzip")
+    add_packages("ncnn~runtime", "libwebp", "glaze", "qr-code-generator-cpp", "cli11", "libsodium", "libcurl", "libzip")
     if has_config("avif-encoder") or has_config("avif-decoder") then
         add_packages("libavif")
     end
@@ -128,7 +128,9 @@ target("test_model_catalog")
 target("test_model_downloader")
     set_kind("binary")
     add_files("$(projectdir)/cli/src/model_downloader.cpp")
-    add_packages("libcurl", "openssl", "libzip", "glaze")
+    -- openssl is the independent sha256 oracle the downloader's libsodium
+    -- implementation is cross-checked against (see root xmake.lua).
+    add_packages("libcurl", "openssl", "libzip", "glaze", "libsodium")
     add_includedirs("$(projectdir)/cli/src")
     add_files("$(projectdir)/cli/tests/test_model_downloader.cpp")
     set_targetdir("$(projectdir)/cli/build")

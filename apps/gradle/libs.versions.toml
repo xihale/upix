@@ -20,7 +20,6 @@ coroutines = "1.10.2"
 camerax = "1.5.3"
 zxing = "3.5.3"
 serializationJson = "1.10.0"
-securityCrypto = "1.1.0"
 exifinterface = "1.3.7"
 # Not covered by the Compose BOM (it only manages material3-adaptive-navigation-suite)
 adaptive = "1.2.0"
@@ -75,9 +74,6 @@ zxing-core = { module = "com.google.zxing:core", version.ref = "zxing" }
 
 # JSON
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serializationJson" }
-
-# Security: EncryptedSharedPreferences for auth key storage
-androidx-security-crypto = { module = "androidx.security:security-crypto", version.ref = "securityCrypto" }
 
 # Testing
 junit = { module = "junit:junit", version.ref = "junit" }

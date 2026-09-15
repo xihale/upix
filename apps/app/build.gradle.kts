@@ -231,9 +231,6 @@ dependencies {
     // JSON
     implementation(libs.kotlinx.serialization.json)
 
-    // Security: EncryptedSharedPreferences for auth key storage
-    implementation(libs.androidx.security.crypto)
-
     // Testing
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

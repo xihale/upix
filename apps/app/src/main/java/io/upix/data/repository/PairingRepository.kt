@@ -1,14 +1,10 @@
 package io.upix.data.repository
 
 import android.content.Context
-import android.content.SharedPreferences
-import androidx.security.crypto.EncryptedSharedPreferences
-import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
-import androidx.core.content.edit
 
 data class TrustedPC(
     val identityPubKey: String,
@@ -34,21 +30,12 @@ class PairingRepository(
 ) {
     private val appContext = context.applicationContext
 
-    // 懒初始化：MasterKey + EncryptedSharedPreferences 的密钥派生很重，
-    // 不能在 Application.onCreate（主线程）里构建；首次访问发生在下面的
-    // suspend 访问器内，全部切换到 IO 线程。
-    private val prefs: SharedPreferences by lazy {
-        val masterKey = MasterKey.Builder(appContext)
-            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-            .build()
-        EncryptedSharedPreferences.create(
-            appContext,
-            PREFS_NAME,
-            masterKey,
-            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-        )
-    }
+    // 懒初始化：Keystore 密钥生成很重，不能在 Application.onCreate（主线程）
+    // 里构建；首次访问发生在下面的 suspend 访问器内，全部切换到 IO 线程。
+    // 取代已废弃的 androidx.security-crypto：存的是对端公钥/指纹（公开材料），
+    // 密封买的是防篡改与落盘卫生；旧 EncryptedSharedPreferences 数据读为
+    // 不存在（安全降级=重新配对）。
+    private val store by lazy { KeystoreSecretStore(appContext, PREFS_NAME) }
 
     suspend fun saveTrustedPC(host: String, port: Int, pc: TrustedPC) = withContext(ioDispatcher) {
         val normalizedHost = host.trim()
@@ -59,7 +46,7 @@ class PairingRepository(
             put("pk", pc.identityPubKey)
             put("fp", pc.fingerprint)
         }.toString()
-        prefs.edit { putString(keyFor(normalizedHost, port), blob) }
+        store.put(keyFor(normalizedHost, port), blob)
         logRepository.info("PairingRepository", "Saved trusted PC $normalizedHost:$port (fp=${pc.fingerprint})")
     }
 
@@ -68,7 +55,7 @@ class PairingRepository(
         if (normalizedHost.isBlank() || port !in 1..65535) {
             return@withContext null
         }
-        val blob = prefs.getString(keyFor(normalizedHost, port), null) ?: return@withContext null
+        val blob = store.get(keyFor(normalizedHost, port)) ?: return@withContext null
         runCatching {
             val obj = JSONObject(blob)
             val pk = obj.optString("pk")
@@ -97,7 +84,7 @@ class PairingRepository(
             put("pk", identityPubKey)
             put("fp", fingerprint ?: "")
         }.toString()
-        prefs.edit { putString(KEY_LAST_PAIRED_PC, blob) }
+        store.put(KEY_LAST_PAIRED_PC, blob)
         logRepository.info(
             "PairingRepository",
             "Saved last paired PC $normalizedHost:$port (fp=$fingerprint)"
@@ -105,7 +92,7 @@ class PairingRepository(
     }
 
     suspend fun getLastPairedPC(): LastPairedPC? = withContext(ioDispatcher) {
-        val blob = prefs.getString(KEY_LAST_PAIRED_PC, null) ?: return@withContext null
+        val blob = store.get(KEY_LAST_PAIRED_PC) ?: return@withContext null
         runCatching {
             val obj = JSONObject(blob)
             val host = obj.optString("host").trim()

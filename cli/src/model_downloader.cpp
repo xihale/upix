@@ -1,5 +1,5 @@
 // See model_downloader.hpp. libcurl for HTTP(S), glaze for the manifest JSON,
-// OpenSSL EVP for sha256, libzip for extraction.
+// libsodium for sha256, libzip for extraction.
 #include "model_downloader.hpp"
 
 #include <algorithm>
@@ -13,7 +13,7 @@
 
 #include <curl/curl.h>
 #include <zip.h>
-#include <openssl/evp.h>
+#include <sodium.h>
 #include <glaze/glaze.hpp>
 
 namespace fs = std::filesystem;
@@ -140,26 +140,30 @@ auto sha256_file(const fs::path& path, std::string& error) -> std::string {
         error = std::format("cannot open {}", path.string());
         return {};
     }
-    struct Free { void operator()(EVP_MD_CTX* p) const { EVP_MD_CTX_free(p); } };
-    std::unique_ptr<EVP_MD_CTX, Free> ctx{EVP_MD_CTX_new()};
-    EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr);
+    if (sodium_init() < 0) {
+        error = "libsodium init failed";
+        return {};
+    }
+    crypto_hash_sha256_state st;
+    crypto_hash_sha256_init(&st);
 
     std::array<char, 64 * 1024> buf{};
     while (in) {
         in.read(buf.data(), static_cast<std::streamsize>(buf.size()));
         auto got = in.gcount();
         if (got > 0) {
-            EVP_DigestUpdate(ctx.get(), buf.data(), static_cast<size_t>(got));
+            crypto_hash_sha256_update(
+                &st, reinterpret_cast<const unsigned char*>(buf.data()),
+                static_cast<unsigned long long>(got));
         }
     }
-    unsigned char digest[EVP_MAX_MD_SIZE];
-    unsigned int len = 0;
-    EVP_DigestFinal_ex(ctx.get(), digest, &len);
+    unsigned char digest[crypto_hash_sha256_BYTES];
+    crypto_hash_sha256_final(&st, digest);
 
     std::string hex;
-    hex.reserve(len * 2);
-    for (unsigned int i = 0; i < len; ++i) {
-        hex += std::format("{:02x}", digest[i]);
+    hex.reserve(sizeof(digest) * 2);
+    for (unsigned char b : digest) {
+        hex += std::format("{:02x}", b);
     }
     return hex;
 }

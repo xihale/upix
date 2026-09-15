@@ -76,7 +76,7 @@ class DeviceViewModel(
      */
     fun tryAutoReconnect() {
         viewModelScope.launch {
-            // EncryptedSharedPreferences 首次构建 + 读取都在 IO 线程，不碰主线程。
+            // 信任表（Keystore 密封）首次构建 + 读取都在 IO 线程，不碰主线程。
             val pc = withContext(Dispatchers.IO) { pairingRepository.getLastPairedPC() }
             if (pc == null) {
                 logRepository.info("DeviceViewModel", "No last paired PC, staying disconnected")
@@ -173,7 +173,7 @@ class DeviceViewModel(
         }
         val normalizedHost = host.trim()
         viewModelScope.launch {
-            // 信任表读取（EncryptedSharedPreferences）在 IO 线程执行。
+            // 信任表读取（Keystore 密封存储）在 IO 线程执行。
             val trusted = withContext(Dispatchers.IO) {
                 pairingRepository.getTrustedPC(normalizedHost, port)
             }
@@ -328,7 +328,7 @@ class DeviceViewModel(
         learnedPubKeyB64: String,
         fingerprint: String = computeFingerprint(learnedPubKeyB64)
     ) {
-        // 信任表写入（EncryptedSharedPreferences）在 IO 线程执行。
+        // 信任表写入（Keystore 密封存储）在 IO 线程执行。
         withContext(Dispatchers.IO) {
             pairingRepository.saveTrustedPC(host, port, TrustedPC(learnedPubKeyB64, fingerprint))
             pairingRepository.saveLastPairedPC(host, port, learnedPubKeyB64, fingerprint)

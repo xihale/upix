@@ -191,6 +191,20 @@ GPU 管线改动要求 md5/PSNR 双端验证输出不变（性能优化不得改
 - release 相关文件（`apps/app/build.gradle.kts` 版本、根 `xmake.lua` set_version）
   只在发版提交中改动。
 
+### 4.6 三方依赖版本策略
+
+- **静态嵌进 Android APK 的包不得静默陈旧**：安全相关的包给下限钉
+  （`libwebp >=1.6.0`——xrepo 上游停更在 1.3.0，缺 CVE-2023-4863 修复，
+  包清单收编在 `packages/l/libwebp`，升级=改此文件）；破坏性大版本史
+  悠久的给精确钉（`glaze v7.9.0`）。升级是显式 bump + 像素级验证。
+- 宿主侧走滚动系统库的包（libpng/libjpeg/libdeflate/libcurl/libzip）
+  保持浮动：发行版自带新鲜度，且 libjpeg 的 IJG 9f 与 turbo 3.x 版本线
+  不可比较，钉了反而制造解析脆弱性。
+- 生产代码只用 libsodium 一套加密 API；`openssl` 仅为
+  `test_model_downloader` 的独立 sha256 oracle 保留，禁止新增 OpenSSL include。
+- Android 密钥落盘一律走 `KeystoreSecretStore`（Android Keystore AES-GCM），
+  不要再引 androidx.security-crypto（Google 已废弃）。
+
 ---
 
 ## 5. 版本与发布
