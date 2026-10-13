@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600">
+  <!-- 原图:窗台绣球,低对比软焦 -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#b8c8d8"/>
+      <stop offset="1" stop-color="#9db4c8"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="600" fill="#8a97a8"/>
+  <rect x="120" y="60" width="560" height="380" rx="10" fill="url(#sky)" stroke="#5a6878" stroke-width="14"/>
+  <g stroke="#7f95aa" stroke-width="6" opacity="0.9">
+    <line x1="400" y1="60" x2="400" y2="440"/>
+    <line x1="120" y1="250" x2="680" y2="250"/>
+  </g>
+  <rect x="0" y="440" width="800" height="160" fill="#6b5647"/>
+  <rect x="0" y="440" width="800" height="14" fill="#7d6756"/>
+  <g fill="#7e9cc4">
+    <circle cx="330" cy="430" r="52"/>
+    <circle cx="415" cy="452" r="60"/>
+    <circle cx="497" cy="428" r="50"/>
+    <circle cx="373" cy="500" r="46"/>
+    <circle cx="458" cy="508" r="42"/>
+    <circle cx="418" cy="382" r="38"/>
+  </g>
+  <g fill="#a7bfe0">
+    <circle cx="352" cy="415" r="12"/>
+    <circle cx="438" cy="438" r="13"/>
+    <circle cx="500" cy="415" r="10"/>
+    <circle cx="395" cy="487" r="11"/>
+    <circle cx="468" cy="498" r="10"/>
+  </g>
+  <path d="M410 545 C405 565 402 580 404 598" stroke="#5f7a4a" stroke-width="8" fill="none" stroke-linecap="round"/>
+</svg>

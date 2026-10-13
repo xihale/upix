@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600">
+  <!-- 结果:超分后,细节锐利 -->
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c4d6e8"/>
+      <stop offset="1" stop-color="#8fabc4"/>
+    </linearGradient>
+  </defs>
+  <rect width="800" height="600" fill="#8492a4"/>
+  <rect x="120" y="60" width="560" height="380" rx="10" fill="url(#sky)" stroke="#4c5b6e" stroke-width="16"/>
+  <rect x="134" y="74" width="532" height="352" fill="none" stroke="#ffffff" stroke-width="2" opacity="0.5"/>
+  <g stroke="#6f88a0" stroke-width="4">
+    <line x1="400" y1="60" x2="400" y2="440"/>
+    <line x1="120" y1="250" x2="680" y2="250"/>
+  </g>
+  <g stroke="#ffffff" stroke-width="1.4" opacity="0.65">
+    <line x1="306" y1="62" x2="306" y2="438"/>
+    <line x1="494" y1="62" x2="494" y2="438"/>
+    <line x1="122" y1="156" x2="678" y2="156"/>
+    <line x1="122" y1="344" x2="678" y2="344"/>
+  </g>
+  <rect x="0" y="440" width="800" height="160" fill="#5f4c3e"/>
+  <rect x="0" y="440" width="800" height="16" fill="#7a6250"/>
+  <g stroke="#4c3c31" stroke-width="1.2" opacity="0.5">
+    <line x1="0" y1="480" x2="800" y2="480"/>
+    <line x1="0" y1="520" x2="800" y2="520"/>
+    <line x1="0" y1="560" x2="800" y2="560"/>
+  </g>
+  <g fill="#6f92c6">
+    <circle cx="330" cy="430" r="54"/>
+    <circle cx="415" cy="452" r="62"/>
+    <circle cx="497" cy="428" r="52"/>
+    <circle cx="373" cy="500" r="48"/>
+    <circle cx="458" cy="508" r="44"/>
+    <circle cx="418" cy="382" r="40"/>
+  </g>
+  <g fill="#3f5a80" opacity="0.55">
+    <path d="M300 430 q-14 -10 0 -22 q14 10 0 22Z"/>
+    <path d="M470 470 q-14 -10 0 -22 q14 10 0 22Z"/>
+    <path d="M395 512 q-14 -10 0 -22 q14 10 0 22Z"/>
+  </g>
+  <g fill="#b9d2f2">
+    <circle cx="348" cy="412" r="14"/>
+    <circle cx="436" cy="436" r="15"/>
+    <circle cx="502" cy="412" r="12"/>
+    <circle cx="392" cy="484" r="13"/>
+    <circle cx="470" cy="496" r="12"/>
+    <circle cx="418" cy="368" r="10"/>
+  </g>
+  <g fill="#ffffff" opacity="0.8">
+    <circle cx="348" cy="412" r="5"/>
+    <circle cx="436" cy="436" r="5"/>
+    <circle cx="502" cy="412" r="4"/>
+    <circle cx="392" cy="484" r="4"/>
+    <circle cx="470" cy="496" r="4"/>
+  </g>
+  <path d="M410 545 C404 565 400 580 403 598" stroke="#4f6a3c" stroke-width="9" fill="none" stroke-linecap="round"/>
+  <path d="M407 570 q-18 -4 -24 -18 M404 585 q16 2 22 -12" stroke="#5d7a48" stroke-width="4" fill="none" stroke-linecap="round"/>
+</svg>
