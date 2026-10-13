@@ -29,9 +29,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.upix.R
 import io.upix.data.model.ModelInfo
+import io.upix.data.model.classifyModelScene
 import io.upix.ui.components.ModelFamilyCard
 import io.upix.ui.components.ModelFamilyEmptyCard
 import io.upix.ui.components.ModelListRow
+import io.upix.ui.components.ModelSceneBadge
 import io.upix.ui.components.SectionHeader
 import io.upix.ui.components.formatSizeBytes
 import io.upix.ui.components.groupModelsByFamily
@@ -116,6 +118,7 @@ internal fun ModelPickerSheet(
                                     onSelectModel(entry.value)
                                     onDismiss()
                                 },
+                                badge = { ModelSceneBadge(classifyModelScene(entry.value.name)) },
                                 trailing = {
                                     Text(
                                         text = sizeText,

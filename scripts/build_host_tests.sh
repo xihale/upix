@@ -14,6 +14,7 @@ tests=(
     test_gpu_precision
     test_model_downloader
     test_model_catalog
+    test_model_scene
     test_image_avif
 )
 

@@ -15,6 +15,12 @@ struct ModelInfo {
     int scale_factor = 2;
     int input_channels = 3;
     size_t total_size = 0;
+    // Scene labels for the curated catalog (see core/model_metadata.hpp).
+    // Empty scene = not a catalog model (user import) → no badge anywhere.
+    // Never serialized: the phone wire format (ModelLibraryEntry) copies
+    // fields explicitly.
+    std::string scene;
+    bool recommended = false;
 };
 
 struct ModelManagerError {

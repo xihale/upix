@@ -265,6 +265,13 @@ its license silently unset.
 Upix automatically infers:
 - Scale factor (2x, 4x, etc., from the `x2`/`x4` filename suffix)
 - Input channels (RGB or Grayscale, from the param file)
+- **Scene tag** (动漫 / 照片 / 综合 / 照片·修复 …) and a **recommended pick**
+  (★) per scene, from the catalog table in
+  `share/core/model_metadata.cpp` — the CLI (`model list`, `model
+  list-remote`), the desktop app and the Android app all surface it
+  (`apps/app/.../data/model/ModelScenes.kt` is the Kotlin counterpart;
+  keep the two in sync). Models outside the curated catalog (user
+  imports) carry no tag.
 
 ## Attribution & Licensing
 

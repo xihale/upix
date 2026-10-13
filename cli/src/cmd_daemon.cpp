@@ -104,8 +104,11 @@ int cmd_daemon(const args::Daemon& a) {
         // Liveness alone can race with shutdown; the socket is the real contract.
         std::error_code ec;
         const bool sock_up = std::filesystem::exists(socket_path, ec);
-        std::println("running (pid {}, socket {}{})", pid, socket_path,
-                     sock_up ? ")" : " — socket file missing!");
+        if (sock_up)
+            std::println("running (pid {}, socket {})", pid, socket_path);
+        else
+            std::println("running (pid {}, socket {} — socket file missing!)",
+                         pid, socket_path);
         return 0;
     }
 

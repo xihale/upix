@@ -79,10 +79,13 @@ release `.so` 被 strip，符号全无。排查 native 崩溃/GPU 垃圾输出�
 ```bash
 xmake build test_crypto && xmake run test_crypto        # 加密/会话/信任库
 xmake build test_protocol && xmake run test_protocol    # 帧协议 round-trip
-xmake build test_sr_marker    # XMP 标记四格式
-xmake build test_image_avif   # AVIF 编解码（依赖系统/内置 libavif）
-xmake build test_gpu_precision
-xmake build test_model_downloader
+xmake build test_distributed_session                    # 分布式会话端到端（可选真实模型，见 §6）
+xmake build test_image_avif                             # AVIF 编解码（依赖系统/内置 libavif）
+xmake build test_sr_marker                              # XMP 标记四格式
+xmake build test_exif                                   # EXIF orientation 解析与烘焙
+xmake build test_gpu_precision                          # GPU 精度 profile（Integrated/Discrete 预设选择）
+xmake build test_model_catalog                          # 模型图检测 × 文件名 scale 三方一致（见 §4.4）
+xmake build test_model_downloader                       # 下载器 sha256 双实现交叉验证
 ```
 
 改动加密、协议、图像编解码、sr_marker 后必须跑对应测试。改 GPU kernel 后跑
@@ -119,8 +122,9 @@ cd apps && ./scripts/android_test.sh          # 单元测试 + assembleDebug (+l
 ./gradlew connectedDebugAndroidTest           # 仪器测试（需设备）
 ```
 
-仪器测试 3 个（`apps/app/src/androidTest/`）：`GpuProbeDiagTest`（GPU 诊断）、
-`LocalNativeBenchmarkTest`（本地引擎基准）、`RemoteDistributedTest`（分布式全链）。
+仪器测试 4 个（`apps/app/src/androidTest/`）：`GpuProbeDiagTest`（GPU 诊断）、
+`LocalNativeBenchmarkTest`（本地引擎基准）、`LocalBatchTimingTest`（本地批量计时）、
+`RemoteDistributedTest`（分布式全链）。
 
 ### 3.3 端到端
 
@@ -259,14 +263,20 @@ keystore 文件在 `~/.config/upix/android-release.jks`，**不进 git**。
 | 变量 | 作用 |
 |------|------|
 | `UPIX_MODELS_DIR` | 模型目录覆盖（默认 `$XDG_DATA_HOME/upix/models`） |
-| `UPIX_LOG_LEVEL` | 日志级别 |
-| `UPIX_PROGRESS` | 目录模式进度输出 |
+| `UPIX_LOG_LEVEL=debug` | 开启 DEBUG 日志（默认 INFO） |
+| `UPIX_PROGRESS=1` | 单图/目录模式进度输出 |
 | `UPIX_KERNEL_SELFTEST=1` | 引擎初始化时跑 GPU kernel round-trip 自检 |
-| `UPIX_PIPELINE_TIMER` | GPU 流水线分段时间日志 |
-| `UPIX_GPU_DISABLE_FP16` / `UPIX_GPU_DISABLE_INT8` / `UPIX_GPU_ENABLE_FP16_ARITH` | 覆盖精度 profile |
+| `UPIX_PIPELINE_TIMER` | GPU 流水线与进度帧的分段时间日志 |
+| `UPIX_GPU_DISABLE_FP16=1` | 关闭 fp16 存储——冻结 SPIR-V pack 需要 fp16，引擎会整体回退 CPU |
+| `UPIX_GPU_ENABLE_FP16_ARITH=1` | 强制开 fp16 算术（绕过按设备名的 profile 自动选择） |
+| `UPIX_GPU_DISABLE_INT8=1` | 已读但当前无效：冻结 SPIR-V pack 含 int8 storage，设 1 仅打警告（`ncnn_engine.cpp`） |
 | `UPIX_GPU_FORCE_BUDGET_MB` | 覆盖 VRAM/heap 预算（默认按设备估算，如 8GB 4060 ≈ 6.1GB） |
-| `UPIX_GPU_INIT_RETRIES` / `UPIX_GPU_INIT_DELAY_MS` | GPU 初始化重试 |
+| `UPIX_GPU_INIT_RETRIES` / `UPIX_GPU_INIT_DELAY_MS` | GPU 初始化重试次数 / 间隔毫秒 |
 | `UPIX_CPU_THREADS_PER_ENGINE` | 引擎池每实例线程数 |
+| `UPIX_GPU_TILE_SIZE` / `UPIX_GPU_TILE_OVERLAP` / `UPIX_GPU_TILE_BATCH` | GPU tile 探针参数覆盖（auto-tile 实测与 GPU 快速路径） |
+| `UPIX_CPU_TILE_SIZE` | CPU tile 探针参数覆盖 |
+| `UPIX_TILE_CACHE` | auto-tile 探针缓存目录覆盖（默认 `$XDG_CACHE_HOME/upix/`，空值禁用持久化） |
+| `UPIX_TEST_MODEL_DIR` / `UPIX_TEST_MODEL_NAME` | `test_distributed_session` 的可选真实模型路径（双 submit 位级一致回归） |
 
 ---
 

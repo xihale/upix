@@ -125,6 +125,17 @@ target("test_model_catalog")
     add_files("$(projectdir)/cli/tests/test_model_catalog.cpp")
     set_targetdir("$(projectdir)/cli/build")
 
+target("test_model_scene")
+    set_kind("binary")
+    add_deps("upix-core")
+    add_packages("ncnn~runtime", "libwebp", "libpng", "libjpeg", "libdeflate", "glaze", "libsodium")
+    if is_plat("linux", "bsd") then
+        add_syslinks("dl")
+    end
+    add_includedirs("$(projectdir)/share")
+    add_files("$(projectdir)/cli/tests/test_model_scene.cpp")
+    set_targetdir("$(projectdir)/cli/build")
+
 target("test_model_downloader")
     set_kind("binary")
     add_files("$(projectdir)/cli/src/model_downloader.cpp")

@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -137,6 +138,8 @@ internal fun ModelListRow(
     isSelected: Boolean = false,
     onClick: (() -> Unit)? = null,
     supporting: (@Composable () -> Unit)? = null,
+    /** 行名后的场景徽标槽（ModelSceneBadge）；null 时行布局与旧版一致。 */
+    badge: (@Composable () -> Unit)? = null,
     trailing: @Composable () -> Unit
 ) {
     ListItem(
@@ -173,12 +176,28 @@ internal fun ModelListRow(
             )
             .then(if (isSelected) Modifier.semantics { selected = true } else Modifier)
     ) {
-        Text(
-            text = label,
-            style = valueStyleFor(label),
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        if (badge == null) {
+            Text(
+                text = label,
+                style = valueStyleFor(label),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        } else {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
+            ) {
+                Text(
+                    text = label,
+                    style = valueStyleFor(label),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                badge()
+            }
+        }
     }
 }
 

@@ -2,6 +2,13 @@
 
 Upix is an image super-resolution system with a standalone CLI (and Android app) plus encrypted LAN offloading: the phone pairs with a PC and delegates the GPU work. It uses modern C++ (C++23), ncnn for inference, and supports popular image formats via libpng, libjpeg, libwebp, and (optionally) libavif.
 
+## Contents
+
+**[Features](#features) · [Build](#build) · [Usage](#usage) · [Performance Notes](#performance-notes) · [Configuration File](#configuration-file) · [Troubleshooting](#troubleshooting) · [Development](#development) · [License](#license)**
+
+Build: [CLI](#build-cli) — [Android](#build-android-app) — [Desktop](#desktop) — [Optional AVIF codecs](#optional-avif-codecs-opt-in) — [AVIF over remote](#avif-over-remote-phone-↔-pc)
+Usage: [Single image](#single-image) — [Warm-engine daemon](#warm-engine-daemon) — [Directory processing](#directory-processing) — [Model management](#model-management) — [SR marker](#sr-marker-idempotent-re-runs) — [Distributed mode](#distributed-mode) — [Performance probes](#performance-probes) — [Shell completions](#shell-completions)
+
 ## Features
 
 - Single-image and batch directory processing
@@ -10,15 +17,15 @@ Upix is an image super-resolution system with a standalone CLI (and Android app)
 - Multi-threaded directory processing via `--jobs` (CPU engines)
 - Offload to a PC over the LAN: QR pairing, end-to-end encrypted (X25519 + Ed25519 + secretbox)
 - Outputs carry an XMP marker; re-feeding an already-upscaled image skips by default
-- Cross-platform: Linux/macOS/Windows CLI + Android app
+- Cross-platform: Linux/macOS/Windows CLI + Android app + desktop workbench (`desktop/`, Qt 6 Quick)
 
 ## Build
 
 ### Prerequisites
 
 - xmake (v3.0+)
-- C++23 compiler (GCC 11+, Clang 13+, MSVC 2022+)
-- Dependencies: ncnn, libpng, libjpeg, libwebp (installed via `xmake require`)
+- C++23 compiler (GCC 14+, Clang 18+, or MSVC 2022+; the CLI uses `<print>`)
+- Dependencies (ncnn, image codecs, libsodium, …) are pulled automatically via `xmake require`
 
 ### Build CLI
 
@@ -39,6 +46,27 @@ cd apps
 ```
 
 The native engine (`libupix-native.so`) is built with xmake by a Gradle task (`xmakeNative` in `apps/app/build.gradle.kts`) that runs before each APK build; see `apps/xmake.lua`.
+
+### Desktop
+
+The desktop app is a Qt 6 Quick window around the same CLI. It needs Qt 6.5+
+(`qt6-base`, `qt6-declarative`, `qt6-svg`), CMake, Ninja, and
+`upix-cli` on `PATH` (or
+`UPIX_CLI`).
+
+```bash
+cd desktop
+./build.sh              # cmake + ninja, binary at desktop/build/upix
+./build/upix
+```
+
+`ctest --test-dir desktop/build` runs the compare-divider regression (real
+mouse events; drag tracking, clamps, single-column seam).
+`--shot empty,picked,running,done,error,models,host,pairing --out shots-qt`
+renders those states headless to PNG (add `--anim` for entry-motion frames,
+`--sweep` for the compare sweep, `QT_SCALE_FACTOR=2` for 200%).
+`--smoke` runs a real end-to-end upscale against `upix-cli` and exits non-zero
+on failure. `UPIX_THEME=light|dark` pins the color scheme.
 
 ### Optional AVIF codecs (opt-in)
 
@@ -172,6 +200,10 @@ and downloaded on demand (see `models/README.md`):
 ./upix-cli model list                                 # list installed models
 ./upix-cli model import ~/foo.param ~/foo.bin         # import local custom models
 ```
+
+Rows carry a scene tag and the recommended picks (`[动漫] ★` — 适用场景：
+动漫/照片/综合/修复…; `★` = that scene's first choice), mirrored by the
+scene badges in the desktop and Android apps.
 
 Models are discovered from the per-user store `$XDG_DATA_HOME/upix/models`
 (`~/.local/share/upix/models` by default) — the same set from any working directory.

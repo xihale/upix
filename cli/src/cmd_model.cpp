@@ -19,6 +19,7 @@
 #include "utils/logger.hpp"
 #include "core/engine_setup.hpp"  // probe_model_sanity
 #include "core/model_manager.hpp"
+#include "core/model_metadata.hpp"
 
 namespace fs = std::filesystem;
 
@@ -43,6 +44,18 @@ auto find_remote(const std::vector<upix::cli::RemoteModel>& models,
 
 auto mb(double bytes) -> std::string {
     return std::format("{:.1f} MB", bytes / 1024.0 / 1024.0);
+}
+
+// "[动漫] ★" style annotation for catalog models; empty for user imports.
+auto scene_suffix(const std::string& name) -> std::string {
+    const auto meta = upix::classify_model_scene(name);
+    if (meta.scene.empty()) return "";
+    return std::format(" [{}]{}", meta.scene, meta.recommended ? " ★" : "");
+}
+
+// One-line legend so the tags/stars are self-explanatory in a terminal.
+auto print_scene_legend() -> void {
+    std::println("  ([场景] 适用：动漫/照片/综合/修复… · ★ 推荐)");
 }
 
 int cmd_model_list(const args::Model& a) {
@@ -76,9 +89,10 @@ int cmd_model_list(const args::Model& a) {
         return 0;
     }
     for (const auto& m : models.value()) {
-        std::println("  {} ({}x, {} MB)", m.name, m.scale_factor,
-                     m.total_size / 1024 / 1024);
+        std::println("  {} ({}x, {} MB){}", m.name, m.scale_factor,
+                     m.total_size / 1024 / 1024, scene_suffix(m.name));
     }
+    print_scene_legend();
     return 0;
 }
 
@@ -96,8 +110,10 @@ int cmd_model_list_remote(const args::Model& a) {
         std::println("  (manifest is empty)");
     }
     for (const auto& m : *remote) {
-        std::println("  {} ({}x, {})", m.name, m.scale, mb(m.size_bytes));
+        std::println("  {} ({}x, {}){}", m.name, m.scale, mb(m.size_bytes),
+                     scene_suffix(m.name));
     }
+    print_scene_legend();
     std::println("\nDownload with: upix model download <name>");
     return 0;
 }

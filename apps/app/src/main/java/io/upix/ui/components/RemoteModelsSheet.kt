@@ -33,6 +33,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.upix.R
 import io.upix.data.model.RemoteModel
+import io.upix.data.model.classifyModelScene
 import io.upix.ui.theme.Spacing
 import io.upix.ui.theme.valueStyleFor
 import io.upix.viewmodel.RemoteModelDownloadState
@@ -171,6 +172,7 @@ private fun RemoteModelRow(
     val state = downloadState
     ModelListRow(
         label = label,
+        badge = { ModelSceneBadge(classifyModelScene(model.name)) },
         supporting = when {
             state != null && !state.failed && state.indeterminate -> {
                 // 总大小未知（如服务端不返回 Content-Length）：不确定进度 + 已下载字节提示。

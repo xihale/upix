@@ -1,5 +1,6 @@
 #include "model_manager.hpp"
 #include "core/model_graph.hpp"
+#include "core/model_metadata.hpp"
 #include "utils/logger.hpp"
 #include <cctype>
 #include <format>
@@ -126,7 +127,13 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
     // keep the 2 default.
     const int from_name = scale_from_filename(param_stem);
     info.scale_factor = from_name >= 1 ? from_name : 2;
-    
+
+    // Scene badge data (动漫/照片/…+ ★推荐) from the catalog table; empty
+    // for imported non-catalog models.
+    const auto meta = classify_model_scene(info.name);
+    info.scene = std::string{meta.scene};
+    info.recommended = meta.recommended;
+
     info.input_channels = 3;
 
     std::string line;

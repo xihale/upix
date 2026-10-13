@@ -18,12 +18,14 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.upix.R
 import io.upix.data.model.ModelLibraryEntry
+import io.upix.data.model.classifyModelScene
 import io.upix.ui.theme.Spacing
 import io.upix.ui.theme.valueStyleFor
 
@@ -114,6 +116,7 @@ fun ModelCard(
             val showDeviceBadges = pcConnected && (entry.onPhone || entry.onPc)
             val scaleText = stringResource(R.string.config_scale_value, entry.scaleFactor)
             val sizeText = formatSizeBytes(entry.totalSize)
+            val scene = remember(entry.name) { classifyModelScene(entry.name) }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(Spacing.xs)
@@ -124,6 +127,9 @@ fun ModelCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1
                 )
+                if (scene != null) {
+                    ModelSceneBadge(scene)
+                }
                 if (showDeviceBadges) {
                     Row(
                         modifier = Modifier.padding(start = Spacing.sm),

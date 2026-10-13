@@ -3,9 +3,12 @@
 > 跨平台图像超分辨率系统：PC 端 CLI 与 Android 应用共享同一份 C++ 核心（`share/`），
 > 通过局域网 TCP + 加密配对协议组成"手机提交、PC 计算"的卸载模式。
 >
-> 本文档是架构的**单一权威来源**，随代码滚动更新（最近全面核对：2026-09-15；
-> 不再钉具体 commit——曾钉 `9920fc9` 后内容先行演化、戳记失真）。
+> 本文档是架构的**单一权威来源**，随代码滚动更新（最近全面核对：2026-10-13；
+> 不再钉具体 commit——曾钉 `9920fc9` 后内容先行演化、戳记失真；同理正文也不钉
+> 精确行数）。
 > 与代码冲突时以代码为准，并请回来修文档。
+
+**目录**：[0. 顶层布局](#0-顶层布局) · [1. 子系统划分](#1-子系统划分) · [2. 推理引擎子系统](#2-推理引擎子系统sharecore) · [3. 通信与配对子系统](#3-通信与配对子系统sharecoredistributed) · [4. serve daemon](#4-serve-daemonsharecoreservedaemonhppcpp) · [5. 前端子系统](#5-前端子系统) · [6. 构建系统](#6-构建系统) · [7. 技术栈与依赖](#7-技术栈与依赖) · [8. 架构特点与已知限制](#8-架构特点与已知限制) · [9. 关键调用链速查](#9-关键调用链速查) · [10. 相关文档](#10-相关文档)
 
 ---
 
@@ -31,10 +34,12 @@
               └──────────────────────────────────────────────┘
 ```
 
+桌面端 `desktop/` 不链接 share/。它用 Qt Quick 开窗口，界面调用同一份 `upix-cli`（放大、模型、主机、热引擎）。
+
 | 目录 | 角色 | 构建 | 标准 |
 |------|------|------|------|
 | `share/` | 共享 C++ 核心：推理引擎、tile 处理、加密配对协议、coordinator、serve daemon、网络/图像/加密工具、perf 框架 | xmake 静态库 `upix-core`（PC 与 Android 共用同一工程） | C++23（JNI 桥 C++17） |
-| `cli/` | PC 命令行入口（`main.cpp` 薄入口 + `cli_app.cpp` 命令树 + `cmd_*.cpp` 每子命令一个） | xmake → `upix-cli` + 6 个测试二进制 | C++23 |
+| `cli/` | PC 命令行入口（`main.cpp` 薄入口 + `cli_app.cpp` 命令树 + `cmd_*.cpp` 每子命令一个） | xmake → `upix-cli` + 9 个测试二进制 | C++23 |
 | `tools/` | 主机侧工具：`dump-spirv`（SPIR-V pack 生成器）+ `upix-perf`（独立性能探针二进制） | xmake | C++23 |
 | `apps/` | Android 应用（Jetpack Compose + MVVM，单 Activity + 手写 DI） | Gradle + xmake（NDK），产物 `libupix-native.so` | Kotlin + C++17 JNI |
 | `models/` | ncnn 模型目录（源码仓库只含 README；模型经 GitHub release 分发） | 运行时扫描 | — |
@@ -75,14 +80,14 @@ xmake 工程、同一套编译选项——编进 `libupix-native.so`，保证两
 
 ### 2.2 ncnn 后端（按职责拆分）
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `ncnn_engine_impl.hpp` | 146 | `NCNNEngineImpl` 类声明（PIMPL 外壳 + 工厂） |
-| `ncnn_engine.cpp` | 1372 | 类骨架：initialize/load_model/process/process_u8/process_batch/benchmark + CPU 路径 |
-| `ncnn_gpu_init.cpp` | 256 | Vulkan 初始化 + GPU 枚举打分（discrete/integrated/fp16/queue）+ 重试 |
-| `ncnn_gpu_pipeline.cpp` | 2783 | GPU tile 流水线（最高档 `process_tiles_gpu_u8_queue`：整图 u8 一次上传，GPU 上 crop + 推理 + 量化 + 拼回） |
-| `vulkan_shaders.hpp` | 779 | 12 个 GLSL compute kernel 源码常量 + RAII guard |
-| `groupnorm_layer.hpp` | 261 | 自研 GroupNorm 层（Vulkan + CPU 双路径），覆盖 ncnn 无 GPU 实现的缺口 |
+| 文件 | 职责 |
+|------|------|
+| `ncnn_engine_impl.hpp` | `NCNNEngineImpl` 类声明（PIMPL 外壳 + 工厂） |
+| `ncnn_engine.cpp` | 类骨架：initialize/load_model/process/process_u8/process_batch/benchmark + CPU 路径 |
+| `ncnn_gpu_init.cpp` | Vulkan 初始化 + GPU 枚举打分（discrete/integrated/fp16/queue）+ 重试 |
+| `ncnn_gpu_pipeline.cpp` | GPU tile 流水线（最高档 `process_tiles_gpu_u8_queue`：整图 u8 一次上传，GPU 上 crop + 推理 + 量化 + 拼回），全子系统最大的单文件 |
+| `vulkan_shaders.hpp` | 12 个 GLSL compute kernel 源码常量 + RAII guard |
+| `groupnorm_layer.hpp` | 自研 GroupNorm 层（Vulkan + CPU 双路径），覆盖 ncnn 无 GPU 实现的缺口 |
 
 **关键实现细节**：
 
@@ -142,6 +147,7 @@ storage，数学全 fp32——Adreno/Mali 残差块会溢出 fp16 范围）与 *
 | `tile_optimizer.hpp` | 自动选最优 tile：候选 {64…512} 实测 tiles/sec + 内存预算淘汰，在最小耗时 ×1.05 容忍带内挑最大 tile |
 | `engine_pool.{hpp,cpp}` | N 个独立 Engine 实例 + 队列复用（CPU 目录模式 `--jobs` 并发用） |
 | `model_manager.{hpp,cpp}` | 递归扫描模型目录，解析 `.param` 推断元数据（放大倍数从文件名 xN，输入通道数从首个卷积层反推） |
+| `model_metadata.{hpp,cpp}` | 目录模型的场景标注表（动漫/照片/综合/修复…+ ★推荐），CLI/GUI 徽标数据源；Android 侧对照表在 `ModelScenes.kt` |
 | `model_graph.{hpp,cpp}` | 纯 param 文件图分析：xN 文件名约定单一实现（`scale_from_filename`）+ 无网络加载的放大倍数图检测（Interp 级/反卷积/PixelShuffle 主干 BFS/头部 Reorg 除子）。引擎加载与 ModelManager 扫描共用，`test_model_catalog` 对抗 publish 脚本三方钉一致性 |
 | `engine_setup.{hpp,cpp}` | `initialize_engine`（GPU/CPU/GPU_THEN_CPU/默认四策略，含回退）+ `switch_model` 懒加载换模（coordinator 与 daemon 共用） |
 | `config.{hpp,cpp}` | `ProcessingConfig` 聚合，glaze JSON 持久化 + 校验 |
@@ -318,16 +324,16 @@ TCP）。二者共享的是协议帧格式与 TileProcessor。
 
 **结构**：
 
-| 文件 | 行数 | 职责 |
-|------|------|------|
-| `main.cpp` | 47 | 薄入口：拦截 `__complete`，其余交 CLI11 树 dispatch |
-| `cli_app.cpp` | 273 | CLI11 命令树（所有子命令的选项/校验/回调） |
-| `args.hpp` / `common.{hpp,cpp}` | — | 参数 struct；模型目录解析（`$UPIX_MODELS_DIR` > `$XDG_DATA_HOME/upix/models`）、输出命名、日志装配等共用逻辑 |
-| `cmd_process.cpp` | 558 | 单图超分（daemon 委托 + 内联路径） |
-| `process_batch.cpp` | 1048 | 目录模式批处理（CPU EnginePool / GPU 多引擎 prepare→SR→save 流水线） |
-| `cmd_model.cpp` + `model_downloader.{hpp,cpp}` | — | 模型列表/导入 + release 清单解析与下载（libcurl） |
-| `cmd_host.cpp` / `cmd_daemon.cpp` | — | 连接卡（IP/QR/指纹）+ coordinator 生命周期；daemon 控制 |
-| `cmd_complete.cpp` / `cmd_completions.cpp` | — | cobra 风格动态补全引擎；三 shell 薄适配脚本输出/安装 |
+| 文件 | 职责 |
+|------|------|
+| `main.cpp` | 薄入口：拦截 `__complete`，其余交 CLI11 树 dispatch |
+| `cli_app.cpp` | CLI11 命令树（所有子命令的选项/校验/回调） |
+| `args.hpp` / `common.{hpp,cpp}` | 参数 struct；模型目录解析（`$UPIX_MODELS_DIR` > `$XDG_DATA_HOME/upix/models`）、输出命名、日志装配等共用逻辑 |
+| `cmd_process.cpp` | 单图超分（daemon 委托 + 内联路径） |
+| `process_batch.cpp` | 目录模式批处理（CPU EnginePool / GPU 多引擎 prepare→SR→save 流水线） |
+| `cmd_model.cpp` + `model_downloader.{hpp,cpp}` | 模型列表/导入 + release 清单解析与下载（libcurl） |
+| `cmd_host.cpp` / `cmd_daemon.cpp` | 连接卡（IP/QR/指纹）+ coordinator 生命周期；daemon 控制 |
+| `cmd_complete.cpp` / `cmd_completions.cpp` | cobra 风格动态补全引擎；三 shell 薄适配脚本输出/安装 |
 
 **输出标记（SR XMP）**：所有输出图嵌入 XMP 标记 `urn:upix:sr:1`（`share/utils/sr_marker`，
 PNG iTXt / JPEG APP1 / WebP XMP chunk / AVIF mdat 四格式同一份探测代码）。CLI/Android
@@ -359,7 +365,7 @@ io/upix/
 ├── ui/                       screens(含 home/) · components · navigation · theme · scanner · input
 ├── viewmodel/                Main / Device / Models + Processing 五件套
 │                              （ViewModel + Mappers + UiModels + QueueController + RunEngine + RunPlanner）
-├── data/                     model/（数据类）· repository/（17 个仓库）· thumbnails/
+├── data/                     model/（数据类）· repository/（仓库层：本地推理/分布式/队列/checkpoint/模型/设备/日志等）· thumbnails/
 ├── service/                  ProcessingKeepAliveService（前台保活 FGS dataSync）
 │                              + ProcessingForegroundCoordinator（进度共享总线，AppContainer 单例）
 ├── network/                  CoordinatorClient（调 JNI）· JoinInvite（连接卡解析）
@@ -537,6 +543,8 @@ DeviceViewModel → CoordinatorClient → NativeWorker.nativeRequestConnection
 | `README.md` | 用户向使用说明（构建、CLI 用法、分布式模式） |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | 开发规范：构建/测试/发布流程与已知坑 |
 | [DESIGN_LANGUAGE.md](DESIGN_LANGUAGE.md) | Android 端 UI 设计语言（规范性） |
+| [desktop/DESIGN.md](../desktop/DESIGN.md) | 桌面端 Qt Quick 设计语言与架构（组件层、token、动效、无头验证） |
+| [serve-tests-design.md](serve-tests-design.md) | serve E2E 测试套件取舍记录与非确定性断言的定标依据 |
 | `models/README.md` | 模型分发、格式与发版流程 |
 
 历史设计文档（serve daemon 设计、架构简化 ADR、性能报告）已随仓库精简移除，见 git 历史。
