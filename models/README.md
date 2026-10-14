@@ -139,7 +139,7 @@ fp16 baseline on GPU.
 
 - **Real-CUGAN se x4** (official `up4x-*`): deliberately not shipped. The
   net uses a PixelShuffle-trunk topology that the currently pinned ncnn
-  (20260113) executes to garbage on both CPU and Vulkan, while upstream
+  (20260526) executes to garbage on both CPU and Vulkan, while upstream
   ncnn 2022 ran it fine; x2/x3 from the same families are unaffected.
   The engine logs a warning when it detects this topology from an
   imported model. Revisit when the ncnn pin moves.

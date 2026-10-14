@@ -99,7 +99,7 @@ output PNG and the traced TorchScript for the next step.
   lower to ncnn **Reorg**, and the engine compensates (input channels
   ÷ stride², advertised scale ÷ stride); nearest upsampling and the
   RealPLKSR residual rewrite lower cleanly. The pinned ncnn
-  (20260113) has two behavior changes vs upstream 2022: `from_pixels`
+  (20260526) has two behavior changes vs upstream 2022: `from_pixels`
   returns float, and **Real-CUGAN se x4's PixelShuffle-trunk executes
   as garbage on both CPU and Vulkan** — that topology is excluded from
   the catalog and the engine logs a warning on import. Re-test both

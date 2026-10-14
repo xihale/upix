@@ -6,6 +6,7 @@ package("ncnn")
     add_urls("https://github.com/Tencent/ncnn/archive/refs/tags/$(version).tar.gz",
             "https://github.com/Tencent/ncnn.git", { submodules = false })
 
+    add_versions("20260526", "da1ade826bc22858a9fb87ae052789bbd614d042b3ec2c22e6544ca83db6bc04")
     add_versions("20260113", "2fdc5c6e37f8552921a9daad498a1be54a6fa6edd32c1a9e3030b27fab253b47")
     add_versions("20250916", "7d463f1e5061facd02b8af5e792e059088695cdcfcc152c8f4892f6ffe5eab1a")
     add_versions("20250503", "3afea4cf092ce97d06305b72c6affbcfb3530f536ae8e81a4f22007d82b729e9")
@@ -50,7 +51,13 @@ package("ncnn")
 
     on_load(function (package)
         local ncnn_ver = package:version()
-        local glslang = "glslang-nihui" .. (ncnn_ver and (" " .. ncnn_ver) or "")
+        -- glslang-nihui releases normally mirror ncnn tags one-to-one. ncnn
+        -- 20260526 never got a matching glslang-nihui release, but its glslang
+        -- submodule is the exact commit xrepo's glslang-nihui 20260113 pins
+        -- (fe88f421), so map it there instead of failing resolution.
+        local glslang_versions = {["20260526"] = "20260113"}
+        local glslang_ver = ncnn_ver and glslang_versions[tostring(ncnn_ver)] or ncnn_ver
+        local glslang = "glslang-nihui" .. (glslang_ver and (" " .. glslang_ver) or "")
         local want_glslang = package:config("vulkan") and package:config("online_spirv")
         if want_glslang then
             package:add("deps", glslang)

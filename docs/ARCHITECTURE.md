@@ -130,8 +130,8 @@ storage，数学全 fp32——Adreno/Mali 残差块会溢出 fp16 范围）与 *
 - **三段流水线**（Load 线程切块提取 → 主线程 Proc 调 `engine.process_batch` → Save
   线程融合），两个有界队列 + `condition_variable` 同步，CPU 提取/融合与 GPU 推理重叠。
 - GPU 快速路径：引擎支持时整图直接交给 `process_tiles_gpu_u8_queue`。
-- GPU chunk 提交/执行重叠（`ncnn_gpu_pipeline.cpp` u8 主路径）：ncnn 20260113 的
-  VkCompute 只有 `submit_and_wait`（无 fence submit），故用一个专职提交线程承担阻塞
+- GPU chunk 提交/执行重叠（`ncnn_gpu_pipeline.cpp` u8 主路径）：ncnn 20260526 的
+  VkCompute 仍只有 `submit_and_wait`（无 fence submit），故用一个专职提交线程承担阻塞
   等待 + 两个交替 VkCompute 双缓冲 chunk——CPU 录制 chunk N+1 时 chunk N 在 GPU 执行；
   chunk 的 tile 输入/输出/下载 staging 一律等 fence 信号后才回收，跨 chunk 的
   WAR/WAW 依赖 ncnn 每 SSBO binding 的 barrier（首个同步域覆盖先前提交）+ 单线程
@@ -413,7 +413,7 @@ UI → ProcessingViewModel → NativeImageProcessingRepository
 根 `xmake.lua` 是唯一工程：`set_project("upix")`、`set_version()` 是 **CLI
 版本真源**（与 `apps/app/build.gradle.kts` 的 Android `versionName` 独立），
 C++23。option：`native_isa`（默认开）、`upx`（默认关）、`avif-encoder` /
-`avif-decoder`（默认关，见下）。ncnn 钉 `20260113` runtime 变体（不带在线编译器）。
+`avif-decoder`（默认关，见下）。ncnn 钉 `20260526` runtime 变体（不带在线编译器）。
 
 | target | 定义于 | 说明 |
 |--------|--------|------|
@@ -460,7 +460,7 @@ before_build 注册只有第一个生效）负责两件事：Android 配置下 p
 
 | 层 | 技术 |
 |----|------|
-| 推理 | ncnn 20260113（Vulkan），自写 GLSL compute kernel（预编译 SPIR-V pack） |
+| 推理 | ncnn 20260526（Vulkan），自写 GLSL compute kernel（预编译 SPIR-V pack） |
 | 图像 | libpng / libjpeg / libwebp / libdeflate /（可选）libavif+aom/dav1d |
 | 构建 | xmake（双端 C++）+ Gradle 9.7.1 / AGP 9.3.0（Android 壳） |
 | Android UI | Jetpack Compose（BOM 2026.08）+ Material 3 Expressive（1.5.0-alpha26）+ adaptive 1.2 |

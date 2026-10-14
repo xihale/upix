@@ -144,16 +144,19 @@ option_end()
 -- compiling kernel variants it could never dispatch to ("all" = upstream).
 local ncnn_x86_isa = has_config("native_isa") and is_plat("linux") and "auto" or "all"
 
--- Pin to 20260113: glslang-nihui (a vulkan build dep of ncnn) has no 20260526 release,
--- so the latest ncnn (20260526) fails to resolve its glslang-nihui dependency.
--- 20260113 is the newest ncnn version with a matching glslang-nihui release.
--- Runtime ncnn looks up a frozen SPIR-V pack and does not link glslang.
+-- Pin to 20260526 (upstream's newest release). Upstream ncnn vendors glslang
+-- as a submodule; glslang-nihui (the xrepo package of that fork) has no
+-- 20260526 release, so the vendored ncnn package maps 20260526 onto
+-- glslang-nihui 20260113 — ncnn 20260526's submodule is the exact commit
+-- (fe88f421) that glslang-nihui 20260113 pins, so the pairing is identical
+-- to a native release. Runtime ncnn looks up a frozen SPIR-V pack and does
+-- not link glslang.
 -- dump-spirv (glslang-linked ncnn) generates share/core/spirv_pack.bin if missing.
 -- Desktop builds use ncnn's built-in minimal omp runtime (simpleomp): host
 -- binaries (release tarballs, dump-spirv) run directly with no rpath into
 -- xmake package dirs, so the real libomp shared runtime must not be a
 -- dependency. Android keeps real libomp (packaged inside the APK).
-add_requires("ncnn~runtime 20260113", {configs = {vulkan = true, online_spirv = false, x86_isa = ncnn_x86_isa, simpleomp = not is_plat("android")}})
+add_requires("ncnn~runtime 20260526", {configs = {vulkan = true, online_spirv = false, x86_isa = ncnn_x86_isa, simpleomp = not is_plat("android")}})
 -- Version policy (component audit 2026-09-15): anything statically embedded
 -- in the Android APK must not resolve to a silently ancient version — xrepo
 -- ships libwebp 1.3.0 to this day (missing the CVE-2023-4863 fix), which the
@@ -188,7 +191,7 @@ if is_plat("android") then
 end
 
 if not is_plat("android") then
-    add_requires("ncnn~glslang 20260113", {configs = {vulkan = true, online_spirv = true, skip_device_defines = true, x86_isa = ncnn_x86_isa, simpleomp = true}})
+    add_requires("ncnn~glslang 20260526", {configs = {vulkan = true, online_spirv = true, skip_device_defines = true, x86_isa = ncnn_x86_isa, simpleomp = true}})
     add_requires("qr-code-generator-cpp")
     add_requires("cli11")
     add_requires("libcurl")

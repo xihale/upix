@@ -1644,9 +1644,10 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             // finished the whole chunk, so the GPU idles whenever the CPU
             // records the next chunk (4-5% of the pipeline wall time, see the
             // UPIX_PIPELINE_TIMER p2_record_ms/p2_submit_ms split). ncnn
-            // 20260113's VkCompute offers no fence-based submit (public API:
-            // submit_and_wait()/reset() only; the command buffer and fence
-            // are private), so instead the blocking half of submit_and_wait
+            // 20260526's VkCompute still offers no fence-based submit (public
+            // API: submit_and_wait()/reset() only; the command buffer and
+            // fence are private), so instead the blocking half of
+            // submit_and_wait
             // moves to a dedicated submit thread and two alternating
             // VkCompute objects double-buffer the chunks: the CPU records
             // chunk N+1 while chunk N executes on the GPU.
