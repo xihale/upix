@@ -11,6 +11,8 @@ import io.upix.data.model.ModelImportResult
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.Locale
 import java.util.zip.ZipInputStream
 import kotlinx.coroutines.Dispatchers
@@ -283,9 +285,17 @@ class ModelRepository(
         )
 
         runCatching {
+            // 直传单文件与 zip 路径共用同一套导入预算：content:// 流可能是
+            // 任意大小（甚至永不结束），无守卫地抄进 cacheDir 会塞满磁盘、
+            // 拖垮整个应用（zip 路径已有守卫，见 ensureZipExtractionBudget）。
+            ensureImportFreeSpace(sourceName)
             sourceInputStream.use { input ->
                 stagingFile.outputStream().use { output ->
-                    input.copyTo(output)
+                    copyWithImportBudget(
+                        input = input,
+                        output = output,
+                        sourceName = sourceName
+                    )
                 }
             }
         }.onFailure { throwable ->
@@ -429,20 +439,20 @@ class ModelRepository(
      */
     // usableSpace 的保守下限检查足够：allocatableBytes 需 API 26+ 的
     // StorageManager 且语义含“可清理缓存”，这里只关心硬剩余量。
-    @SuppressLint("UsableSpace")
     private fun ensureZipExtractionBudget(
         totalExtractedBytes: Long,
         nextEntryBytes: Long,
         sourceName: String
     ) {
-        val projectedBytes = totalExtractedBytes + nextEntryBytes.coerceAtLeast(0L)
-        if (projectedBytes > MAX_ZIP_EXTRACTED_BYTES) {
-            throw IOException(
-                "cumulative extracted size exceeds " +
-                    "${MAX_ZIP_EXTRACTED_BYTES / (1024L * 1024 * 1024)} GiB limit " +
-                    "($projectedBytes bytes) while importing $sourceName"
-            )
-        }
+        ensureImportSizeLimit(
+            projectedBytes = totalExtractedBytes + nextEntryBytes.coerceAtLeast(0L),
+            sourceName = sourceName
+        )
+        ensureImportFreeSpace(sourceName)
+    }
+
+    @SuppressLint("UsableSpace")
+    private fun ensureImportFreeSpace(sourceName: String) {
         // usableSpace 为 0 时语义不明（可能未知），交由实际写入失败兜底。
         val usableBytes = context.cacheDir.usableSpace
         if (usableBytes in 1 until MIN_FREE_SPACE_BYTES) {
@@ -451,6 +461,36 @@ class ModelRepository(
                     "minimum required $MIN_FREE_SPACE_BYTES) while importing $sourceName"
             )
         }
+    }
+
+    private fun ensureImportSizeLimit(projectedBytes: Long, sourceName: String) {
+        if (projectedBytes > MAX_ZIP_EXTRACTED_BYTES) {
+            throw IOException(
+                "cumulative imported size exceeds " +
+                    "${MAX_ZIP_EXTRACTED_BYTES / (1024L * 1024 * 1024)} GiB limit " +
+                    "($projectedBytes bytes) while importing $sourceName"
+            )
+        }
+    }
+
+    /** 流式拷贝并逐块校验导入上限（直传单文件路径用）。 */
+    private fun copyWithImportBudget(
+        input: InputStream,
+        output: OutputStream,
+        sourceName: String
+    ): Long {
+        val buffer = ByteArray(IMPORT_COPY_BUFFER_BYTES)
+        var written = 0L
+        while (true) {
+            val read = input.read(buffer)
+            if (read < 0) {
+                break
+            }
+            output.write(buffer, 0, read)
+            written += read
+            ensureImportSizeLimit(projectedBytes = written, sourceName = sourceName)
+        }
+        return written
     }
 
     private fun addCandidateFile(
@@ -666,11 +706,14 @@ class ModelRepository(
         private const val BIN_FILE_EXTENSION = "bin"
         private const val ZIP_FILE_EXTENSION = "zip"
 
-        /** 单次 zip 导入的累计解压上限：8 GiB。 */
+        /** 单次导入（zip 解压或直传文件）的累计写入上限：8 GiB。 */
         private const val MAX_ZIP_EXTRACTED_BYTES = 8L * 1024 * 1024 * 1024
 
         /** cacheDir 剩余空间守卫：低于 512 MB 时中止导入。 */
         private const val MIN_FREE_SPACE_BYTES = 512L * 1024 * 1024
+
+        /** 直传单文件的拷贝块大小（逐块校验导入上限）。 */
+        private const val IMPORT_COPY_BUFFER_BYTES = 64 * 1024
     }
 
 }

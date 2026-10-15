@@ -3,12 +3,13 @@
     <!-- Security fix: Restrict FileProvider to specific app-owned subdirectories
          instead of exposing the entire external storage root (".").
          This prevents other apps from accessing arbitrary files via the content provider. -->
-    <external-files-path name="models" path="Documents/models/" />
+    <!-- 输出图分发（UriUtils.fileViewUri → ACTION_VIEW）只用到这里列出的输出
+         目录。BatchOutputRepository 的默认输出根：公共 Pictures/Upix
+         （external-path）、外部私有 Pictures/Upix（external-files-path）、
+         内部兜底 filesDir/Upix（files-path）。刻意不映射整个 filesDir——
+         其下还有 Ed25519 身份私钥（filesDir/identity，backup 规则同样把它
+         排除在设备外）；也不映射 cacheDir，暂存输出从不分发给外部应用。 -->
     <external-files-path name="shared_images" path="Pictures/" />
-    <!-- 默认输出根目录（未选 SAF 目录时 BatchOutputRepository 写入的公共
-         Pictures/Upix），ACTION_VIEW 分发输出图需要它能被 FileProvider 映射；
-         仍只暴露这一个子目录，不放开整个外部存储根。 -->
     <external-path name="public_pictures_output" path="Pictures/Upix/" />
-    <cache-path name="cache" path="." />
-    <files-path name="files" path="." />
+    <files-path name="internal_output" path="Upix/" />
 </paths>

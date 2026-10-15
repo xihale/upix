@@ -334,21 +334,20 @@ internal class ProcessingRunEngine(    private val viewModel: ProcessingViewMode
             // aborts the batch with an error instead of silently falling back.
             val remoteRouting = effectiveDistributedMode
             var processingSession: ImageProcessingSession? = null
-            // 远程流水线状态：remoteInFlight 是"已上传、待收结果"的任务。
-            // 深度1（旧 PC）：读下一张字节与推理重叠，收完结果后才上传下一张。
-            // 深度2（CONNECT_RESPONSE.pipeline_depth ≥ 2，PeerCapabilities.
-            // deepPipeline）：上传窗口扩到 2——等结果 N 时就把 N+2 也推上链路，
-            // 本侧"收 N + 写盘 N + SAF 提交 N"与"PC 推理 N+1、收 N+2 上传"
-            // 全双工并行，逐张周期收敛到 max(PC 推理, PC 编码+回传)，
-            // GPU 不再在图间断粮。窗口约束：wire 上同时至多一个未完成的
-            // submission（单 upload 队列串行发射，DATA 帧永不交错，PC 按
-            // FIFO 匹配 staging）。remoteSendAheadError 非空 = 发前上传失败
-            // （发前路径不做任何会话恢复），循环下一迭代按当前图失败上报并
-            // 终止批次。
+            // 远程流水线状态：remoteInFlight 是"已上传、待收结果"的任务，
+            // remoteUploads 是按提交顺序排队的提前上传作业。索引 ↔ 输入
+            // 的对应关系由 RemoteUploadWindow 唯一决定（PC 按提交顺序回帧，
+            // 收错一张就会把 A 的成果写进 B 的文件）。深度 1 上传 N+1、深度 2
+            // 再上传 N+2，与"收 N + 写盘 N + SAF 提交 N"并行，逐张周期收敛到
+            // max(PC 推理, PC 编码+回传)。上传链串行（每个作业先 join 上一个），
+            // 保证 wire 顺序 == 队列顺序且 DATA 帧永不交错（同一条 TCP 流上
+            // 并发的两个 CLIENT_SUBMIT 会交错分块帧、颠倒 FIFO staging）。
+            // remoteSendAheadError 非空 = 上传失败（发前路径不做任何会话恢复），
+            // 循环下一迭代按当前图失败上报并终止批次。
             var remoteInFlight: CoordinatorClient.RemoteTask? = null
             val remoteUploads = ArrayDeque<
                 kotlinx.coroutines.Deferred<Result<CoordinatorClient.RemoteTask>>>()
-            var uploadsLaunched = 0
+            var lastAheadUpload: kotlinx.coroutines.Deferred<Result<CoordinatorClient.RemoteTask>>? = null
             var remoteSendAheadError: Exception? = null
 
             // 提交（落盘）流水线：commit 是纯文件 IO（SAF copy/MediaStore/
@@ -367,6 +366,7 @@ internal class ProcessingRunEngine(    private val viewModel: ProcessingViewMode
             suspend fun saveCheckpointSnapshot() {
                 planner.saveCheckpointSnapshot(
                     taskId = taskId,
+                    queueItemId = queueItemId,
                     imagePath = imagePath,
                     modelName = modelName,
                     distributedMode = effectiveDistributedMode,
@@ -376,6 +376,7 @@ internal class ProcessingRunEngine(    private val viewModel: ProcessingViewMode
                     outputDirectoryUri = outputDirectory.outputDirectoryUri,
                     overwriteOriginal = outputDirectory.overwriteOriginal,
                     backupOriginal = outputDirectory.backupOriginal,
+                    processNestedFolders = outputDirectory.processNestedFolders,
                     skipSrMarkedInputs = effectiveSkipSrMarked,
                     createdAtEpochMs = createdAt,
                     pendingImages = pendingByUri.values.toList(),
@@ -386,8 +387,30 @@ internal class ProcessingRunEngine(    private val viewModel: ProcessingViewMode
 
             // Initial checkpoint (moved into the run coroutine so the disk
             // write happens off the main thread via persistCheckpoint).
-            saveCheckpointSnapshot()
-
+            try {
+                saveCheckpointSnapshot()
+            } catch (cancellationException: CancellationException) {
+                throw cancellationException
+            } catch (exception: Exception) {
+                val errorMessage = exception.message
+                    ?: stringProvider.getString(R.string.processing_error_unknown_failure)
+                logRepository.error(
+                    "ProcessingViewModel",
+                    "Failed to persist initial task checkpoint: $errorMessage"
+                )
+                viewModel.updateUiState { state ->
+                    val currentTask = state.task ?: return@updateUiState state
+                    state.copy(
+                        task = currentTask.copy(
+                            status = ProcessingStatus.FAILED,
+                            lastErrorMessage = errorMessage,
+                            currentItemName = null
+                        ),
+                        isProcessing = false
+                    )
+                }
+                return@launchRun
+            }
             // Apply the bookkeeping of finished commit jobs: success bumps the
             // counter and shrinks the pending set (checkpoint + UI follow),
             // failure records the item and discards its staging file. In FIFO
@@ -487,13 +510,25 @@ internal class ProcessingRunEngine(    private val viewModel: ProcessingViewMode
                 }
 
                 if (!remoteRouting) {
-                    processingSession = withContext(defaultDispatcher) {
-                        nativeImageProcessingRepository.openSession(
-                            modelName = modelName,
-                            modelBasePath = modelBasePath,
-                            preferGpu = true
-                        )
+                    // openSession 里的 nativeInit/nativeLoadModel 是阻塞调用，
+                    // 不响应协程取消；withContext 的 prompt cancellation 会在
+                    // 返回处丢弃已赋值的 session，此时若不显式释放，native 引擎
+                    // （含已加载模型/Vulkan 资源）就永久泄漏——finally 里的
+                    // processingSession 还是 null。close() 自身幂等。
+                    var openedSession: ImageProcessingSession? = null
+                    try {
+                        withContext(defaultDispatcher) {
+                            openedSession = nativeImageProcessingRepository.openSession(
+                                modelName = modelName,
+                                modelBasePath = modelBasePath,
+                                preferGpu = true
+                            )
+                        }
+                    } catch (cancellationException: CancellationException) {
+                        openedSession?.close()
+                        throw cancellationException
                     }
+                    processingSession = openedSession
 
                     if (processingSession == null) {
                         val errorMessage = stringProvider.getString(
@@ -547,6 +582,18 @@ internal class ProcessingRunEngine(    private val viewModel: ProcessingViewMode
                     }
                 }
 
+                // 流水线深度来自 PC 的 CONNECT_RESPONSE（握手/配对已随首发
+                // 上传完成，PeerCapabilities 此刻已刷新）；窗口的索引↔输入
+                // 对应关系在整个批次内固定。
+                val remoteUploadWindow = RemoteUploadWindow(
+                    aheadDepth = when {
+                        PeerCapabilities.deepPipeline -> 2
+                        PeerCapabilities.submitAhead -> 1
+                        else -> 0
+                    },
+                    itemCount = runImages.size
+                )
+
                 for ((itemIndex, item) in runImages.withIndex()) {
                     if (!isActive) {
                         return@launchRun
@@ -587,43 +634,33 @@ internal class ProcessingRunEngine(    private val viewModel: ProcessingViewMode
                             )
                         } else {
                     withContext(ioDispatcher) {
-                        val submitAheadActive = PeerCapabilities.submitAhead
-                        // 深度1（旧 PC）：预取下一张原图字节，与 PC 处理当前张
-                        // 重叠。深度2+：读取挪进上传作业内做。
-                        if (!submitAheadActive && itemIndex + 1 < runImages.size) {
+                        // 深度0（旧 PC，无发前窗口）：预取下一张原图字节，与
+                        // PC 处理当前张重叠；上传在收完结果后串行进行。
+                        if (remoteUploadWindow.aheadDepth == 0 && itemIndex + 1 < runImages.size) {
                             coordinatorClient!!.prefetchRemoteInput(runImages[itemIndex + 1])
                         }
-                        // 发前上传窗口补满：保持 uploaded-awaiting ≤ 深度。
-                        // PC depth 1 → 提前 1 张（N+1）；depth ≥ 2 → 提前
-                        // 2 张（本轮补发 N+2）。全部经由同一个异步队列串行
-                        // 入线（队列 head 尚未完成时新作业也不会发送——
-                        // kotlinx 的 async 只调度，真正的 socket 写在各作业
-                        // 线程内完成；深度窗口 = 队列长度约束本身保证至多
-                        // 一个未完成 submission 在 wire 上）。
-                        val aheadDepth = when {
-                            PeerCapabilities.deepPipeline -> 2
-                            submitAheadActive -> 1
-                            else -> 0
-                        }
-                        while (uploadsLaunched - itemIndex < aheadDepth &&
-                            uploadsLaunched < runImages.size
-                        ) {
-                            val k = uploadsLaunched++
-                            val kOutputFile = batchOutputRepository.outputFileFor(
+                        // 补齐发前上传窗口：本轮要提前上传的索引由窗口决定
+                        // （深度1 → N+1；深度2 → N+1、N+2）。每个作业先 join
+                        // 上一个作业再发送，因此提交顺序 == 队列顺序，同一条
+                        // 会话上不会有两个 CLIENT_SUBMIT 交错。
+                        remoteUploadWindow.uploadsForRound(itemIndex).forEach { aheadIndex ->
+                            val aheadOutputFile = batchOutputRepository.outputFileFor(
                                 outputDirectory = outputDirectory,
-                                input = runImages[k]
+                                input = runImages[aheadIndex]
                             )
-                            remoteUploads.addLast(
-                                async(ioDispatcher) {
-                                    coordinatorClient!!.beginRemoteTaskAhead(
-                                        input = runImages[k],
-                                        modelName = modelName,
-                                        tileSize = DISTRIBUTED_TILE_SIZE,
-                                        tileOverlap = DISTRIBUTED_TILE_OVERLAP,
-                                        outputFormat = outputFormatFor(kOutputFile)
-                                    )
-                                }
-                            )
+                            val previousUpload = lastAheadUpload
+                            val uploadJob = async(ioDispatcher) {
+                                previousUpload?.join()
+                                coordinatorClient!!.beginRemoteTaskAhead(
+                                    input = runImages[aheadIndex],
+                                    modelName = modelName,
+                                    tileSize = DISTRIBUTED_TILE_SIZE,
+                                    tileOverlap = DISTRIBUTED_TILE_OVERLAP,
+                                    outputFormat = outputFormatFor(aheadOutputFile)
+                                )
+                            }
+                            lastAheadUpload = uploadJob
+                            remoteUploads.addLast(uploadJob)
                         }
                         val fetchResult = flight.awaitResult { stage, percent, eta ->
                             viewModel.updateUiState { state ->
@@ -652,11 +689,28 @@ internal class ProcessingRunEngine(    private val viewModel: ProcessingViewMode
                                 )
                             }
                         }
-                        // 收完结果 N：把队首已传完的 submission 换成下一轮的
-                        // 待收任务（先落地发前结果再写盘：窗口状态在本轮末尾
-                        // 收敛，失败尽早进入 remoteSendAheadError 供下轮上报）。
-                        if (remoteUploads.isNotEmpty()) {
-                            val begun = remoteUploads.removeFirst().await()
+                        // 收完结果 N：窗口推进到下一张待收任务——队首已传完
+                        // 的 submission 直接接棒；没有提前上传时（深度0 或
+                        // 窗口尾部）在这里同步补一次上传。先落地窗口状态再
+                        // 写盘：失败尽早进入 remoteSendAheadError 供下轮上报。
+                        val successor = remoteUploadWindow.advanceAfterResult(itemIndex)
+                        if (successor != null) {
+                            val begun = if (successor.uploadedAhead) {
+                                remoteUploads.removeFirst().await()
+                            } else {
+                                val nextInput = runImages[successor.index]
+                                val nextOutputFile = batchOutputRepository.outputFileFor(
+                                    outputDirectory = outputDirectory,
+                                    input = nextInput
+                                )
+                                coordinatorClient!!.beginRemoteTask(
+                                    input = nextInput,
+                                    modelName = modelName,
+                                    tileSize = DISTRIBUTED_TILE_SIZE,
+                                    tileOverlap = DISTRIBUTED_TILE_OVERLAP,
+                                    outputFormat = outputFormatFor(nextOutputFile)
+                                )
+                            }
                             remoteInFlight = begun.getOrNull()
                             remoteSendAheadError = begun.exceptionOrNull()
                                 as? Exception ?: begun.exceptionOrNull()
@@ -954,7 +1008,14 @@ internal class ProcessingRunEngine(    private val viewModel: ProcessingViewMode
                 // The coroutine is already cancelled; wrap in NonCancellable so
                 // the final checkpoint still reaches disk before rethrowing.
                 withContext(NonCancellable) {
-                    saveCheckpointSnapshot()
+                    try {
+                        saveCheckpointSnapshot()
+                    } catch (checkpointFailure: Exception) {
+                        logRepository.error(
+                            "ProcessingViewModel",
+                            "Failed to persist canceled task checkpoint: ${checkpointFailure.message}"
+                        )
+                    }
                 }
                 logRepository.warning("ProcessingViewModel", "Task $taskId canceled")
                 throw cancellationException
@@ -962,35 +1023,50 @@ internal class ProcessingRunEngine(    private val viewModel: ProcessingViewMode
                 val errorMessage = throwable.message
                     ?: stringProvider.getString(R.string.processing_error_unknown_failure)
                 lastError = errorMessage
-                saveCheckpointSnapshot()
-                    viewModel.updateUiState { state ->
-                        val currentTask = state.task ?: return@updateUiState state
-                        val orderedFailures = planner.orderedFailureDetails(failureDetailsByUri)
-                        state.copy(
-                            task = currentTask.copy(
-                                status = ProcessingStatus.FAILED,
-                                currentItemName = null,
-                                completedItems = successfulCount,
-                                pendingItems = pendingByUri.size,
-                                failedItems = orderedFailures.size,
-                                failureDetails = orderedFailures,
-                                progress = planner.progressOf(successfulCount, totalItems),
-                                lastErrorMessage = errorMessage,
-                                remotePhase = null,
-                                remoteItemProgress = null,
-                                remoteItemEtaSeconds = null
-                            ),
-                            isProcessing = false
-                        )
-                    }
+                try {
+                    saveCheckpointSnapshot()
+                } catch (checkpointFailure: Exception) {
+                    throwable.addSuppressed(checkpointFailure)
+                    logRepository.error(
+                        "ProcessingViewModel",
+                        "Failed to persist failed task checkpoint: ${checkpointFailure.message}"
+                    )
+                }
+                viewModel.updateUiState { state ->
+                    val currentTask = state.task ?: return@updateUiState state
+                    val orderedFailures = planner.orderedFailureDetails(failureDetailsByUri)
+                    state.copy(
+                        task = currentTask.copy(
+                            status = ProcessingStatus.FAILED,
+                            currentItemName = null,
+                            completedItems = successfulCount,
+                            pendingItems = pendingByUri.size,
+                            failedItems = orderedFailures.size,
+                            failureDetails = orderedFailures,
+                            progress = planner.progressOf(successfulCount, totalItems),
+                            lastErrorMessage = errorMessage,
+                            remotePhase = null,
+                            remoteItemProgress = null,
+                            remoteItemEtaSeconds = null
+                        ),
+                        isProcessing = false
+                    )
+                }
                 logRepository.error(
                     "ProcessingViewModel",
                     "Task $taskId failed unexpectedly: $errorMessage"
                 )
             } finally {
-                processingSession?.close()
-                if (remoteRouting) {
-                    coordinatorClient?.endRemoteSession()
+                // 收尾的 native 调用都在主线程之外的调度器上做：run 体跑在
+                // viewModelScope（Main.immediate），而 close() 会销毁 ncnn Net
+                // 与 Vulkan 设备、endRemoteSession() 是阻塞 socket close——放在
+                // 主线程上会卡顿（慢设备上可能 ANR）。NonCancellable 保证取消
+                // 后也一定执行（Session.close() 本身幂等）。
+                withContext(NonCancellable + defaultDispatcher) {
+                    processingSession?.close()
+                    if (remoteRouting) {
+                        coordinatorClient?.endRemoteSession()
+                    }
                 }
                 if (viewModel.currentUiState().isProcessing) {
                     viewModel.updateUiState { state ->

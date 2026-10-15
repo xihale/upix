@@ -21,15 +21,18 @@ class ProcessingQueueRepositoryTest {
     private lateinit var repository: ProcessingQueueRepository
     private lateinit var queueFile: File
     private lateinit var tempQueueFile: File
+    private lateinit var backupQueueFile: File
 
     @Before
     fun setUp() {
         context = RuntimeEnvironment.getApplication()
         logRepository = LogRepository()
         queueFile = File(context.filesDir, QUEUE_FILE_NAME)
-        tempQueueFile = File(context.filesDir, "$QUEUE_FILE_NAME.tmp")
+        tempQueueFile = File(context.filesDir, "$QUEUE_FILE_NAME.new")
+        backupQueueFile = File(context.filesDir, "$QUEUE_FILE_NAME.bak")
         queueFile.delete()
-        tempQueueFile.delete()
+        tempQueueFile.deleteRecursively()
+        backupQueueFile.delete()
         repository = ProcessingQueueRepository(
             context = context,
             logRepository = logRepository
@@ -39,7 +42,8 @@ class ProcessingQueueRepositoryTest {
     @After
     fun tearDown() {
         queueFile.delete()
-        tempQueueFile.delete()
+        tempQueueFile.deleteRecursively()
+        backupQueueFile.delete()
     }
 
     @Test
@@ -151,10 +155,12 @@ class ProcessingQueueRepositoryTest {
             )
         }
         assertTrue(queueFile.exists())
+        backupQueueFile.writeText("stale recovery data")
 
         runBlocking { repository.persistQueue(ProcessingQueueSnapshot()) }
 
         assertFalse(queueFile.exists())
+        assertFalse(backupQueueFile.exists())
         assertTrue(repository.queue.value.items.isEmpty())
         assertFalse(repository.queue.value.isQueueRunning)
     }
@@ -222,6 +228,53 @@ class ProcessingQueueRepositoryTest {
             ),
             InputSourceSpec.decode(loaded.items.first().source)
         )
+    }
+
+    @Test
+    fun failedQueueWriteKeepsDiskAndObservableSnapshotUnchanged() {
+        val original = ProcessingQueueSnapshot(
+            items = listOf(
+                PersistedQueueItem(
+                    id = "kept-item",
+                    source = "content://images/kept.jpg",
+                    modelName = "model",
+                    distributedMode = false,
+                    createdAtEpochMs = 1L
+                )
+            )
+        )
+        runBlocking { repository.persistQueue(original) }
+        val committedPayload = queueFile.readText()
+        assertTrue(tempQueueFile.mkdir())
+
+        val failure = runCatching {
+            runBlocking {
+                repository.persistQueue(
+                    original.copy(items = original.items.map { it.copy(id = "new-item") })
+                )
+            }
+        }.exceptionOrNull()
+
+        assertTrue(failure != null)
+        assertEquals(committedPayload, queueFile.readText())
+        assertEquals(original, repository.queue.value)
+        assertFalse(tempQueueFile.exists())
+    }
+
+    @Test
+    fun interruptedReplacementRestoresBackupAndDropsStagingFile() {
+        val previous = """
+            {"items":[{"id":"restored","source":"content://images/a.jpg","modelName":"model","distributedMode":false,"createdAtEpochMs":1}]}
+        """.trimIndent()
+        backupQueueFile.writeText(previous)
+        tempQueueFile.writeText("partial")
+
+        val restored = repository.loadQueue()
+
+        assertEquals("restored", restored.items.single().id)
+        assertEquals(previous, queueFile.readText())
+        assertFalse(backupQueueFile.exists())
+        assertFalse(tempQueueFile.exists())
     }
 
     companion object {

@@ -235,7 +235,12 @@ class CoordinatorClient(
     // send（上传）→ receive（收结果+进度）→ persist（写盘）三段拆开：
     // 上传 N+1 与 PC 推理 N 重叠，写盘 N 与 PC 解码/推理 N+1 重叠。
 
-    /** 持久会话句柄（0=未打开）。RunEngine 的单循环串行访问，无并发。 */
+    /**
+     * 持久会话句柄（0=未打开）。RunEngine 的单循环串行访问是常态，但关闭/
+     * 取消来自别的线程（DeviceViewModel.disconnect、onCleared、主线程取消），
+     * 因此本字段的每次读写都在 [sessionOpGate] 内（见其注释的接收↔关闭协议）；
+     * @Volatile 只是纵深防御，正确性不依赖它。
+     */
     @Volatile
     private var nativeSessionHandle: Long = 0L
 
@@ -407,7 +412,11 @@ class CoordinatorClient(
         private fun awaitResultOnce(
             onProgress: (stage: Int, percent: Int, etaSeconds: Int) -> Unit
         ): AwaitOutcome {
-            val handle = nativeSessionHandle
+            // 句柄在门闩内取并同时标记“接收在途”：nativeClose 若在此期间
+            // 到达会转交本次接收收尾释放（见 closeSession），否则会在 native
+            // 解帧途中 delete 掉会话对象。门闩只覆盖取句柄这一瞬，随后的阻塞
+            // 接收不持锁，取消/关闭不会被接收时长拖住。
+            val handle = beginReceive()
             if (handle == 0L) {
                 return AwaitOutcome(null, "Distributed session is closed",
                     taskRejected = false, userCanceled = false)
@@ -420,6 +429,8 @@ class CoordinatorClient(
             } catch (e: UnsatisfiedLinkError) {
                 logRepository.error("CoordinatorClient", "Native bridge unavailable: ${e.message}")
                 null
+            } finally {
+                endReceive(handle)
             }
             if (encodedOutput != null && encodedOutput.isNotEmpty()) {
                 return AwaitOutcome(encodedOutput, "", taskRejected = false, userCanceled = false)
@@ -579,18 +590,24 @@ class CoordinatorClient(
             }
         }
 
-        if (nativeSessionHandle == 0L) {
-            if (!recoverOnFailure) {
-                // 发前路径禁止在这里开新会话（与 awaitResult 抢句柄）。
-                return Result.failure(IllegalStateException("Distributed session is closed"))
+        // 确保会话 + 发送同处一个临界区：句柄的判空/打开/使用不再跨临界区
+        // 分步（既避免两次真并发上传各开一条会话把其中一条泄漏掉，也让取消/
+        // 掉线路径的 closeSession 与整段上传互斥——句柄不会在 native 上传
+        // 中途被删除，见 sessionOpGate 注释）。`send` 之外没有别的持有门闩的
+        // 阻塞调用。
+        val sent = synchronized(sessionOpGate) {
+            if (nativeSessionHandle == 0L) {
+                if (!recoverOnFailure) {
+                    // 发前路径禁止在这里开新会话（与 awaitResult 抢句柄）。
+                    return Result.failure(IllegalStateException("Distributed session is closed"))
+                }
+                if (!openSession(endpoint)) {
+                    return Result.failure(IllegalStateException("PC 不可达：${lastNativeError()}"))
+                }
             }
-            if (!openSession(endpoint)) {
-                return Result.failure(IllegalStateException("PC 不可达：${lastNativeError()}"))
-            }
+            send(nativeSessionHandle, useChunked)
         }
-        // 发送全程持门闩：取消/掉线路径的 closeSession 与之互斥，句柄不会在
-        // native 上传中途被删除（见 sessionOpGate 注释）。
-        if (withSessionHandle { send(it, useChunked) } == true) {
+        if (sent) {
             return Result.success(task)
         }
         if (!recoverOnFailure) {
@@ -631,9 +648,20 @@ class CoordinatorClient(
      */
     fun cancelRemoteTask() {
         // 句柄快照与 native 调用同在门闩内：发前上传可能正持锁上传，取消等
-        // 待其帧界；关闭与本调用同协程不可能并发。
+        // 待其帧界；延后释放的旧句柄也只有在本门闩内才确定还活着（释放方与
+        // 接收收尾都在门闩内迁移状态），不会对已 delete 的会话对象置标志。
         synchronized(sessionOpGate) {
-            val handle = nativeSessionHandle
+            // 取消落在「用户正等的那次接收」上：优先当前会话句柄（若它正在
+            // 接收），否则取最新的在途接收句柄——掉线/断连已把 nativeSessionHandle
+            // 摘掉、阻塞中的 nativeReceiveDistributedResult 还在轮询时，取消必须
+            // 落到那个句柄上，否则接收永远等不到取消标志。没有接收在途时才是
+            // 当前会话句柄（发/收间隙，标志由下一次接收开始时清零）。
+            val current = nativeSessionHandle
+            val handle = when {
+                current != 0L && receiveInFlight.containsKey(current) -> current
+                receiveInFlight.isNotEmpty() -> receiveInFlight.keys.last()
+                else -> current
+            }
             if (handle == 0L) {
                 return
             }
@@ -647,10 +675,26 @@ class CoordinatorClient(
 
     // 会话句柄生命周期门闩。深度2发前窗口里，上传跑在独立线程上，而失败/
     // 取消路径会在引擎协程线程上关闭会话——nativeClose 会删除句柄背后的
-    // 对象，持着旧句柄调 nativeSend 就是 use-after-free。三类操作（打开/
-    // 发送/关闭）全部在门闩内取句柄并完成 native 调用；阻塞式接收是唯一
-    // 的例外：它只在 awaitResult 调用栈内存活，与关闭同协程串行，天然无
-    // 重叠（这也是取消延迟不受上传时间拖累的原因——门闩只包发送）。
+    // 对象，持着旧句柄调 nativeSend 就是 use-after-free。因此句柄的每一次
+    // 状态迁移都在门闩内完成：打开、取用（发送/取消）、登记接收在途、注销
+    // 接收、释放。阻塞式接收是唯一例外：门闩只包「取句柄 + 登记在途」这一
+    // 瞬，随后的 native 接收不持锁，否则用户取消 / 掉线会被整段接收时长拖
+    // 住（主线程调用 cancelProcessing 会直接卡死）。
+    //
+    // 接收↔关闭协议（两端的状态迁移都只在本门闩内做，因此可线性化）：
+    //  - beginReceive：门闩内取句柄并 receiveInFlight[handle]++。
+    //  - closeSession：门闩内摘掉 nativeSessionHandle；该句柄有在途接收
+    //    就放进 deferredClose 转交接收线程收尾释放，否则当场释放。
+    //  - endReceive：门闩内注销自己那个句柄，并取走它的延后关闭。
+    // 「检查 + 迁移」必须同处一个临界区：只要读/写分处临界区内外，就会出现
+    // (1) closeSession 检查到"有在途接收"后才写 deferred，而接收线程已在检查
+    // 与写入之间取走 0 —— 那次关闭从此无人释放（永久泄漏）；(2) 反向交错时
+    // 接收线程取走了新会话的延后句柄并 delete 掉它，而新接收正在 native 里用
+    // 它（UAF）。因此这里用普通集合而非 AtomicLong 单槽，读写一律在门闩内。
+    // 集合而非单槽还消除了句柄覆盖：掉线时旧会话的接收可能仍在 native 里阻塞
+    // （接收方与关闭方分属不同 ViewModel/线程：DeviceViewModel.disconnect、
+    // onCleared 都会关会话），用户重连后新会话另开句柄，两个在途句柄必须各记
+    // 各的，旧 endReceive 只注销/释放旧句柄，永远碰不到新会话。
     private val sessionOpGate = Any()
 
     /** 门闩内取当前句柄执行 [block]；无会话返回 null。 */
@@ -658,6 +702,56 @@ class CoordinatorClient(
         synchronized(sessionOpGate) {
             val handle = nativeSessionHandle
             return if (handle == 0L) null else block(handle)
+        }
+    }
+
+    /** handle → 该句柄上正在阻塞的接收次数（仅门闩内读写）。 */
+    private val receiveInFlight = mutableMapOf<Long, Int>()
+
+    /** 有在途接收、等接收线程收尾释放的句柄（仅门闩内读写）。 */
+    private val deferredClose = mutableSetOf<Long>()
+
+    /**
+     * 门闩内取当前句柄并登记「接收在途」：返回后不持锁，阻塞接收不阻塞
+     * 取消/掉线。登记与取句柄同处一个临界区，并发的 [closeSession] 只能看到
+     * 两种一致状态之一——未登记（当场释放）或已登记（转交本次接收收尾释放）。
+     */
+    private fun beginReceive(): Long = synchronized(sessionOpGate) {
+        val handle = nativeSessionHandle
+        if (handle != 0L) {
+            receiveInFlight[handle] = (receiveInFlight[handle] ?: 0) + 1
+        }
+        handle
+    }
+
+    /**
+     * 门闩内注销本次接收并释放撞上它的那次延后关闭。只动 [handle] 自己的
+     * 条目：旧会话的接收收尾绝不会释放（或注销）新会话的句柄。
+     */
+    private fun endReceive(handle: Long) {
+        if (handle == 0L) {
+            return
+        }
+        synchronized(sessionOpGate) {
+            val remaining = (receiveInFlight[handle] ?: 1) - 1
+            if (remaining > 0) {
+                receiveInFlight[handle] = remaining
+                return
+            }
+            receiveInFlight.remove(handle)
+            if (deferredClose.remove(handle)) {
+                // 该句柄的 native 接收已退出；关闭方在门闩内已先摘掉
+                // nativeSessionHandle，发送路径再也拿不到它，此刻释放安全。
+                closeNativeSession(handle)
+            }
+        }
+    }
+
+    private fun closeNativeSession(handle: Long) {
+        try {
+            NCNNEngine.nativeCloseDistributedSession(handle)
+        } catch (e: Throwable) {
+            logRepository.warning("CoordinatorClient", "Session close failed: ${e.message}")
         }
     }
 
@@ -690,12 +784,18 @@ class CoordinatorClient(
         synchronized(sessionOpGate) {
             val handle = nativeSessionHandle
             nativeSessionHandle = 0L
-            if (handle != 0L) {
-                try {
-                    NCNNEngine.nativeCloseDistributedSession(handle)
-                } catch (e: Throwable) {
-                    logRepository.warning("CoordinatorClient", "Session close failed: ${e.message}")
-                }
+            if (handle == 0L) {
+                return
+            }
+            if ((receiveInFlight[handle] ?: 0) > 0) {
+                // 接收线程正阻塞在该句柄的 native 调用里：转交它收尾释放，绝不
+                // 在 native 解帧途中 delete 会话对象。代价是该 socket 在本次
+                // 接收结束前不关闭（PC 仍在算/仍在发进度帧），接收要么拿到结果、
+                // 要么等用户取消后退出——两条路都会回到 endReceive 在有限时间内
+                // 释放（native 侧接收有 200ms 轮询 + 取消 90s 排空上限）。
+                deferredClose.add(handle)
+            } else {
+                closeNativeSession(handle)
             }
         }
     }

@@ -42,6 +42,23 @@ class JoinInviteParserTest {
     }
 
     @Test
+    fun parse_ipv6_host_payloads() {
+        // 带方括号的 IPv6 字面量：连接目标必须去掉方括号（getaddrinfo 不认）。
+        val bracketedShort = JoinInviteParser.parse("[fd00::2]:9527")
+        assertNotNull(bracketedShort)
+        assertEquals("fd00::2", bracketedShort?.host)
+        assertEquals(9527, bracketedShort?.port)
+
+        val bracketedUri = JoinInviteParser.parse("upix://join?host=%5Bfd00::2%5D&port=9527")
+        assertNotNull(bracketedUri)
+        assertEquals("fd00::2", bracketedUri?.host)
+
+        // 裸 IPv6 没有端口分隔符，不得解析成 host="fd00:" port=2 的假端点。
+        assertNull(JoinInviteParser.parse("fd00::2"))
+        assertNull(JoinInviteParser.parse("2001:db8::1"))
+    }
+
+    @Test
     fun parse_invalid_payload_returns_null() {
         assertNull(JoinInviteParser.parse("not-a-valid-invite"))
         assertNull(JoinInviteParser.parse("""{"port":9527}"""))

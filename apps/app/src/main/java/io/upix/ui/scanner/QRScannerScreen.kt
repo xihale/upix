@@ -175,6 +175,9 @@ fun QRScannerScreen(
             setSurfaceProvider(previewView.surfaceProvider)
         }
         val processingFrame = AtomicBoolean(false)
+        // 组件销毁标记：分析线程解出二维码后把回调 post 到主线程，若用户在同一帧
+        // 点关闭/返回，这条已排队的回调仍会跑——不拦就会在退出扫码页之后发起连接。
+        val disposed = AtomicBoolean(false)
         // 分析线程串行回调内的统计（单线程 executor，无需原子量）。
         var firstFrame = true
         var framesSinceReport = 0
@@ -226,7 +229,13 @@ fun QRScannerScreen(
                         if (payload != null) {
                             Log.i(TAG, "decoded payload len=${payload.length}")
                             if (hasScanned.compareAndSet(false, true)) {
-                                mainExecutor.execute { onPayloadScanned(payload) }
+                                mainExecutor.execute {
+                                    if (!disposed.get()) {
+                                        onPayloadScanned(payload)
+                                    } else {
+                                        Log.i(TAG, "dropped decoded payload: scanner already closed")
+                                    }
+                                }
                             }
                         }
                     } catch (throwable: Throwable) {
@@ -273,6 +282,7 @@ fun QRScannerScreen(
         cameraProviderFuture.addListener(listener, mainExecutor)
 
         onDispose {
+            disposed.set(true)
             analysis.clearAnalyzer()
             if (cameraProviderFuture.isDone) {
                 runCatching {

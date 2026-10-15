@@ -12,7 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
@@ -52,8 +52,8 @@ import androidx.compose.foundation.layout.Spacer
 /** 主 CTA 高度（56dp = MD3 Expressive L 档；spec Appendix A / §9.3）。 */
 internal val DockCtaHeight = 56.dp
 
-/** 药丸容器圆角：全高圆弧，与 MD3 floating toolbar 视觉一致。 */
-private val DockContainerShape = RoundedCornerShape(percent = 50)
+/** 药丸容器圆角：全高圆弧（= CircleShape，spec §4 只允许 MaterialTheme.shapes.* / CircleShape）。 */
+private val DockContainerShape = CircleShape
 
 @Composable
 internal fun BottomActionDock(
@@ -77,7 +77,6 @@ internal fun BottomActionDock(
             shape = DockContainerShape,
             color = MaterialTheme.colorScheme.surfaceContainer,
             contentColor = MaterialTheme.colorScheme.onSurface,
-            shadowElevation = 6.dp,
             modifier = Modifier.padding(start = Spacing.lg, end = Spacing.lg, bottom = Spacing.lg)
         ) {
             Row(

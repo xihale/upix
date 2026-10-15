@@ -2,6 +2,7 @@ package io.upix.service
 
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import androidx.compose.runtime.Immutable
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.channels.BufferOverflow
@@ -74,8 +75,21 @@ class ProcessingForegroundCoordinator(
                 Intent(context, ProcessingKeepAliveService::class.java)
             )
             true
+        }.onFailure { throwable ->
+            // API 31+ 后台启动受限时抛 ForegroundServiceStartNotAllowedException：
+            // 不再静默吞掉（此前只在 serviceStartRequested 里留一个 false，日志里
+            // 什么都看不到），至少留下可诊断的记录。active 期间每次状态变化都会
+            // 重试，回到前台后自然成功。
+            Log.w(
+                TAG,
+                "startForegroundService failed (keep-alive not active): ${throwable.message}"
+            )
         }.isSuccess
         serviceStartRequested = started
+    }
+
+    private companion object {
+        private const val TAG = "ProcessingForeground"
     }
 }
 

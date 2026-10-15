@@ -611,10 +611,15 @@ internal class ProcessingQueueController(
         val sameMode = checkpoint.distributedMode == queueItem.distributedMode
         val sameOverwrite = checkpoint.overwriteOriginal == queueItem.overwriteOriginal
         val sameBackup = checkpoint.backupOriginal == queueItem.backupOriginal
+        val sameNested = checkpoint.processNestedFolders == queueItem.processNestedFolders
         val sameSkip = checkpoint.skipSrMarkedInputs == queueItem.skipSrMarkedInputs
         val sameOutputUri = checkpoint.outputDirectoryUri?.trim().orEmpty() ==
             queueItem.outputDirectoryUri?.trim().orEmpty()
-        if (!sameSource || !sameModel || !sameMode || !sameOverwrite || !sameBackup || !sameSkip || !sameOutputUri) {
+        val sameQueueItem = checkpoint.queueItemId == null || checkpoint.queueItemId == queueItem.id
+        if (
+            !sameSource || !sameModel || !sameMode || !sameOverwrite || !sameBackup ||
+            !sameNested || !sameSkip || !sameOutputUri || !sameQueueItem
+        ) {
             return null
         }
         return checkpoint

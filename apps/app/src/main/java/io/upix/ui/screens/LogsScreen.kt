@@ -1,6 +1,7 @@
 package io.upix.ui.screens
 
 import android.widget.Toast
+import androidx.annotation.StringRes
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -142,8 +143,12 @@ fun LogsScreen(
                     FilterChip(
                         selected = selectedLevel == level,
                         onClick = { selectedLevelOrdinal = level.ordinal },
-                        // 级别用原始英文枚举（开发工具美学），等宽字体与日志正文同族。
-                        label = { Text(text = level.name, style = ValueMono) }
+                        label = {
+                            Text(
+                                text = stringResource(levelDisplayName(level)),
+                                style = ValueMono
+                            )
+                        }
                     )
                 }
             }
@@ -210,4 +215,12 @@ fun LogsScreen(
     }
 }
 
-/** 级别色点已移除；chip 标签直接用枚举 name。 */
+/** 级别色点已移除；chip 标签走本地化文案，日志正文/复制内容保持原始枚举。 */
+@StringRes
+private fun levelDisplayName(level: LogLevel): Int = when (level) {
+    LogLevel.DEBUG -> R.string.log_level_debug
+    LogLevel.INFO -> R.string.log_level_info
+    LogLevel.WARNING -> R.string.log_level_warning
+    LogLevel.ERROR -> R.string.log_level_error
+    LogLevel.CRITICAL -> R.string.log_level_critical
+}

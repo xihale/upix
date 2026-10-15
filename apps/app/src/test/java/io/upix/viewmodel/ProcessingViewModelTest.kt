@@ -12,6 +12,7 @@ import io.upix.data.repository.InputSourceResolver
 import io.upix.data.repository.LogRepository
 import io.upix.data.repository.ModelProvider
 import io.upix.data.repository.NativeProcessResult
+import io.upix.data.repository.PersistedQueueItem
 import io.upix.data.repository.PersistedQueueItemStatus
 import io.upix.data.repository.ProcessingCheckpoint
 import io.upix.data.repository.ProcessingCheckpointStore
@@ -114,6 +115,8 @@ class ProcessingViewModelTest {
             updatedCheckpoint?.pendingItems?.map { item -> item.uri }
         )
         assertTrue(updatedCheckpoint?.failureDetails?.isEmpty() == true)
+        assertNull(updatedCheckpoint?.queueItemId)
+        assertTrue(checkpointStore.persistedCheckpoints.all { it.queueItemId == null })
     }
 
     @Test
@@ -633,6 +636,10 @@ class ProcessingViewModelTest {
             distributedMode = false,
             outputDirectoryUri = null
         )
+        val queueItemId = viewModel.uiState.value.queueItems.single().id
+        checkpointStore.persistCheckpoint(
+            requireNotNull(checkpointStore.loadCheckpoint()).copy(queueItemId = queueItemId)
+        )
         advanceUntilIdle()
         inputSourceResolver.resetCallCount()
 
@@ -645,7 +652,63 @@ class ProcessingViewModelTest {
         assertEquals(1, finalState.queueItems.size)
         assertEquals(PersistedQueueItemStatus.COMPLETED, finalState.queueItems.first().status)
         assertEquals(ProcessingStatus.COMPLETED, finalState.task?.status)
+        assertTrue(checkpointStore.persistedCheckpoints.isNotEmpty())
+        assertTrue(checkpointStore.persistedCheckpoints.all { it.queueItemId == queueItemId })
+        assertTrue(checkpointStore.persistedCheckpoints.all { it.taskId != it.queueItemId })
     }
+    @Test
+    fun manualResumeCompletesOriginalQueueRowAndStoresOutputUri() = runTest(mainDispatcherRule.testDispatcher) {
+        val source = "content://source/manual-queued-resume"
+        val imageUri = "content://images/manual-resume.jpg"
+        val queueItemId = "original-queue-row"
+        val checkpointStore = FakeCheckpointStore(
+            ProcessingCheckpoint(
+                taskId = "independent-task-id",
+                source = source,
+                modelName = "Real-ESRGANv3-anime-x2",
+                distributedMode = false,
+                totalItems = 1,
+                completedItems = 0,
+                outputDirectory = "/tmp/out",
+                createdAtEpochMs = 1L,
+                updatedAtEpochMs = 1L,
+                pendingItems = listOf(ProcessingPendingItem(imageUri, "manual-resume.jpg")),
+                queueItemId = queueItemId
+            )
+        )
+        val queueStore = FakeQueueStore(
+            ProcessingQueueSnapshot(
+                items = listOf(
+                    PersistedQueueItem(
+                        id = queueItemId,
+                        source = source,
+                        modelName = "Real-ESRGANv3-anime-x2",
+                        distributedMode = false,
+                        createdAtEpochMs = 1L,
+                        status = PersistedQueueItemStatus.FAILED
+                    )
+                )
+            )
+        )
+        val resolver = FakeInputSourceResolver().apply { register(source, listOf(imageUri)) }
+        val viewModel = makeViewModel(
+            inputSourceRepository = resolver,
+            checkpointRepository = checkpointStore,
+            queueRepository = queueStore
+        )
+
+        advanceUntilIdle()
+        viewModel.resumeLastProcessing()
+        advanceUntilIdle()
+
+        val completedItem = viewModel.uiState.value.queueItems.single()
+        assertEquals(queueItemId, completedItem.id)
+        assertEquals(PersistedQueueItemStatus.COMPLETED, completedItem.status)
+        assertEquals("content://outputs/manual-resume.jpg", completedItem.lastOutputUri)
+        assertTrue(checkpointStore.persistedCheckpoints.all { it.queueItemId == queueItemId })
+        assertTrue(checkpointStore.persistedCheckpoints.all { it.taskId != it.queueItemId })
+    }
+
 
     @Test
     fun queueStatePersistsAcrossViewModelRecreation() = runTest(mainDispatcherRule.testDispatcher) {
@@ -908,9 +971,7 @@ class ProcessingViewModelTest {
         override fun firstReadyOutputUri(
             outputDirectory: BatchOutputDirectory,
             inputs: List<ResolvedImageInput>
-        ): String? {
-            return null
-        }
+        ): String? = inputs.firstOrNull()?.let { "content://outputs/${it.displayName}" }
 
         override fun hasBackup(input: ResolvedImageInput): Boolean = false
 
@@ -939,6 +1000,7 @@ class ProcessingViewModelTest {
         checkpoint: ProcessingCheckpoint?
     ) : ProcessingCheckpointStore {
         private val state = MutableStateFlow(checkpoint)
+        val persistedCheckpoints = mutableListOf<ProcessingCheckpoint>()
         var clearCallCount: Int = 0
             private set
 
@@ -946,6 +1008,7 @@ class ProcessingViewModelTest {
             get() = state.asStateFlow()
 
         override suspend fun persistCheckpoint(checkpoint: ProcessingCheckpoint) {
+            persistedCheckpoints += checkpoint
             state.value = checkpoint
         }
 

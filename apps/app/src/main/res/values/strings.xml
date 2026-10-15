@@ -3,6 +3,7 @@
 
     <!-- Shared across screens -->
     <string name="common_cancel">取消</string>
+    <string name="common_close">关闭</string>
     <string name="common_retry">重试</string>
     <string name="common_settings">设置</string>
     <string name="common_help">帮助</string>
@@ -242,10 +243,19 @@
     <string name="help_family_classics">社区经典 · UltraSharp / Remacri / BSRGAN 等</string>
     <string name="help_family_classics_desc">社区多年默认的全能老牌：UltraSharp-x4 锐利、Remacri-x4 自然、AnimeSharp-x4 动漫线条 4x、AnimeJaNai-v2-Compact-x2 动漫轻量 2x、NMKD-Siax-x4 专保纹理、BSRGAN-x4/x2 是学术界的多劣化修复经典（Apache-2.0）。注意：除 NMKD（WTFPL）与 BSRGAN（Apache-2.0）外，其余四款权重为非商用许可（CC-BY-NC-SA），个人使用不受影响。</string>
     <string name="home_model_picker_help">不知道怎么选？查看模型指南</string>
+    <!-- 模型场景徽标里的「推荐」星标（此前是 ui 代码里的硬编码字面量）。 -->
+    <string name="model_scene_recommended">推荐</string>
 
     <!-- Logs screen -->
     <string name="logs_search_label">搜索</string>
     <string name="logs_filter_all">全部</string>
+    <!-- 级别 chip 的本地化文案（DESIGN_LANGUAGE §9.11 2026-08-24 amendment）：
+         交互 chrome 全本地化，等宽日志正文/复制内容里的原始英文枚举不变。 -->
+    <string name="log_level_debug">调试</string>
+    <string name="log_level_info">信息</string>
+    <string name="log_level_warning">警告</string>
+    <string name="log_level_error">错误</string>
+    <string name="log_level_critical">严重</string>
     <string name="logs_clear">清空日志</string>
     <string name="logs_copy">复制</string>
     <string name="logs_empty">无日志</string>

@@ -9,6 +9,8 @@ import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URL
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.security.MessageDigest
 import java.util.Locale
 import java.util.zip.ZipInputStream
@@ -34,9 +36,14 @@ import org.json.JSONObject
  * 证书判断完整保留：握手链校验走系统信任库，平台默认主机名验证器
  * 核对证书与目标域名，不匹配即失败，绝不关闭校验。
  *
- * 下载流式写入 models 目录下的 .part 临时文件，校验 sha256 后解压，
- * 任一步失败即清理临时文件并返回错误信息（取消例外：CancellationException
- * 清理 .part 后向上抛出，供调用方协程走标准取消路径）。
+ * 下载流式写入 models 目录下的 .part 临时文件，校验 sha256 后解压到 .part
+ * 暂存名，成对校验通过才改名就位。就位时旧文件先在同目录内改名成 .bak 备份，
+ * 换新失败即把备份放回原位——要么整套新模型、要么整套旧模型。任一步失败都
+ * 清理本次事务自己创建的临时/暂存文件并返回错误信息（取消例外：
+ * CancellationException 清理 .part 后向上抛出，供调用方协程走标准取消路径）。
+ * 临时/暂存/备份名都按模型名派生（发布 zip 的条目名即 `<name>.param`/`<name>.bin`），
+ * 故同一模型的下载必须由调用方串行化——现有调用方 ModelsViewModel 已用
+ * per-model 门闩（downloads/downloadJobs）保证，不同模型之间互不干扰。
  */
 class ModelReleaseRepository(
     private val logRepository: LogRepository
@@ -84,7 +91,12 @@ class ModelReleaseRepository(
         }
     }
 
-    /** 单次尝试：下载→sha256 校验→解压，任一步失败抛异常并清理临时文件。 */
+    /** 失败路径专用：删除本次事务创建的暂存文件；文件不存在时 delete 返回 false，无副作用。 */
+    private fun deleteStagingFiles(staged: List<Pair<File, File>>) {
+        staged.forEach { (stagingFile, _) -> stagingFile.delete() }
+    }
+
+    /** 单次尝试：下载→sha256 校验→解压→就位，任一步失败抛异常并清理本次事务的临时/暂存文件（就位阶段还会回滚旧文件）。 */
     private suspend fun downloadAndInstall(
         model: RemoteModel,
         modelsDirectory: File,
@@ -148,8 +160,11 @@ class ModelReleaseRepository(
             throw IOException("sha256 mismatch: expected $expected, got $actual")
         }
 
-        // 3. 解压 .param/.bin 到 modelsDirectory（展平，条目名去目录）。
-        val written = mutableListOf<File>()
+        // 3. 先解压到 .part 暂存名，两组文件都写全、且同名成对后再改名就位。
+        // 解压中途失败（IO 错误 / 取消 / 磁盘满 / zip 数据损坏）既不会在模型
+        // 目录里留下半截 .param/.bin（discoverModels 只认 .param 结尾，重名
+        // 配对后会把截断的模型交给 native 引擎），也不会覆盖正在使用的旧模型。
+        val staged = mutableListOf<Pair<File, File>>()
         try {
             ZipInputStream(zipFile.inputStream().buffered()).use { zip ->
                 var entry = zip.nextEntry
@@ -160,21 +175,84 @@ class ModelReleaseRepository(
                         (name.endsWith(".param") || name.endsWith(".bin"))
                     ) {
                         val base = name.substringAfterLast('/')
-                        val dest = File(modelsDirectory, base)
-                        dest.outputStream().use { output -> zip.copyTo(output) }
-                        written += dest
+                        val stagingFile = File(modelsDirectory, "$base$STAGING_SUFFIX")
+                        // 先登记再写：写中途失败（磁盘满、zip 截断）时，失败路径
+                        // 才知道该删哪个文件——否则刚写的半截暂存会留在目录里。
+                        staged += stagingFile to File(modelsDirectory, base)
+                        stagingFile.outputStream().use { output -> zip.copyTo(output) }
                     }
                     zip.closeEntry()
                     entry = zip.nextEntry
                 }
             }
+        } catch (extractionFailure: Throwable) {
+            deleteStagingFiles(staged)
+            throw extractionFailure
         } finally {
             zipFile.delete()
         }
-        if (written.size != 2) {
-            written.forEach { it.delete() }
-            throw IOException("zip did not contain one .param + one .bin (got ${written.size})")
+        val paramCount = staged.count { (_, installedFile) -> installedFile.name.endsWith(".param") }
+        val binCount = staged.count { (_, installedFile) -> installedFile.name.endsWith(".bin") }
+        // 同名才成对：A.param + B.bin 条目数是 1+1，但装上去 discoverModels
+        // 按同名配对，只会得到一个永远配不上的孤儿 .param。
+        val pairedNameCount = staged
+            .map { (_, installedFile) -> installedFile.name.substringBeforeLast('.') }
+            .toSet()
+            .size
+        if (staged.size != 2 || paramCount != 1 || binCount != 1 || pairedNameCount != 1) {
+            deleteStagingFiles(staged)
+            throw IOException(
+                "zip did not contain one .param + one .bin with the same name " +
+                    "(got ${staged.size} entries: ${staged.map { (_, installedFile) -> installedFile.name }})"
+            )
         }
+
+        // 4. 就位：旧文件先在同目录内改名成 backup（rename，不复制数据），换新
+        // 全部成功后才删备份；任一步失败即把备份按原路放回，保证“要么整套新
+        // 模型、要么整套旧模型”，不会留下新 .param + 旧 .bin 的错配。
+        val backups = mutableListOf<Pair<File, File>>()
+        try {
+            staged.forEach { (stagingFile, installedFile) ->
+                if (installedFile.exists()) {
+                    if (!installedFile.isFile) {
+                        // 非普通文件（目录等）不能改名当备份：它会挡住 install，
+                        // 就算成功挪走也会作为备份残留在目录里。
+                        throw IOException(
+                            "cannot install ${installedFile.name}: occupied by a non-regular file"
+                        )
+                    }
+                    val backupFile = File(modelsDirectory, "${installedFile.name}$BACKUP_SUFFIX")
+                    Files.move(
+                        installedFile.toPath(),
+                        backupFile.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING
+                    )
+                    backups += backupFile to installedFile
+                }
+                Files.move(
+                    stagingFile.toPath(),
+                    installedFile.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING
+                )
+            }
+        } catch (installFailure: Throwable) {
+            // 回滚：逆序把备份放回原位（覆盖刚换上的新文件）。放回失败就保留
+            // 备份文件——它是旧内容唯一完好的副本，只是暂时换个名字。
+            backups.asReversed().forEach { (backupFile, installedFile) ->
+                try {
+                    Files.move(
+                        backupFile.toPath(),
+                        installedFile.toPath(),
+                        StandardCopyOption.REPLACE_EXISTING
+                    )
+                } catch (restoreFailure: Throwable) {
+                    installFailure.addSuppressed(restoreFailure)
+                }
+            }
+            deleteStagingFiles(staged)
+            throw installFailure
+        }
+        backups.forEach { (backupFile, _) -> backupFile.delete() }
 
         logRepository.info(
             "ModelReleaseRepository",
@@ -392,6 +470,19 @@ class ModelReleaseRepository(
         const val CONNECT_TIMEOUT_MS = 8_000
         const val READ_TIMEOUT_MS = 15_000
         const val DOWNLOAD_BUFFER_BYTES = 64 * 1024
+
+        /**
+         * 解压暂存后缀：`X.param.part` / `X.bin.part`。模型发现按扩展名
+         * `.param` 匹配，暂存名不会被扫描到（见 ModelRepository.discoverModels）。
+         */
+        const val STAGING_SUFFIX = ".part"
+
+        /**
+         * 就位期间的旧文件备份后缀：`X.param.bak` / `X.bin.bak`（同目录 rename，
+         * 不复制数据，成功即删、失败即回滚）。扩展名同样不是 .param/.bin，
+         * 不会被模型扫描到。
+         */
+        const val BACKUP_SUFFIX = ".bak"
 
         /** 进度上报的时间下限（100ms）：总量未知时唯一的节流依据。 */
         const val PROGRESS_EMIT_INTERVAL_NS = 100_000_000L

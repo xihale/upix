@@ -157,9 +157,13 @@ class NativeImageProcessingRepository(
             return null
         }
 
-        val scaleFactor = runCatching {
+        // native 侧异常路径返回 0（不是 Kotlin 异常，getOrDefault 拦不住）。
+        // 0 若被 coerceAtLeast(1) 夹成 1，outputWidth = width * 1 与 native 真实
+        // 倍率不符，整批都会以「Output dimensions mismatch」失败——按默认倍率兜底。
+        val rawScaleFactor = runCatching {
             NCNNEngine.nativeGetScaleFactor(enginePtr)
-        }.getOrDefault(DEFAULT_SCALE_FACTOR).coerceAtLeast(1)
+        }.getOrDefault(DEFAULT_SCALE_FACTOR)
+        val scaleFactor = if (rawScaleFactor <= 0) DEFAULT_SCALE_FACTOR else rawScaleFactor
 
         return NativeEngineHandle(
             enginePtr = enginePtr,
@@ -212,10 +216,15 @@ class NativeImageProcessingRepository(
                 reason = "GPU probe first decode failed"
             )
         val secondProbeBitmap = decodeValidationBitmap(secondProbeOutput)
-            ?: return GpuValidationResult(
+        if (secondProbeBitmap == null) {
+            // 解码失败路径同样要归还第一张探针位图：这正是 GPU 不稳时最容易
+            // 走到的分支，交给 GC 终结器回收等于放任 native 位图内存堆积。
+            firstProbeBitmap.recycle()
+            return GpuValidationResult(
                 isStable = false,
                 reason = "GPU probe second decode failed"
             )
+        }
 
         return try {
             val expectedWidth = GPU_VALIDATION_INPUT_SIZE * gpuHandle.scaleFactor

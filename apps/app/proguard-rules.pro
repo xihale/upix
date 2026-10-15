@@ -7,9 +7,22 @@
 # NativeWorker and NCNNEngine: the Java_io_upix_nativelib_* exports in
 # jni_bridge.cpp resolve classes and methods by name. Their non-native
 # members are only referenced from Kotlin, which R8 traces statically
-# (jni_bridge.cpp reflects into nothing but java/lang/String).
+# (jni_bridge.cpp reflects into nothing but java/lang/String and the progress
+# listener below).
 -keepclasseswithmembernames class * {
     native <methods>;
+}
+
+# jni_bridge.cpp resolves this callback by name:
+#   GetMethodID(listener_class, "onProgress", "(III)V")   (nativeReceiveDistributedResult)
+# Keep the interface alive as well as the method name: keeping only members
+# lets R8 remove the abstract callback and optimize its implementations away.
+# JNI resolves onProgress on the concrete listener object via GetObjectClass.
+-keep interface io.upix.nativelib.NCNNEngine$DistributedProgressListener {
+    void onProgress(int, int, int);
+}
+-keepclassmembers class * implements io.upix.nativelib.NCNNEngine$DistributedProgressListener {
+    public void onProgress(int, int, int);
 }
 
 # kotlinx.serialization (official template, io.upix substituted). The

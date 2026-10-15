@@ -1,12 +1,14 @@
 package io.upix.data.repository
 
-import android.net.Uri
 import android.provider.DocumentsContract
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
+import kotlinx.coroutines.runBlocking
 
 /** 文件夹源判定（UI 角标用；「添加文件夹」选入的是 SAF 树 URI）。 */
 @RunWith(RobolectricTestRunner::class)
@@ -32,8 +34,18 @@ class FolderInputInfoTest {
 
     @Test
     fun countImagesReturnsNullForNonFolderSource() {
-        // 单图 URI 交给协程层验证 null 语义需要 Robolectric 主线程调度；
-        // 这里直接验证非文件夹源在纯同步路径上的快速返回。
-        assertFalse(FolderInputInfo.isFolderSource(Uri.parse("content://a/1.jpg").toString()))
+        // 非文件夹源在进入协程/SAF 查询前快速返回 null（countImages 的第一道
+        // 门）。空源与 upix://multi: 源同样落在这条路径上。
+        assertNull(
+            runBlocking { FolderInputInfo.countImages(context = RuntimeEnvironment.getApplication(), source = "") }
+        )
+        assertNull(
+            runBlocking {
+                FolderInputInfo.countImages(
+                    context = RuntimeEnvironment.getApplication(),
+                    source = "content://media/external/images/1"
+                )
+            }
+        )
     }
 }

@@ -26,6 +26,7 @@ import io.upix.service.ForegroundCompletionSnapshot
 import io.upix.service.ForegroundProgressSnapshot
 import io.upix.service.ProcessingForegroundCoordinator
 import io.upix.util.StringProvider
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -171,8 +172,17 @@ class ProcessingViewModel(
                             // wrapped in withContext(Dispatchers.IO). collectLatest
                             // cancels an in-flight stale save so only the newest
                             // snapshot hits disk.
-                            withContext(ioDispatcher) {
-                                queueRepository.persistQueue(snapshot)
+                            try {
+                                withContext(ioDispatcher) {
+                                    queueRepository.persistQueue(snapshot)
+                                }
+                            } catch (cancellationException: CancellationException) {
+                                throw cancellationException
+                            } catch (exception: Exception) {
+                                logRepository.error(
+                                    "ProcessingViewModel",
+                                    "Failed to persist queue snapshot: ${exception.message}"
+                                )
                             }
                         }
                 }
@@ -444,6 +454,19 @@ class ProcessingViewModel(
             logRepository.warning("ProcessingViewModel", "No checkpoint found to resume")
             return
         }
+        val compatibleQueueItemId = checkpoint.queueItemId?.takeIf { id ->
+            _uiState.value.queueItems.any { item ->
+                item.id == id &&
+                    item.source.trim() == checkpoint.source.trim() &&
+                    item.modelName.trim() == checkpoint.modelName.trim() &&
+                    item.distributedMode == checkpoint.distributedMode &&
+                    item.outputDirectoryUri?.trim().orEmpty() == checkpoint.outputDirectoryUri?.trim().orEmpty() &&
+                    item.overwriteOriginal == checkpoint.overwriteOriginal &&
+                    item.backupOriginal == checkpoint.backupOriginal &&
+                    item.processNestedFolders == checkpoint.processNestedFolders &&
+                    item.skipSrMarkedInputs == checkpoint.skipSrMarkedInputs
+            }
+        }
         startProcessingInternal(
             imagePath = checkpoint.source,
             modelName = checkpoint.modelName,
@@ -456,7 +479,7 @@ class ProcessingViewModel(
             resumeCheckpoint = checkpoint,
             retryFailedOnly = retryFailedOnly,
             resumePendingUris = resumePendingUris,
-            queueItemId = checkpoint.taskId
+            queueItemId = compatibleQueueItemId
         )
     }
 
@@ -467,12 +490,21 @@ class ProcessingViewModel(
         }
         // 读/删 checkpoint 都是磁盘 IO：内部起协程，公开 API 保持非挂起。
         viewModelScope.launch {
-            if (checkpointRepository.loadCheckpoint() == null) {
-                logRepository.info("ProcessingViewModel", "No checkpoint to discard")
-                return@launch
+            try {
+                if (checkpointRepository.loadCheckpoint() == null) {
+                    logRepository.info("ProcessingViewModel", "No checkpoint to discard")
+                    return@launch
+                }
+                checkpointRepository.clearCheckpoint()
+                logRepository.info("ProcessingViewModel", "Discarded processing checkpoint")
+            } catch (cancellationException: CancellationException) {
+                throw cancellationException
+            } catch (exception: Exception) {
+                logRepository.error(
+                    "ProcessingViewModel",
+                    "Failed to discard processing checkpoint: ${exception.message}"
+                )
             }
-            checkpointRepository.clearCheckpoint()
-            logRepository.info("ProcessingViewModel", "Discarded processing checkpoint")
         }
     }
 

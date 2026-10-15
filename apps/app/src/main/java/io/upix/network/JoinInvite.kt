@@ -82,10 +82,11 @@ object JoinInviteParser {
         val uri = runCatching { URI(uriRaw) }.getOrNull() ?: return null
         val params = parseQueryParams(uri.rawQuery.orEmpty())
 
-        val host = params["host"]
+        val host = (params["host"]
             ?.trim()
             .orEmpty()
-            .ifBlank { uri.host?.trim().orEmpty() }
+            .ifBlank { uri.host?.trim().orEmpty() })
+            .removeSurrounding("[", "]")
         if (host.isEmpty()) {
             return null
         }
@@ -107,9 +108,22 @@ object JoinInviteParser {
         if (colonIndex <= 0 || colonIndex == value.lastIndex) {
             return null
         }
-        val host = value.substring(0, colonIndex).trim()
+        val rawHost = value.substring(0, colonIndex).trim()
         val port = value.substring(colonIndex + 1).trim().toIntOrNull() ?: return null
-        if (host.isEmpty() || port !in 1..65535) {
+        if (port !in 1..65535) {
+            return null
+        }
+        // IPv6 字面量必须带方括号：裸 `2001:db8::1` 的最后一个 ':' 属于地址
+        // 本身，旧逻辑会把它当端口分隔符，解析出 host="2001:db8:"、port=1
+        // 这种能通过校验的假端点。带方括号的 `[::1]:9527` 剥括号后交给
+        // native 连接（getaddrinfo 不认方括号）。
+        val host = when {
+            rawHost.startsWith("[") && rawHost.endsWith("]") ->
+                rawHost.substring(1, rawHost.length - 1).trim()
+            rawHost.contains(':') -> return null
+            else -> rawHost
+        }
+        if (host.isEmpty()) {
             return null
         }
         return host to port

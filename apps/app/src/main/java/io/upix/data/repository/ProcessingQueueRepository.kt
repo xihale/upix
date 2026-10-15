@@ -4,6 +4,8 @@ import android.content.Context
 import java.io.File
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -52,7 +54,8 @@ class ProcessingQueueRepository(
     // 可注入 IO 调度器（与 ProcessingCheckpointRepository 同一模式，单测可注入 TestDispatcher）
     private val ioDispatcher: CoroutineDispatcher = Dispatchers.IO
 ) : ProcessingQueueStore {
-    private val queueFile = File(context.filesDir, QUEUE_FILE_NAME)
+    private val queueFile = AtomicSnapshotFile(File(context.filesDir, QUEUE_FILE_NAME))
+    private val persistenceLock = Any()
     private val _queue = MutableStateFlow(ProcessingQueueSnapshot())
     override val queue: StateFlow<ProcessingQueueSnapshot> = _queue.asStateFlow()
 
@@ -64,71 +67,43 @@ class ProcessingQueueRepository(
     }
 
     override suspend fun persistQueue(snapshot: ProcessingQueueSnapshot) {
-        val normalizedSnapshot = snapshot.normalizedForSave()
-        if (normalizedSnapshot.items.isEmpty() && !normalizedSnapshot.isQueueRunning) {
-            withContext(ioDispatcher) {
-                runCatching {
-                    if (queueFile.exists()) {
+        withContext(ioDispatcher) {
+            val coroutineContext = currentCoroutineContext()
+            synchronized(persistenceLock) {
+                coroutineContext.ensureActive()
+                val normalizedSnapshot = snapshot.normalizedForSave()
+                try {
+                    if (normalizedSnapshot.items.isEmpty() && !normalizedSnapshot.isQueueRunning) {
                         queueFile.delete()
+                    } else {
+                        queueFile.writeText(json.encodeToString(ProcessingQueueSnapshot.serializer(), normalizedSnapshot))
                     }
                     _queue.value = normalizedSnapshot
-                }.onFailure { throwable ->
-                    logRepository.error(
-                        "ProcessingQueueRepository",
-                        "Failed to clear queue: ${throwable.message}"
-                    )
+                } catch (exception: Exception) {
+                    logRepository.error("ProcessingQueueRepository", "Failed to save queue: ${exception.message}")
+                    throw exception
                 }
-            }
-            return
-        }
-
-        withContext(ioDispatcher) {
-            runCatching {
-                val payload = json.encodeToString(
-                    ProcessingQueueSnapshot.serializer(),
-                    normalizedSnapshot
-                )
-                val tempFile = File(queueFile.parentFile, "${queueFile.name}.tmp")
-                tempFile.writeText(payload)
-                if (queueFile.exists()) {
-                    queueFile.delete()
-                }
-                val renameSuccess = tempFile.renameTo(queueFile)
-                if (!renameSuccess) {
-                    throw IllegalStateException("Failed to replace queue file")
-                }
-                _queue.value = normalizedSnapshot
-            }.onFailure { throwable ->
-                logRepository.error(
-                    "ProcessingQueueRepository",
-                    "Failed to save queue: ${throwable.message}"
-                )
             }
         }
     }
 
-    override fun loadQueue(): ProcessingQueueSnapshot {
-        val loadedQueue = loadQueueFromDisk()
+    override fun loadQueue(): ProcessingQueueSnapshot = synchronized(persistenceLock) {
+        val loadedQueue = try {
+            loadQueueFromDisk()
+        } catch (exception: Exception) {
+            logRepository.error(
+                "ProcessingQueueRepository",
+                "Failed to load queue: ${exception.message}"
+            )
+            return@synchronized _queue.value
+        }
         _queue.value = loadedQueue
-        return loadedQueue
+        loadedQueue
     }
 
     private fun loadQueueFromDisk(): ProcessingQueueSnapshot {
-        if (!queueFile.exists()) {
-            return ProcessingQueueSnapshot()
-        }
-
-        return runCatching {
-            json.decodeFromString(ProcessingQueueSnapshot.serializer(), queueFile.readText())
-                .normalizedForRestore()
-        }.onFailure { throwable ->
-            logRepository.error(
-                "ProcessingQueueRepository",
-                "Failed to load queue: ${throwable.message}"
-            )
-        }.getOrElse {
-            ProcessingQueueSnapshot()
-        }
+        val payload = queueFile.readText() ?: return ProcessingQueueSnapshot()
+        return json.decodeFromString(ProcessingQueueSnapshot.serializer(), payload).normalizedForRestore()
     }
 
     private fun ProcessingQueueSnapshot.normalizedForSave(): ProcessingQueueSnapshot {
@@ -149,6 +124,7 @@ class ProcessingQueueRepository(
                     overwriteOriginal = item.overwriteOriginal,
                     backupOriginal = item.backupOriginal,
                     processNestedFolders = item.processNestedFolders,
+                    skipSrMarkedInputs = item.skipSrMarkedInputs,
                     createdAtEpochMs = item.createdAtEpochMs,
                     expectedItems = item.expectedItems?.coerceAtLeast(0),
                     status = item.status,

@@ -762,7 +762,10 @@ internal fun PreviewBottomSheet(
                 IconButton(onClick = onDismiss) {
                     Icon(
                         imageVector = Icons.Outlined.Close,
-                        contentDescription = stringResource(R.string.queue_close_cd)
+                        // 这是预览 sheet 的关闭按钮（不是队列 sheet）：用通用
+                        // 「关闭」，此前借用 queue_close_cd（"关闭队列"）会让
+                        // TalkBack 读出错误的操作对象。
+                        contentDescription = stringResource(R.string.common_close)
                     )
                 }
             }

@@ -238,6 +238,7 @@ class ProcessingRunPlanner(
 
     suspend fun saveCheckpointSnapshot(
         taskId: String,
+        queueItemId: String?,
         imagePath: String,
         modelName: String,
         distributedMode: Boolean,
@@ -247,6 +248,7 @@ class ProcessingRunPlanner(
         outputDirectoryUri: String?,
         overwriteOriginal: Boolean,
         backupOriginal: Boolean,
+        processNestedFolders: Boolean,
         skipSrMarkedInputs: Boolean,
         createdAtEpochMs: Long,
         pendingImages: List<ResolvedImageInput>,
@@ -274,12 +276,14 @@ class ProcessingRunPlanner(
                 outputDirectoryUri = outputDirectoryUri,
                 overwriteOriginal = overwriteOriginal,
                 backupOriginal = backupOriginal,
+                processNestedFolders = processNestedFolders,
                 skipSrMarkedInputs = skipSrMarkedInputs,
                 createdAtEpochMs = createdAtEpochMs,
                 updatedAtEpochMs = System.currentTimeMillis(),
                 lastErrorMessage = lastErrorMessage,
                 pendingItems = orderedPendingItems,
-                failureDetails = orderedFailureDetails(failureDetails)
+                failureDetails = orderedFailureDetails(failureDetails),
+                queueItemId = queueItemId
             )
         )
     }
