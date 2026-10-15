@@ -33,6 +33,9 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: site/package-lock.json
+      - name: install
+        run: npm ci
+        working-directory: site
       - name: lint
         run: npm run lint
         working-directory: site
