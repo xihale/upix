@@ -72,6 +72,8 @@ test_output/
 # Landing-page pair (site/public/images/*.webp): these files are shipped, not
 # build output.
 !site/public/images/*.webp
+# apple-touch-icon (rasterized from icon.svg) ships with the page.
+!site/public/images/*.png
 
 # Landing-page build output and dependencies
 site/node_modules/

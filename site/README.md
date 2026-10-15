@@ -25,5 +25,6 @@ npm run dev -- --port 5174
 
 - 图片：《重返未来：1999》官网壁纸（[来源](https://re.bluepoch.com/home/detail.html#wallpaper)，© 广州深蓝互动网络科技有限公司）。图注已标注来源；官网《许可及服务协议》禁止未经书面同意的商业性使用与信息网络传播，公开部署前需获授权或替换为自有/开放授权素材。
 - 字体：自托管 Manrope 400/600 与 Noto Sans SC 400（WOFF2，OFL 许可证在 `public/fonts/`）。中文字体按页面文案提取子集，新增文案需同步扩充字形。
+- 图标：favicon 与 apple-touch-icon 取自 Android 启动图标（adaptive icon 浅色配色，`public/images/icon.svg` 复刻 foreground 矢量）。
 
 设计与评审记录在 `design/`。
