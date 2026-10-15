@@ -15,11 +15,18 @@ npm run dev -- --port 5174
 
 首屏拖动对比原图与修复图，支持鼠标、触摸和键盘方向键、Home/End；放大/还原同步改变两图尺寸与位置；开启「减少动态效果」显示静态内容；加载失败可重试并保留状态。仅展示固定作品的对比，不含上传或在线推理。
 
-获取入口：Android 指向 GitHub 发布 `android-v0.1.1`（arm64-v8a APK），CLI 指向 GitHub 发布 `cli-v0.1.0`。
+获取入口：Android 指向 GitHub 发布 `android-v0.1.1`（arm64-v8a APK），CLI 指向 GitHub 发布 `cli-v0.1.0`。手机布局隐藏首屏导航里的 GitHub 入口，仓库仍可从获取区的发布页进入。
 
 ## 部署
 
 推送 main（改动 `site/**`）触发 `.github/workflows/deploy-pages.yml`：lint、构建并发布 `site/dist` 到 GitHub Pages，并自动启用 Pages（`configure-pages`）。构建时从 GitHub API 解析最新的 `android-*` / `cli-*` 发布 tag 自动替换下载链接（见 `vite.config.js`，API 不可用时回退到内置固定 tag）。自定义域名 `upix.xihale.top`：DNS CNAME → `xihale.github.io`，`public/CNAME` 绑定，HTTPS 证书由 GitHub 在首次部署后自动签发。
+
+维护这些链接与元数据时需要同时改两处，改动后跑一次 `npm run build` 并检查 `dist/index.html`：
+
+- `index.html` 里两个 `releases/tag/<平台>-…` 是替换锚点，`vite.config.js` 的 `FALLBACK_TAGS` 必须与它们取同值；否则 API 不可用时会构建出与配置不一致的固定链接。
+- API 返回的 tag 只接受 `[A-Za-z0-9._-]`（git 允许 ref 名含 `"`/`<`/`&`，会注入 HTML 属性），不合格的 tag 被跳过并保留固定 tag。
+- `index.html` 的 `canonical` / `og:*` 绝对地址必须与 `public/CNAME` 的域名一致；相对地址会被抓取器丢弃（链接预览无图）。
+
 
 ## 素材
 
