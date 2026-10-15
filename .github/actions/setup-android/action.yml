@@ -20,7 +20,11 @@ runs:
           apps/gradle/libs.versions.toml
           apps/gradle/wrapper/gradle-wrapper.properties
 
+    # Legacy `tools` 包已被 Google 从仓库下架（sdkmanager 报
+    # "Failed to find package 'tools'"），显式只装 platform-tools。
     - uses: android-actions/setup-android@v3
+      with:
+        packages: platform-tools
 
     - name: Install pinned NDK
       if: inputs.install-ndk == 'true'
