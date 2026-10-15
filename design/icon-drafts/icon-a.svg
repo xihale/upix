@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+  <!-- A · 破框外箭：圆角相框在右上角断开，箭头由中心穿角而出 -->
+  <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M13.75 4.5 H10.25 A5.75 5.75 0 0 0 4.5 10.25 V13.75 A5.75 5.75 0 0 0 10.25 19.5 H13.75 A5.75 5.75 0 0 0 19.5 13.75 V10.25"/>
+    <path d="M12 12 L21 3"/>
+    <path d="M16.5 3 H21 V7.5"/>
+  </g>
+</svg>

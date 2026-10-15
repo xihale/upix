@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Upix icon 草稿 · 几何极简 / MD3</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 15px/1.7 system-ui, sans-serif; background: #F7F5FA; color: #1C1B1F; margin: 32px auto; max-width: 1100px; padding: 0 20px; }
+  h1 { font-size: 21px; margin: 0 0 4px; }
+  .sub { color: #5B5566; font-size: 13.5px; margin-bottom: 28px; }
+  h2 { font-size: 16px; margin: 32px 0 6px; }
+  .desc { color: #5B5566; font-size: 13.5px; margin: 0 0 14px; }
+  .row { display: flex; gap: 18px; flex-wrap: wrap; align-items: flex-end; }
+  .cell { text-align: center; font-size: 12px; color: #6B6577; }
+  .chip { border-radius: 24px; display: flex; align-items: center; justify-content: center; }
+  .light { background: #fff; border: 1px solid #E5E0EB; color: #1C1B1F; }
+  .dark  { background: #141218; color: #E6E0E9; }
+  .p { background: #6750A4; color: #fff; }
+  .bl { background: #0B57D0; color: #fff; }
+  .k  { background: #1D1B20; color: #fff; }
+  .mono { background: #E8DEF8; color: #1D192B; } /* 主题图标(monochrome layer)染色观感 */
+  svg.ic { display: block; }
+  .note { margin-top: 36px; padding: 16px 20px; background: #fff; border: 1px solid #E5E0EB; border-radius: 16px; font-size: 13.5px; color: #454049; }
+  .note b { color: #1C1B1F; }
+  code { font: 12.5px/1.5 ui-monospace, monospace; background: #F2EEF8; padding: 1px 5px; border-radius: 6px; }
+</style>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <symbol id="a" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M13.75 4.5 H10.25 A5.75 5.75 0 0 0 4.5 10.25 V13.75 A5.75 5.75 0 0 0 10.25 19.5 H13.75 A5.75 5.75 0 0 0 19.5 13.75 V10.25"/>
+        <path d="M12 12 L21 3"/>
+        <path d="M16.5 3 H21 V7.5"/>
+      </g>
+    </symbol>
+    <symbol id="b" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 20 L20 4"/>
+        <path d="M16 4 H20 V8"/>
+        <path d="M8 20 H4 V16"/>
+      </g>
+    </symbol>
+    <symbol id="c" viewBox="0 0 24 24">
+      <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M8.5 4 H6.5 A2.5 2.5 0 0 0 4 6.5 V8.5"/>
+        <path d="M15.5 4 H17.5 A2.5 2.5 0 0 1 20 6.5 V8.5"/>
+        <path d="M20 15.5 V17.5 A2.5 2.5 0 0 1 17.5 20 H15.5"/>
+        <path d="M8.5 20 H6.5 A2.5 2.5 0 0 0 4 17.5 V15.5"/>
+      </g>
+      <circle cx="12" cy="12" r="2.25" fill="currentColor"/>
+    </symbol>
+  </defs>
+</svg>
+
+<h1>Upix 图标草稿 · 图片放大 · 几何极简</h1>
+<p class="sub">24 网格 · 统一 2 单位描边 · 圆帽圆角连接 · MD3 基线；每行从左到右：亮色 48 / 亮色 96 / 暗色 48 / 暗色 96 / 三种底色自适应圆角 / 主题染色观感。</p>
+
+<h2>A · 破框外箭（主推）</h2>
+<p class="desc">一个圆角相框，右上角的圆角整段断开，箭头从画面中心沿 45° 穿出框外 —— “内容冲出边框 = 放大”。三笔元素：一框、一斜线、一箭头。</p>
+<div class="row">
+  <div class="cell"><div class="chip light" style="width:64px;height:64px"><svg class="ic" width="44" height="44"><use href="#a"/></svg></div>48px 亮</div>
+  <div class="cell"><div class="chip light" style="width:112px;height:112px"><svg class="ic" width="78" height="78"><use href="#a"/></svg></div>96px 亮</div>
+  <div class="cell"><div class="chip dark" style="width:64px;height:64px"><svg class="ic" width="44" height="44"><use href="#a"/></svg></div>48px 暗</div>
+  <div class="cell"><div class="chip dark" style="width:112px;height:112px"><svg class="ic" width="78" height="78"><use href="#a"/></svg></div>96px 暗</div>
+  <div class="cell"><div class="chip p" style="width:96px;height:96px"><svg class="ic" width="66" height="66"><use href="#a"/></svg></div>紫底</div>
+  <div class="cell"><div class="chip bl" style="width:96px;height:96px"><svg class="ic" width="66" height="66"><use href="#a"/></svg></div>蓝底</div>
+  <div class="cell"><div class="chip k" style="width:96px;height:96px"><svg class="ic" width="66" height="66"><use href="#a"/></svg></div>墨底</div>
+  <div class="cell"><div class="chip mono" style="width:96px;height:96px"><svg class="ic" width="66" height="66"><use href="#a"/></svg></div>主题染色</div>
+</div>
+
+<h2>B · 对角双箭</h2>
+<p class="desc">一条 45° 对角线、两端反向箭头（Material <code>open_in_full</code> 的极简重画）。最纯粹的“缩放”符号，但离“图片”最远。</p>
+<div class="row">
+  <div class="cell"><div class="chip light" style="width:64px;height:64px"><svg class="ic" width="44" height="44"><use href="#b"/></svg></div>48px 亮</div>
+  <div class="cell"><div class="chip light" style="width:112px;height:112px"><svg class="ic" width="78" height="78"><use href="#b"/></svg></div>96px 亮</div>
+  <div class="cell"><div class="chip dark" style="width:64px;height:64px"><svg class="ic" width="44" height="44"><use href="#b"/></svg></div>48px 暗</div>
+  <div class="cell"><div class="chip dark" style="width:112px;height:112px"><svg class="ic" width="78" height="78"><use href="#b"/></svg></div>96px 暗</div>
+  <div class="cell"><div class="chip p" style="width:96px;height:96px"><svg class="ic" width="66" height="66"><use href="#b"/></svg></div>紫底</div>
+  <div class="cell"><div class="chip bl" style="width:96px;height:96px"><svg class="ic" width="66" height="66"><use href="#b"/></svg></div>蓝底</div>
+  <div class="cell"><div class="chip k" style="width:96px;height:96px"><svg class="ic" width="66" height="66"><use href="#b"/></svg></div>墨底</div>
+  <div class="cell"><div class="chip mono" style="width:96px;height:96px"><svg class="ic" width="66" height="66"><use href="#b"/></svg></div>主题染色</div>
+</div>
+
+<h2>C · 四角扩满 + 中心点</h2>
+<p class="desc">四段圆角括号把内容“推”向四角，中心一枚实心圆点（呼应点线词汇）。对称安静，但“放大”语义弱于 A，更像“全屏/对焦”。</p>
+<div class="row">
+  <div class="cell"><div class="chip light" style="width:64px;height:64px"><svg class="ic" width="44" height="44"><use href="#c"/></svg></div>48px 亮</div>
+  <div class="cell"><div class="chip light" style="width:112px;height:112px"><svg class="ic" width="78" height="78"><use href="#c"/></svg></div>96px 亮</div>
+  <div class="cell"><div class="chip dark" style="width:64px;height:64px"><svg class="ic" width="44" height="44"><use href="#c"/></svg></div>48px 暗</div>
+  <div class="cell"><div class="chip dark" style="width:112px;height:112px"><svg class="ic" width="78" height="78"><use href="#c"/></svg></div>96px 暗</div>
+  <div class="cell"><div class="chip p" style="width:96px;height:96px"><svg class="ic" width="66" height="66"><use href="#c"/></svg></div>紫底</div>
+  <div class="cell"><div class="chip bl" style="width:96px;height:96px"><svg class="ic" width="66" height="66"><use href="#c"/></svg></div>蓝底</div>
+  <div class="cell"><div class="chip k" style="width:96px;height:96px"><svg class="ic" width="66" height="66"><use href="#c"/></svg></div>墨底</div>
+  <div class="cell"><div class="chip mono" style="width:96px;height:96px"><svg class="ic" width="66" height="66"><use href="#c"/></svg></div>主题染色</div>
+</div>
+
+<h2>A 落地为 Android 自适应图标（108 画布 + 66dp 安全区）</h2>
+<p class="desc">前景按安全区内缩约 2.45 倍率居中，虚线圈即 66dp 安全区；箭头尖端恰好收在圈内。背景为纯色层，前景为白色线稿透明底。</p>
+<div class="row">
+  <div class="cell">
+    <svg width="180" height="180" viewBox="0 0 108 108">
+      <rect width="108" height="108" rx="24" fill="#6750A4"/>
+      <circle cx="54" cy="54" r="33" fill="none" stroke="rgba(255,255,255,.5)" stroke-width="1" stroke-dasharray="3 3"/>
+      <g transform="translate(24.6 24.6) scale(2.45)">
+        <g fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13.75 4.5 H10.25 A5.75 5.75 0 0 0 4.5 10.25 V13.75 A5.75 5.75 0 0 0 10.25 19.5 H13.75 A5.75 5.75 0 0 0 19.5 13.75 V10.25"/>
+          <path d="M12 12 L21 3"/>
+          <path d="M16.5 3 H21 V7.5"/>
+        </g>
+      </g>
+    </svg>
+    108 画布 · 安全区演示
+  </div>
+  <div class="cell">
+    <svg width="180" height="180" viewBox="0 0 108 108">
+      <rect width="108" height="108" fill="#6750A4"/>
+      <g transform="translate(24.6 24.6) scale(2.45)">
+        <g fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M13.75 4.5 H10.25 A5.75 5.75 0 0 0 4.5 10.25 V13.75 A5.75 5.75 0 0 0 10.25 19.5 H13.75 A5.75 5.75 0 0 0 19.5 13.75 V10.25"/>
+          <path d="M12 12 L21 3"/>
+          <path d="M16.5 3 H21 V7.5"/>
+        </g>
+      </g>
+    </svg>
+    圆形蒙版模拟（裁切后）
+  </div>
+</div>
+
+<div class="note">
+  <b>规格速记（24 网格）：</b>描边 2，全程圆帽（<code>stroke-linecap:round</code>）圆角连接；框体圆角半径 5.75（约边长 38%，MD3 Expressive 的大圆角取向）；箭头箭杆 45°，箭尾尾翅长 4.5；三元素共用同一描边宽度，无填充面（C 的中心点除外）。<br><br>
+  <b>落地三件事：</b>① 前景层 = 线稿（白/单色，透明底），按预览比例缩进 66dp 安全区；② 背景层 = 纯色（候选 <code>#6750A4</code> MD3 基线紫 / <code>#0B57D0</code> 蓝 / <code>#1D1B20</code> 墨）；③ Android 13+ 主题图标 = 同一线稿的单色层，染色由系统接管（“主题染色”一栏即观感）。
+</div>
+
+</body>
+</html>
