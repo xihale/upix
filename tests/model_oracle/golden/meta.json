@@ -1,0 +1,72 @@
+{
+  "binary": "upix-cli",
+  "cases": {
+    "compact-anime-x2": {
+      "golden_sha256": "8ead213ef23e895fc7f5f657cadde95dc29403af302464b638d01639ec22380b",
+      "maxdiff_vs_previous": 142.0,
+      "model": "Real-ESRGANv3-anime-x2",
+      "model_sha256": "477dedc82a4177d96112e0c9b15ad5a059a49d66530473b753088ef4eb9baa02",
+      "overlap": 16,
+      "psnr_vs_previous": 28.46,
+      "scale": 2,
+      "tile": 256
+    },
+    "compact-archivist-x1": {
+      "golden_sha256": "d2428f03b8dea3f897d9455e4df7c9b91cc31f41c4ca4d22504b8aedff4b4cfe",
+      "maxdiff_vs_previous": 96.0,
+      "model": "Archivist-Medium-Compact-x1",
+      "model_sha256": "e446ba191f2dbb3133983d1c9b9e783d349b09dd876c5437ab27182bff9c46c7",
+      "overlap": 16,
+      "psnr_vs_previous": 29.9,
+      "scale": 1,
+      "tile": 256
+    },
+    "cugan-x2": {
+      "golden_sha256": "90e6f01d26b0c4b21b733f407483bef24586eea25a217ab0b7982cfc9bf14306",
+      "maxdiff_vs_previous": 161.0,
+      "model": "Real-CUGAN-no-denoise-x2",
+      "model_sha256": "218e0e84b689337222bb160c1f7981accd141a49a0e233f031f19b2e6b47be81",
+      "overlap": 16,
+      "psnr_vs_previous": 18.73,
+      "scale": 2,
+      "tile": 256
+    },
+    "realplksr-x4": {
+      "golden_sha256": "67a8d18fc526b8d50d79fac2eea17dd44e77de99307bfd4a36dc1ad2d64fa6c6",
+      "maxdiff_vs_previous": 77.0,
+      "model": "NomosWebPhoto-RealPLKSR-x4",
+      "model_sha256": "c1c7681245140624bb6d1e8f70eac2feb2930c6119ff2ce33774365015c2fcfd",
+      "overlap": 16,
+      "psnr_vs_previous": 31.88,
+      "scale": 4,
+      "tile": 256
+    },
+    "rrdb-x2plus": {
+      "golden_sha256": "a77997cfacb344af1798e7cca4c4c700618d21030d74e664a8fafb205c7fb077",
+      "maxdiff_vs_previous": 86.0,
+      "model": "Real-ESRGAN-x2plus",
+      "model_sha256": "e7e0083d82741fc821f9055356eebdaf151e55f619e483c29030a718062e16b6",
+      "overlap": 16,
+      "psnr_vs_previous": 31.9,
+      "scale": 2,
+      "tile": 256
+    },
+    "span-x2": {
+      "golden_sha256": "8500fc4025f40276c742b525e830d845ede29d605e0daefb2b0ab785edb9ccd1",
+      "maxdiff_vs_previous": 95.0,
+      "model": "NomosUni-SPAN-x2",
+      "model_sha256": "715cd8cf039d39137734f7150f9e29c9ea0b5c57aeae0128b1018502124e42e5",
+      "overlap": 16,
+      "psnr_vs_previous": 30.28,
+      "scale": 2,
+      "tile": 256
+    }
+  },
+  "device": "cpu",
+  "generated": "2026-10-15T14:55:47+08:00",
+  "input": {
+    "sha256": "be0e33058078741b9bc1733bd5be653adc8b3bc4e4dbe0cc24e1e0f9eac918b5",
+    "size": 64
+  },
+  "schema": 1
+}

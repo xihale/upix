@@ -80,6 +80,7 @@ def main():
     print(f"binary: {args.binary}  device: {args.device}")
     all_failures = []
     started = time.time()
+    daemon = None
     try:
         imgs = corpus.build(work)
 
@@ -100,7 +101,8 @@ def main():
 
         if any(s in wanted for s in ("protocol", "concurrency", "io")):
             daemon = Daemon(args.binary, work, args.models_dir, args.model,
-                            device=args.device).start()
+                            device=args.device)
+            daemon.start()
             if "protocol" in wanted:
                 run_suite("protocol", lambda c: suite_protocol.run(
                     daemon, imgs, work, c))
@@ -113,12 +115,18 @@ def main():
                     daemon, imgs, work, c, args.model))
             daemon.stop()
             daemon.cleanup_files()
+            daemon = None
 
         if "lifecycle" in wanted:
             run_suite("lifecycle", lambda c: suite_lifecycle.run(
                 args.binary, imgs, work, c, args.models_dir, args.model,
                 device=args.device))
     finally:
+        if daemon is not None:
+            try:
+                daemon.stop()
+            finally:
+                daemon.cleanup_files()
         if args.keep_work:
             print(f"work dir kept: {work}")
         else:

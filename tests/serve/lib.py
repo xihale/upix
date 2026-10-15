@@ -70,40 +70,36 @@ def parse_response(payload):
 
 def send_request(sock_path, payload, timeout=180.0):
     """One request per connection: send, drain progress, return response."""
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(timeout)
-    s.connect(sock_path)
-    s.sendall(frame(MSG_SERVE_REQUEST, payload))
-    resp = None
-    while resp is None:
-        magic, mtype, plen = HEADER.unpack(_recv_exact(s, 14)[:10])
-        if magic != MAGIC:
-            raise ValueError("daemon sent bad magic")
-        data = _recv_exact(s, plen) if plen else b""
-        if mtype == MSG_SERVE_RESPONSE:
-            resp = parse_response(data)
-    s.close()
-    return resp
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(timeout)
+        s.connect(sock_path)
+        s.sendall(frame(MSG_SERVE_REQUEST, payload))
+        while True:
+            magic, mtype, plen = HEADER.unpack(_recv_exact(s, 14)[:10])
+            if magic != MAGIC:
+                raise ValueError("daemon sent bad magic")
+            data = _recv_exact(s, plen) if plen else b""
+            if mtype == MSG_SERVE_RESPONSE:
+                return parse_response(data)
 
 
 def raw_roundtrip(sock_path, data, timeout=10.0):
     """Send raw bytes, collect everything the daemon replies until EOF/timeout.
     Returns the raw byte stream (progress + response frames interleaved)."""
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(timeout)
-    s.connect(sock_path)
-    s.sendall(data)
-    out = b""
-    try:
-        while True:
-            chunk = s.recv(65536)
-            if not chunk:
-                break
-            out += chunk
-    except (socket.timeout, ConnectionResetError, BrokenPipeError):
-        pass
-    s.close()
-    return out
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(timeout)
+        s.connect(sock_path)
+        s.sendall(data)
+        out = bytearray()
+        try:
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                out.extend(chunk)
+        except (socket.timeout, ConnectionResetError, BrokenPipeError):
+            pass
+        return bytes(out)
 
 
 def _recv_exact(s, n):
@@ -153,6 +149,9 @@ class Daemon:
             self.proc = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
                                          env=self.env())
         if not self.wait_ready(timeout_s):
+            self.proc.kill()
+            self.proc.wait()
+            self.cleanup_files()
             raise RuntimeError(f"daemon not ready in {timeout_s}s; log tail: "
                                + _tail(self.log_path))
         return self
@@ -160,12 +159,13 @@ class Daemon:
     def wait_ready(self, timeout_s):
         deadline = time.time() + timeout_s
         while time.time() < deadline:
+            if self.proc is not None and self.proc.poll() is not None:
+                return False
             if os.path.exists(self.sock):
                 try:
-                    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-                    s.settimeout(2)
-                    s.connect(self.sock)
-                    s.close()
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+                        s.settimeout(2)
+                        s.connect(self.sock)
                     return True
                 except OSError:
                     pass
@@ -202,13 +202,19 @@ class Daemon:
             self.proc.kill()
 
     def stop(self):
-        if self.proc and self.proc.poll() is None:
-            subprocess.run([self.binary, "daemon", "stop"], env=self.env(),
-                           capture_output=True, timeout=60)
+        if (self.proc is not None and self.proc.poll() is None) or self.alive():
+            try:
+                subprocess.run([self.binary, "daemon", "stop"], env=self.env(),
+                               capture_output=True, timeout=60)
+            except subprocess.TimeoutExpired:
+                pass
+        if self.proc is None:
+            return
         try:
             self.proc.wait(timeout=30)
-        except (subprocess.TimeoutExpired, ValueError):
-            pass
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait()
 
     def cleanup_files(self):
         for f in (self.sock, self.pidfile):

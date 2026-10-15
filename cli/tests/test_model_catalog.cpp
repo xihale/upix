@@ -11,6 +11,7 @@
 
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -42,6 +43,44 @@ int check_filename_scale(const std::string& name, int expected) {
     return 0;
 }
 
+// A param file whose upsampler arithmetic lands outside the supported range
+// must report "not detected" (the engine then falls back to the filename
+// convention) instead of exporting a scale that overflows every caller's
+// width*scale arithmetic. Runs without any installed model.
+int check_hostile_scale_rejected() {
+    std::error_code tmp_ec;
+    const fs::path tmp_dir = fs::temp_directory_path(tmp_ec);
+    if (tmp_ec) {
+        std::cerr << "no temporary directory for the hostile-param check: "
+                  << tmp_ec.message() << "\n";
+        return 1;
+    }
+    const fs::path param = tmp_dir / "upix-hostile-scale.param";
+    {
+        std::ofstream out(param);
+        if (!out) {
+            std::cerr << "cannot write " << param << "\n";
+            return 1;
+        }
+        out << "7767517\n2 2\n"
+               "Input in 0 1 in0 0=4 1=4 2=3\n"
+               "Deconvolution deconv 1 1 in0 out0 0=3 3=2000000000\n";
+    }
+    auto graph = upix::detect_model_graph(param.string());
+    std::error_code rm_ec;
+    fs::remove(param, rm_ec);
+    if (!graph) {
+        std::cerr << "detect_model_graph on the hostile param returned nullopt\n";
+        return 1;
+    }
+    if (graph->scale_detected) {
+        std::cerr << "hostile param reported scale x" << graph->scale_factor
+                  << " (expected: not detected)\n";
+        return 1;
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -62,10 +101,15 @@ int main() {
     failures += check_filename_scale("x9", 0);
     failures += check_filename_scale("x0", 0);
     failures += check_filename_scale("", 0);
+    // Digit runs long enough to overflow a naive accumulator must be rejected,
+    // not wrapped into a plausible-looking scale.
+    failures += check_filename_scale("x99999999999", 0);
+    failures += check_filename_scale("7x2147483647", 0);
+    failures += check_hostile_scale_rejected();
 
     const fs::path dir = models_dir_from_env();
     if (dir.empty() || !fs::exists(dir)) {
-        std::cout << "ok " << 10 - failures
+        std::cout << "ok " << 13 - failures
                   << " convention checks (no models dir, catalog scan skipped)\n";
         return failures == 0 ? 0 : 1;
     }
@@ -77,7 +121,7 @@ int main() {
         return 1;
     }
     if (scanned->empty()) {
-        std::cout << "ok " << 10 - failures
+        std::cout << "ok " << 13 - failures
                   << " convention checks (no models installed, scan skipped)\n";
         return failures == 0 ? 0 : 1;
     }

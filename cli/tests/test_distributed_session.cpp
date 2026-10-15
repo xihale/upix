@@ -401,6 +401,66 @@ auto connect_and_pair(TCPSocket& sock, uint16_t port,
     }
     return session;
 }
+// Authenticate and send the required gate request without waiting for its
+// response. Pairing tests use this to observe the server's pending approval.
+auto request_pairing(TCPSocket& sock, uint16_t port,
+                     const IdentityKey& server_identity,
+                     const IdentityKey& client_identity)
+    -> std::optional<EncryptedSession> {
+    if (!sock.connect_with_timeout("127.0.0.1", port, 5000)) {
+        return std::nullopt;
+    }
+    sock.set_timeout(5000);
+    auto session = client_handshake(sock, server_identity, client_identity);
+    if (!session) {
+        return std::nullopt;
+    }
+    ClientConnectRequest creq{};
+    std::strncpy(creq.device_name, "pairing-test", sizeof(creq.device_name) - 1);
+    const auto fp = fingerprint(client_identity.public_key());
+    std::strncpy(creq.fingerprint, fp.c_str(), sizeof(creq.fingerprint) - 1);
+    if (!send_sealed(sock, *session, MessageType::MSG_CLIENT_CONNECT_REQUEST,
+                     &creq, sizeof(creq))) {
+        return std::nullopt;
+    }
+    return session;
+}
+
+auto await_approval(Coordinator& coordinator) -> std::optional<PendingApproval> {
+    const auto deadline = std::chrono::steady_clock::now() +
+                          std::chrono::seconds(5);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (auto request = coordinator.pop_pending_approval()) {
+            return request;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return std::nullopt;
+}
+
+auto recv_connect_response(TCPSocket& sock, EncryptedSession& session)
+    -> std::optional<ClientConnectResponse> {
+    auto frame = recv_sealed(sock, session);
+    if (!frame || frame->first.type != MessageType::MSG_CLIENT_CONNECT_RESPONSE ||
+        frame->second.size() < sizeof(ClientConnectResponse)) {
+        return std::nullopt;
+    }
+    ClientConnectResponse response{};
+    std::memcpy(&response, frame->second.data(), sizeof(response));
+    return response;
+}
+
+auto reserve_test_port(Coordinator& coordinator, IdentityKey& identity,
+                       const std::filesystem::path& trust_path) -> uint16_t {
+    coordinator.set_trust_store_path(trust_path);
+    for (uint32_t candidate = 39600; candidate <= 39629; ++candidate) {
+        if (coordinator.start(static_cast<uint16_t>(candidate), identity).has_value()) {
+            return static_cast<uint16_t>(candidate);
+        }
+    }
+    CHECK(false && "could not bind pairing test coordinator");
+    return 0;
+}
 
 }  // namespace
 
@@ -593,8 +653,324 @@ int main() {
         std::printf("OK session usable after a malformed chunked submit\n");
     }
 
+    // ── Truncated CLIENT_SUBMIT: a payload shorter than ClientTaskSubmit is
+    //    neither a chunked declaration (payload == struct) nor a legacy inline
+    //    frame (payload > struct). The PC must not read the struct out of it
+    //    (the submit-ahead prefetch used to memcpy sizeof(ClientTaskSubmit)
+    //    bytes from it) and must not keep polling for DATA chunks that can
+    //    never complete it — the session is dropped instead. ────────────────
+    {
+        const std::vector<uint8_t> truncated(sizeof(ClientTaskSubmit) - 80, 0xAB);
+        CHECK(send_sealed(sock, session, MessageType::MSG_CLIENT_SUBMIT,
+                          truncated.data(), truncated.size()));
+        // Dropped, not answered: the next read sees EOF/error, not a frame.
+        auto after = drain_until_response(sock, session, nullptr);
+        CHECK(!after.has_value());
+        std::printf("OK truncated CLIENT_SUBMIT dropped without an OOB read\n");
+    }
+
     sock.close();
     coordinator.stop();
+
+    // ── First-time identities remain untrusted after denial, and an
+    //    affirmative approval is persisted for a later reconnect. ───────────
+    {
+        const auto pairing_trust_path = dir / "pairing_trust";
+        Coordinator pairing;
+        const uint16_t pairing_port = reserve_test_port(
+            pairing, server_identity, pairing_trust_path);
+
+        TCPSocket denied_sock;
+        auto denied_session = request_pairing(denied_sock, pairing_port,
+                                               server_identity, client_identity);
+        CHECK(denied_session.has_value());
+        auto denied_request = await_approval(pairing);
+        CHECK(denied_request.has_value());
+        CHECK(denied_request->fingerprint == fingerprint(client_identity.public_key()));
+        pairing.resolve_approval(denied_request->id, false);
+        auto denied_response = recv_connect_response(denied_sock, *denied_session);
+        CHECK(denied_response.has_value());
+        CHECK(denied_response->approved == 0);
+        CHECK(!TrustStore::load(pairing_trust_path).contains(
+            client_identity.public_key()));
+        denied_sock.close();
+
+        TCPSocket approved_sock;
+        auto approved_session = request_pairing(approved_sock, pairing_port,
+                                                 server_identity, client_identity);
+        CHECK(approved_session.has_value());
+        auto approved_request = await_approval(pairing);
+        CHECK(approved_request.has_value());
+        CHECK(approved_request->id != denied_request->id);
+        pairing.resolve_approval(approved_request->id, true);
+        auto approved_response = recv_connect_response(approved_sock, *approved_session);
+        CHECK(approved_response.has_value());
+        CHECK(approved_response->approved == 1);
+        auto approved_task = submit_and_await(approved_sock, *approved_session,
+                                               png_bytes, "no-such-model");
+        CHECK(approved_task.has_value());
+        CHECK(TrustStore::load(pairing_trust_path).contains(
+            client_identity.public_key()));
+        approved_sock.close();
+
+        TCPSocket reconnect_sock;
+        auto reconnect_session = request_pairing(reconnect_sock, pairing_port,
+                                                  server_identity, client_identity);
+        CHECK(reconnect_session.has_value());
+        auto reconnect_response = recv_connect_response(reconnect_sock, *reconnect_session);
+        CHECK(reconnect_response.has_value());
+        CHECK(reconnect_response->approved == 1);
+        CHECK(reconnect_response->trusted == 1);
+        CHECK(!pairing.pop_pending_approval().has_value());
+        reconnect_sock.close();
+        pairing.stop();
+        std::printf("OK denied reconnect prompts again; approved identity reconnects trusted\n");
+    }
+
+    // ── Model upload installs a PAIR and must never damage the installed one.
+    //    Three cases, each on its own (one-shot) session: a clean install, a
+    //    destination that is not a regular file, and a failure AFTER the .param
+    //    rename (parked non-empty directory on the .bin backup name) — in all
+    //    three the previous .param/.bin must be byte-identical afterwards. ───
+    {
+        const auto upload_models = dir / "upload_models";
+        std::filesystem::create_directories(upload_models);
+        const auto upload_trust_path = dir / "upload_trust";
+
+        Coordinator uploads;
+        uploads.set_models_directory(upload_models);
+        const uint16_t upload_port =
+            reserve_test_port(uploads, server_identity, upload_trust_path);
+
+        auto read_file = [](const std::filesystem::path& p) {
+            std::ifstream in(p, std::ios::binary);
+            return std::string(std::istreambuf_iterator<char>(in), {});
+        };
+        auto write_file = [](const std::filesystem::path& p, const std::string& data) {
+            std::filesystem::create_directories(p.parent_path());
+            std::ofstream(p, std::ios::binary | std::ios::trunc) << data;
+        };
+        // One MSG_MODEL_UPLOAD per session: the PC answers, then closes the
+        // connection (one-shot op), so every attempt opens its own.
+        auto upload_model = [&](TCPSocket& s, EncryptedSession& sess, const char* name,
+                                const std::string& param, const std::string& bin)
+            -> std::optional<ModelOpResponse> {
+            ModelUploadRequest req{};
+            std::strncpy(req.name, name, sizeof(req.name) - 1);
+            req.scale_factor = 2;
+            req.param_size = static_cast<uint32_t>(param.size());
+            req.bin_size = static_cast<uint32_t>(bin.size());
+            std::vector<uint8_t> payload(sizeof(req) + param.size() + bin.size());
+            std::memcpy(payload.data(), &req, sizeof(req));
+            std::memcpy(payload.data() + sizeof(req), param.data(), param.size());
+            std::memcpy(payload.data() + sizeof(req) + param.size(), bin.data(),
+                        bin.size());
+            if (!send_sealed(s, sess, MessageType::MSG_MODEL_UPLOAD, payload.data(),
+                             payload.size())) {
+                return std::nullopt;
+            }
+            auto frame = recv_sealed(s, sess);
+            if (!frame || frame->first.type != MessageType::MSG_MODEL_UPLOAD_RESPONSE ||
+                frame->second.size() < sizeof(ModelOpResponse)) {
+                return std::nullopt;
+            }
+            ModelOpResponse resp{};
+            std::memcpy(&resp, frame->second.data(), sizeof(resp));
+            return resp;
+        };
+        // First time this identity is seen by `uploads`: approve once; later
+        // connections are trusted and auto-approved.
+        bool approved_once = false;
+        auto attempt = [&](const char* name, const std::string& param,
+                           const std::string& bin) -> std::optional<ModelOpResponse> {
+            TCPSocket s;
+            auto sess = request_pairing(s, upload_port, server_identity, client_identity);
+            if (!sess.has_value()) {
+                return std::nullopt;
+            }
+            if (!approved_once) {
+                auto req = await_approval(uploads);
+                if (!req.has_value()) {
+                    return std::nullopt;
+                }
+                uploads.resolve_approval(req->id, true);
+                approved_once = true;
+            }
+            auto cresp = recv_connect_response(s, *sess);
+            if (!cresp.has_value() || cresp->approved != 1) {
+                return std::nullopt;
+            }
+            auto resp = upload_model(s, *sess, name, param, bin);
+            s.close();
+            return resp;
+        };
+
+        // 1) Clean install.
+        auto first = attempt("pairtest", "param-v1", "bin-v1");
+        CHECK(first.has_value());
+        CHECK(first->success == 1);
+        CHECK(read_file(upload_models / "pairtest.param") == "param-v1");
+        CHECK(read_file(upload_models / "pairtest.bin") == "bin-v1");
+
+        // 2) A directory parked on the .bin destination: refused, and the
+        //    installed .param stays intact (nothing of the user's is renamed
+        //    away either).
+        std::filesystem::remove(upload_models / "pairtest.bin");
+        std::filesystem::create_directories(upload_models / "pairtest.bin");
+        write_file(upload_models / "pairtest.bin" / "keep.txt", "keep");
+        auto rejected = attempt("pairtest", "param-v2", "bin-v2");
+        CHECK(rejected.has_value());
+        CHECK(rejected->success == 0);
+        CHECK(std::string(rejected->error).find("regular") != std::string::npos);
+        CHECK(read_file(upload_models / "pairtest.param") == "param-v1");
+        CHECK(std::filesystem::is_directory(upload_models / "pairtest.bin"));
+        CHECK(read_file(upload_models / "pairtest.bin" / "keep.txt") == "keep");
+        std::filesystem::remove_all(upload_models / "pairtest.bin");
+
+        // 3) Force the failure AFTER the .param rename: a non-empty directory on
+        //    the .bin backup name makes that rename fail, so the rollback has to
+        //    put the previous .param back instead of leaving param-v3 beside the
+        //    old .bin (which would be a model that no longer loads).
+        write_file(upload_models / "pairtest.param", "param-v1");
+        write_file(upload_models / "pairtest.bin", "bin-v1");
+        std::filesystem::create_directories(upload_models / "pairtest.bin.upix-backup");
+        write_file(upload_models / "pairtest.bin.upix-backup" / "occupied.txt", "x");
+
+        auto failed = attempt("pairtest", "param-v3", "bin-v3");
+        CHECK(failed.has_value());
+        CHECK(failed->success == 0);
+        CHECK(read_file(upload_models / "pairtest.param") == "param-v1");
+        CHECK(read_file(upload_models / "pairtest.bin") == "bin-v1");
+        CHECK(read_file(upload_models / "pairtest.bin.upix-backup" / "occupied.txt") == "x");
+
+        uploads.stop();
+        std::printf("OK model upload keeps the installed pair on every failure path\n");
+    }
+
+    // ── An authenticated peer cannot skip CONNECT_REQUEST and reach a
+    //    submit or model operation. ──────────────────────────────────────────
+    {
+        Coordinator gated;
+        const uint16_t gated_port = reserve_test_port(
+            gated, server_identity, dir / "gated_trust");
+        TCPSocket skipped_sock;
+        CHECK(skipped_sock.connect_with_timeout("127.0.0.1", gated_port, 5000));
+        skipped_sock.set_timeout(5000);
+        auto skipped_session = client_handshake(skipped_sock, server_identity,
+                                                client_identity);
+        CHECK(skipped_session.has_value());
+        ClientTaskSubmit skipped_submit{};
+        CHECK(send_sealed(skipped_sock, *skipped_session,
+                          MessageType::MSG_CLIENT_SUBMIT,
+                          &skipped_submit, sizeof(skipped_submit)));
+        CHECK(!recv_sealed(skipped_sock, *skipped_session).has_value());
+        CHECK(!gated.pop_pending_approval().has_value());
+        skipped_sock.close();
+
+        // Model-library frames are gated by the same required request.
+        TCPSocket skipped_model_sock;
+        CHECK(skipped_model_sock.connect_with_timeout("127.0.0.1", gated_port, 5000));
+        skipped_model_sock.set_timeout(5000);
+        auto skipped_model_session = client_handshake(
+            skipped_model_sock, server_identity, client_identity);
+        CHECK(skipped_model_session.has_value());
+        CHECK(send_sealed(skipped_model_sock, *skipped_model_session,
+                          MessageType::MSG_MODEL_LIST_REQUEST, nullptr, 0));
+        CHECK(!recv_sealed(skipped_model_sock, *skipped_model_session).has_value());
+        CHECK(!gated.pop_pending_approval().has_value());
+        skipped_model_sock.close();
+
+        // Even after CONNECT_REQUEST is queued, no business frame is served
+        // while the UI decision is outstanding.
+        TCPSocket pending_sock;
+        auto pending_session = request_pairing(pending_sock, gated_port,
+                                               server_identity, client_identity);
+        CHECK(pending_session.has_value());
+        auto pending_request = await_approval(gated);
+        CHECK(pending_request.has_value());
+        CHECK(send_sealed(pending_sock, *pending_session,
+                          MessageType::MSG_MODEL_LIST_REQUEST, nullptr, 0));
+        CHECK(!recv_sealed(pending_sock, *pending_session).has_value());
+        gated.resolve_approval(pending_request->id, true);
+        pending_sock.close();
+        gated.stop();
+        std::printf("OK task and model frames are gated by CONNECT_REQUEST approval\n");
+    }
+
+    // ── stop rejects both a queued request and one already popped by the UI;
+    //    resolving either stale id after shutdown is harmless. ───────────────
+    {
+        Coordinator queued;
+        const uint16_t queued_port = reserve_test_port(
+            queued, server_identity, dir / "queued_trust");
+        TCPSocket queued_sock;
+        auto queued_session = request_pairing(queued_sock, queued_port,
+                                               server_identity, client_identity);
+        CHECK(queued_session.has_value());
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        queued.stop();
+        queued.resolve_approval(1, true);
+        CHECK(!recv_connect_response(queued_sock, *queued_session).has_value());
+        queued_sock.close();
+
+        Coordinator popped;
+        const uint16_t popped_port = reserve_test_port(
+            popped, server_identity, dir / "popped_trust");
+        TCPSocket popped_sock;
+        auto popped_session = request_pairing(popped_sock, popped_port,
+                                               server_identity, client_identity);
+        CHECK(popped_session.has_value());
+        auto popped_request = await_approval(popped);
+        CHECK(popped_request.has_value());
+        popped.stop();
+        popped.resolve_approval(popped_request->id, true);
+        CHECK(!recv_connect_response(popped_sock, *popped_session).has_value());
+        popped_sock.close();
+        std::printf("OK stop rejects queued and popped approvals; late resolution is safe\n");
+    }
+
+    // ── stop() with silent sessions. One peer connects and never sends its
+    //    first frame (its handler is parked in the 10 s handshake window), the
+    //    other completes the handshake + gate and then goes quiet (parked in
+    //    the 30 s pre-session / 60 s session window). request_stop() alone
+    //    cannot reach either — a handler only observes the token between
+    //    frames — so stop() must wake them instead of waiting those windows
+    //    out. Both peers must then see the session dropped. ────────────────
+    {
+        Coordinator silent;
+        const uint16_t silent_port = reserve_test_port(
+            silent, server_identity, trust_path);
+        TCPSocket mute;  // connects, then never writes a byte
+        CHECK(mute.connect_with_timeout("127.0.0.1", silent_port, 5000));
+        mute.set_timeout(5000);
+
+        TCPSocket idle;  // auto-approved pair (seeded TrustStore), then silence
+        auto idle_session = connect_and_pair(idle, silent_port, server_identity,
+                                             client_identity);
+        CHECK(idle_session.has_value());
+        idle.set_timeout(5000);
+
+        // Give both handlers time to reach their blocking read.
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+        const auto stop_t0 = std::chrono::steady_clock::now();
+        silent.stop();
+        const auto stop_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - stop_t0).count();
+        std::printf("OK stop with two silent sessions returned in %lld ms\n",
+                    static_cast<long long>(stop_ms));
+        // Poll granularity (500 ms accept tick) plus handler join, nowhere
+        // near the 10 s/30 s windows the handlers are parked in.
+        CHECK(stop_ms < 3000);
+
+        uint8_t byte = 0;
+        CHECK(!mute.receive(&byte, 1).has_value());
+        CHECK(!idle.receive(&byte, 1).has_value());
+        mute.close();
+        idle.close();
+        std::printf("OK stop drops silent and idle sessions instead of waiting "
+                    "out their receive timeouts\n");
+    }
 
     // ── Optional real-model success path (needs UPIX_TEST_MODEL_DIR + _NAME):
     //    two identical submits on one session must both succeed and return

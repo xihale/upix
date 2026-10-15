@@ -1,23 +1,17 @@
 #!/usr/bin/env bash
 # Compile host C++ test binaries only. Does not run them.
 # Requires xmake already configured for linux/x86_64 (scripts/build_cli.sh).
+#
+# The target list is discovered from cli/tests/test_*.cpp (one standalone test
+# per file) — add a test file, not a list entry; xmake declares its target.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+source scripts/lib/host_tests.sh
 
-tests=(
-    test_crypto
-    test_protocol
-    test_distributed_session
-    test_sr_marker
-    test_exif
-    test_gpu_precision
-    test_model_downloader
-    test_model_catalog
-    test_model_scene
-    test_image_avif
-)
+upix_check_host_test_targets
 
+mapfile -t tests < <(upix_host_test_targets)
 xmake build -y "${tests[@]}"
 echo "host test binaries:"
 ls -l cli/build/test_*

@@ -12,8 +12,9 @@ import time
 
 from PIL import Image
 
-from lib import (Checks, Daemon, MSG_SERVE_REQUEST, frame, send_request,
-                 serve_request, encoder_wire)
+from lib import (Checks, Daemon, MSG_SERVE_REQUEST, MSG_SERVE_RESPONSE, frame,
+                 send_request, serve_request, encoder_wire, raw_roundtrip,
+                 split_frames, parse_response)
 
 MODEL = b"NomosUni-SPAN-x2"
 
@@ -179,22 +180,19 @@ def run(ctx, corpus_imgs, work_dir, checks):
     checks.check("S5 jpg knobs=2^31-1", survived("S5-jpg") and state == "ok",
                  detail[:120])
 
-    # ── S5b checksum discipline probe (soft finding) ────────────────────────
-    # The wire format defines a CRC over every frame; this checks whether the
-    # daemon actually enforces it. A corrupted-but-processed request is a
-    # documented gap, not a crash.
+    # ── S5b CRC failure must be rejected before inference/output ──────────
+    crc_output = os.path.join(out, "sem_crc.png")
     good = serve_request(MODEL, b"png", 0, 16, 90,
-                         str(inp).encode(),
-                         str(os.path.join(out, "sem_crc.png")).encode())
+                         str(inp).encode(), str(crc_output).encode())
     hdr = struct.pack("<IHI", 0x53534358, MSG_SERVE_REQUEST, len(good))
     bad_crc = hdr + struct.pack("<I", 0xDEADBEEF) + good
-    state, detail = ask("corrupted-crc", bad_crc)
-    checks.check("S5b corrupted-CRC frame: daemon alive", survived("S5b"))
-    if state == "ok":
-        checks.info("FINDING: header checksum is never verified — corrupted "
-                    "frames are processed (design decision recorded)")
-    else:
-        checks.info(f"corrupted-CRC frame rejected (state={state})")
+    raw = raw_roundtrip(d.sock, bad_crc)
+    responses = [parse_response(payload) for kind, payload in split_frames(raw)
+                 if kind == MSG_SERVE_RESPONSE]
+    checks.check("S5b corrupted-CRC frame rejected without output",
+                 survived("S5b") and bool(responses)
+                 and responses[-1]["ok"] == 0
+                 and not os.path.exists(crc_output), str(responses))
 
     # ── S6 FIFO input: inference isolation + graceful-teardown probe ────────
     fifo = os.path.join(work_dir, "in.fifo")

@@ -17,6 +17,22 @@ def _gradient_noise(w, h, rng):
     return np.clip(img.astype(np.int16) + noise - 12, 0, 255).astype(np.uint8)
 
 
+def _alpha_pattern(w, h):
+    """Non-constant alpha carrying both endpoints: a 0→255 ramp plus a large
+    fully-transparent and a large fully-opaque block. The flat blocks are the
+    checkable part — a bicubic resample reproduces a flat region exactly, so a
+    dropped or forced-opaque alpha is unambiguous there; the ramp is what makes
+    "not constant" true."""
+    a = np.full((h, w), 255, np.uint8)
+    band = h // 3
+    rows = np.arange(band, dtype=np.int32)[:, None]
+    a[band:2 * band, :] = (rows * 255 // max(band - 1, 1)).astype(np.uint8)
+    blk = max(16, min(w, h) // 6)
+    a[:blk, :blk] = 0            # fully transparent block (top-left)
+    a[h - blk:, w - blk:] = 255  # fully opaque block (bottom-right)
+    return a
+
+
 def build(work_dir):
     """Generate the corpus; returns dict of name -> absolute path."""
     d = os.path.join(work_dir, "corpus")
@@ -53,5 +69,12 @@ def build(work_dir):
     p = os.path.join(d, "exif_rotated.jpg")
     Image.fromarray(arr, "RGB").save(p, "JPEG", exif=exif)
     paths["exif_rotated.jpg"] = p
+
+    # RGBA: the model is RGB, so the daemon's 4-channel image must have its
+    # alpha split off before inference and merged back after (suite_io A7).
+    # Built last so the LCG draws feeding every image above keep their order —
+    # those files are compared byte-wise between runs.
+    rgba = np.dstack([_gradient_noise(200, 150, rng), _alpha_pattern(200, 150)])
+    paths["rgba_alpha.png"] = save("rgba_alpha.png", rgba, mode="RGBA")
 
     return paths

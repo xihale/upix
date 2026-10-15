@@ -62,11 +62,10 @@ class Ctx:
         self.deaths = []  # (suite, case, log tail)
 
     def start_daemon(self, log_name="stress_shared.log"):
-        d = Daemon(self.binary, self.work, self.models_dir, self.model,
-                   device=self.device, log_name=log_name)
-        d.start()
-        self.daemon = d
-        return d
+        self.daemon = Daemon(self.binary, self.work, self.models_dir, self.model,
+                             device=self.device, log_name=log_name)
+        self.daemon.start()
+        return self.daemon
 
     def restart(self, suite, case):
         """Record a daemon death and bring a fresh one up on the same path."""
@@ -79,6 +78,7 @@ class Ctx:
                 pass
             try:
                 self.daemon.proc.kill()
+                self.daemon.proc.wait()
             except OSError:
                 pass
             self.daemon.cleanup_files()
@@ -127,6 +127,7 @@ def main():
           f"  mode: {'quick' if args.quick else 'full'}")
     all_failures = []
     started = time.time()
+    ctx = None
     try:
         imgs = corpus.build(work)
 
@@ -175,6 +176,11 @@ def main():
                 if tail:
                     print(f"      log: {tail}")
     finally:
+        if ctx is not None and ctx.daemon is not None:
+            try:
+                ctx.daemon.stop()
+            finally:
+                ctx.daemon.cleanup_files()
         if args.keep_work:
             print(f"work dir kept: {work}")
         else:

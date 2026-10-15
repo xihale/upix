@@ -6,6 +6,7 @@ import os
 import subprocess
 import time
 
+import numpy as np
 from PIL import Image
 
 from lib import Checks, send_request, serve_request
@@ -154,3 +155,98 @@ def run(daemon, corpus, work_dir, checks: Checks, model):
                          im.size[0] == 512, str(im.size))
         except (ConnectionError, OSError, ValueError) as e:
             checks.check(f"A6 format {fmt}", False, str(e))
+
+    # ── A7: RGBA input keeps its alpha through the daemon ───────────────────
+    # The daemon decodes and forwards the image with its own channel count (4
+    # here) while the loaded model is RGB: the alpha must be split off before
+    # inference (a 3-channel net never emits a 4th channel), the result must
+    # still be a full-size 4-channel image, and alpha must keep its endpoints —
+    # neither dropped (→ RGB out) nor forced opaque.
+    rgba_src = corpus["rgba_alpha.png"]
+    in_alpha = np.asarray(Image.open(rgba_src))
+    w, h = in_alpha.shape[1], in_alpha.shape[0]
+    blk = max(16, min(w, h) // 6)
+    out_rgba = os.path.join(a, "rgba_out.png")
+    try:
+        # tile=64 forces a multi-tile grid on 200x150, the shape that exposed
+        # the shape-mismatch abort in the first place.
+        r = send_request(daemon.sock, serve_request(
+            MODEL_NAME, b"png", 64, 16, 90, str(rgba_src).encode(),
+            out_rgba.encode()), timeout=600)
+        ok = r["ok"] == 1
+        checks.check("A7 rgba upscaled",
+                     ok and r["w"] == w * 2 and r["h"] == h * 2,
+                     f"want {w*2}x{h*2}, got {r}")
+        checks.check("A7 rgba input really has alpha",
+                     in_alpha.ndim == 3 and in_alpha.shape[2] == 4 and
+                     in_alpha[:, :, 3].min() == 0 and
+                     in_alpha[:, :, 3].max() == 255,
+                     f"input shape {in_alpha.shape}")
+        if ok:
+            im = Image.open(out_rgba)
+            checks.check("A7 output stays 4-channel", im.mode == "RGBA", im.mode)
+            alpha = np.asarray(im.convert("RGBA"))[:, :, 3]
+            checks.check("A7 alpha endpoints kept",
+                         int(alpha.min()) == 0 and int(alpha.max()) == 255,
+                         f"min={int(alpha.min())} max={int(alpha.max())}")
+            checks.check("A7 alpha not flattened",
+                         int(alpha.min()) != int(alpha.max()) and
+                         int(((alpha > 8) & (alpha < 247)).sum()) > 0,
+                         f"{len(np.unique(alpha))} distinct values")
+            # Flat fully-transparent region: a flat input survives a normalized
+            # bicubic resample exactly, two source pixels inside the block edge.
+            checks.check("A7 transparent block preserved",
+                         int(alpha[blk // 2, blk // 2]) == 0,
+                         f"center={int(alpha[blk // 2, blk // 2])}")
+            checks.check("A7 opaque block preserved",
+                         int(alpha[2 * h - blk // 2, 2 * w - blk // 2]) == 255,
+                         f"center={int(alpha[2 * h - blk // 2, 2 * w - blk // 2])}")
+    except (ConnectionError, OSError, ValueError) as e:
+        checks.check("A7 rgba upscaled", False, str(e))
+
+    # The inline path normalizes model channels before tiling; it must retain
+    # the same alpha as the daemon instead of compositing the image to RGB.
+    inline_rgba = os.path.join(a, "rgba_inline.png")
+    r = cli(str(rgba_src), inline_rgba, "--model", model,
+            "--models", daemon.models_dir, "--no-daemon", "--tile-size", "64",
+            *(["--cpu"] if daemon.device == "cpu" else []))
+    checks.check("A7 inline rgba upscaled", r.returncode == 0,
+                 f"rc={r.returncode}: {r.stderr[-500:]}")
+    if r.returncode == 0:
+        with Image.open(inline_rgba) as im:
+            checks.check("A7 inline rgba shape",
+                         im.mode == "RGBA" and im.size == (w * 2, h * 2),
+                         f"mode={im.mode} size={im.size}")
+            inline_alpha = np.asarray(im.convert("RGBA"))[:, :, 3]
+        if os.path.exists(out_rgba):
+            with Image.open(out_rgba) as im:
+                daemon_alpha = np.asarray(im.convert("RGBA"))[:, :, 3]
+            checks.check("A7 inline and daemon preserve the same alpha",
+                         np.array_equal(inline_alpha, daemon_alpha))
+
+    # The same RGB pixels must survive the alpha bypass. Comparing against the
+    # RGB fast path catches black/partially initialized RGB with valid alpha.
+    rgb_source = os.path.join(a, "rgba_colors_rgb.png")
+    with Image.open(rgba_src) as im:
+        im.convert("RGB").save(rgb_source)
+    rgb_out = os.path.join(a, "rgb_channels.png")
+    try:
+        r = send_request(daemon.sock, serve_request(
+            MODEL_NAME, b"png", 64, 16, 90, str(rgb_source).encode(),
+            rgb_out.encode()), timeout=300)
+        mode = Image.open(rgb_out).mode if r["ok"] == 1 else "n/a"
+        checks.check("A7 rgb output stays 3-channel",
+                     r["ok"] == 1 and mode == "RGB", f"mode={mode}")
+        if r["ok"] == 1 and os.path.exists(out_rgba):
+            with Image.open(out_rgba) as im:
+                rgba_colors = np.asarray(im.convert("RGB"), dtype=np.float32)
+            with Image.open(rgb_out) as im:
+                rgb_colors = np.asarray(im, dtype=np.float32)
+            mse = float(np.mean((rgba_colors - rgb_colors) ** 2))
+            psnr = float("inf") if mse == 0 else 10 * np.log10(255 ** 2 / mse)
+            maxdiff = float(np.abs(rgba_colors - rgb_colors).max())
+            checks.check("A7 rgba colors match rgb inference",
+                         psnr >= 24 and maxdiff <= 96,
+                         f"PSNR={psnr:.1f}dB maxdiff={maxdiff:.0f}")
+    except (ConnectionError, OSError, ValueError) as e:
+        checks.check("A7 rgb output stays 3-channel", False, str(e))
