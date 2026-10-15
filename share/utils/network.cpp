@@ -240,6 +240,16 @@ void TCPSocket::close() {
     close_fd();
 }
 
+void TCPSocket::shutdown() {
+    // SHUT_RDWR, never close(): the descriptor stays owned by this object
+    // (a recycled number must never be reachable through a live TCPSocket),
+    // while every blocking recv/send on it returns immediately. Deliberately
+    // lock-free w.r.t. tx_mutex_/rx_mutex_ — see the header contract.
+    if (socket_ >= 0) {
+        (void)::shutdown(socket_, SHUT_RDWR);
+    }
+}
+
 TCPServer::TCPServer() = default;
 
 TCPServer::~TCPServer() {
@@ -250,35 +260,46 @@ auto TCPServer::listen(uint16_t port, int backlog)
     -> expected<void, NetworkError> {
     stop();
 
-    server_socket_ = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (server_socket_ < 0) {
+    const int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) {
         return std::unexpected(NetworkError{errno, "Failed to create socket"});
     }
 
     int opt = 1;
-    setsockopt(server_socket_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(port);
 
-    if (::bind(server_socket_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-        stop();
-        return std::unexpected(NetworkError{errno, "Bind failed"});
+    if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        const int e = errno;
+        ::close(fd);
+        return std::unexpected(NetworkError{e, "Bind failed"});
     }
 
-    if (::listen(server_socket_, backlog) < 0) {
-        stop();
-        return std::unexpected(NetworkError{errno, "Listen failed"});
+    if (::listen(fd, backlog) < 0) {
+        const int e = errno;
+        ::close(fd);
+        return std::unexpected(NetworkError{e, "Listen failed"});
     }
 
-    port_ = port;
+    {
+        std::lock_guard<std::mutex> lk(fd_mutex_);
+        server_socket_ = fd;
+        port_ = port;
+    }
     return {};
 }
 
 auto TCPServer::accept()
     -> expected<std::unique_ptr<TCPSocket>, NetworkError> {
+    // Held across poll+accept: a concurrent stop() from another thread must
+    // not close the descriptor while it is in (or about to enter) a syscall —
+    // the fd number could then be reused by an unrelated open() and accepted
+    // as if it were this listener.
+    std::lock_guard<std::mutex> fd_lock(fd_mutex_);
     if (server_socket_ < 0) {
         return std::unexpected(NetworkError{EBADF, "Server not listening"});
     }
@@ -300,6 +321,13 @@ auto TCPServer::accept()
             // Timeout: no client. Signal the caller via EAGAIN so it can
             // re-check the running flag and loop back if still alive.
             return std::unexpected(NetworkError{EAGAIN, "Accept timed out"});
+        }
+        // The listener is only readable when a connection is pending; anything
+        // else (POLLNVAL after an external close, POLLERR/POLLHUP) means the
+        // descriptor is gone and ::accept must not be called on it.
+        if ((pfd.revents & POLLIN) == 0) {
+            return std::unexpected(
+                NetworkError{ECONNABORTED, "Listen socket no longer usable"});
         }
         break;
     }
@@ -336,6 +364,7 @@ auto TCPServer::accept()
 }
 
 void TCPServer::stop() {
+    std::lock_guard<std::mutex> lk(fd_mutex_);
     if (server_socket_ >= 0) {
         ::close(server_socket_);
         server_socket_ = -1;

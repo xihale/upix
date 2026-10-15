@@ -59,6 +59,22 @@ public:
     // Close connection
     void close();
 
+    // Announce shutdown in both directions of a live connection WITHOUT
+    // releasing the descriptor: a thread parked in recv()/receive_all() sees
+    // EOF and a thread parked in send()/send_all() fails, instead of waiting
+    // out its SO_RCVTIMEO/SO_SNDTIMEO. This is what lets a shutdown path wake
+    // a session handler whose peer went silent (the handler then unwinds and
+    // the socket is closed by its owner as usual).
+    //
+    // Lifetime contract: no I/O lock is taken here — the very calls that must
+    // be interrupted are the ones holding them — so the descriptor is only
+    // touched while the caller has established that the socket object is
+    // alive. Callers therefore hand out the pointer under a lock that the
+    // owner also takes before it destroys the socket (Coordinator's session
+    // wake handles do this), which is also what keeps this from ever acting
+    // on a descriptor number that has been closed and recycled.
+    void shutdown();
+
 private:
     std::string peer_address_;
     uint16_t peer_port_ = 0;
@@ -87,6 +103,14 @@ public:
 private:
     int server_socket_ = -1;
     uint16_t port_ = 0;
+    // Guards server_socket_ across listen()/accept()/stop(). It exists so a
+    // stop()/destructor close can never land between accept()'s poll() and its
+    // ::accept(), where the descriptor would be closed — and its number reused
+    // by an unrelated open() — mid-call. accept() holds it for at most one
+    // 500 ms poll tick. A shutdown path that must not wait for that tick
+    // requests the accept loop's stop token first and only closes the listener
+    // once the loop has exited (see Coordinator::stop).
+    mutable std::mutex fd_mutex_;
 };
 
 // Network utilities

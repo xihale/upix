@@ -10,6 +10,7 @@
 #include "utils/crypto.hpp"
 #include "utils/crypto_sodium.hpp"
 #include "utils/sr_marker.hpp"
+#include <system_error>
 #include <thread>
 #include <cstring>
 #include <chrono>
@@ -33,6 +34,15 @@ static constexpr uint64_t MAX_RAW_OUTPUT_BYTES = 512ULL * 1024 * 1024;
 // only leaves the phone after output N has been written to SAF and the
 // checkpoint saved, so the gap must tolerate file IO, not just framing.
 static constexpr int SESSION_FRAME_TIMEOUT_MS = 60 * 1000;
+
+// Deadline for the whole pre-session phase of an accepted connection: waiting
+// for the first frame, the ECDH handshake, and the pairing request. Accepted
+// sockets carry no timeout of their own, so without this a peer that connects
+// and never writes pins a handler thread in a blocking recv() forever — the
+// accept loop would spawn threads without bound, and stop() (which joins the
+// handlers) would never return. Ten seconds is far beyond any legitimate
+// exchange on a LAN; the session then installs its own longer timeouts.
+static constexpr int HANDSHAKE_TIMEOUT_MS = 10 * 1000;
 
 // While a task runs on its worker thread, the connection handler polls for
 // new frames with this receive timeout instead of blocking for the full
@@ -67,6 +77,30 @@ static std::string format_seconds(double s) {
     return std::format("{:.2f} s", s);
 }
 
+// Wire structs carry fixed-width char[] fields that the peer controls and that
+// are NOT guaranteed NUL-terminated. Constructing std::string straight from the
+// array scans past the field — and, for a trailing field, past the struct
+// itself (a stack over-read whose bytes can then be echoed back to the peer).
+// Copy with an explicit bound instead; the serve daemon uses the same rule.
+static std::string bounded_string(const char* src, size_t capacity) {
+    return {src, ::strnlen(src, capacity)};  // POSIX: not in std:: on glibc
+}
+
+// Replace `path` with exactly `size` bytes from `data`. Callers stage into a
+// temp path and rename, so a short write can never masquerade as a complete
+// file. Returns false on open/write/close failure.
+static bool write_file(const std::filesystem::path& path, const uint8_t* data,
+                       size_t size) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        return false;
+    }
+    out.write(reinterpret_cast<const char*>(data),
+              static_cast<std::streamsize>(size));
+    out.close();
+    return static_cast<bool>(out);
+}
+
 Coordinator::Coordinator() = default;
 
 Coordinator::~Coordinator() {
@@ -75,30 +109,26 @@ Coordinator::~Coordinator() {
 
 auto Coordinator::pop_pending_approval() -> std::optional<PendingApproval> {
     std::lock_guard<std::mutex> lock(approval_mtx_);
-    if (pending_approvals_.empty()) {
-        return std::nullopt;
+    while (!pending_approvals_.empty()) {
+        PendingApproval req = std::move(pending_approvals_.front());
+        pending_approvals_.pop();
+        // Disconnected or already-resolved requests must not re-enter the UI.
+        if (approval_futures_.contains(req.id)) {
+            return req;
+        }
     }
-    PendingApproval req = std::move(pending_approvals_.front());
-    pending_approvals_.pop();
-    // Keep the verdict future indexed by id so resolve_approval() can find it.
-    approval_futures_[req.id] = req.verdict;
-    return req;
+    return std::nullopt;
 }
 
 void Coordinator::resolve_approval(uint64_t id, bool approved) {
-    std::shared_ptr<std::promise<uint8_t>> fut;
-    {
-        std::lock_guard<std::mutex> lock(approval_mtx_);
-        auto it = approval_futures_.find(id);
-        if (it == approval_futures_.end()) {
-            return;  // stale or unknown id; nothing to wake
-        }
-        fut = it->second;
-        approval_futures_.erase(it);
+    std::lock_guard<std::mutex> lock(approval_mtx_);
+    auto it = approval_futures_.find(id);
+    if (it == approval_futures_.end()) {
+        return;  // stale, disconnected, or canceled by stop()
     }
-    if (fut) {
-        fut->set_value(approved ? 1 : 0);
-    }
+    // Fulfill and erase under the same lock as shutdown and registration.
+    it->second->set_value(approved && running_ ? 1 : 0);
+    approval_futures_.erase(it);
 }
 
 auto Coordinator::start(uint16_t port, IdentityKey& identity)
@@ -111,8 +141,8 @@ auto Coordinator::start(uint16_t port, IdentityKey& identity)
     identity_ = &identity;
     sodium::init();
 
-    // Load the TrustStore (TOFU bookkeeping). A missing file yields an empty
-    // store, which simply means every connecting worker is flagged first-time.
+    // Load explicitly approved peers. Missing stores leave every identity
+    // unapproved until the user accepts a CONNECT_REQUEST.
     if (!trust_store_path_.empty()) {
         trust_store_ = TrustStore::load(trust_store_path_);
         LOG_INFO("Coordinator", "TrustStore loaded ({} known peers) from {}",
@@ -140,32 +170,52 @@ void Coordinator::set_trust_store_path(const std::filesystem::path& path) {
 }
 
 void Coordinator::stop() {
+    // Serialize concurrent callers (see stop_mutex_): the early-out below is
+    // only sound once a caller owns the whole teardown.
+    std::lock_guard<std::mutex> stop_lock(stop_mutex_);
     if (!running_ && !server_) {
         return;
     }
 
     LOG_INFO("Coordinator", "Stopping coordinator...");
-    running_ = false;
-
-    // Shutdown ordering matters:
-    //   1. Close the listener first — request_stop() cannot interrupt a thread
-    //      blocked in a socket syscall; closing the fd makes the next 500 ms
-    //      poll tick in TCPServer::accept() fail immediately (same pattern as
-    //      the serve daemon).
-    //   2. Then join the accept thread; its loop observes the stop token on
-    //      every poll-tick wake.
-    //   3. Only then destroy the server object: accept_loop still dereferences
-    //      it on its final wake (ASAN proved a use-after-free when reset()
-    //      ran before the join), so the reset must wait until step 2 proves
-    //      no reader remains.
-    //   4. Then stop+join the client handler threads. A handler sitting in
-    //      recv() wakes via its own socket timeouts and drops the connection
-    //      at the next stop-token check between frames; the pairing-gate wait
-    //      resolves through its promise as before.
-    if (server_) {
-        server_->stop();
+    {
+        std::lock_guard<std::mutex> lock(approval_mtx_);
+        running_ = false;
+        // The registry includes requests still queued and those held by the UI.
+        // Closing registration before waking waiters prevents orphan promises.
+        for (auto& [id, verdict] : approval_futures_) {
+            verdict->set_value(0);
+        }
+        approval_futures_.clear();
+        pending_approvals_ = {};
     }
 
+    // Shutdown ordering matters:
+    //   1. Request the accept loop's stop FIRST, before anything touches the
+    //      listener. The loop re-checks the token at the top of every
+    //      iteration, so the request alone ends it within one 500 ms poll
+    //      tick. With the previous order (close the listener, then request)
+    //      this thread had to win TCPServer's fd mutex against a loop that
+    //      re-acquires it every tick, and a listener closed under that loop
+    //      makes accept() return immediately instead of on a poll tick — the
+    //      loop then spins without ever sleeping and holds the mutex almost
+    //      continuously. On a real host that showed up as one stop() blocked
+    //      for 48 s and a second caller (which entered while the first was
+    //      still tearing down, so server_ was not null yet) never returning.
+    //   2. Then join the accept thread; its loop observes the request token on
+    //      every poll-tick wake.
+    //   3. Only then destroy the server object: accept_loop still dereferences
+    //      it on its final wake (ASAN proved a use-after-free when reset() ran
+    //      before the join), and with the join done no thread can be inside
+    //      accept() holding its fd mutex, so the close cannot starve anyone.
+    //   4. Then stop+join the client handler threads. request_stop() alone is
+    //      not enough: a handler parked in recv() on a peer that went silent —
+    //      one that connected and never sent its first frame, or an
+    //      authenticated one that went quiet between frames — only notices the
+    //      token after its receive timeout, up to SESSION_FRAME_TIMEOUT_MS
+    //      (the 1-minute session window). shutdown() on the descriptor each
+    //      handler registered for exactly this purpose wakes those calls
+    //      immediately. Pending pairing waits were already rejected above.
     if (accept_thread_.joinable()) {
         accept_thread_.request_stop();
         accept_thread_.join();
@@ -174,9 +224,21 @@ void Coordinator::stop() {
     server_.reset();
 
     for (auto& t : client_threads_) {
-        t.request_stop();
-        if (t.joinable()) {
-            t.join();
+        t->thread.request_stop();
+    }
+    // Wake after every token is requested: a handler that has not registered
+    // its descriptor yet then sees the token on its post-registration check
+    // and drops the connection itself, while one already waiting is woken by
+    // the shutdown. Either way no handler is left waiting out a timeout.
+    for (auto& t : client_threads_) {
+        std::lock_guard<std::mutex> wake_lock(t->wake_mutex);
+        if (t->session_socket != nullptr) {
+            t->session_socket->shutdown();
+        }
+    }
+    for (auto& t : client_threads_) {
+        if (t->thread.joinable()) {
+            t->thread.join();
         }
     }
     client_threads_.clear();
@@ -243,6 +305,10 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     std::vector<uint8_t> out_bytes;
     double inf_s = 0.0;
     std::string inference_error;
+    // Effective model name, snapshotted under engine_mutex_: loaded_model_name_
+    // may be reassigned by another session's switch_model() (it is only
+    // serialized by that mutex), and it is read again below for the SR marker.
+    std::string effective_model;
     {
         std::lock_guard<std::mutex> lk(engine_mutex_);
         // Re-check after the (possibly long) engine lock wait: another
@@ -285,8 +351,9 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
                      tile_size);
         }
 
+        effective_model = model_name.empty() ? loaded_model_name_ : model_name;
         LOG_INFO("Coordinator", "Processing locally: {}x{} model={} tile={}", width, height,
-                 model_name.empty() ? loaded_model_name_ : model_name, tile_size);
+                 effective_model, tile_size);
 
         out_bytes.resize(out_bytes_n);
 
@@ -358,8 +425,7 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     // bytes verbatim, so remote results are recognized on re-input the same
     // way local ones are.
     const auto sr_xmp = sr_marker::build_xmp(
-        model_name.empty() ? loaded_model_name_ : model_name, scale,
-        static_cast<int64_t>(std::time(nullptr)));
+        effective_model, scale, static_cast<int64_t>(std::time(nullptr)));
     auto encoded = out_image.save_to_memory(output_format, transport_quality, sr_xmp, transport_opts);
     const auto t_enc_end = std::chrono::steady_clock::now();
     if (!encoded) {
@@ -382,11 +448,31 @@ auto Coordinator::process_locally(const std::vector<uint8_t>& image_data,
     return *encoded;
 }
 
+// ── Session wake registration ───────────────────────────────────────────────
+// The handler registers its descriptor for the whole session and clears it on
+// every exit path, before `conn` (its owner) closes the descriptor: `wake` is
+// declared after `conn` in handle_client, so its destructor runs first.
+// stop() shutdown()s whatever is registered while holding the same
+// `wake_mutex`, so a handler is either still parked in a blocking call
+// (shutdown wakes it) or already deregistered (nothing is touched).
+Coordinator::SessionWakeRegistration::SessionWakeRegistration(ClientThread& entry,
+                                                             TCPSocket* socket)
+    : entry_(entry) {
+    std::lock_guard<std::mutex> lk(entry_.wake_mutex);
+    entry_.session_socket = socket;
+}
+
+Coordinator::SessionWakeRegistration::~SessionWakeRegistration() {
+    std::lock_guard<std::mutex> lk(entry_.wake_mutex);
+    entry_.session_socket = nullptr;
+}
+
 void Coordinator::accept_loop(std::stop_token st) {
     // The stop token is checked on every iteration; TCPServer::accept() polls
     // with a 500 ms timeout so this loop re-runs at least every 500 ms even
     // with no incoming connections.
     while (!st.stop_requested()) {
+        reap_finished_clients();
         auto client = server_->accept();
         if (!client.has_value()) {
             // EAGAIN/ETIMEDOUT is the normal poll-timeout wake-up: loop back
@@ -398,10 +484,56 @@ void Coordinator::accept_loop(std::stop_token st) {
             continue;
         }
 
-        client_threads_.emplace_back(
-            [this, sock = std::move(client.value())](std::stop_token st) mutable {
-                handle_client(st, std::move(sock));
-            });
+        if (client_threads_.size() >= kMaxConcurrentClients) {
+            LOG_WARNING("Coordinator",
+                        "Refusing connection: {} clients already connected",
+                        client_threads_.size());
+            continue;  // the refused socket closes with this unique_ptr
+        }
+
+        // Record first, thread second: std::jthread's constructor can throw
+        // (EAGAIN), and the thread body writes e->done through this pointer —
+        // it must never observe a record that was never owned by the vector.
+        auto entry = std::make_unique<ClientThread>();
+        ClientThread* e = entry.get();
+        client_threads_.push_back(std::move(entry));
+        try {
+            e->thread = std::jthread(
+                [this, e, sock = std::move(client.value())](std::stop_token st) mutable {
+                    // A handler must never take the process down: an exception
+                    // escaping a thread body calls std::terminate. Hostile
+                    // input can throw before authentication (libsodium rejects
+                    // an all-zero X25519 peer key), so the whole session runs
+                    // inside this guard.
+                    try {
+                        handle_client(st, std::move(sock), *e);
+                    } catch (const std::exception& ex) {
+                        LOG_ERROR("Coordinator", "client handler aborted: {}", ex.what());
+                    } catch (...) {
+                        LOG_ERROR("Coordinator", "client handler aborted (unknown exception)");
+                    }
+                    e->done.store(true);
+                });
+        } catch (const std::system_error& ex) {
+            LOG_ERROR("Coordinator", "cannot start client thread: {}", ex.what());
+            client_threads_.pop_back();
+        }
+    }
+}
+
+void Coordinator::reap_finished_clients() {
+    // Runs on the accept thread only, so the vector needs no lock. join() on a
+    // finished thread returns immediately and releases its stack; records of
+    // still-running sessions are kept for stop().
+    for (auto it = client_threads_.begin(); it != client_threads_.end();) {
+        if (!(*it)->done.load()) {
+            ++it;
+            continue;
+        }
+        if ((*it)->thread.joinable()) {
+            (*it)->thread.join();
+        }
+        it = client_threads_.erase(it);
     }
 }
 
@@ -577,31 +709,29 @@ bool Coordinator::run_handshake(WorkerConnection& conn) {
     }
 
     conn.peer_id_pub = c_id_pub_arr;
-    // trusted=1 means "this peer was already in the TrustStore"; trusted=0
-    // means "first time we're seeing this identity (TOFU)". We capture the
-    // first-time flag BEFORE persisting, then record the peer so the *next*
-    // connection reports trusted=1.
-    const bool was_known = trust_store_ ? trust_store_->contains(c_id_pub_arr) : false;
-    conn.peer_trusted = was_known;
-    if (trust_store_ && !was_known) {
-        trust_store_->add(c_id_pub_arr);
-        trust_store_->save();
+    // Authentication proves key ownership; only affirmative pairing approval
+    // may add this identity to the TrustStore.
+    bool was_known = false;
+    {
+        std::lock_guard<std::mutex> lock(trust_store_mtx_);
+        was_known = trust_store_ && trust_store_->contains(c_id_pub_arr);
     }
+    conn.peer_trusted = was_known;
 
     // (6) Send AUTH_RESPONSE (encrypted).
     AuthResponse resp{};
     resp.authenticated = 1;
     std::strncpy(resp.device_id, conn.device_id.c_str(), sizeof(resp.device_id) - 1);
     resp.device_id[sizeof(resp.device_id) - 1] = '\0';
-    resp.trusted = was_known ? 1 : 0;  // 0 = first-time/TOFU this session
+    resp.trusted = was_known ? 1 : 0;  // trust requires prior approval
     if (!send_encrypted(conn, MessageType::MSG_AUTH_RESPONSE, &resp, sizeof(resp))) {
         LOG_WARNING("Coordinator", "Handshake aborted: failed to send AUTH_RESPONSE");
         return false;
     }
 
     conn.authenticated = true;
-    LOG_INFO("Coordinator", "Worker handshake ok (device_id=" + conn.device_id +
-             ", trusted=" + (was_known ? "1" : "0 (first-time TOFU)") + ")");
+    LOG_INFO("Coordinator", "Client handshake ok (device_id=" + conn.device_id +
+             ", trusted=" + (was_known ? "1" : "0 (approval required)") + ")");
     return true;
 }
 
@@ -640,14 +770,14 @@ auto Coordinator::prepare_task_input(
     if (!decoded) {
         return "input decode failed: " + decoded.error().message;
     }
-    // Model input channels win over what the encoder shipped: RGBA
-    // screenshots / gray PNGs must reach the engine as the model's
-    // expected planar layout or the GPU tile pipeline fails with a
-    // shape mismatch (historical gap — the CLI always normalized).
+    // Normalize gray and other model inputs before inference. RGBA stays
+    // intact for RGB models: TileProcessor splits off alpha and merges it
+    // after inference instead of compositing it away here.
     int expected_channels = 0;
     {
         std::lock_guard<std::mutex> lk(models_mutex_);
-        if (auto task_model = model_manager_.get_model(task.model_name)) {
+        if (auto task_model = model_manager_.get_model(
+                bounded_string(task.model_name, sizeof(task.model_name)))) {
             expected_channels = task_model->input_channels;
         }
     }
@@ -722,6 +852,12 @@ void Coordinator::maybe_launch_head_prefetch(
     }
     CapturedSubmit& head = q.front();
     if (head.ahead) {
+        return;
+    }
+    // A payload shorter than the submit struct is not a submit at all: the
+    // pump answers it with a framing error when served. Read nothing from it —
+    // the copy below would read past the buffer.
+    if (head.payload.size() < sizeof(ClientTaskSubmit)) {
         return;
     }
     size_t have = 0;
@@ -853,6 +989,21 @@ bool Coordinator::pump_session_submits(
         // cancel every iteration and bail out as soon as a joinable wake-up
         // (any Timeout/Error tick reaches here within TASK_FRAME_POLL_MS).
         if (st.stop_requested()) {
+            cancel_all_and_join();
+            return false;
+        }
+
+        // A head capture shorter than the submit struct can never become
+        // servable — it is neither a chunked declaration (payload == struct)
+        // nor a legacy inline frame (payload > struct) — so the waiting below
+        // would poll for DATA chunks that can never complete it and wedge the
+        // session forever. Treat it as the framing violation it is.
+        if (!captures.empty() &&
+            captures.front().payload.size() < sizeof(ClientTaskSubmit)) {
+            LOG_WARNING("Coordinator",
+                        "Peer {} sent a CLIENT_SUBMIT shorter than the submit "
+                        "struct ({} bytes); dropping",
+                        conn.device_id, captures.front().payload.size());
             cancel_all_and_join();
             return false;
         }
@@ -1101,8 +1252,12 @@ void Coordinator::run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
     } done_guard{run};
 
     try {
-        std::string model_name = task.model_name;
-        std::string output_format = task.output_format;
+        // Wire char[] fields are not guaranteed NUL-terminated; see
+        // bounded_string.
+        std::string model_name =
+            bounded_string(task.model_name, sizeof(task.model_name));
+        std::string output_format =
+            bounded_string(task.output_format, sizeof(task.output_format));
         if (output_format.empty()) output_format = "jpg";
         const int output_quality = task.output_quality == 0 ? 90
             : static_cast<int>(task.output_quality);
@@ -1225,9 +1380,23 @@ void Coordinator::run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
         // Encoded results above MAX_NETWORK_PAYLOAD stream as MSG_CLIENT_DATA
         // continuation frames instead; small results stay single-frame.
         constexpr size_t CLIENT_CHUNK_BYTES = CLIENT_DATA_CHUNK_BYTES;
-        const auto& result_bytes = process_result.value_or(std::vector<uint8_t>{});
+        // A single RESPONSE frame is bounded by what the RECEIVER accepts on
+        // the wire: it rejects any frame whose header payload_length exceeds
+        // MAX_NETWORK_PAYLOAD, and sealing adds the nonce+MAC on top of the
+        // plaintext. Leave room for both that overhead and the response
+        // struct, or a result near the cap would be sent as a first frame the
+        // phone rejects — exactly the case this chunked path exists for.
+        // Everything past the leading slice streams as MSG_CLIENT_DATA.
+        constexpr size_t kSealOverhead = 24 + 16;  // secretbox nonce + MAC
+        constexpr size_t kMaxSingleFramePlaintext =
+            MAX_NETWORK_PAYLOAD - sizeof(ClientTaskResponse) - kSealOverhead;
+        // A reference, not value_or(): the latter would copy the whole encoded
+        // result (tens of MB) just so a temporary could be bound.
+        const std::vector<uint8_t> no_result;
+        const std::vector<uint8_t>& result_bytes =
+            process_result.has_value() ? *process_result : no_result;
         const size_t leading_bytes =
-            std::min<size_t>(result_bytes.size(), MAX_NETWORK_PAYLOAD);
+            std::min<size_t>(result_bytes.size(), kMaxSingleFramePlaintext);
         std::vector<uint8_t> resp_payload(sizeof(ClientTaskResponse) + leading_bytes);
         std::memcpy(resp_payload.data(), &response, sizeof(response));
         if (!result_bytes.empty()) {
@@ -1267,18 +1436,41 @@ void Coordinator::run_client_task(WorkerConnection& conn, ClientTaskSubmit task,
 }
 
 void Coordinator::handle_client(std::stop_token st,
-                                std::unique_ptr<TCPSocket> socket) {
+                                std::unique_ptr<TCPSocket> socket,
+                                ClientThread& entry) {
+    WorkerConnection conn;
+    conn.socket = std::move(socket);
+
+    // Register this session's descriptor with the accept-loop record before
+    // the first blocking read, so stop() can wake this handler out of any
+    // socket call (a peer that never sends its first frame is parked here for
+    // the whole 10 s handshake window, an idle authenticated peer for up to
+    // SESSION_FRAME_TIMEOUT_MS). Declared AFTER conn: its destructor clears
+    // the registration before conn closes the descriptor.
+    SessionWakeRegistration wake(entry, conn.socket.get());
+
     // Shutdown raced with an accepted connection: drop it immediately.
+    // Checked AFTER registering — stop() requests the stop token before it
+    // wakes registered sessions, so a wake that ran before this registration
+    // is always visible here, and a wake issued after it hits the descriptor.
+    // No interleaving leaves the handler blocking on a peer that stop() has
+    // already given up on.
     if (st.stop_requested()) {
         return;
     }
+
+    // Bound the whole pre-session phase (first header + KEY_HELLO handshake +
+    // CONNECT_REQUEST). Accepted sockets are created without SO_RCVTIMEO, so
+    // without this a silent peer blocks this thread forever. (The session
+    // paths below install their own, longer timeouts.)
+    conn.socket->set_timeout(HANDSHAKE_TIMEOUT_MS);
 
     // First, peek the very first header to decide which kind of client this is.
     //   - MSG_KEY_HELLO → encrypted ECDH+sig handshake, then pairing gate and
     //     an authenticated CLIENT_SUBMIT / model-library op.
     // Anything else is a protocol error → drop.
     std::vector<uint8_t> first_hdr(Protocol::HEADER_SIZE);
-    auto first_recv = socket->receive_all(first_hdr.data(), first_hdr.size());
+    auto first_recv = conn.socket->receive_all(first_hdr.data(), first_hdr.size());
     if (!first_recv.has_value()) {
         return;
     }
@@ -1286,8 +1478,6 @@ void Coordinator::handle_client(std::stop_token st,
     if (!first_parsed) {
         return;
     }
-    WorkerConnection conn;
-    conn.socket = std::move(socket);
     conn.device_id = crypto::generate_uuid().substr(0, 35);
 
     // ── Branch on the first frame ────────────────────────────────────────────
@@ -1300,10 +1490,8 @@ void Coordinator::handle_client(std::stop_token st,
             return;
         }
 
-        // (Encrypted) second frame. The phone always opens the pairing gate
-        // first: MSG_CLIENT_CONNECT_REQUEST, then (once approved) a third frame
-        // carrying the MSG_CLIENT_SUBMIT with the image to upscale. A phone
-        // that skips the gate and submits bare is tolerated as auto-approved.
+        // Every peer must open the pairing gate before sending business frames.
+        // Known identities still send CONNECT_REQUEST to negotiate capabilities.
         conn.socket->set_timeout(5000);
         auto second_frame = recv_encrypted(conn);
         if (!second_frame) {
@@ -1311,9 +1499,14 @@ void Coordinator::handle_client(std::stop_token st,
                 " did not send CONNECT_REQUEST within timeout");
         } else {
             auto [frame_hdr, frame_payload] = std::move(*second_frame);
+            if (frame_hdr.type != MessageType::MSG_CLIENT_CONNECT_REQUEST ||
+                st.stop_requested() || !running_) {
+                LOG_WARNING("Coordinator", "Peer skipped CONNECT_REQUEST or server stopped");
+                return;
+            }
 
             // ── Mobile pairing request/allow gate ───────────────────────────
-            // Run only if the peer explicitly opened with CONNECT_REQUEST.
+            // The only entry into the session dispatch loop is an approved gate.
             if (frame_hdr.type == MessageType::MSG_CLIENT_CONNECT_REQUEST) {
                 if (frame_payload.size() < sizeof(ClientConnectRequest)) {
                     LOG_ERROR("Coordinator", "CONNECT_REQUEST payload too short");
@@ -1321,8 +1514,9 @@ void Coordinator::handle_client(std::stop_token st,
                 }
                 const ClientConnectRequest* creq =
                     reinterpret_cast<const ClientConnectRequest*>(frame_payload.data());
-                std::string req_device_name(creq->device_name);
-                std::string req_fingerprint(creq->fingerprint);
+                std::string req_device_name(creq->device_name,
+                    std::find(std::begin(creq->device_name), std::end(creq->device_name), '\0'));
+                const std::string req_fingerprint = fingerprint(conn.peer_id_pub);
 
                 // Auto-approve already-trusted peers; first-time peers block on
                 // an interactive prompt served by the PC main loop.
@@ -1333,24 +1527,45 @@ void Coordinator::handle_client(std::stop_token st,
                              req_device_name + " (" + req_fingerprint + ")");
                 } else {
                     PendingApproval pa;
-                    {
-                        std::lock_guard<std::mutex> lock(approval_mtx_);
-                        pa.id = next_approval_id_++;
-                        pa.verdict = std::make_shared<std::promise<uint8_t>>();
-                        approval_futures_[pa.id] = pa.verdict;
-                    }
                     pa.device_name = req_device_name;
                     pa.fingerprint = req_fingerprint;
                     pa.identity_pub = conn.peer_id_pub;
+                    pa.verdict = std::make_shared<std::promise<uint8_t>>();
+                    auto verdict = pa.verdict->get_future();
                     {
                         std::lock_guard<std::mutex> lock(approval_mtx_);
+                        if (!running_ || st.stop_requested()) {
+                            return;
+                        }
+                        pa.id = next_approval_id_++;
+                        approval_futures_[pa.id] = pa.verdict;
                         pending_approvals_.push(pa);
                     }
                     LOG_INFO("Coordinator", "Pairing request queued from " +
                              req_device_name + " (" + req_fingerprint +
                              ") — waiting for PC approval");
-                    // Block this connection thread until the PC resolves it.
-                    approved = (pa.verdict->get_future().get() != 0);
+                    // While the UI decides, detect EOF or premature business
+                    // traffic without consuming a partial frame or blocking stop().
+                    conn.socket->set_recv_timeout(100);
+                    while (verdict.wait_for(std::chrono::milliseconds(0)) !=
+                           std::future_status::ready) {
+                        if (st.stop_requested() || !running_) {
+                            resolve_approval(pa.id, false);
+                            return;
+                        }
+                        uint8_t byte = 0;
+                        auto received = conn.socket->receive(&byte, 1);
+                        if (received || (received.error().code != EAGAIN &&
+                                         received.error().code != EWOULDBLOCK)) {
+                            resolve_approval(pa.id, false);
+                            return;
+                        }
+                    }
+                    approved = verdict.get() != 0;
+                    conn.socket->set_recv_timeout(5000);
+                }
+                if (st.stop_requested() || !running_) {
+                    return;
                 }
 
                 ClientConnectResponse cresp{};
@@ -1376,11 +1591,19 @@ void Coordinator::handle_client(std::stop_token st,
                     LOG_WARNING("Coordinator", "Pairing denied for " + req_device_name);
                     return;
                 }
-                // First-time approval ⇒ persist so future connects auto-pass.
-                if (!conn.peer_trusted && trust_store_) {
-                    trust_store_->add(conn.peer_id_pub);
-                    trust_store_->save();
-                    LOG_INFO("Coordinator", "Peer added to TrustStore: " + req_fingerprint);
+                // Persist only an affirmative, delivered approval. Serialize with
+                // stop() so shutdown cannot turn a canceled prompt into trust.
+                if (!conn.peer_trusted) {
+                    std::lock_guard<std::mutex> approval_lock(approval_mtx_);
+                    if (!running_ || st.stop_requested()) {
+                        return;
+                    }
+                    std::lock_guard<std::mutex> trust_lock(trust_store_mtx_);
+                    if (trust_store_) {
+                        trust_store_->add(conn.peer_id_pub);
+                        trust_store_->save();
+                        LOG_INFO("Coordinator", "Peer added to TrustStore: " + req_fingerprint);
+                    }
                 }
 
                 // Now read the first session frame (third frame after the
@@ -1437,15 +1660,20 @@ void Coordinator::handle_client(std::stop_token st,
                 frame_payload = std::move(next_frame->second);
                 continue;
             } else if (frame_hdr.type == MessageType::MSG_MODEL_LIST_REQUEST) {
-                conn.socket->set_timeout(120);
+                // These ops send a (possibly large) reply and then end the
+                // session, so only the receive window is worth shortening:
+                // set_timeout() here also shrank SO_SNDTIMEO to 120/300 ms,
+                // which aborts a model transfer of tens of MB on any link
+                // slower than ~330 MB/s.
+                conn.socket->set_recv_timeout(120);
                 handle_model_list(conn);
                 return;
             } else if (frame_hdr.type == MessageType::MSG_MODEL_UPLOAD) {
-                conn.socket->set_timeout(300);
+                conn.socket->set_recv_timeout(300);
                 handle_model_upload(conn, frame_hdr, frame_payload);
                 return;
             } else if (frame_hdr.type == MessageType::MSG_MODEL_DOWNLOAD_REQUEST) {
-                conn.socket->set_timeout(300);
+                conn.socket->set_recv_timeout(300);
                 handle_model_download(conn, frame_hdr, frame_payload);
                 return;
             } else {
@@ -1536,7 +1764,7 @@ void Coordinator::handle_model_upload(WorkerConnection& conn,
     }
     ModelUploadRequest req{};
     std::memcpy(&req, payload.data(), sizeof(req));
-    const std::string name(req.name);
+    const std::string name = bounded_string(req.name, sizeof(req.name));
     if (!is_safe_model_name(name)) {
         fail("invalid model name: " + name);
         return;
@@ -1554,38 +1782,118 @@ void Coordinator::handle_model_upload(WorkerConnection& conn,
 
     // Write flat into the models dir: <name>.param / <name>.bin → ModelManager
     // derives the model name from the file stem alone.
-    const std::filesystem::path param_path = model_manager_.models_directory() / (name + ".param");
-    const std::filesystem::path bin_path = model_manager_.models_directory() / (name + ".bin");
+    const std::filesystem::path models_dir = model_manager_.models_directory();
+    const std::filesystem::path param_path = models_dir / (name + ".param");
+    const std::filesystem::path bin_path = models_dir / (name + ".bin");
 
-    bool write_ok = true;
-    try {
-        {
-            std::ofstream param_file(param_path, std::ios::binary | std::ios::trunc);
-            param_file.write(reinterpret_cast<const char*>(param_begin),
-                             static_cast<std::streamsize>(req.param_size));
-            param_file.close();
-            if (!param_file) write_ok = false;
+    // Stage both files, then rename them into place. Truncation (full disk,
+    // short write) and a crash can then never leave a half-written pair for the
+    // scanner and the next inference to pick up. The whole install runs under
+    // models_mutex_: it serializes two uploads of the same name (which would
+    // otherwise interleave through the fixed staging names) and keeps readers
+    // out of a file that is being replaced.
+    const std::filesystem::path param_tmp = models_dir / (name + ".param.upix-upload");
+    const std::filesystem::path bin_tmp = models_dir / (name + ".bin.upix-upload");
+    // Backups of an already-installed pair. The two install renames below are
+    // not atomic as a pair, so a failure after the first one would otherwise
+    // leave a new .param next to an old .bin — a model that no longer loads,
+    // with the working copy already destroyed. Staging the previous files
+    // aside lets every failure path put them back. (The scanner matches the
+    // .param/.bin extension exactly, so leftover .upix-* files are ignored.)
+    const std::filesystem::path param_bak = models_dir / (name + ".param.upix-backup");
+    const std::filesystem::path bin_bak = models_dir / (name + ".bin.upix-backup");
+    // Refuse a destination that is not a regular file (a directory, fifo, ...):
+    // installing over it would either fail halfway through the pair or move the
+    // user's own entry aside as a "backup" — neither is ours to do. A symlink
+    // to a regular file is fine: that is how a model name is pointed at another
+    // copy. (Same rule the model downloader applies to its install.)
+    auto inspect_destination = [&](const std::filesystem::path& path,
+                                   bool& present) -> bool {
+        std::error_code st_ec;
+        const auto status = std::filesystem::symlink_status(path, st_ec);
+        if (status.type() == std::filesystem::file_type::not_found &&
+            (!st_ec || st_ec == std::errc::no_such_file_or_directory)) {
+            present = false;
+            return true;
         }
-        {
-            std::ofstream bin_file(bin_path, std::ios::binary | std::ios::trunc);
-            bin_file.write(reinterpret_cast<const char*>(bin_begin),
-                           static_cast<std::streamsize>(req.bin_size));
-            bin_file.close();
-            if (!bin_file) write_ok = false;
+        if (st_ec) {
+            return false;
         }
-    } catch (const std::exception& e) {
-        fail(std::string("write failed: ") + e.what());
+        present = true;
+        if (status.type() == std::filesystem::file_type::regular) {
+            return true;
+        }
+        if (status.type() == std::filesystem::file_type::symlink) {
+            std::error_code target_ec;
+            const auto target = std::filesystem::status(path, target_ec);
+            return !target_ec &&
+                   target.type() == std::filesystem::file_type::regular;
+        }
+        return false;
+    };
+    bool had_param = false;
+    bool had_bin = false;
+    if (!inspect_destination(param_path, had_param) ||
+        !inspect_destination(bin_path, had_bin)) {
+        fail("existing destination for " + name + " is not a regular file");
         return;
     }
-    if (!write_ok) {
-        fail("failed to write model files");
-        return;
-    }
 
-    // Rescan so the new model is immediately usable and visible to lists.
+    std::error_code write_ec;
+    bool write_ok = false;
     {
         std::lock_guard<std::mutex> lk(models_mutex_);
-        (void)model_manager_.scan_models();
+        bool saved_param = false;
+        bool saved_bin = false;
+        bool installed_param = false;
+        bool installed_bin = false;
+
+        write_ok = write_file(param_tmp, param_begin, req.param_size) &&
+                   write_file(bin_tmp, bin_begin, req.bin_size);
+        if (write_ok && had_param) {
+            std::filesystem::rename(param_path, param_bak, write_ec);
+            saved_param = !write_ec;
+            write_ok = saved_param;
+        }
+        if (write_ok && had_bin) {
+            std::filesystem::rename(bin_path, bin_bak, write_ec);
+            saved_bin = !write_ec;
+            write_ok = saved_bin;
+        }
+        if (write_ok) {
+            std::filesystem::rename(param_tmp, param_path, write_ec);
+            installed_param = !write_ec;
+            write_ok = installed_param;
+        }
+        if (write_ok) {
+            std::filesystem::rename(bin_tmp, bin_path, write_ec);
+            installed_bin = !write_ec;
+            write_ok = installed_bin;
+        }
+
+        std::error_code rm_ec;
+        if (write_ok) {
+            if (saved_param) std::filesystem::remove(param_bak, rm_ec);
+            if (saved_bin) std::filesystem::remove(bin_bak, rm_ec);
+            // Rescan so the new model is immediately usable and visible to lists.
+            (void)model_manager_.scan_models();
+        } else {
+            // Roll back: drop only what THIS attempt installed, then restore
+            // only what it actually moved aside — a stale backup left by an
+            // earlier crash must never overwrite a still-good installed file.
+            if (installed_param) std::filesystem::remove(param_path, rm_ec);
+            if (installed_bin) std::filesystem::remove(bin_path, rm_ec);
+            std::filesystem::remove(param_tmp, rm_ec);
+            std::filesystem::remove(bin_tmp, rm_ec);
+            if (saved_param) std::filesystem::rename(param_bak, param_path, rm_ec);
+            if (saved_bin) std::filesystem::rename(bin_bak, bin_path, rm_ec);
+            (void)model_manager_.scan_models();
+        }
+    }
+    if (!write_ok) {
+        fail("failed to write model files: " +
+             (write_ec ? write_ec.message() : std::string("short write")));
+        return;
     }
     resp.success = 1;
     if (!send_encrypted(conn, MessageType::MSG_MODEL_UPLOAD_RESPONSE,
@@ -1621,7 +1929,7 @@ void Coordinator::handle_model_download(WorkerConnection& conn,
     }
     ModelDownloadRequest req{};
     std::memcpy(&req, payload.data(), sizeof(req));
-    const std::string name(req.name);
+    const std::string name = bounded_string(req.name, sizeof(req.name));
 
     std::optional<ModelInfo> model;
     {
@@ -1651,8 +1959,18 @@ void Coordinator::handle_model_download(WorkerConnection& conn,
         fail("cannot stat bin file");
         return;
     }
-    if (param_size + bin_size > MAX_NETWORK_PAYLOAD) {
-        fail("model too large for transfer (" + format_bytes(param_size + bin_size) + ")");
+    // The reply is ONE encrypted frame: its wire length is the plaintext
+    // (response struct + both files) plus the seal overhead, and the receiver
+    // rejects any frame whose payload_length exceeds MAX_NETWORK_PAYLOAD. Cap
+    // by what actually fits on the wire so an oversized model fails with a
+    // clear message here instead of an opaque disconnect on the phone.
+    constexpr uint64_t kSealOverhead = 24 + 16;  // secretbox nonce + MAC
+    const uint64_t max_transfer_bytes =
+        MAX_NETWORK_PAYLOAD - sizeof(ModelDownloadResponse) - kSealOverhead;
+    if (param_size + bin_size > max_transfer_bytes) {
+        fail("model too large for the single-frame transfer limit (" +
+             format_bytes(param_size + bin_size) + " > " +
+             format_bytes(max_transfer_bytes) + ")");
         return;
     }
 

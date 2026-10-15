@@ -29,6 +29,9 @@ public:
     // Connect to a server listening at the given filesystem path.
     auto connect(const std::string& path) -> expected<void, NetworkError>;
 
+    // Bound blocking reads and writes, matching the TCP socket API.
+    void set_timeout(int timeout_ms);
+
     void close();
 
     const std::string& path() const { return path_; }

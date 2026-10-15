@@ -13,7 +13,13 @@ auto StreamSocket::send(const void* data, size_t size)
         return std::unexpected(NetworkError{EBADF, "Socket not connected"});
     }
 
-    ssize_t sent = ::send(socket_, data, size, MSG_NOSIGNAL);
+    // A signal delivered during the syscall (the CLI/daemon installs SIGINT/
+    // SIGTERM handlers) returns -1/EINTR; retrying keeps that from looking
+    // like a dead connection.
+    ssize_t sent;
+    do {
+        sent = ::send(socket_, data, size, MSG_NOSIGNAL);
+    } while (sent < 0 && errno == EINTR);
     if (sent < 0) {
         return std::unexpected(NetworkError{errno, "Send failed"});
     }
@@ -31,6 +37,10 @@ auto StreamSocket::send_all(const void* data, size_t size)
         if (!result.has_value()) {
             return std::unexpected(result.error());
         }
+        if (result.value() == 0) {
+            // A zero-byte send for a non-empty request would spin here forever.
+            return std::unexpected(NetworkError{EPIPE, "Send made no progress"});
+        }
         total_sent += result.value();
     }
     return {};
@@ -43,7 +53,11 @@ auto StreamSocket::receive(void* buffer, size_t max_size)
         return std::unexpected(NetworkError{EBADF, "Socket not connected"});
     }
 
-    ssize_t received = ::recv(socket_, buffer, max_size, 0);
+    // EINTR is retried for the same reason as in send().
+    ssize_t received;
+    do {
+        received = ::recv(socket_, buffer, max_size, 0);
+    } while (received < 0 && errno == EINTR);
     if (received < 0) {
         return std::unexpected(NetworkError{errno, "Receive failed"});
     }

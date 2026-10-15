@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <cstring>
 #include <cerrno>
 
@@ -68,6 +69,15 @@ auto UnixSocket::connect(const std::string& path) -> expected<void, NetworkError
 
     path_ = path;
     return {};
+}
+
+void UnixSocket::set_timeout(int timeout_ms) {
+    if (socket_ < 0) return;
+    timeval timeout{};
+    timeout.tv_sec = timeout_ms / 1000;
+    timeout.tv_usec = (timeout_ms % 1000) * 1000;
+    setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(socket_, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 }
 
 void UnixSocket::close() {

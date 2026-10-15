@@ -3,10 +3,14 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cerrno>
 #include <cstring>
 #include <fstream>
 #include <sodium.h>
 #include <stdexcept>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace upix {
 
@@ -20,6 +24,31 @@ void ensure_0600(const std::filesystem::path& file) {
     fs::permissions(file, fs::perms::owner_read | fs::perms::owner_write,
                     fs::perm_options::replace, ec);
     // 权限设置失败不致命(如 Windows),忽略。
+}
+
+// Create/truncate `file` with mode 0600 *in the open call*, so the contents
+// never exist even briefly with the process umask's permissions — a plain
+// ofstream creates the file 0644 first and only gets chmod'ed afterwards,
+// leaving a window where another local user can read the Ed25519 secret key.
+auto write_private_file(const std::filesystem::path& file, const void* data,
+                        size_t size) -> bool {
+    const int fd = ::open(file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+    if (fd < 0) {
+        return false;
+    }
+    const char* ptr = static_cast<const char*>(data);
+    size_t written = 0;
+    while (written < size) {
+        const ssize_t n = ::write(fd, ptr + written, size - written);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            ::close(fd);
+            return false;
+        }
+        written += static_cast<size_t>(n);
+    }
+    ::close(fd);
+    return true;
 }
 } // namespace
 
@@ -55,13 +84,9 @@ auto IdentityKey::load_or_create(const std::filesystem::path& file)
     }
 
     auto kp = sodium::ed25519_keygen();
-    {
-        std::ofstream out(file, std::ios::binary | std::ios::trunc);
-        if (!out) {
-            throw std::runtime_error("Failed to create identity file: " +
-                                     file.string());
-        }
-        out.write(reinterpret_cast<const char*>(kp.private_key.data()), 64);
+    if (!write_private_file(file, kp.private_key.data(), 64)) {
+        throw std::runtime_error("Failed to create identity file: " +
+                                 file.string());
     }
     ensure_0600(file);
     return IdentityKey(kp);
@@ -116,9 +141,15 @@ void TrustStore::save() const {
         std::filesystem::create_directories(file_.parent_path(), ec);
         // 目录已存在时 ec 清空;真错误忽略(best-effort,与历史行为一致)。
     }
-    std::ofstream out(file_, std::ios::trunc);
+    std::string body;
     for (const auto& pk : entries_) {
-        out << base64_encode(pk.data(), ED_PUBKEY_LEN) << "\n";
+        body += base64_encode(pk.data(), ED_PUBKEY_LEN);
+        body += '\n';
+    }
+    // Same 0600-at-creation rule as the identity key: never expose the file
+    // (or a rewritten one) with the umask's permissions first.
+    if (!write_private_file(file_, body.data(), body.size())) {
+        return;  // best-effort, as before: callers only log
     }
     ensure_0600(file_);
 }

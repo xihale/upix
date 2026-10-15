@@ -49,13 +49,13 @@ struct WorkerConnection {
     // KEY_HELLO travel through this session.
     EncryptedSession session;
     // The phone's long-term Ed25519 pubkey, learned during the handshake and
-    // used for TrustStore lookup (TOFU / known-peer flagging).
+    // used for lookup of identities explicitly approved by the user.
     std::array<uint8_t, 32> peer_id_pub{};
     bool peer_trusted = false;
 };
 
-// A pending pairing request from a phone (first-time, not yet trusted).
-// The PC's main loop pops these, shows an approval prompt, and resolves them.
+// A pending pairing request from a phone not yet present in the approved
+// TrustStore. The PC's main loop pops these, shows an approval prompt, and resolves them.
 struct PendingApproval {
     uint64_t id = 0;                       // monotonic id for resolve()
     std::string device_name;               // human-readable, from the request
@@ -75,7 +75,7 @@ public:
     ~Coordinator();
 
     // The coordinator's long-term Ed25519 identity signs the ECDH handshake
-    // transcript; the TrustStore flags known vs. first-time (TOFU) phones.
+    // transcript; the TrustStore contains only explicitly approved phones.
     auto start(uint16_t port, IdentityKey& identity)
         -> expected<void, CoordinatorError>;
 
@@ -112,17 +112,47 @@ public:
 
     // ── Phone pairing approval (request/allow flow) ─────────────────────────
     // Called by the PC main loop. Returns a pending first-time pairing request
-    // if one is waiting (FIFO), or nullopt. Each returned request must later be
-    // resolved by resolve_approval(id, approved) — the requesting phone blocks
-    // on that resolution. Already-trusted peers never appear here.
+    // if one is waiting (FIFO), or nullopt. Resolve returned requests with
+    // resolve_approval(id, approved). Disconnect or stop cancels the request;
+    // resolving a canceled request is harmless. Trusted peers never appear here.
     auto pop_pending_approval() -> std::optional<PendingApproval>;
     void resolve_approval(uint64_t id, bool approved);
 
 private:
     void accept_loop(std::stop_token st);
+    // Join and drop connection threads whose handler already returned. Called
+    // from accept_loop (its only caller); keeps the vector bounded by live
+    // connections instead of by lifetime connection count.
+    void reap_finished_clients();
+    // Record for one accepted connection; defined below (only the name is
+    // needed this early).
+    struct ClientThread;
+
+    // Registers a connection handler's live descriptor in its ClientThread
+    // record for the whole handler scope and clears it on EVERY exit path
+    // (including an exception escaping the session — a hostile all-zero X25519
+    // peer key throws from the handshake). stop() only ever shutdown()s a
+    // registered descriptor, and the clear runs before the owning TCPSocket is
+    // destroyed, so a registration is never left behind pointing at a closed
+    // (and possibly recycled) descriptor.
+    class SessionWakeRegistration {
+    public:
+        SessionWakeRegistration(ClientThread& entry, TCPSocket* socket);
+        ~SessionWakeRegistration();
+        SessionWakeRegistration(const SessionWakeRegistration&) = delete;
+        SessionWakeRegistration& operator=(const SessionWakeRegistration&) = delete;
+
+    private:
+        ClientThread& entry_;
+    };
+
     // Runs on its own jthread; `st` is checked at phase boundaries so a
-    // shutdown request drops the connection instead of serving it.
-    void handle_client(std::stop_token st, std::unique_ptr<TCPSocket> socket);
+    // shutdown request drops the connection instead of serving it. `entry` is
+    // the accept-loop record that owns this session: the handler registers its
+    // descriptor there (see SessionWakeRegistration) so stop() can wake it out
+    // of a blocking socket call.
+    void handle_client(std::stop_token st, std::unique_ptr<TCPSocket> socket,
+                       ClientThread& entry);
 
     // Shared state between the connection handler thread (frame reader) and
     // the per-task worker thread it spawns:
@@ -329,12 +359,41 @@ private:
     std::unique_ptr<TCPServer> server_;
     std::jthread accept_thread_;
 
-    // One jthread per accepted connection. Only accept_loop pushes and only
-    // stop() joins/clears (after accept_thread_ is joined), so no lock is
-    // needed. Finished jthreads stay joinable in the vector until stop()
-    // reaps them — same retention as the old (dead-code) sweep, but stop()
-    // now frees them deterministically.
-    std::vector<std::jthread> client_threads_;
+    // One tracked thread per accepted connection. accept_loop owns the vector
+    // (it is the only writer), pushes a record BEFORE starting its thread, and
+    // reaps records whose handler already returned: without the reap, a phone
+    // that reconnects per image (legacy one-shot clients) would leave one
+    // unjoined thread — holding its stack — behind per connection until stop().
+    // `done` is written by the connection thread through the stable heap
+    // pointer the accept thread waits on. stop() is the only other reader and
+    // only after it has joined accept_thread_, which is what freezes the
+    // vector for its request_stop/wake/join sweep.
+    struct ClientThread {
+        std::jthread thread;
+        std::atomic<bool> done{false};
+
+        // ── Session wake handle ─────────────────────────────────────────────
+        // stop() cannot interrupt a handler parked in a blocking socket call
+        // with request_stop() alone: the handler only observes the token
+        // between frames, i.e. after its receive timeout (up to
+        // SESSION_FRAME_TIMEOUT_MS) expires. So the handler registers its
+        // descriptor here for the whole session scope (via
+        // SessionWakeRegistration) and stop() shutdown()s whatever is
+        // registered. Every access takes `wake_mutex`, and the registration
+        // is cleared before the owning socket closes the descriptor — that
+        // is what makes shutdown() safe: it can never act on a closed and
+        // recycled descriptor number, and never on a destroyed socket.
+        std::mutex wake_mutex;
+        TCPSocket* session_socket = nullptr;
+    };
+    std::vector<std::unique_ptr<ClientThread>> client_threads_;
+
+    // Ceiling on simultaneous connections, checked before spawning the handler
+    // thread. An unauthenticated peer must not be able to grow the thread/fd
+    // count without bound before the handshake gate; the 1:1 design needs one
+    // session per phone (plus a reconnect race), so this is far above any
+    // legitimate load. The refused socket is closed when its unique_ptr dies.
+    static constexpr size_t kMaxConcurrentClients = 8;
 
     // Local inference engine + tile processor (lazy-init on first submit, then
     // kept warm across requests — mirrors share/core/serve/daemon.cpp).
@@ -351,18 +410,29 @@ private:
 
     IdentityKey* identity_ = nullptr;
     std::filesystem::path trust_store_path_;
-    // Lazily loaded in start(); empty until a path is set. A valid trust store
-    // means "only listed peers are trusted"; missing file is treated as empty
-    // (TOFU for everyone, flagged untrusted).
+    // Lazily loaded in start(); empty until a path is set. A missing file
+    // leaves every identity untrusted until explicitly approved.
     std::optional<TrustStore> trust_store_;
+    std::mutex trust_store_mtx_;
 
     uint16_t port_ = 0;
     std::atomic<bool> running_{false};
+
+    // Single-flight guard for stop(). The host calls it from its shutdown path
+    // and its destructor, and a second caller that entered while the first was
+    // mid-teardown (running_ already false, server_ still set) used to
+    // re-enter: it then raced the first on the accept-thread join and the
+    // client-thread vector. Serializing is also what keeps a second caller
+    // from competing for the listener's fd mutex while the accept loop is
+    // spinning down.
+    std::mutex stop_mutex_;
 
     std::function<void(float)> on_task_progress_;
 
     // ── Phone pairing approval state ────────────────────────────────────────
     std::mutex approval_mtx_;
+    // Guards registration, resolution, and shutdown; the registry owns every
+    // unresolved promise, whether queued or already popped by the UI.
     std::queue<PendingApproval> pending_approvals_;
     std::unordered_map<uint64_t, std::shared_ptr<std::promise<uint8_t>>> approval_futures_;
     uint64_t next_approval_id_ = 1;
