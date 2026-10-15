@@ -9,10 +9,20 @@ const zoomButton = document.querySelector('.zoom-button');
 const retryButton = document.querySelector('.retry-button');
 const message = document.querySelector('.status-message');
 const images = [...artwork.querySelectorAll('img')];
+const pictures = [...artwork.querySelectorAll('picture')];
 const originalUrls = images.map(image => image.getAttribute('src'));
+// 明暗两幅构图不同，同一个 <img> 的 alt 得跟着主题走；文案在 index.html 的 data-alt-dark 里
+const originalSourceSets = pictures.map(picture => [...picture.querySelectorAll('source')].map(source => source.getAttribute('srcset')));
+const darkScheme = matchMedia('(prefers-color-scheme: dark)');
+const alts = images.map(image => ({ light: image.alt, dark: image.dataset.altDark || image.alt }));
 let loadingGeneration = 0;
 let split = 50;
 let zoomed = false;
+
+function applyScheme() {
+  const dark = darkScheme.matches;
+  images.forEach((image, index) => { image.alt = dark ? alts[index].dark : alts[index].light; });
+}
 
 function updateSplit(value) {
   split = Math.min(100, Math.max(0, Number(value)));
@@ -39,6 +49,12 @@ async function loadImages(retry = false) {
   if (retry) {
     images.forEach((image, index) => {
       image.src = `${originalUrls[index]}?retry=${generation}`;
+    });
+    // <picture> 命中 <source> 时 img.src 不参与选择，重试参数得同时写到 source 上
+    pictures.forEach((picture, index) => {
+      picture.querySelectorAll('source').forEach((source, sourceIndex) => {
+        source.srcset = `${originalSourceSets[index][sourceIndex]}?retry=${generation}`;
+      });
     });
   }
   try {
@@ -84,13 +100,27 @@ function updateFromPointer(event) {
 
 zoomButton.addEventListener('click', () => setZoom(!zoomed));
 retryButton.addEventListener('click', () => loadImages(true));
+// 系统/浏览器切主题：<picture> 会自己换图，这里重新等待解码并同步 alt
+darkScheme.addEventListener('change', () => {
+  applyScheme();
+  loadImages();
+});
 if (new URLSearchParams(location.search).get('state') === 'zoom') setZoom(true);
+applyScheme();
 loadImages();
 
 const media = gsap.matchMedia();
 media.add('(prefers-reduced-motion: no-preference)', () => {
   gsap.from('.hero-heading', { y: 14, opacity: 0, duration: .5, ease: 'power3.out' });
   gsap.from('.artwork-figure', { y: 20, opacity: 0, duration: .6, delay: .06, ease: 'power3.out' });
+  gsap.from('.feature-section h2, .feature-section > p', {
+    y: 18, stagger: .06, duration: .5, ease: 'power3.out',
+    scrollTrigger: { trigger: '.feature-section', start: 'top 85%', once: true },
+  });
+  gsap.from('.feature-list > li', {
+    y: 14, stagger: .05, duration: .5, ease: 'power3.out',
+    scrollTrigger: { trigger: '.feature-list', start: 'top 88%', once: true },
+  });
   gsap.from('.get-section h2, .get-section p', {
     y: 18, stagger: .06, duration: .5, ease: 'power3.out',
     scrollTrigger: { trigger: '.get-section', start: 'top 85%', once: true },

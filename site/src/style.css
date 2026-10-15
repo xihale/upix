@@ -3,13 +3,19 @@
 @font-face { font-family: 'Noto Sans SC'; src: url('/fonts/noto-sc-400.woff2') format('woff2'); font-weight: 400; font-display: swap; }
 
 :root {
-  color-scheme: light;
+  color-scheme: light dark;
   --surface: #f3f4f5;
   --ink: #131619;
   --muted: #626871;
   --accent: #3151d4;
+  --accent-ink: #f8f9ff;
+  --accent-hover: #2542b6;
   --border: #d8dee7;
   --selected: #e5eafb;
+  --stage: #dde1e7;
+  --stage-wait: #e6e9ec;
+  --grip-line: #aeb4bd;
+  --grip-shadow: 0 2px 14px #10172230;
   --radius: 4px;
   --gutter: clamp(24px, 4.45vw, 80px);
   --ease: cubic-bezier(.16, 1, .3, 1);
@@ -17,6 +23,29 @@
   font-synthesis: none;
   color: var(--ink);
   background: var(--surface);
+}
+/* 暗色沿用同一套结构：底与文字对调，钴蓝提亮到暗底可读（见 README 的对比度实测） */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #101418;
+    --ink: #f2f4f6;
+    --muted: #9aa3ae;
+    --accent: #8fa4ff;
+    --accent-ink: #0d1220;
+    --accent-hover: #a9b9ff;
+    --border: #2b333d;
+    --selected: #1c2740;
+    --stage: #0b0f13;
+    --stage-wait: #0e1216;
+    --grip-line: #a8b1bd;
+    --grip-shadow: 0 2px 14px #000000a6;
+  }
+}
+/* 图注里的原图尺寸随主题走（暗色是 3:2 那幅） */
+.scheme-dark { display: none; }
+@media (prefers-color-scheme: dark) {
+  .scheme-light { display: none; }
+  .scheme-dark { display: inline; }
 }
 * { box-sizing: border-box; }
 html { scroll-behavior: smooth; scroll-padding-top: 32px; }
@@ -37,34 +66,44 @@ button[hidden] { display: none; }
 .site-header nav { display: flex; gap: 34px; align-items: center; font-size: 14px; }
 .quiet-link { transition: color 180ms; }
 .quiet-link:hover { color: var(--accent); }
-.primary-link { display: inline-flex; align-items: center; justify-content: center; gap: 24px; min-height: 44px; padding: 12px 18px; background: var(--accent); color: #f8f9ff; border-radius: var(--radius); white-space: nowrap; transition: background 180ms, transform 180ms var(--ease); }
-.primary-link:hover { background: #2542b6; transform: translateY(-2px); }
+.primary-link { display: inline-flex; align-items: center; justify-content: center; gap: 24px; min-height: 44px; padding: 12px 18px; background: var(--accent); color: var(--accent-ink); border-radius: var(--radius); white-space: nowrap; transition: background 180ms, transform 180ms var(--ease); }
+.primary-link:hover { background: var(--accent-hover); transform: translateY(-2px); }
 .primary-link:active { transform: scale(.98); }
 .hero { padding-top: 32px; }
 .hero-heading { display: flex; justify-content: space-between; align-items: end; padding-bottom: 34px; gap: 24px; }
-h1, h2, p, figure { margin: 0; }
+h1, h2, h3, p, figure { margin: 0; }
 h1 { font-size: clamp(40px, 5.25vw, 78px); font-weight: 400; letter-spacing: -.065em; line-height: 1.35; }
 .hero-description { margin-top: 12px; color: var(--muted); font-size: 15px; letter-spacing: .08em; }
 .text-button { display: inline-flex; align-items: center; gap: 20px; padding: 10px 0; min-height: 44px; border: none; background: transparent; font-size: 14px; white-space: nowrap; color: var(--ink); transition: color 180ms, transform 180ms var(--ease); }
 .text-button > span { font-size: 23px; line-height: 1; }
 .text-button:hover, .text-button[aria-pressed='true'] { color: var(--accent); }
 .text-button:active { transform: scale(.97); }
-.artwork { position: relative; height: clamp(390px, 56dvh, 620px); overflow: hidden; background: #dde1e7; isolation: isolate; --split: 50%; --image-scale: 1; }
+.artwork { position: relative; height: clamp(390px, 56dvh, 620px); overflow: hidden; background: var(--stage); isolation: isolate; --split: 50%; --image-scale: 1; }
 .image-plane { position: absolute; inset: 0; }
-.image-plane img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 20%; transform: scale(var(--image-scale)); transform-origin: 31% 0%; transition: transform 650ms var(--ease); display: block; user-select: none; }
+/* picture 只是媒体选择的壳：展平，别参与布局 */
+.image-plane picture { display: contents; }
+.image-plane img { width: 100%; height: 100%; object-fit: cover; object-position: 50% 30%; transform: scale(var(--image-scale)); transform-origin: 54% 42%; transition: transform 650ms var(--ease); display: block; user-select: none; }
+/* 暗色那幅是 3:2 的特写：取景点回到眼睛与发辫 */
+@media (prefers-color-scheme: dark) {
+  .image-plane img { object-position: 50% 20%; transform-origin: 31% 0%; }
+}
 .source-plane { clip-path: inset(0 calc(100% - var(--split)) 0 0); }
-.divider { position: absolute; top: 0; bottom: 0; left: var(--split); width: 1px; background: #f3f4f5; transform: translateX(-50%); pointer-events: none; }
-.divider-grip { position: absolute; top: 50%; left: 50%; width: 54px; height: 44px; transform: translate(-50%, -50%); display: flex; align-items: center; justify-content: center; gap: 9px; border-radius: var(--radius); background: var(--surface); color: var(--ink); font-size: 23px; box-shadow: 0 2px 14px #10172230; transition: transform 150ms var(--ease), background 150ms; }
-.divider-grip i { height: 17px; width: 1px; background: #aeb4bd; }
-.artwork[data-dragging='true'] .divider-grip { transform: translate(-50%, -50%) scale(1.04); background: var(--selected); box-shadow: inset 0 0 0 2px var(--accent), 0 2px 14px #10172230; }
+.divider { position: absolute; top: 0; bottom: 0; left: var(--split); width: 1px; background: var(--surface); transform: translateX(-50%); pointer-events: none; }
+/* 按住时把手大 2px（约 4%）：用尺寸而不是 transform 缩放——
+   缩放会让 1px 细条在 150ms 动画里跨设备像素对齐，看起来在闪 */
+.divider-grip { --grip-w: 54px; --grip-h: 44px; position: absolute; top: 50%; left: 50%; width: var(--grip-w); height: var(--grip-h); transform: translate(-50%, -50%); display: flex; align-items: center; justify-content: center; gap: 9px; border-radius: var(--radius); background: var(--surface); color: var(--ink); font-size: 23px; box-shadow: var(--grip-shadow); transition: background 150ms, width 150ms var(--ease), height 150ms var(--ease); }
+.divider-grip i { height: 17px; width: 1px; background: var(--grip-line); }
+.artwork[data-dragging='true'] .divider-grip { width: calc(var(--grip-w) + 2px); height: calc(var(--grip-h) + 2px); background: var(--selected); box-shadow: inset 0 0 0 2px var(--accent), var(--grip-shadow); }
 .comparison-input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: ew-resize; touch-action: pan-y; }
-.artwork:has(.comparison-input:focus-visible) { outline: 3px solid var(--accent); outline-offset: 5px; }
-.artwork:has(.comparison-input:focus-visible) .divider-grip { outline: 3px solid var(--accent); outline-offset: 3px; }
+/* 载入/失败时对比不可拖动：不要用 ew-resize 提示可拖 */
+.comparison-input:disabled { cursor: default; }
+/* 键盘仍可拖动（方向键/Home/End），但不做任何焦点高亮：用户明确要求图像与把手都不套描边 */
 .artwork[data-status='loading'] .image-plane, .artwork[data-status='error'] .image-plane { visibility: hidden; }
 .artwork[data-status='loading'] .divider, .artwork[data-status='error'] .divider { display: none; }
 .image-status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 16px; flex-direction: column; background: var(--surface); color: var(--muted); font-size: 15px; pointer-events: none; }
 .artwork[data-status='ready'] .image-status { display: none; }
-.artwork[data-status='loading'] .image-status { background: #e2e5e9; }
+/* 载入占位底比 --surface 略深（展览台），但 15px 的 --muted 文案需 ≥4.5:1：亮色 4.61:1、暗色 6.7:1 */
+.artwork[data-status='loading'] .image-status { background: var(--stage-wait); }
 .artwork[data-status='error'] .image-status { pointer-events: auto; }
 .retry-button { border: 1px solid var(--border); background: var(--surface); color: var(--ink); border-radius: var(--radius); min-height: 44px; padding: 10px 24px; }
 .artwork-caption { display: flex; justify-content: space-between; align-items: center; min-height: 60px; gap: 16px; font-size: 14px; }
@@ -73,6 +112,14 @@ h1 { font-size: clamp(40px, 5.25vw, 78px); font-weight: 400; letter-spacing: -.0
 .artwork-credit { display: inline-flex; align-items: center; min-height: 44px; padding: 0 4px; color: var(--muted); transition: color 180ms; }
 .artwork-credit:hover { color: var(--accent); }
 h2 { font-size: clamp(32px, 3.2vw, 48px); font-weight: 400; letter-spacing: -.06em; line-height: 1.4; }
+/* 展签：左列短名，右列一句话；只用发丝线与字级差，不引入卡片 */
+.feature-section { padding-top: 128px; }
+.feature-section > p { color: var(--muted); margin-top: 16px; font-size: 15px; }
+.feature-list { list-style: none; margin: 52px 0 0; padding: 0; }
+.feature-list > li { display: grid; grid-template-columns: 240px minmax(0, 1fr); align-items: baseline; gap: 6px 40px; padding-block: 24px; border-top: 1px solid var(--border); }
+.feature-list > li:last-child { border-bottom: 1px solid var(--border); }
+.feature-list h3 { font-size: 21px; font-weight: 400; letter-spacing: -.03em; }
+.feature-list > li > p { color: var(--muted); font-size: 14px; line-height: 1.8; text-wrap: pretty; }
 .get-section { padding-top: 130px; padding-bottom: 120px; scroll-margin-top: 24px; }
 .get-section > p { color: var(--muted); margin-top: 16px; font-size: 15px; }
 .platform-links { display: grid; grid-template-columns: repeat(2, 1fr); margin-top: 52px; gap: 44px; }
@@ -99,12 +146,17 @@ h2 { font-size: clamp(32px, 3.2vw, 48px); font-weight: 400; letter-spacing: -.06
   .text-button { gap: 8px; font-size: 13px; }
   .text-button > span { font-size: 20px; }
   .artwork { height: min(55dvh, 520px); min-height: 340px; }
-  .image-plane img { object-position: 49% 35%; transform-origin: 14% 0%; }
+  .image-plane img { object-position: 50% 44%; transform-origin: 52% 46%; }
   .artwork-caption { font-size: 14px; gap: 12px; flex-wrap: wrap; min-height: 62px; padding-block: 14px; }
   .dimensions { display: none; }
-  .divider-grip { width: 48px; height: 44px; }
+  .divider-grip { --grip-w: 48px; }
   .get-section { padding-top: 80px; padding-bottom: 64px; }
   .get-section > p { font-size: 14px; }
+  .feature-section { padding-top: 80px; }
+  .feature-section > p { font-size: 14px; }
+  .feature-list { margin-top: 32px; }
+  .feature-list > li { grid-template-columns: 1fr; gap: 8px; padding-block: 20px; }
+  .feature-list h3 { font-size: 19px; }
   .platform-links { grid-template-columns: 1fr; gap: 0; margin-top: 32px; }
   .platform-links > a { min-height: 76px; }
   .site-footer { min-height: 88px; }
@@ -114,6 +166,10 @@ h2 { font-size: clamp(32px, 3.2vw, 48px); font-weight: 400; letter-spacing: -.06
   .hero-heading { align-items: start; flex-direction: column; gap: 8px; padding-bottom: 20px; }
   .text-button { align-self: flex-end; }
   .artwork { min-height: 310px; }
+}
+/* 暗色 + 窄屏：手机裁到少女脸部（与亮色分开定，两幅构图不同） */
+@media (prefers-color-scheme: dark) and (max-width: 767px) {
+  .image-plane img { object-position: 49% 35%; transform-origin: 14% 0%; }
 }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
