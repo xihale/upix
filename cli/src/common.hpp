@@ -9,8 +9,10 @@
 #include <atomic>
 #include <chrono>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include <sys/types.h>  // pid_t
 
@@ -73,22 +75,76 @@ auto derive_default_output(const std::string& input_path,
 void print_progress_stderr(const upix::ProcessingProgress& prog,
                            std::chrono::steady_clock::time_point start_time);
 
-// Convert `image` in place to `expected_channels`; logs + returns false on
-// failure. No-op when channels already match.
+// ── Machine-readable output ─────────────────────────────────────────────────
+// JSON event mode for GUI/script consumers: `--json` on model/daemon/host,
+// `UPIX_PROGRESS=json` on the process paths. Events are one compact JSON
+// object per '\n'-terminated line on stdout; the Logger moves to stderr so
+// the event stream stays parseable. Progress numbers are identical to the
+// human path — only the encoding differs.
+auto machine_output_enabled() -> bool;
+void enable_machine_output();  // idempotent; also routes Logger to stderr
+
+// Escape a UTF-8 string for embedding in a JSON string literal (quotes,
+// backslashes, control chars; bytes >= 0x20 pass through untouched).
+auto json_escape(std::string_view s) -> std::string;
+
+// ── Interruptible stdin ─────────────────────────────────────────────────────
+// Read one line from stdin without ever blocking past a poll tick, so a signal
+// can end the wait: std::signal() installs its handler with SA_RESTART, so a
+// blocked std::getline() is restarted rather than returning EINTR — pressing
+// Ctrl+C at a prompt would otherwise look like a hang until Enter is pressed.
+// `still_waiting` is re-checked every tick (the caller passes its shutdown
+// condition); when it returns false, or stdin is at EOF with nothing buffered,
+// the wait is abandoned and the function returns false (callers treat that as
+// "no approval").
+// Returns true when a complete line was read; the trailing '\n' is stripped.
+inline constexpr size_t kMaxPromptLineBytes = 4096;  // bound a silent/hostile writer
+auto read_line_interruptible(std::string& line,
+                             const std::function<bool()>& still_waiting) -> bool;
+
+// Write one machine event line to stdout and flush (GUI consumers read
+// incrementally; pairing prompts block on stdin right after an event).
+void emit_json_line(const std::string& json);
+
+// Tile-progress update: machine JSON event when enabled, else the human
+// `\r` line on stderr. Producers: inline single image, daemon delegate,
+// directory batch — one call site each.
+void report_progress(const upix::ProcessingProgress& prog,
+                     std::chrono::steady_clock::time_point start_time);
+
+// Normalize model input channels, preserving RGBA for the tile alpha bypass.
+// Logs and returns false on failure.
 auto normalize_channels_for_model(upix::Image& image,
                                   int expected_channels,
                                   const std::string& image_path) -> bool;
 
-// ── Encoder flag merge ───────────────────────────────────────────────────────
-// Applies the per-format encoder flags that were explicitly given on the
-// command line (cli_app.cpp sets the *_explicit marks) onto a loaded
-// ProcessingConfig; flags absent from the command line leave config-file
-// values untouched. Shared by the inline, batch and daemon-delegate paths.
-void apply_encoder_overrides(const args::Process& a, upix::ProcessingConfig& config);
+// Defaults -> config file -> explicitly supplied CLI flags. The recommendation
+// is deferred until an engine exists, and only applies without a loaded config
+// or an explicit tile size. A loaded file owns its defaulted fields too.
+struct EffectiveProcessingConfig {
+    upix::ProcessingConfig config;
+    bool recommend_tile_size = true;
+};
+auto resolve_processing_config(const args::Process& a) -> EffectiveProcessingConfig;
 
 // ── QR / connection card ────────────────────────────────────────────────────
 // Render text as a 2-row-per-line block of Unicode half-blocks.
 auto generate_qr_ascii(const std::string& text) -> std::string;
+
+// Connection card data shared by the human printer and the `--json` emitters.
+struct ConnectionCard {
+    std::vector<std::string> addresses;  // first non-loopback is the QR default
+    uint16_t port = 0;
+    std::string fingerprint;
+    std::string pubkey_b64;
+    std::string qr_payload;  // v2 JSON the Android JoinInviteParser understands
+};
+
+// Resolve local addresses + identity into a card. Pure data — no I/O beyond
+// the interface enumeration, safe to call before any output mode is chosen.
+auto build_connection_card(uint16_t port,
+                           const std::array<uint8_t, 32>& identity_pubkey)
+    -> ConnectionCard;
 
 // Print the connection card shown to the user: all local IPv4 addresses
 // (first non-loopback one is used as the QR default), the identity fingerprint,

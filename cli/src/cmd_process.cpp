@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -149,6 +150,13 @@ int cmd_process(const args::Process& a) {
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
+    // Machine event mode (UPIX_PROGRESS=json): must be on before the first
+    // LOG_* so stdout stays a clean event stream. `=1` keeps the human path.
+    if (const char* progress_env = std::getenv("UPIX_PROGRESS");
+        progress_env && std::string_view(progress_env) == "json") {
+        enable_machine_output();
+    }
+
     if (a.input_path.empty()) {
         std::println(stderr, "upix: no input given — try `upix <image>` "
                              "or `upix -i <image>`");
@@ -159,17 +167,27 @@ int cmd_process(const args::Process& a) {
     const std::string& output_path = a.output_path;
     const std::string& model_name = a.model_name;
     const std::string& models_dir = a.models_dir;
-    const std::string& config_file = a.config_file;
-    int tile_size = a.tile_size;
-    int tile_overlap = a.tile_overlap;
-    bool auto_tile = a.auto_tile;
-    bool tile_size_explicit = a.tile_size_explicit;  // set by cli_app.cpp
-    int min_tile = a.min_tile;
-    int max_tile = a.max_tile;
-    int batch_size = a.batch_size;
-    bool no_daemon = a.no_daemon;
-    int cli_output_quality = a.output_quality;
-    const std::string& cli_output_format = a.output_format;
+    auto effective = resolve_processing_config(a);
+    auto& config = effective.config;
+    // Reject invalid fixed settings before delegating: the daemon must receive
+    // the same valid settings that inline processing would use.
+    if (!effective.recommend_tile_size && !config.auto_tile_size) {
+        const auto errors = config.validate();
+        if (!errors.empty()) {
+            for (const auto& err : errors) LOG_ERROR("Config", "{}", err);
+            return 1;
+        }
+    }
+
+    // ── Device selection ────────────────────────────────────────────────────
+    // Explicit CLI wins over the config file: --cpu (mutually exclusive with
+    // --gpu) forces a CPU-only engine, --gpu prefers GPU, and a config file's
+    // `use_gpu: false` is honored when neither flag was given — it used to be
+    // parsed and then silently ignored on the single-image path. CPU-only also
+    // skips daemon delegation below: the daemon is a warm GPU engine and
+    // ServeRequest carries no device field, so delegating would run the work
+    // on the GPU anyway.
+    const bool force_cpu = a.use_cpu || (!a.use_gpu && !config.use_gpu);
 
     // Check if input is a directory for batch processing
     bool is_dir = fs::is_directory(input_path);
@@ -205,22 +223,18 @@ int cmd_process(const args::Process& a) {
     // running, spawn one in the background and wait for it (it idle-exits on
     // its own later). Falls back silently (returns nullopt) if the daemon
     // never comes up or the connection fails; on a real daemon-side error
-    // returns 1. --auto-tile stays inline: the optimizer benchmarks the
-    // engine directly, which ServeRequest cannot carry.
-    if (!is_dir && !no_daemon && !auto_tile) {
+    // returns 1. Auto-tile and nondefault batching stay inline: ServeRequest
+    // cannot carry optimizer settings or batch size. Bounds on an unpinned
+    // recommended size also require the inline engine to apply them.
+    const bool daemon_supports_config =
+        !config.auto_tile_size && config.batch_size == upix::kDefaultBatchSize &&
+        (!effective.recommend_tile_size ||
+         (config.min_tile_size == upix::kDefaultMinTileSize &&
+          config.max_tile_size == upix::kDefaultMaxTileSize));
+    if (!is_dir && !a.no_daemon && !force_cpu && daemon_supports_config) {
         auto delegate = [&]() -> std::optional<int> {
             namespace fs = std::filesystem;
 
-            // Resolve output format/quality up front: they ride in the request
-            // because the daemon does the encoding too.
-            upix::ProcessingConfig config;
-            if (!config_file.empty()) {
-                auto cfg = upix::ProcessingConfig::load(config_file);
-                if (cfg) config = cfg.value();
-            }
-            if (cli_output_quality >= 0) config.output_quality = cli_output_quality;
-            if (!cli_output_format.empty()) config.output_format = cli_output_format;
-            apply_encoder_overrides(a, config);
             // Empty → daemon derives: keeps the input's extension when it maps
             // to a known encoder, else .png (same rule as derive_default_output).
             const std::string out_fmt = !config.output_format.empty()
@@ -256,11 +270,9 @@ int cmd_process(const args::Process& a) {
             upix::ServeRequest req{};
             model_name.copy(req.model_name, sizeof(req.model_name) - 1);
             out_fmt.copy(req.output_format, sizeof(req.output_format) - 1);
-            // 0 = "auto": the daemon substitutes its engine's recommended tile
-            // size — the same rule the inline path applies — so both paths
-            // produce identical pixels when --tile-size is not pinned.
-            req.tile_size = tile_size_explicit ? tile_size : 0;
-            req.tile_overlap = tile_overlap;
+            // Only the no-config, unpinned case delegates engine recommendation.
+            req.tile_size = effective.recommend_tile_size ? 0 : config.tile_size;
+            req.tile_overlap = config.tile_overlap;
             req.output_quality = static_cast<int32_t>(config.output_quality);
             req.encoder = upix::to_wire(config.encoder);
             req.input_path_length = static_cast<uint32_t>(in_abs.string().size());
@@ -317,8 +329,8 @@ int cmd_process(const args::Process& a) {
                         upix::ProcessingProgress prog;
                         prog.total_tiles = static_cast<int>(sp.total_tiles);
                         prog.completed_tiles = static_cast<int>(sp.completed_tiles);
-                        print_progress_stderr(prog, delegate_start_time);
-                    } else {
+                        report_progress(prog, delegate_start_time);
+                    } else if (!machine_output_enabled()) {
                         std::print(stderr, "\n");
                         std::fflush(stderr);
                         LOG_INFO("Engine", "Inference done, encoding output...");
@@ -354,6 +366,12 @@ int cmd_process(const args::Process& a) {
             const std::string saved_path(
                 reinterpret_cast<const char*>(rhead.data()) + sizeof(resp), path_len);
 
+            if (machine_output_enabled()) {
+                emit_json_line(std::format(
+                    R"({{"t":"saved","path":"{}"}})", json_escape(saved_path)));
+                emit_json_line(std::format(
+                    R"({{"t":"note","message":"{}x{}"}})", resp.width, resp.height));
+            }
             LOG_INFO("Engine", "Output saved (via warm daemon): {}", saved_path);
             LOG_INFO("Engine", "Processing complete: {}x{}", resp.width, resp.height);
             return 0;
@@ -376,7 +394,7 @@ int cmd_process(const args::Process& a) {
             batch.output_path = derive_default_output(input_path, model, true);
             LOG_INFO("Engine", "Output directory: {}", batch.output_path);
         }
-        return run_batch(batch);
+        return run_batch(batch, std::move(effective));
     }
 
     // Single file processing continues...
@@ -408,8 +426,13 @@ int cmd_process(const args::Process& a) {
 
     // Engine init + model load via the shared recipe. ENGINE_DEFAULT mirrors the
     // original `engine->initialize()` (no arg): try GPU, fall back to CPU.
+    // --cpu / config use_gpu=false select the CPU-only strategy; --gpu makes
+    // the GPU-first strategy explicit (identical to the default, but it must
+    // not be silently ignored).
     auto setup = upix::setup_engine(
-        upix::SetupDevice::ENGINE_DEFAULT,
+        force_cpu ? upix::SetupDevice::CPU
+                  : (a.use_gpu ? upix::SetupDevice::GPU_THEN_CPU
+                               : upix::SetupDevice::ENGINE_DEFAULT),
         models_dir,
         model_name
     );
@@ -447,10 +470,10 @@ int cmd_process(const args::Process& a) {
     int scale = engine->get_scale_factor();
     LOG_INFO("Engine", "Scale factor: {}x", scale);
 
-    // Auto tile size: use engine's VRAM-aware recommendation if not explicitly set
-    if (!tile_size_explicit && !auto_tile) {
-        tile_size = engine->get_recommended_tile_size();
-        LOG_INFO("Engine", "Auto-selected tile size: {}", tile_size);
+    if (effective.recommend_tile_size) {
+        config.tile_size = std::clamp(engine->get_recommended_tile_size(),
+                                      config.min_tile_size, config.max_tile_size);
+        LOG_INFO("Engine", "Auto-selected tile size: {}", config.tile_size);
     }
 
     int input_channels_before = image.channels();
@@ -462,31 +485,7 @@ int cmd_process(const args::Process& a) {
                  input_channels_before, image.channels());
     }
 
-    // 加载配置文件（如果指定）
-    upix::ProcessingConfig config;
-    if (!config_file.empty()) {
-        auto cfg_result = upix::ProcessingConfig::load(config_file);
-        if (cfg_result.has_value()) {
-            config = cfg_result.value();
-            LOG_INFO("Config", "Loaded config from {}", config_file);
-        } else {
-            LOG_WARNING("Config", "Failed to load config: {}", cfg_result.error());
-        }
-    }
-
-    // 命令行参数覆盖配置文件（显式指定的参数优先）
-    config.tile_size = tile_size;
-    config.tile_overlap = tile_overlap;
-    config.auto_tile_size = auto_tile;
-    config.min_tile_size = min_tile;
-    config.max_tile_size = max_tile;
-    if (cli_output_quality >= 0) {
-        config.output_quality = cli_output_quality;
-    }
-    apply_encoder_overrides(a, config);
-    if (!cli_output_format.empty()) {
-        config.output_format = upix::normalize_output_format(cli_output_format);
-    } else {
+    if (config.output_format.empty()) {
         // Auto-infer output format from output file extension
         std::string inferred = infer_format_from_extension(eff_output);
         if (!inferred.empty()) {
@@ -496,7 +495,7 @@ int cmd_process(const args::Process& a) {
     }
 
     // 如果启用自动调优，运行基准测试选择最优 tile size
-    if (auto_tile || config.auto_tile_size) {
+    if (config.auto_tile_size) {
         LOG_INFO("Config", "Auto-tile enabled, benchmarking...");
 
         upix::TileSizeOptimizer optimizer;
@@ -530,14 +529,33 @@ int cmd_process(const args::Process& a) {
     upix::TileConfig tile_config;
     tile_config.tile_size = config.tile_size;
     tile_config.overlap = config.tile_overlap;
-    tile_config.batch_size = batch_size;
+    tile_config.batch_size = config.batch_size;
 
-    int out_width = image.width() * scale;
-    int out_height = image.height() * scale;
+    // 64-bit math, then range-check BEFORE the narrowing cast (same rule as the
+    // batch path): an overflowed int would size the output Image from a bogus
+    // value instead of failing loudly.
+    const int64_t out_w64 = static_cast<int64_t>(image.width()) * scale;
+    const int64_t out_h64 = static_cast<int64_t>(image.height()) * scale;
+    const uint64_t bytes_per_pixel =
+        static_cast<uint64_t>(std::max(1, image.channels()));
+    const bool size_overflow =
+        out_w64 > 0 && out_h64 > 0 &&
+        static_cast<uint64_t>(out_w64) >
+            std::numeric_limits<size_t>::max() /
+                (static_cast<uint64_t>(out_h64) * bytes_per_pixel);
+    if (out_w64 <= 0 || out_h64 <= 0 ||
+        out_w64 > std::numeric_limits<int>::max() ||
+        out_h64 > std::numeric_limits<int>::max() || size_overflow) {
+        LOG_ERROR("Engine", "Upscaled output out of range: {}x{} at {}x",
+                  image.width(), image.height(), scale);
+        return 1;
+    }
+    const int out_width = static_cast<int>(out_w64);
+    const int out_height = static_cast<int>(out_h64);
     upix::Image output_image(out_width, out_height, image.channels());
 
     LOG_INFO("Engine", "Processing image with tile_size={} overlap={} batch_size={}...",
-             config.tile_size, config.tile_overlap, batch_size);
+             config.tile_size, config.tile_overlap, config.batch_size);
 
     std::atomic<bool> cancel_flag{false};
     bool enable_progress_log_single = false;
@@ -551,8 +569,9 @@ int cmd_process(const args::Process& a) {
         image.width(), image.height(), image.channels(),
         *engine, tile_config,
         [&](const upix::ProcessingProgress& progress) {
-            // Always print progress to stderr with ETA
-            print_progress_stderr(progress, process_start_time);
+            // Human: always print progress to stderr with ETA.
+            // Machine: one JSON event per update on stdout.
+            report_progress(progress, process_start_time);
             if (enable_progress_log_single && progress.total_tiles > 0) {
                 float pct = progress.percentage();
                 if (progress.completed_tiles % 10 == 0 ||
@@ -586,6 +605,13 @@ int cmd_process(const args::Process& a) {
         return 1;
     }
 
+    if (machine_output_enabled()) {
+        emit_json_line(std::format(
+            R"({{"t":"saved","path":"{}"}})",
+            json_escape(final_output_path.string())));
+        emit_json_line(std::format(
+            R"({{"t":"note","message":"{}x{}"}})", out_width, out_height));
+    }
     LOG_INFO("Engine", "Output saved: {}", final_output_path.string());
     LOG_INFO("Engine", "Processing complete: {}x{}", out_width, out_height);
     return 0;

@@ -55,19 +55,28 @@ auto build_app() -> std::unique_ptr<CLI::App> {
         ->capture_default_str();
     auto* tile_size_opt = app->add_option("--tile-size", proc_args.tile_size, "Tile size")
         ->check(tile_range)->capture_default_str();
-    app->add_option("--tile-overlap", proc_args.tile_overlap, "Tile overlap")
+    auto* tile_overlap_opt = app->add_option("--tile-overlap", proc_args.tile_overlap, "Tile overlap")
         ->check(CLI::Range(0, 1024))->capture_default_str();
-    app->add_option("--batch-size", proc_args.batch_size, "Batch size")
+    auto* batch_size_opt = app->add_option("--batch-size", proc_args.batch_size, "Batch size")
         ->check(CLI::Range(1, 64))->capture_default_str();
-    app->add_flag("--auto-tile", proc_args.auto_tile, "Auto-select tile size from GPU VRAM");
-    app->add_option("--min-tile", proc_args.min_tile, "Minimum auto-tile size")
+    auto* auto_tile_opt = app->add_flag("--auto-tile", proc_args.auto_tile, "Auto-select tile size from GPU VRAM");
+    auto* min_tile_opt = app->add_option("--min-tile", proc_args.min_tile, "Minimum auto-tile size")
         ->check(tile_range)->capture_default_str();
-    app->add_option("--max-tile", proc_args.max_tile, "Maximum auto-tile size")
+    auto* max_tile_opt = app->add_option("--max-tile", proc_args.max_tile, "Maximum auto-tile size")
         ->check(tile_range)->capture_default_str();
     auto* jobs_opt = app->add_option("-j,--jobs", proc_args.jobs,
                                      "Parallel workers for directory mode")
         ->check(CLI::Range(1, 1024))->capture_default_str();
-    app->add_flag("--gpu", proc_args.use_gpu, "Force GPU for directory mode");
+    // --gpu / --cpu are explicit device overrides and mutually exclusive; a
+    // config file's `use_gpu: false` is honored when neither is given.
+    auto* gpu_opt = app->add_flag("--gpu", proc_args.use_gpu,
+                                  "Force GPU (directory mode: GPU submit-queue "
+                                  "pipeline; single image: prefer GPU)");
+    auto* cpu_opt = app->add_flag("--cpu", proc_args.use_cpu,
+                                  "Force CPU only (never GPU, and never the GPU "
+                                  "warm-engine daemon)");
+    gpu_opt->excludes(cpu_opt);
+    cpu_opt->excludes(gpu_opt);
     app->add_flag("--no-daemon", proc_args.no_daemon,
                   "Never use the warm-engine daemon (process inline)");
     app->add_flag("-f,--force", proc_args.force,
@@ -116,10 +125,16 @@ auto build_app() -> std::unique_ptr<CLI::App> {
                         "AVIF encoder tile threads (default: auto, hardware concurrency)")
             ->check(CLI::Range(0, 64));
     app->add_option("--config", proc_args.config_file, "Config file path");
-    app->callback([input_opt, tile_size_opt, jobs_opt, png_level_opt,
+    app->callback([input_opt, tile_size_opt, tile_overlap_opt, batch_size_opt,
+                   auto_tile_opt, min_tile_opt, max_tile_opt, jobs_opt, png_level_opt,
                    jpeg_subsampling_opt, webp_method_opt, webp_lossless_opt,
                    avif_speed_opt, avif_subsampling_opt, avif_threads_opt] {
         proc_args.tile_size_explicit = tile_size_opt->count() > 0;
+        proc_args.tile_overlap_explicit = tile_overlap_opt->count() > 0;
+        proc_args.batch_size_explicit = batch_size_opt->count() > 0;
+        proc_args.auto_tile_explicit = auto_tile_opt->count() > 0;
+        proc_args.min_tile_explicit = min_tile_opt->count() > 0;
+        proc_args.max_tile_explicit = max_tile_opt->count() > 0;
         proc_args.jobs_explicit = jobs_opt->count() > 0;
         proc_args.png_level_explicit = png_level_opt->count() > 0;
         proc_args.jpeg_subsampling_explicit = jpeg_subsampling_opt->count() > 0;
@@ -146,6 +161,8 @@ auto build_app() -> std::unique_ptr<CLI::App> {
                       "Models directory (default: " + default_models_dir() + ")");
     mlist->add_flag("--names-only", model_list_args.names_only,
                     "Print model names only, one per line (for scripts/completions)");
+    mlist->add_flag("--json", model_list_args.json,
+                    "Emit one JSON document: {modelsDir, installed:[…]}");
     mlist->callback([] { model_list_args.subcommand = "list";
                          g_exit_code = cmd_model(model_list_args); });
 
@@ -154,6 +171,8 @@ auto build_app() -> std::unique_ptr<CLI::App> {
     auto* mremote = model->add_subcommand("list-remote", "List models in the GitHub release");
     mremote->add_option("--repo", model_remote_args.repo,
                         "GitHub repo owner/name (default: upstream release)");
+    mremote->add_flag("--json", model_remote_args.json,
+                      "Emit one JSON document: {manifestUrl, remote:[…]}");
     mremote->callback([] { model_remote_args.subcommand = "list-remote";
                            g_exit_code = cmd_model(model_remote_args); });
 
@@ -166,6 +185,8 @@ auto build_app() -> std::unique_ptr<CLI::App> {
                     "Models directory (default: " + default_models_dir() + ")");
     mdl->add_option("--repo", model_dl_args.repo,
                     "GitHub repo owner/name (default: upstream release)");
+    mdl->add_flag("--json", model_dl_args.json,
+                  "Emit JSON download events: {\"t\":\"download\",name,pct}");
     mdl->callback([] { model_dl_args.subcommand = "download";
                        g_exit_code = cmd_model(model_dl_args); });
 
@@ -176,6 +197,8 @@ auto build_app() -> std::unique_ptr<CLI::App> {
         ->required();
     mimp->add_option("--models-dir", model_imp_args.models_dir,
                      "Models directory (default: " + default_models_dir() + ")");
+    mimp->add_flag("--json", model_imp_args.json,
+                   "Emit one JSON document: {ok, imported:[…] | error}");
     mimp->callback([] { model_imp_args.subcommand = "import";
                         g_exit_code = cmd_model(model_imp_args); });
 
@@ -191,6 +214,8 @@ auto build_app() -> std::unique_ptr<CLI::App> {
             ->capture_default_str();
         s->add_flag("--auto-approve", host_args.auto_approve,
                     "Auto-approve all pairing requests without prompting (for automated testing/CI)");
+        s->add_flag("--json", host_args.json,
+                    "Emit JSON events (card/pairing/task) on stdout; logs to stderr");
     };
     auto* hstart = host->add_subcommand("start", "Start the coordinator (accepts one phone, upscales submitted images)");
     add_host_start_flags(hstart);
@@ -198,6 +223,8 @@ auto build_app() -> std::unique_ptr<CLI::App> {
                           g_exit_code = cmd_host(host_args); });
     auto* hinfo = host->add_subcommand("info", "Print the connection card (IP/QR/key)");
     hinfo->add_option("-p,--port", host_args.port, "Port")->capture_default_str();
+    hinfo->add_flag("--json", host_args.json,
+                    "Emit one JSON document: {ips, port, fingerprint, qr}");
     hinfo->callback([] { host_args.subcommand = "info";
                          g_exit_code = cmd_host(host_args); });
 
@@ -243,6 +270,8 @@ auto build_app() -> std::unique_ptr<CLI::App> {
 
     auto* daemon_status = daemon->add_subcommand("status", "Report whether the daemon is running");
     daemon_status->add_option("--socket", daemon_args.socket_path, "Unix socket path");
+    daemon_status->add_flag("--json", daemon_args.json,
+                            "Emit one JSON document: {running, pid, socket, socketMissing} | {running:false, stale}");
     daemon_status->callback([] { daemon_args.subcommand = "status";
                                  g_exit_code = cmd_daemon(daemon_args); });
 

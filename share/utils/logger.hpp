@@ -63,6 +63,11 @@ public:
         return logger;
     }
 
+    // Machine-output mode (CLI `--json` / `UPIX_PROGRESS=json`): stdout carries
+    // parseable events, so logs move to stderr. Call once at entry-point start,
+    // before any LOG_* runs.
+    void set_output_stderr(bool v) { to_stderr_ = v; }
+
     // Pre-formatted sink (also used by the templated overloads below).
     void log(LogLevel level, std::string_view tag, std::string_view message) {
         if (level < min_level_) {
@@ -92,11 +97,12 @@ public:
         const char* level_color = use_color_ ? level_to_color(level) : "";
         const char* reset_color = use_color_ ? console_colors::RESET : "";
 
-        std::cout << std::format("[{}] [{}{}{}] [{}{}{}] {}\n",
-                                 timestamp,
-                                 tag_color, tag, reset_color,
-                                 level_color, level_to_string(level), reset_color,
-                                 message) << std::flush;
+        std::ostream& out = to_stderr_ ? std::cerr : std::cout;
+        out << std::format("[{}] [{}{}{}] [{}{}{}] {}\n",
+                           timestamp,
+                           tag_color, tag, reset_color,
+                           level_color, level_to_string(level), reset_color,
+                           message) << std::flush;
 
 #ifdef __ANDROID__
         // Mirror to Android logcat so native engine logs are visible alongside
@@ -174,6 +180,7 @@ private:
         return LogLevel::INFO;
     }();
     const bool use_color_ = console_color_enabled();
+    bool to_stderr_ = false;
     std::mutex mutex_;
 };
 

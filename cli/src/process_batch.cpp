@@ -1,9 +1,8 @@
-// Directory batch path, split out of cmd_process (Layer 2 Task 4).
+// Directory batch path, split out of cmd_process.
 //
-// Verbatim move of the former `if (is_dir) { ... }` block into run_batch().
-// The four helper lambdas (prepare/infer/save/process_one) stay intact
-// inside run_batch; their [&] captures resolve to run_batch's locals.
-// No logic change — A/B md5 verified bit-identical.
+// It consumes the same resolved processing configuration as single-image
+// processing so file settings and explicit CLI overrides apply identically.
+// The task helpers capture the effective config and engine-derived tile size.
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -18,6 +17,7 @@
 #include <format>
 #include <fstream>
 #include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -25,6 +25,7 @@
 #include <span>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -108,26 +109,18 @@ std::pair<uint32_t, uint32_t> sniff_image_dimensions(const fs::path& path) {
 
 #include "process_batch.hpp"
 
-int run_batch(const args::Process& a) {
+int run_batch(const args::Process& a, EffectiveProcessingConfig effective) {
     const std::string& input_path = a.input_path;
     const std::string& output_path = a.output_path;
     const std::string& model_name = a.model_name;
     const std::string& models_dir = a.models_dir;
-    const std::string& config_file = a.config_file;
-    int tile_size = a.tile_size;
-    int tile_overlap = a.tile_overlap;
-    bool auto_tile = a.auto_tile;
-    bool tile_size_explicit = a.tile_size_explicit;  // set by cli_app.cpp
-    int min_tile = a.min_tile;
-    int max_tile = a.max_tile;
-    int batch_size = a.batch_size;
-    int jobs = a.jobs;
-    bool jobs_explicit = a.jobs_explicit;  // set by cli_app.cpp
-    bool use_gpu = a.use_gpu;
-    int cli_output_quality = a.output_quality;
-    const std::string& cli_output_format = a.output_format;
+    auto& config = effective.config;
+    const bool recommend_tile_size = effective.recommend_tile_size;
+    const int jobs = a.jobs;
+    const bool jobs_explicit = a.jobs_explicit;  // set by cli_app.cpp
+    const bool use_gpu = a.use_gpu;
 
-        // Validate output path
+    // Validate output path
         if (output_path.empty()) {
             LOG_ERROR("CLI", "Output path required when input is a directory");
             return 1;
@@ -136,24 +129,71 @@ int run_batch(const args::Process& a) {
             LOG_ERROR("CLI", "Output path must be a directory when input is a directory");
             return 1;
         }
-        fs::create_directories(output_path);
+        // `upix imgs -o imgs` writes every result over its own input (the
+        // relative name is preserved), destroying the originals with no
+        // backup. Compare the canonical forms so a symlink or a "./imgs"
+        // spelling cannot slip past.
+        {
+            std::error_code canon_ec;
+            const fs::path in_canon = fs::weakly_canonical(input_path, canon_ec);
+            const fs::path out_canon =
+                canon_ec ? fs::path{} : fs::weakly_canonical(output_path, canon_ec);
+            if (!canon_ec && in_canon == out_canon) {
+                LOG_ERROR("CLI", "Output directory must differ from the input "
+                                 "directory — results would overwrite the inputs");
+                return 1;
+            }
+        }
+        {
+            std::error_code mkdir_ec;
+            fs::create_directories(output_path, mkdir_ec);
+            if (mkdir_ec) {
+                LOG_ERROR("CLI", "Cannot create output directory {}: {}",
+                          output_path, mkdir_ec.message());
+                return 1;
+            }
+        }
 
         // Gather image files recursively. Must mirror the decoders Image::load
         // actually ships (share/utils/image.cpp): .bmp/.tiff used to be
         // enumerated here but always failed at load with "Unsupported image
-        // format", so they are not tasks at all.
+        // format", so they are not tasks at all. Filesystem errors are
+        // collected rather than thrown: an unreadable subdirectory must skip
+        // that entry, not abort the whole batch.
         std::vector<std::string> extensions = {
             ".png", ".jpg", ".jpeg", ".webp", ".avif"
         };
         std::vector<std::pair<std::string, std::string>> tasks;
-        for (auto& p : fs::recursive_directory_iterator(input_path)) {
-            if (!p.is_regular_file()) continue;
-            std::string ext = p.path().extension().string();
+        std::error_code iter_ec;
+        for (fs::recursive_directory_iterator it(
+                 input_path, fs::directory_options::skip_permission_denied, iter_ec),
+             end;
+             it != end; it.increment(iter_ec)) {
+            if (iter_ec) {
+                LOG_WARNING("CLI", "Skipping unreadable directory entry: {}",
+                            iter_ec.message());
+                iter_ec.clear();
+                continue;
+            }
+            const fs::directory_entry& entry = *it;
+            std::error_code st_ec;
+            if (!entry.is_regular_file(st_ec) || st_ec) continue;
+            std::string ext = entry.path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
             if (!std::ranges::contains(extensions, ext)) continue;
-            std::string rel = fs::relative(p.path(), input_path).string();
-            std::string out_file = fs::path(output_path) / rel;
-            tasks.emplace_back(p.path().string(), out_file);
+            // Lexical, not fs::relative(): that one canonicalizes both sides,
+            // so a symlinked input pointing outside the tree would produce a
+            // ".."-laden relative path and the result would be written outside
+            // the output directory.
+            const fs::path rel_path =
+                entry.path().lexically_relative(fs::path(input_path));
+            if (rel_path.empty() || *rel_path.begin() == "..") {
+                LOG_WARNING("CLI", "Skipping an entry outside the input tree: {}",
+                            entry.path().string());
+                continue;
+            }
+            std::string out_file = (fs::path(output_path) / rel_path).string();
+            tasks.emplace_back(entry.path().string(), out_file);
         }
         if (tasks.empty()) {
             LOG_WARNING("CLI", "No image files found in input directory");
@@ -207,38 +247,35 @@ int run_batch(const args::Process& a) {
         LOG_INFO("Engine", "Using model: {} ({}x)", model_name_used,
                  selected_model->scale_factor);
 
-        // Load configuration if specified
-        upix::ProcessingConfig config;
-        if (!config_file.empty()) {
-            auto cfg_result = upix::ProcessingConfig::load(config_file);
-            if (cfg_result.has_value()) {
-                config = cfg_result.value();
-                LOG_INFO("Config", "Loaded config from {}", config_file);
-            } else {
-                LOG_WARNING("Config", "Failed to load config: {}", cfg_result.error());
+        // Preserve a configured output format; infer from the first target only
+        // when neither the config file nor CLI selected one.
+        if (config.output_format.empty() && !tasks.empty()) {
+            std::string inferred = infer_format_from_extension(tasks[0].second);
+            if (!inferred.empty()) {
+                config.output_format = upix::normalize_output_format(inferred);
+                LOG_INFO("Config", "Auto-detected output format: {}", inferred);
             }
         }
 
-        // Override with CLI arguments
-        config.tile_size = tile_size;
-        config.tile_overlap = tile_overlap;
-        config.batch_size = batch_size;
-        config.auto_tile_size = auto_tile;
-        config.min_tile_size = min_tile;
-        config.max_tile_size = max_tile;
-        if (cli_output_quality >= 0) {
-            config.output_quality = cli_output_quality;
-        }
-        apply_encoder_overrides(a, config);
-        if (!cli_output_format.empty()) {
-            config.output_format = upix::normalize_output_format(cli_output_format);
-        } else {
-            // Auto-infer output format from first output file extension
-            if (!tasks.empty()) {
-                std::string inferred = infer_format_from_extension(tasks[0].second);
-                if (!inferred.empty()) {
-                    config.output_format = upix::normalize_output_format(inferred);
-                    LOG_INFO("Config", "Auto-detected output format: {}", inferred);
+        // One resolved output format is applied to the whole batch, so two
+        // inputs can map to the SAME output file — `a.png` + `a.jpg` in one
+        // directory, or two symlinks to one target. Both would be processed,
+        // both counted as successes, and one result silently overwritten by
+        // the other (nondeterministically, since saves run in parallel).
+        // Refuse the batch up front instead of losing a file.
+        {
+            std::unordered_map<std::string, std::string> outputs;
+            for (const auto& [in_file, out_file] : tasks) {
+                const std::string final_path =
+                    upix::resolve_output_path(fs::path(out_file), config).string();
+                const auto [it, inserted] = outputs.emplace(final_path, in_file);
+                if (!inserted) {
+                    LOG_ERROR("CLI",
+                              "Output collision: {} and {} both map to {} — "
+                              "use separate input trees or a per-file output "
+                              "format",
+                              it->second, in_file, final_path);
+                    return 1;
                 }
             }
         }
@@ -347,13 +384,19 @@ int run_batch(const args::Process& a) {
         };
 
         auto infer_prepared_task = [&](PreparedTask&& prepared, upix::Engine& eng) -> std::optional<ProcessedTask> {
-            if (enable_progress_log) {
+            if (machine_output_enabled()) {
+                // The GUI shows which file of the batch is on the engine; a
+                // log scrape can't do this (the old line was LOG_DEBUG).
+                emit_json_line(std::format(
+                    R"({{"t":"current","file":"{}"}})",
+                    json_escape(fs::path(prepared.in_path).filename().string())));
+            } else if (enable_progress_log) {
                 LOG_INFO("Engine", "Processing image: {}", prepared.in_path);
             }
 
             upix::ProcessingConfig local_config = config;
 
-            if (auto_tile || local_config.auto_tile_size) {
+            if (local_config.auto_tile_size) {
                 LOG_INFO("Task", "Auto-tile for {}", prepared.in_path);
                 upix::TileSizeOptimizer optimizer;
                 upix::ModelConstraints mc;
@@ -375,8 +418,31 @@ int run_batch(const args::Process& a) {
             tile_config.overlap = local_config.tile_overlap;
             tile_config.batch_size = local_config.batch_size;
 
-            int out_width = prepared.width * eng.get_scale_factor();
-            int out_height = prepared.height * eng.get_scale_factor();
+            // 64-bit math, then range-check BEFORE the narrowing cast: an
+            // overflowed int would make Image() allocate a bogus (often
+            // negative → huge) buffer, and the byte product must still fit a
+            // size_t. The bound is the int payload the rest of the pipeline
+            // (TileConfig/Image/ServeResponse) carries — not a memory policy,
+            // so previously-working large inputs keep working.
+            const int scale_factor = eng.get_scale_factor();
+            const int64_t out_w64 = static_cast<int64_t>(prepared.width) * scale_factor;
+            const int64_t out_h64 = static_cast<int64_t>(prepared.height) * scale_factor;
+            const uint64_t bytes_per_pixel = static_cast<uint64_t>(
+                std::max(1, prepared.channels));
+            const bool size_overflow =
+                out_w64 > 0 && out_h64 > 0 &&
+                static_cast<uint64_t>(out_w64) >
+                    std::numeric_limits<size_t>::max() /
+                        (static_cast<uint64_t>(out_h64) * bytes_per_pixel);
+            if (out_w64 <= 0 || out_h64 <= 0 ||
+                out_w64 > std::numeric_limits<int>::max() ||
+                out_h64 > std::numeric_limits<int>::max() || size_overflow) {
+                LOG_ERROR("Task", "Upscaled output out of range: {}x{} at {}x",
+                          prepared.width, prepared.height, scale_factor);
+                return std::nullopt;
+            }
+            const int out_width = static_cast<int>(out_w64);
+            const int out_height = static_cast<int>(out_h64);
             upix::Image output_image(out_width, out_height, prepared.channels);
 
             upix::TileProcessor processor;
@@ -385,8 +451,8 @@ int run_batch(const args::Process& a) {
                 prepared.width, prepared.height, prepared.channels,
                 eng, tile_config,
                 [&](const upix::ProcessingProgress& prog) {
-                    // Always print progress to stderr
-                    print_progress_stderr(prog, batch_start_time);
+                    // Human: stderr line. Machine: JSON event on stdout.
+                    report_progress(prog, batch_start_time);
                     if (enable_progress_log &&
                         prog.total_tiles > 0 &&
                         (prog.completed_tiles % 10 == 0 || prog.completed_tiles == prog.total_tiles)) {
@@ -421,7 +487,13 @@ int run_batch(const args::Process& a) {
             std::filesystem::path out_path_obj(processed.out_path);
             const std::filesystem::path final_out_path = upix::resolve_output_path(out_path_obj, config);
             if (!final_out_path.parent_path().empty()) {
-                std::filesystem::create_directories(final_out_path.parent_path());
+                std::error_code mk_ec;
+                std::filesystem::create_directories(final_out_path.parent_path(), mk_ec);
+                if (mk_ec) {
+                    LOG_ERROR("Task", "Cannot create output directory {}: {}",
+                              final_out_path.parent_path().string(), mk_ec.message());
+                    return false;
+                }
             }
 
             const auto sr_xmp = upix::sr_marker::build_xmp(
@@ -436,6 +508,11 @@ int run_batch(const args::Process& a) {
 
             if (enable_progress_log) {
                 LOG_INFO("Task", "Completed: {}", final_out_path.string());
+            }
+            if (machine_output_enabled()) {
+                emit_json_line(std::format(
+                    R"({{"t":"saved","path":"{}"}})",
+                    json_escape(final_out_path.string())));
             }
             return true;
         };
@@ -493,13 +570,13 @@ int run_batch(const args::Process& a) {
             int scale = engine->get_scale_factor();
             LOG_INFO("Engine", "Scale factor: {}x", scale);
 
-            // Auto tile size: use engine's VRAM-aware recommendation if not explicitly set
-            if (!tile_size_explicit && !auto_tile) {
-                tile_size = engine->get_recommended_tile_size();
-                config.tile_size = tile_size;
-                LOG_INFO("Engine", "Auto-selected tile size: {}", tile_size);
-            }
+            if (recommend_tile_size) {
+                config.tile_size = std::clamp(
+                    engine->get_recommended_tile_size(), config.min_tile_size,
+                    config.max_tile_size);
+                LOG_INFO("Engine", "Auto-selected tile size: {}", config.tile_size);
 
+            }
             size_t success_count = 0;
             if (use_gpu && tasks.size() > 1) {
                 size_t kSaveWorkers = 2;
@@ -804,10 +881,11 @@ int run_batch(const args::Process& a) {
                 // this, jobs>1 silently used the CLI default (256) while
                 // jobs=1 used the engine recommendation, so the tile grid —
                 // and therefore the output — depended on --jobs.
-                if (!tile_size_explicit && !auto_tile) {
-                    tile_size = gpu_engines[0]->get_recommended_tile_size();
-                    config.tile_size = tile_size;
-                    LOG_INFO("Engine", "Auto-selected tile size: {}", tile_size);
+                if (recommend_tile_size) {
+                    config.tile_size = std::clamp(
+                        gpu_engines[0]->get_recommended_tile_size(),
+                        config.min_tile_size, config.max_tile_size);
+                    LOG_INFO("Engine", "Auto-selected tile size: {}", config.tile_size);
                 }
 
                 // Pipelined stage structure — the same prepare/SR/save shape
@@ -996,8 +1074,21 @@ int run_batch(const args::Process& a) {
                 // index (same shape as the GPU jobs>1 branch). One std::async
                 // per file would race acquire() with more tasks than engines
                 // and stack N engines' default ncnn thread armies.
-                size_t requested_workers = static_cast<size_t>(std::max(1, jobs));
-                size_t worker_count = std::min(requested_workers, tasks.size());
+                // `-j` is only range-checked (1..1024) and every pool engine
+                // loads its own copy of the model, so an absurd -j pins
+                // gigabytes of RAM for no gain. Clamp to the machine's
+                // parallelism (and the task count) and say when it was reduced.
+                const size_t requested_workers = static_cast<size_t>(std::max(1, jobs));
+                const size_t hw_threads =
+                    static_cast<size_t>(std::max(1u, std::thread::hardware_concurrency()));
+                const size_t worker_count =
+                    std::min({requested_workers, tasks.size(), hw_threads});
+                if (worker_count < requested_workers) {
+                    LOG_INFO("Engine",
+                             "Reduced CPU workers from {} to {} (hardware "
+                             "concurrency / task count)",
+                             requested_workers, worker_count);
+                }
                 upix::EnginePool pool(worker_count, param_path, bin_path, upix::DeviceType::CPU);
                 LOG_INFO("Engine", "Created engine pool with {} CPU engines", worker_count);
 
@@ -1005,12 +1096,13 @@ int run_batch(const args::Process& a) {
                 // this, jobs>1 silently used the CLI default (256) while
                 // jobs=1 used the engine recommendation (128 on CPU), so the
                 // tile grid — and therefore the output — depended on --jobs.
-                if (!tile_size_explicit && !auto_tile) {
+                if (recommend_tile_size) {
                     upix::Engine* probe = pool.acquire();
-                    tile_size = probe->get_recommended_tile_size();
+                    config.tile_size = std::clamp(
+                        probe->get_recommended_tile_size(), config.min_tile_size,
+                        config.max_tile_size);
                     pool.release(probe);
-                    config.tile_size = tile_size;
-                    LOG_INFO("Engine", "Auto-selected tile size: {}", tile_size);
+                    LOG_INFO("Engine", "Auto-selected tile size: {}", config.tile_size);
                 }
 
                 std::atomic<size_t> next_task{0};

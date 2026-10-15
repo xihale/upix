@@ -86,6 +86,30 @@ int cmd_daemon(const args::Daemon& a) {
 
     if (a.subcommand == "status") {
         // Plain stdout — a status line is user-facing output, not a log.
+        // --json: same facts as the prose line, as one document. Exit code
+        // semantics are unchanged (1 = not running); consumers parse the
+        // document regardless of the exit code. `stale` covers every
+        // pid-file-without-live-daemon case (dead pid, corrupt file) — for
+        // UI purposes they are all "the file lies".
+        if (a.json) {
+            std::ifstream pf(pid_path);
+            if (!pf) {
+                emit_json_line(R"({"running":false,"stale":false})");
+                return 1;
+            }
+            pid_t pid = 0;
+            pf >> pid;
+            if (pid <= 0 || !pid_is_upix_daemon(pid)) {
+                emit_json_line(R"({"running":false,"stale":true})");
+                return 1;
+            }
+            std::error_code ec;
+            const bool sock_up = std::filesystem::exists(socket_path, ec);
+            emit_json_line(std::format(
+                R"({{"running":true,"pid":{},"socket":"{}","socketMissing":{}}})",
+                pid, json_escape(socket_path), sock_up ? "false" : "true"));
+            return 0;
+        }
         std::ifstream pf(pid_path);
         if (!pf) {
             std::println("not running");

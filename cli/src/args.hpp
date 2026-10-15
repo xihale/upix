@@ -25,6 +25,10 @@ struct Process {
     int min_tile = 64;
     int max_tile = 512;
     int batch_size = 1;
+    bool tile_overlap_explicit = false;
+    bool min_tile_explicit = false;
+    bool max_tile_explicit = false;
+    bool batch_size_explicit = false;
     int jobs = 1;
     bool jobs_explicit = false;     // set by cli_app.cpp when -j/--jobs is given
                                     // (unset: GPU dir mode sizes workers by VRAM)
@@ -54,8 +58,11 @@ struct Process {
     int avif_threads = 0;           // 0 = auto (hardware concurrency)
     bool avif_threads_explicit = false;
     bool auto_tile = false;
+    bool auto_tile_explicit = false;
     bool tile_size_explicit = false;  // set by cli_app.cpp when --tile-size is given
     bool use_gpu = false;
+    bool use_cpu = false;             // explicit --cpu (excludes --gpu): CPU-only
+                                      // engine, and no GPU warm-engine daemon
     bool no_daemon = false;
     bool force = false;               // re-process inputs carrying an SR marker
                                       // (default: such inputs are skipped)
@@ -71,6 +78,8 @@ struct Model {
     std::vector<std::string> files; // import: local .param/.bin paths
     bool names_only = false;        // list: one name per line, no header/sizes
                                     // (machine-readable; used by completions)
+    bool json = false;              // one-shot JSON document / JSON-lines events
+                                    // on stdout (desktop GUI + script consumers)
 };
 
 // `host {start, info}` — the coordination server phones pair with.
@@ -79,6 +88,7 @@ struct Host {
     uint16_t port = 9527;
     bool auto_approve = false;      // start: auto-approve pairing requests (testing/CI)
     std::string models_dir;         // pre-filled by cli_app.cpp from default_models_dir()
+    bool json = false;              // JSON events on stdout; logs/prompts to stderr
 };
 
 // `daemon {start, stop, status}` — the local warm-engine daemon.
@@ -90,6 +100,7 @@ struct Daemon {
     bool force_cpu = false;
     bool foreground = false;
     int idle_timeout_s = 600;       // exit after this many idle seconds (0 = never)
+    bool json = false;              // status: one-shot JSON document on stdout
 };
 
 // `completions <bash|zsh|fish>` — emit a shell completion script to stdout,

@@ -2,6 +2,7 @@
 #include "common.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
@@ -14,6 +15,9 @@
 #include <string_view>
 #include <vector>
 
+#include <cstdio>
+#include <cerrno>
+#include <poll.h>
 #include <signal.h>
 #include <unistd.h>
 #ifdef __APPLE__
@@ -41,9 +45,35 @@ void signal_handler(int) {
     g_cancel_requested = true;
 }
 
-// ── Encoder flag merge ───────────────────────────────────────────────────────
-// See common.hpp. Only explicitly-given flags override the config file.
-void apply_encoder_overrides(const args::Process& a, upix::ProcessingConfig& config) {
+auto resolve_processing_config(const args::Process& a) -> EffectiveProcessingConfig {
+    EffectiveProcessingConfig effective;
+    auto& config = effective.config;
+    bool loaded = false;
+    if (!a.config_file.empty()) {
+        auto result = upix::ProcessingConfig::load(a.config_file);
+        if (result) {
+            config = std::move(*result);
+            loaded = true;
+            LOG_INFO("Config", "Loaded config from {}", a.config_file);
+        } else {
+            LOG_WARNING("Config", "Failed to load config: {}", result.error());
+        }
+    }
+    if (a.tile_size_explicit) {
+        config.tile_size = a.tile_size;
+        // A fixed CLI size overrides file-enabled auto sizing; supplying both
+        // CLI options retains the existing --auto-tile behavior.
+        config.auto_tile_size = false;
+    }
+    if (a.tile_overlap_explicit) config.tile_overlap = a.tile_overlap;
+    if (a.batch_size_explicit) config.batch_size = a.batch_size;
+    if (a.auto_tile_explicit) config.auto_tile_size = a.auto_tile;
+    if (a.min_tile_explicit) config.min_tile_size = a.min_tile;
+    if (a.max_tile_explicit) config.max_tile_size = a.max_tile;
+    if (a.output_quality >= 0) config.output_quality = a.output_quality;
+    if (!a.output_format.empty()) {
+        config.output_format = upix::normalize_output_format(a.output_format);
+    }
     if (a.png_level_explicit) config.encoder.png_level = a.png_level;
     if (a.jpeg_subsampling_explicit) config.encoder.jpeg_subsampling = a.jpeg_subsampling;
     if (a.webp_method_explicit) config.encoder.webp_method = a.webp_method;
@@ -51,6 +81,9 @@ void apply_encoder_overrides(const args::Process& a, upix::ProcessingConfig& con
     if (a.avif_speed_explicit) config.encoder.avif_speed = a.avif_speed;
     if (a.avif_subsampling_explicit) config.encoder.avif_subsampling = a.avif_subsampling;
     if (a.avif_threads_explicit) config.encoder.avif_threads = a.avif_threads;
+    effective.recommend_tile_size = !loaded && !a.tile_size_explicit &&
+                                    !config.auto_tile_size;
+    return effective;
 }
 
 void daemon_signal_handler(int) {
@@ -122,22 +155,137 @@ auto infer_format_from_extension(const std::string& path) -> std::string {
     return "";
 }
 
+// ── Machine-readable output ─────────────────────────────────────────────────
+namespace {
+std::atomic<bool> g_machine_output{false};
+}  // namespace
+
+auto machine_output_enabled() -> bool {
+    return g_machine_output.load(std::memory_order_relaxed);
+}
+
+void enable_machine_output() {
+    if (g_machine_output.exchange(true, std::memory_order_relaxed)) return;
+    // stdout now carries events; logs would corrupt the stream.
+    upix::Logger::instance().set_output_stderr(true);
+}
+
+auto json_escape(std::string_view s) -> std::string {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (const char c : s) {
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) {
+                    out += std::format("\\u{:04x}", c);
+                } else {
+                    out += c;
+                }
+        }
+    }
+    return out;
+}
+
+void emit_json_line(const std::string& json) {
+    std::println("{}", json);
+    // GUI consumers read incrementally; the pairing prompt blocks on stdin
+    // right after an event, so buffering here would deadlock the handshake.
+    std::fflush(stdout);
+}
+
+auto read_line_interruptible(std::string& line,
+                             const std::function<bool()>& still_waiting) -> bool {
+    line.clear();
+    for (;;) {
+        if (!still_waiting()) {
+            return false;  // shutting down: the caller answers the request
+        }
+        pollfd pfd{};
+        pfd.fd = STDIN_FILENO;
+        pfd.events = POLLIN;
+        const int pr = ::poll(&pfd, 1, 200);
+        if (pr < 0) {
+            if (errno == EINTR) continue;  // signal: re-check still_waiting()
+            return false;
+        }
+        if (pr == 0) {
+            continue;  // tick: re-check still_waiting()
+        }
+        if ((pfd.revents & (POLLIN | POLLHUP | POLLERR)) == 0) {
+            return false;
+        }
+        // Bytes are ready, so a single read() cannot block. A partial line from
+        // a GUI writer (no '\n' yet) just loops — with a poll tick in between,
+        // so a signal still gets through.
+        char buf[256];
+        const ssize_t n = ::read(STDIN_FILENO, buf, sizeof(buf));
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return false;
+        }
+        if (n == 0) {
+            // EOF: bytes already read count as the answer (std::getline
+            // behaved the same); an empty buffer means stdin is unusable.
+            return !line.empty();
+        }
+        line.append(buf, static_cast<size_t>(n));
+        const size_t nl = line.find('\n');
+        if (nl != std::string::npos) {
+            line.resize(nl);
+            return true;
+        }
+        if (line.size() > kMaxPromptLineBytes) {
+            line.resize(kMaxPromptLineBytes);
+            return true;
+        }
+    }
+}
+
+// Shared ETA estimate: 0 until a full second of throughput is observable and
+// once the last tile is done (matches what the human line always showed).
+auto progress_eta_seconds(const upix::ProcessingProgress& prog,
+                          std::chrono::steady_clock::time_point start_time)
+    -> long long {
+    if (prog.completed_tiles <= 0 || prog.completed_tiles >= prog.total_tiles)
+        return 0;
+    const double elapsed =
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - start_time)
+            .count();
+    if (elapsed <= 0.1) return 0;
+    const double tiles_per_sec = prog.completed_tiles / elapsed;
+    return std::llround((prog.total_tiles - prog.completed_tiles) / tiles_per_sec);
+}
+
+void report_progress(const upix::ProcessingProgress& prog,
+                     std::chrono::steady_clock::time_point start_time) {
+    if (prog.total_tiles <= 0) return;
+    if (machine_output_enabled()) {
+        emit_json_line(std::format(
+            R"({{"t":"progress","pct":{:.0f},"done":{},"total":{},"eta":{}}})",
+            prog.percentage(), prog.completed_tiles, prog.total_tiles,
+            progress_eta_seconds(prog, start_time)));
+        return;
+    }
+    print_progress_stderr(prog, start_time);
+}
+
 void print_progress_stderr(const upix::ProcessingProgress& prog,
                            std::chrono::steady_clock::time_point start_time) {
     if (prog.total_tiles <= 0) return;
 
-    auto now = std::chrono::steady_clock::now();
-    double elapsed = std::chrono::duration<double>(now - start_time).count();
-    float pct = prog.percentage();
-
-    std::string line = std::format("{:.0f}% ({}/{}", pct,
+    std::string line = std::format("{:.0f}% ({}/{}", prog.percentage(),
                                    prog.completed_tiles, prog.total_tiles);
 
-    if (prog.completed_tiles > 0 && elapsed > 0.1 && prog.completed_tiles < prog.total_tiles) {
-        double tiles_per_sec = prog.completed_tiles / elapsed;
-        double remaining_tiles = prog.total_tiles - prog.completed_tiles;
-        double eta_sec = remaining_tiles / tiles_per_sec;
-        line += std::format(", ETA {:.0f}s", eta_sec);
+    const long long eta_sec = progress_eta_seconds(prog, start_time);
+    if (eta_sec > 0) {
+        line += std::format(", ETA {}s", eta_sec);
     }
 
     line += ')';
@@ -212,38 +360,46 @@ auto generate_qr_ascii(const std::string& text) -> std::string {
     return result;
 }
 
-void print_connection_card(uint16_t port, const std::array<uint8_t, 32>& identity_pubkey) {
-    auto addresses = upix::network_utils::get_local_addresses();
-    if (addresses.empty()) {
-        addresses.push_back("127.0.0.1");
+auto build_connection_card(uint16_t port,
+                           const std::array<uint8_t, 32>& identity_pubkey)
+    -> ConnectionCard {
+    ConnectionCard card;
+    card.addresses = upix::network_utils::get_local_addresses();
+    if (card.addresses.empty()) {
+        card.addresses.push_back("127.0.0.1");
     }
-
-    const std::string fp = upix::fingerprint(identity_pubkey);
-    const std::string pk_b64 = upix::base64_encode(identity_pubkey.data(), 32);
-
-    std::println("\nConnection Information:");
-    for (size_t i = 0; i < addresses.size(); ++i) {
-        std::print("  IP: {}", addresses[i]);
-        if (i == 0) std::print("  (default for QR)");
-        std::println("");
-    }
-    std::println("  Port: {}", port);
-    std::println("  Fingerprint: {}\n", fp);
-    std::println("QR Code (scan with Android app):\n");
+    card.port = port;
+    card.fingerprint = upix::fingerprint(identity_pubkey);
+    card.pubkey_b64 = upix::base64_encode(identity_pubkey.data(), 32);
 
     // v2 JSON: carries fingerprint + identity pubkey. Android rejects v1.
     // ("name" removed: Android's JoinInviteParser never reads it — 13 bytes
     // of payload cost QR modules for nothing.)
-    const std::string json = std::format(
+    card.qr_payload = std::format(
         "{{\"v\":2,\"ip\":\"{}\",\"port\":{},\"fp\":\"{}\""
         ",\"pk\":\"{}\"}}",
-        addresses[0], port, fp, pk_b64);
+        card.addresses[0], port, card.fingerprint, card.pubkey_b64);
+    return card;
+}
+
+void print_connection_card(uint16_t port, const std::array<uint8_t, 32>& identity_pubkey) {
+    const ConnectionCard card = build_connection_card(port, identity_pubkey);
+
+    std::println("\nConnection Information:");
+    for (size_t i = 0; i < card.addresses.size(); ++i) {
+        std::print("  IP: {}", card.addresses[i]);
+        if (i == 0) std::print("  (default for QR)");
+        std::println("");
+    }
+    std::println("  Port: {}", card.port);
+    std::println("  Fingerprint: {}\n", card.fingerprint);
+    std::println("QR Code (scan with Android app):\n");
 
     // 极性：QR 规定亮底暗码。半块字符靠前景色渲染码块、空格露出背景，
     // 深色终端下会呈现反色的黑底白码，扫码器（含 ZXing）无法识别。
     // 在彩色终端上强制 SGR 白底黑前景（47/30），与终端主题无关。
     // 无色环境（管道/NO_COLOR）保持纯文本，由查看环境决定极性。
-    const std::string qr_text = generate_qr_ascii(json);
+    const std::string qr_text = generate_qr_ascii(card.qr_payload);
     if (upix::console_color_enabled()) {
         for (const auto& line : qr_text | std::views::split('\n')) {
             const std::string_view seg(line.begin(), line.end());
@@ -253,4 +409,5 @@ void print_connection_card(uint16_t port, const std::array<uint8_t, 32>& identit
     } else {
         std::println("{}", qr_text);
     }
+    std::fflush(stdout);
 }

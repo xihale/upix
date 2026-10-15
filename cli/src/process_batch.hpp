@@ -6,7 +6,8 @@
 #pragma once
 
 #include "args.hpp"
+#include "common.hpp"
 
 // Directory batch processing. cmd_process delegates here when the input path
 // is a directory. Returns the process exit code (0 success).
-int run_batch(const args::Process& a);
+int run_batch(const args::Process& a, EffectiveProcessingConfig effective);
