@@ -10,6 +10,16 @@ Row {
     spacing: 12
     height: 44
 
+    activeFocusOnTab: true
+    Accessible.role: Accessible.CheckBox
+    Accessible.name: row.label
+    Accessible.checked: row.checked
+    Accessible.onToggleAction: row.toggled(!row.checked)
+
+    Keys.onSpacePressed: row.toggled(!row.checked)
+    Keys.onReturnPressed: row.toggled(!row.checked)
+    Keys.onEnterPressed: row.toggled(!row.checked)
+
     Item {
         width: parent.width - switchTrack.width - 12
         height: parent.height
@@ -28,6 +38,10 @@ Row {
         height: 26
         radius: 13
         color: row.checked ? Theme.primary : Theme.highest
+        // Focus ring: onPrimary over the accent-filled "on" state, primary over
+        // the neutral "off" track.
+        border.width: row.activeFocus ? 1 : 0
+        border.color: row.checked ? Theme.onPrimary : Theme.primary
         Behavior on color { ColorAnimation { duration: 180 } }
 
         Rectangle {

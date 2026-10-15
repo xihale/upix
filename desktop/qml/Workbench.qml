@@ -46,6 +46,13 @@ Rectangle {
             Item {
                 anchors.fill: parent
                 visible: snap.inputs.length === 0
+                // The drop field is the primary entry point; it reports itself
+                // to screen readers even though the keyboard entry is the
+                // Ctrl+O / Ctrl+V shortcut pair.
+                Accessible.role: Accessible.Button
+                Accessible.name: "添加图片"
+                Accessible.description: "拖入图片，或按 Ctrl+V 粘贴"
+                Accessible.onPressAction: picker.openFor(false)
 
                 HoverHandler { id: zoneHover; enabled: zoneTap.enabled }
                 TapHandler {
@@ -122,13 +129,18 @@ Rectangle {
                     anchors.bottomMargin: 44
                     width: folderRow.implicitWidth + 24
                     height: 32
+                    activeFocusOnTab: true
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "选择文件夹批量处理"
+                    Accessible.onPressAction: picker.openFor(true)
+
                     HoverHandler { id: folderHover; cursorShape: Qt.PointingHandCursor }
                     Rectangle {
                         anchors.fill: parent
                         radius: 8
                         color: folderHover.hovered ? Theme.high : "transparent"
                         border.width: 1
-                        border.color: Theme.outlineV
+                        border.color: folderAction.activeFocus ? Theme.primary : Theme.outlineV
                     }
                     Row {
                         id: folderRow
@@ -148,6 +160,9 @@ Rectangle {
                         }
                     }
                     TapHandler { onTapped: picker.openFor(true) }
+                    Keys.onReturnPressed: picker.openFor(true)
+                    Keys.onEnterPressed: picker.openFor(true)
+                    Keys.onSpacePressed: picker.openFor(true)
                 }
             }
 
@@ -179,13 +194,18 @@ Rectangle {
                 anchors.margins: 12
                 width: 26
                 height: 26
+                activeFocusOnTab: clearBtn.visible
+                Accessible.role: Accessible.Button
+                Accessible.name: "清空列表"
+                Accessible.onPressAction: Desk.clearInputs()
+
                 HoverHandler { id: clearHover; cursorShape: Qt.PointingHandCursor }
                 Rectangle {
                     anchors.fill: parent
                     radius: 8
                     color: clearHover.hovered ? Theme.high : Theme.containerLow
                     border.width: 1
-                    border.color: Theme.outlineV
+                    border.color: clearBtn.activeFocus ? Theme.primary : Theme.outlineV
                 }
                 Icon {
                     anchors.centerIn: parent
@@ -197,6 +217,9 @@ Rectangle {
                 ToolTip.text: "清空列表"
                 ToolTip.delay: 400
                 TapHandler { onTapped: Desk.clearInputs() }
+                Keys.onReturnPressed: Desk.clearInputs()
+                Keys.onEnterPressed: Desk.clearInputs()
+                Keys.onSpacePressed: Desk.clearInputs()
             }
 
             // Folder badge
@@ -257,6 +280,7 @@ Rectangle {
                 }
                 Progress {
                     id: track
+                    label: "处理进度"
                     anchors.left: parent.left
                     anchors.right: parent.right
                     anchors.bottom: parent.bottom
@@ -365,24 +389,34 @@ Rectangle {
                     }
                     // delete circle over the thumbnail
                     Item {
+                        id: thumbDelete
                         x: parent.width - width - 4
                         y: 4
-                        width: 22; height: 22
+                        // 24px hit target (WCAG 2.2 §2.5.8 minimum); it was 22.
+                        width: 24; height: 24
+                        activeFocusOnTab: true
+                        Accessible.role: Accessible.Button
+                        Accessible.name: "移除 " + modelData.path
+                        Accessible.onPressAction: Desk.removeInput(modelData.path)
+
                         HoverHandler { id: delHover; cursorShape: Qt.PointingHandCursor }
                         Rectangle {
                             anchors.fill: parent
-                            radius: 11
-                            color: delHover.hovered ? Theme.onSurface : Theme.highest
-                            border.color: Theme.outlineV
+                            radius: 12
+                            color: delHover.hovered || thumbDelete.activeFocus ? Theme.onSurface : Theme.highest
+                            border.color: thumbDelete.activeFocus ? Theme.primary : Theme.outlineV
                             border.width: 1
                         }
                         Icon {
                             anchors.centerIn: parent
                             width: 11; height: 11
                             kind: "x"
-                            ink: delHover.hovered ? Theme.highest : Theme.onSurface
+                            ink: delHover.hovered || thumbDelete.activeFocus ? Theme.highest : Theme.onSurface
                         }
                         TapHandler { onTapped: Desk.removeInput(modelData.path) }
+                        Keys.onReturnPressed: Desk.removeInput(modelData.path)
+                        Keys.onEnterPressed: Desk.removeInput(modelData.path)
+                        Keys.onSpacePressed: Desk.removeInput(modelData.path)
                     }
                 }
             }
@@ -391,12 +425,17 @@ Rectangle {
             Item {
                 id: addTile
                 width: 72; height: 72
+                activeFocusOnTab: true
+                Accessible.role: Accessible.Button
+                Accessible.name: "添加图片"
+                Accessible.onPressAction: picker.openFor(false)
+
                 HoverHandler { id: addHover; cursorShape: Qt.PointingHandCursor }
                 Rectangle {
                     anchors.fill: parent
                     radius: 8
                     color: addHover.hovered ? Theme.high : "transparent"
-                    border.color: Theme.outlineV
+                    border.color: addTile.activeFocus ? Theme.primary : Theme.outlineV
                     border.width: 1
                 }
                 Icon {
@@ -409,6 +448,9 @@ Rectangle {
                 ToolTip.text: "添加图片"
                 ToolTip.delay: 400
                 TapHandler { onTapped: picker.openFor(false) }
+                Keys.onReturnPressed: picker.openFor(false)
+                Keys.onEnterPressed: picker.openFor(false)
+                Keys.onSpacePressed: picker.openFor(false)
             }
         }
     }
@@ -418,7 +460,10 @@ Rectangle {
     FileDialog {
         id: picker
         property bool forDir: false
-        nameFilters: ["图片 (*.png *.jpg *.jpeg *.webp *.avif *.bmp *.tif *.tiff)", "全部文件 (*)"]
+        // Mirrors the decoders the CLI ships (cli/src/process_batch.cpp) — the
+        // old list offered .bmp/.tif*, which always failed to load, so picking
+        // one silently did nothing.
+        nameFilters: ["图片 (*.png *.jpg *.jpeg *.webp *.avif)", "全部文件 (*)"]
         fileMode: FileDialog.OpenFiles
         onAccepted: {
             var paths = []

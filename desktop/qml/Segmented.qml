@@ -21,6 +21,13 @@ Rectangle {
         return idx
     }
 
+    // Arrow keys move the selection like a radio group (no focus juggling:
+    // the cell the user tabbed to keeps the caret).
+    function step(idx, delta) {
+        if (!items.length) return
+        picked(items[(idx + delta + items.length) % items.length].value)
+    }
+
     height: 36
     radius: 9
     color: Theme.containerLow
@@ -45,19 +52,33 @@ Rectangle {
         Repeater {
             model: seg.items
             delegate: Item {
+                id: cell
+                required property var modelData
+                required property int index
                 width: (seg.width - 6) / (seg.items.length || 1)
                 height: 30
+                activeFocusOnTab: true
+                Accessible.role: Accessible.RadioButton
+                Accessible.name: cell.modelData.label
+                Accessible.checked: seg.current === cell.modelData.value
+                Accessible.onPressAction: seg.picked(cell.modelData.value)
+
                 Text {
                     anchors.centerIn: parent
-                    text: modelData.label
+                    text: cell.modelData.label
                     font.pixelSize: 13
-                    color: seg.current === modelData.value ? Theme.onSurface : Theme.muted
+                    color: seg.current === cell.modelData.value ? Theme.onSurface : Theme.muted
                 }
                 MouseArea {
                     anchors.fill: parent
                     cursorShape: Qt.PointingHandCursor
-                    onClicked: seg.picked(modelData.value)
+                    onClicked: seg.picked(cell.modelData.value)
                 }
+                Keys.onReturnPressed: seg.picked(cell.modelData.value)
+                Keys.onEnterPressed: seg.picked(cell.modelData.value)
+                Keys.onSpacePressed: seg.picked(cell.modelData.value)
+                Keys.onLeftPressed: seg.step(cell.index, -1)
+                Keys.onRightPressed: seg.step(cell.index, 1)
             }
         }
     }

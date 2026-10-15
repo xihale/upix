@@ -8,7 +8,14 @@ Rectangle {
     anchors.fill: parent
     color: Qt.rgba(0, 0, 0, 0.55)
     visible: Desk.snap.host.pendingDevice !== "" && Desk.snap.host.pendingFp !== ""
-    onVisibleChanged: if (visible) { sheet.scale = 0.98; sheet.opacity = 0; popAnim.restart() }
+    onVisibleChanged: if (visible) {
+        sheet.scale = 0.98
+        sheet.opacity = 0
+        popAnim.restart()
+        // A pairing request is a decision: put the caret on 允许 so Enter/Space
+        // answers it (Esc rejects, per the shell shortcut).
+        allowBtn.forceActiveFocus()
+    }
 
     Rectangle {
         id: sheet
@@ -109,11 +116,18 @@ Rectangle {
                     id: allowBtn
                     width: parent.width - denyBtn.width - 8
                     height: 40
+                    activeFocusOnTab: true
+                    Accessible.role: Accessible.Button
+                    Accessible.name: "允许连接"
+                    Accessible.onPressAction: Desk.hostDecide(true)
+
                     HoverHandler { id: allowHover; cursorShape: Qt.PointingHandCursor }
                     Rectangle {
                         anchors.fill: parent
                         radius: 8
                         color: allowHover.hovered ? Theme.primary : Qt.darker(Theme.primary, 1.08)
+                        border.width: allowBtn.activeFocus ? 1 : 0
+                        border.color: Theme.onPrimary
                     }
                     Row {
                         anchors.centerIn: parent
@@ -133,6 +147,9 @@ Rectangle {
                         }
                     }
                     TapHandler { onTapped: Desk.hostDecide(true) }
+                    Keys.onReturnPressed: Desk.hostDecide(true)
+                    Keys.onEnterPressed: Desk.hostDecide(true)
+                    Keys.onSpacePressed: Desk.hostDecide(true)
                 }
                 Pill {
                     id: denyBtn

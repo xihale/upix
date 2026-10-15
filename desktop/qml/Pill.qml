@@ -16,6 +16,13 @@ Item {
     implicitHeight: compact ? 28 : 34
     opacity: enabled ? 1 : 0.4
 
+    // Every button in the app is this component: it carries the keyboard path
+    // (Tab + Space/Return) and the screen-reader name for all of them.
+    activeFocusOnTab: enabled
+    Accessible.role: Accessible.Button
+    Accessible.name: pill.text
+    Accessible.onPressAction: if (pill.enabled) pill.clicked()
+
     HoverHandler { id: hover; cursorShape: pill.enabled ? Qt.PointingHandCursor : Qt.ArrowCursor }
 
     Rectangle {
@@ -24,8 +31,11 @@ Item {
         color: pill.accent ? Theme.primary
              : hover.hovered && pill.enabled ? Theme.high
              : "transparent"
-        border.width: pill.accent || pill.flat ? 0 : 1
-        border.color: Theme.outlineV
+        // Focus ring follows the HostPage port field grammar (primary hairline);
+        // on an accent-filled button it has to be onPrimary to stay visible.
+        border.width: pill.accent || pill.flat ? (pill.activeFocus ? 1 : 0) : 1
+        border.color: pill.activeFocus ? (pill.accent ? Theme.onPrimary : Theme.primary)
+                                       : Theme.outlineV
         Behavior on color { ColorAnimation { duration: 120 } }
     }
 
@@ -54,4 +64,8 @@ Item {
     }
 
     TapHandler { enabled: pill.enabled; onTapped: pill.clicked() }
+
+    Keys.onReturnPressed: if (pill.enabled) pill.clicked()
+    Keys.onEnterPressed: if (pill.enabled) pill.clicked()
+    Keys.onSpacePressed: if (pill.enabled) pill.clicked()
 }

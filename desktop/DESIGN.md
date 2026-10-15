@@ -2,8 +2,9 @@
 
 **Status:** the desktop workbench (`desktop/`), a Qt 6 Quick window around `upix-cli`.
 **Aesthetic:** "darkroom instrument" (暗房仪器) — warm graphite canvas near-black,
-one tungsten-amber signal color, Lucide icons, images as the protagonist,
-quiet monospace metadata, depth by tone and hairlines, never shadow or glow.
+one cold teal signal (the brand accent, `docs/DESIGN_LANGUAGE.md` §1), Lucide
+icons, images as the protagonist, quiet monospace metadata, depth by tone and
+hairlines, never shadow or glow.
 **Stack:** C++20 + Qt 6.5+ (Quick + QuickControls2 + Svg; QApplication/Widgets linked
 for native file dialogs), CMake + Ninja (`./build.sh`). The CLI stays a
 subprocess: GPU-crash isolation, one interface. `QQuickStyle` is pinned to
@@ -20,9 +21,9 @@ exceed Qt's 256 MB decode ceiling).
 | File | Role |
 |---|---|
 | `Icon.qml` | library icons — Lucide (ISC) rasterized tintable by `src/icons.cpp` at `image://icon/<kind>/<color>[?fill=1]`; 24-unit viewBox, 2px round-cap stroke |
-| `Rail.qml` | 76px nav rail: wordmark, amber signal tick + tint on the active item, hairline edge |
-| `Pill.qml` | button: 8px radius, 1px etched outline; `flat` text-only, `accent` = the one amber-filled action |
-| `Picker.qml` | collapsed hairline row + token popup list, amber check on the selection |
+| `Rail.qml` | 76px nav rail: wordmark, accent signal tick + tint on the active item, hairline edge |
+| `Pill.qml` | button: 8px radius, 1px etched outline; `flat` text-only, `accent` = the one accent-filled action |
+| `Picker.qml` | collapsed hairline row + token popup list, accent check on the selection |
 | `Segmented.qml` | output format, etched track + raised 220 ms indicator |
 | `TrackSlider.qml` | 2px track with ruler ticks, primary fill, ringed 14px thumb |
 | `Toggle.qml` | 44x26 switch, 20px thumb, 180 ms |
@@ -50,9 +51,11 @@ qml/HostPage.qml        header (title + status dot + stop), pairing panel
                         carries the stage's registration marks
 src/desk.{h,cpp}        controller: one QVariantMap snapshot (same shape as the
                         web-era Snapshot JSON) + Q_INVOKABLE commands; 70 ms
-                        coalesced snapChanged; JSON prefs at ~/.config/upix/desktop.json
-src/parser.{h,cpp}      CLI line parsers (progress tiles, saved outputs, model
-                        lists, daemon status, host lines) — regex port of parse.go
+                        coalesced snapChanged; 400 ms coalesced JSON prefs at
+                        ~/.config/upix/desktop.json (flushed on quit)
+src/machine.{h,cpp}     CLI machine-protocol decoder: one compact JSON object
+                        per '\n' line (--json docs, UPIX_PROGRESS=json events);
+                        done-note + daemon-label copywriting lives here
 src/qrprovider.cpp      image://qr/<payload> via vendored Nayuki qrcodegen (MIT)
 src/icons.{h,cpp}       image://icon/<kind>/<color>[?fill=1] — Lucide (ISC) paths
                         rendered tintable via QSvgRenderer
@@ -64,24 +67,49 @@ tests/tst_compare_drag  QTest regression: drives CompareStage with real mouse
 
 State shape: `Desk.snap` — `{cliFound, cliVersion, inputs[], cover, model, format,
 quality, gpu, autoTile, tileSize, force, jobs, installed[], remote[], job{},
-host{}, daemon{}, notice, noticeSeq}`. `daemon` carries `{running, label, pid,
+host{}, daemon{}, notice, noticeSeq}`. Input entries carry `{path, url, dir,
+count, cover}` (`count`/`cover` are per entry so removing one input restores the
+folder badge and the stage cover). `daemon` carries `{running, label, pid,
 socketName, socketMissing}`: the CLI's raw line is 60+ chars (it embeds the
 socket path), so the inspector renders `pid` compactly and keeps `label` for the
-tooltip. QML is a pure function of it; commands go `Q_INVOKABLE` back. CLI
-discovery: `UPIX_CLI` → exe dir → `PATH`.
+tooltip. `host.running` goes true the moment the coordinator process is up (the
+panel reads "正在启动主机…" until the card lands) and `host.remoteError`-style
+fetch failures surface in `remoteError`. QML is a pure function of it; commands
+go `Q_INVOKABLE` back. CLI discovery: `UPIX_CLI` → exe dir → `PATH`.
+
+Run state is owned by the controller: `job.phase == "running"` is the run lock.
+`start()` is a no-op while it is set (a second Ctrl+Return used to kill the live
+CLI and restart the queue), and input edits (`addPaths`/`clearInputs`) never
+reset the card mid-run — the queue advances off its own snapshot (`m_runSnap`).
+Every input edit that produces nothing says so (`已忽略 N 个不支持的文件`).
+Prefs are written through a 400 ms coalesced timer (`setQuality` fires per
+pointer move; `aboutToQuit` flushes).
 
 ## Tokens (dark / light)
 
-Darkroom instrument: warm graphite neutrals + one tungsten-amber signal.
+Darkroom instrument: warm graphite neutrals + one cold teal signal.
 bg `#131316`/`#f4f3ef` · surface `#1a1a1f`/`#ffffff` · container
 `#202026`/`#ecebe6` · container-low `#1c1c21`/`#f0efeb` · high `#26262c`/`#e3e2dc`
 · highest `#323239`/`#d9d8d1` · outline `#2d2d34`/`#d6d5cd` · primary
-`#f2a93b`/`#a26600` · on-primary `#221503`/`#ffffff` · error `#ff7361`/`#c23a2b`
-· muted `#a2a2ac`/`#71706a`. One amber moment per region (CTA, active nav tick,
+`#7FDAC9`/`#0E6B5F` · on-primary `#00382F`/`#ffffff` · error `#ff7361`/`#c23a2b`
+· muted `#a2a2ac`/`#5e5d57`. One accent moment per region (CTA, active nav tick,
 selection check, download/progress fill); error coral only reports errors.
 
+The light `muted` was `#71706a`, which measured 4.16:1 on `container`, 4.32:1 on
+`container-low` and 4.47:1 on `bg` — under the WCAG AA 4.5:1 floor for the
+12–13px metadata it paints. `#5e5d57` keeps the warm-neutral hue and clears the
+bar on every light surface (worst pair 4.62:1 on `highest`; dark `#a2a2ac` stays
+as-is, 5.03:1 at worst). Measure with the same relative-luminance formula the
+design-language audit uses: `docs/DESIGN_LANGUAGE.md` Appendix C.
+
+The accent's hue is the brand's, not the desktop's: §1 of `docs/DESIGN_LANGUAGE.md`
+fixes teal for the whole product (the Android fallback palette and this window now
+draw the same two values), and `desktop/src/theme.h` is the only place they are
+spelled. The dialogs stay warm graphite — the neutrals are unchanged, so the
+"darkroom" reading survives as tone and treatment rather than as a safelight.
+
 Control grammar: hairline outlines over fills, 8px radius on controls, 12 on
-stages/sheets, 999 only on switches. Amber is filled only for the primary
+stages/sheets, 999 only on switches. The accent is filled only for the primary
 action. Numbers, paths, sizes, logs, fingerprints: monospace. Empty stage =
 film-carrier registration frame (four corner marks) around the drop hint.
 
@@ -103,10 +131,36 @@ Radii: stage/sheet 12, cards/popups 10, controls 8, switches 999. Type: 18 page,
 Evidence: `shots-qt/empty-entry-{start,mid,end}.png`, `shots-qt/sweep-{start,mid,end}.png`
 (captured with `--anim` / `--sweep`, software-rendered, no real display needed).
 
+## Keyboard & accessibility
+
+Every control is a hand-drawn item, so the keyboard path and the screen-reader
+metadata live in the components, not in a style: `Pill`, `Toggle`, `StepRow`'s
+buttons, `Segmented` cells, `Picker` (row + list), `TrackSlider`, the nav rail
+items, the inspector CTA, the stage's clear/`+`/thumb-delete buttons, the
+folder action, the fingerprint copy button, the model rows and the pairing
+sheet's 允许/拒绝 all set `activeFocusOnTab: true`, `Accessible.role/name` and
+`Keys.onReturnPressed`/`onEnterPressed`/`onSpacePressed`. Focus is drawn the way
+the port field always has — a primary hairline, switched to `onPrimary` where
+the fill is the accent (`Pill accent`, pairing 允许, a checked `Toggle`).
+
+- Arrow keys move `TrackSlider` (one `step`, same clamp/snap as a drag),
+  `Segmented` (radio semantics) and the compare divider (`CompareStage` takes
+  tab focus; the handle rings primary while focused). The `Picker` popup owns
+  Up/Down/Return once open.
+- Hit targets: the thumbnail delete circle is 24×24 (WCAG 2.2 §2.5.8); the
+  clear button 26, the copy button 24.
+- The pairing sheet grabs focus on show, so Enter answers it and Esc rejects.
+- `Port` (`TextInput`) is `activeFocusOnTab`; a rejected value restores the
+  binding instead of leaving text the desk never accepted.
+- Light-theme `muted` clears AA on every surface (see Tokens above).
+- Screen readers get no numeric value from QML's `Accessible` type (no value
+  slot in Qt 6.5+), so `TrackSlider`/`Progress` carry the reading in
+  `Accessible.description`.
+
 ## Headless verification
 
 ```bash
-ctest --test-dir build --output-on-failure     # compare-divider regression
+ctest --test-dir build --output-on-failure     # divider + job queue/card parsing
 UPIX_CLI=…/upix-cli ./build/upix --smoke       # real job, exit 0/1
 ./build/upix --shot empty,done,models,host --out shots-qt
 QT_SCALE_FACTOR=2 ./build/upix --shot done --out shots-qt/zoom   # 200 %
@@ -123,6 +177,17 @@ only appeared under a real drag. It loads the shipped `CompareStage.qml` and
 sends real `QMouseEvent`s. Keep the two drag assertions in step with the
 component: they are the only automated coverage of pointer interaction.
 
+`tst_desk_jobs` exercises sequential inputs, snapshotted settings, cancellation,
+retained failure details, host cards split across process output chunks, and the
+run-state guards that keep the queue honest: a live run survives list edits
+(add/remove mid-run), a second `start()` during a run is ignored, an
+unexecutable CLI lands as an error card instead of a stall, `folderCount`/`cover`
+follow input removal, and a drop with nothing usable in it reports how many
+entries were skipped. The workbench runs all selected files and folders in
+order, stops at the first failure, and retains completed outputs; cancel
+prevents the next input from starting. Host output is buffered until the
+complete IP/fingerprint/QR card can be parsed.
+
 ## Parity notes
 
 - Folder `--gpu` only applies to directory runs. Single images never pass
@@ -135,5 +200,7 @@ component: they are the only automated coverage of pointer interaction.
   is installed (`qt6-imageformats` / libavif); otherwise the cell stays quiet.
 - No native menu bar (webview build had one); keyboard parity: Ctrl+O,
   Ctrl+Shift+O, Ctrl+V (paste image), Ctrl+1/2/3, Ctrl+Return (start),
-  Ctrl+. (cancel), Esc (reject pairing).
+  Ctrl+. (cancel), Esc (reject pairing). Beyond the shortcuts, Tab walks the
+  custom controls (Space/Return activate; arrows drive the sliders, the format
+  segment and the compare divider) — see Keyboard & accessibility.
 - Prefs file is the same JSON as the previous Go build, so settings survive the swap.

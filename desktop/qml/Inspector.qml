@@ -102,6 +102,7 @@ Rectangle {
                         }
                         TrackSlider {
                             width: parent.width
+                            label: "质量"
                             from: 1
                             to: 100
                             value: snap.quality
@@ -166,6 +167,7 @@ Rectangle {
                         }
                         TrackSlider {
                             width: parent.width
+                            label: "分块"
                             from: 64
                             to: 1024
                             step: 32
@@ -202,13 +204,31 @@ Rectangle {
                     : inspector.canRun ? Theme.primary : Theme.high
                 readonly property color ink: running ? Theme.error
                     : inspector.canRun ? Theme.onPrimary : Theme.muted
+
+                // The CTA is a hand-drawn item, not a stock control: it carries
+                // its own focus path and screen-reader identity.
+                activeFocusOnTab: cta.live
+                Accessible.role: Accessible.Button
+                Accessible.name: cta.running ? "停止" : "开始超分"
+                Accessible.onPressAction: cta.activate()
+                Keys.onReturnPressed: cta.activate()
+                Keys.onEnterPressed: cta.activate()
+                Keys.onSpacePressed: cta.activate()
+                function activate() {
+                    if (!cta.live) return
+                    if (cta.running) Desk.cancel()
+                    else Desk.start()
+                }
+
                 HoverHandler { cursorShape: cta.live ? Qt.PointingHandCursor : Qt.ArrowCursor }
                 Rectangle {
                     anchors.fill: parent
                     radius: 8
                     color: cta.fill
                     border.width: 1
-                    border.color: cta.running ? Theme.error : "transparent"
+                    border.color: cta.running ? Theme.error
+                                : cta.activeFocus ? Theme.primary
+                                : "transparent"
                 }
                 Row {
                     anchors.centerIn: parent
@@ -231,7 +251,7 @@ Rectangle {
                 }
                 TapHandler {
                     enabled: cta.live
-                    onTapped: cta.running ? Desk.cancel() : Desk.start()
+                    onTapped: cta.activate()
                 }
             }
 

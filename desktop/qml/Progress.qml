@@ -8,7 +8,13 @@ Item {
     property real value: 0
     property real from: 0
     property real to: 100
+    // Screen-reader name for the bar (the visible caption is a sibling Text).
+    property string label: ""
     implicitHeight: 3
+
+    Accessible.role: Accessible.ProgressBar
+    Accessible.name: bar.label
+    Accessible.description: Math.round(bar.norm * 100) + "%"
 
     readonly property real norm: to > from
         ? Math.min(1, Math.max(0, (value - from) / (to - from))) : 0

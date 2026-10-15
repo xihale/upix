@@ -62,11 +62,6 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+."; onActivated: Desk.cancel() }
     Shortcut { sequence: "Escape"; onActivated: if (win.pairing) Desk.hostDecide(false) }
 
-    Connections {
-        target: Desk
-        function onRequestView(v) { win.view = v }
-    }
-
     // file drop
     DropArea {
         anchors.fill: parent

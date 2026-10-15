@@ -12,6 +12,20 @@ Item {
     signal picked(string name)
 
     height: 40
+    activeFocusOnTab: true
+    Accessible.role: Accessible.ComboBox
+    Accessible.name: picker.selected ? picker.selected.name
+                     : picker.items.length ? picker.placeholder
+                     : "未发现模型"
+    Accessible.onPressAction: picker.toggle()
+
+    // Keyboard: Space/Return open the list, Down opens it with the cursor on
+    // the current entry (the list then owns Up/Down/Return/Esc).
+    Keys.onSpacePressed: picker.toggle()
+    Keys.onReturnPressed: picker.toggle()
+    Keys.onEnterPressed: picker.toggle()
+    Keys.onDownPressed: picker.toggle()
+    function toggle() { pop.visible ? pop.close() : pop.open() }
     readonly property int index: {
         for (var i = 0; i < items.length; i++)
             if (items[i].name === current) return i
@@ -82,6 +96,13 @@ Item {
         y: picker.height + 6
         width: picker.width
         padding: 4
+        // The list takes focus so Up/Down/Return work without the mouse.
+        focus: true
+        onOpened: {
+            list.currentIndex = Math.max(0, picker.index)
+            list.forceActiveFocus()
+        }
+        onClosed: picker.forceActiveFocus()
 
         background: Rectangle {
             radius: 10
@@ -98,15 +119,24 @@ Item {
             boundsBehavior: Flickable.StopAtBounds
             ScrollBar.vertical: ScrollBar { }
 
+            Keys.onReturnPressed: picker.takeCursor()
+            Keys.onEnterPressed: picker.takeCursor()
+
             delegate: Rectangle {
                 required property var modelData
                 required property int index
                 width: list.width
                 height: 44
                 radius: 6
-                color: index === picker.index ? Theme.high
+                color: index === picker.index ||
+                       (list.activeFocus && index === list.currentIndex) ? Theme.high
                      : rowHover.hovered ? Theme.containerLow
                      : "transparent"
+
+                Accessible.role: Accessible.ListItem
+                Accessible.name: modelData.short || modelData.name
+                Accessible.selected: index === picker.index
+                Accessible.onPressAction: { picker.picked(modelData.name); pop.close() }
 
                 HoverHandler { id: rowHover; cursorShape: Qt.PointingHandCursor }
 
@@ -146,5 +176,13 @@ Item {
                 TapHandler { onTapped: { picker.picked(modelData.name); pop.close() } }
             }
         }
+    }
+
+    // Return on the focused list row = pick it.
+    function takeCursor() {
+        var i = list.currentIndex
+        if (i < 0 || i >= items.length) return
+        picked(items[i].name)
+        pop.close()
     }
 }

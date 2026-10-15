@@ -8,11 +8,14 @@ set(CMAKE_AUTOMOC ON)
 find_package(Qt6 REQUIRED COMPONENTS Quick QuickControls2 Widgets Svg)
 
 qt_standard_project_setup(REQUIRES 6.5)
+if(Qt6_VERSION VERSION_GREATER_EQUAL "6.8")
+    qt_policy(SET QTP0004 NEW)
+endif()
 
 qt_add_executable(upix
     src/main.cpp
     src/theme.cpp
-    src/parser.cpp
+    src/machine.cpp
     src/desk.cpp
     src/qrprovider.cpp
     src/icons.cpp
@@ -21,11 +24,7 @@ qt_add_executable(upix
 
 target_include_directories(upix PRIVATE src)
 
-if(CMAKE_BUILD_TYPE STREQUAL "" OR NOT CMAKE_BUILD_TYPE)
-    set(FIXTURE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets")
-else()
-    set(FIXTURE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets")
-endif()
+set(FIXTURE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 target_compile_definitions(upix PRIVATE FIXTURE_DIR="${FIXTURE_DIR}")
 target_link_libraries(upix PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Svg)
 qt_add_qml_module(upix
@@ -52,7 +51,6 @@ qml/PairingSheet.qml
 qml/Grouping.js
 )
 
-target_link_libraries(upix PRIVATE Qt6::Quick)
 
 # Regression tests. `ctest` in the build dir; the divider test drives the real
 # CompareStage with real mouse events (the headless shots cannot see gestures).
@@ -86,4 +84,15 @@ if(UPIX_BUILD_TESTS)
     # `offscreen` keeps it runnable on a headless CI box.
     add_test(NAME compare_drag COMMAND tst_compare_drag -platform offscreen)
     set_tests_properties(compare_drag PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+
+    qt_add_executable(tst_desk_jobs
+        tests/tst_desk_jobs.cpp
+        src/desk.cpp
+        src/machine.cpp
+    )
+    target_include_directories(tst_desk_jobs PRIVATE src)
+    target_compile_definitions(tst_desk_jobs PRIVATE FIXTURE_DIR="${FIXTURE_DIR}")
+    target_link_libraries(tst_desk_jobs PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Test)
+    add_test(NAME desk_jobs COMMAND tst_desk_jobs -platform offscreen)
+    set_tests_properties(desk_jobs PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()

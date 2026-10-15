@@ -127,7 +127,11 @@ Flickable {
             Text { visible: snap.remoteError !== ""; text: snap.remoteError; font.pixelSize: 14; color: Theme.error }
             Text {
                 visible: !snap.remoteError && remoteFiltered().length === 0
-                text: snap.remote.length ? "都已在本地" : "正在获取"
+                // Without a CLI the list can never arrive; saying "正在获取"
+                // left the page in a state that never resolved.
+                text: snap.remote.length ? "都已在本地"
+                      : snap.cliFound ? "正在获取"
+                      : "未找到 upix-cli"
                 font.pixelSize: 12
                 color: Theme.muted
             }
@@ -174,8 +178,20 @@ Flickable {
         height: 40
         radius: 6
         color: current ? Theme.high : (hover.hovered ? Theme.containerLow : "transparent")
+        // Installed rows are selectable: Tab to one, Space/Return picks it.
+        border.width: row.activeFocus ? 1 : 0
+        border.color: Theme.primary
+        activeFocusOnTab: !row.isRemote
+        Accessible.role: Accessible.ListItem
+        Accessible.name: row.shortName || row.entry.name
+        Accessible.selected: row.current
+        Accessible.onPressAction: if (!row.isRemote) Desk.setModel(row.entry.name)
 
-        // amber signal tick marks the active model
+        Keys.onReturnPressed: if (!row.isRemote) Desk.setModel(row.entry.name)
+        Keys.onEnterPressed: if (!row.isRemote) Desk.setModel(row.entry.name)
+        Keys.onSpacePressed: if (!row.isRemote) Desk.setModel(row.entry.name)
+
+        // accent signal tick marks the active model
         Rectangle {
             visible: row.current
             x: 0
@@ -229,7 +245,7 @@ Flickable {
                     }
                 }
                 // ★ the picks models/README.md calls out as first choices;
-                // amber = the theme's single signal color.
+                // the accent = the theme's single signal color.
                 Rectangle {
                     visible: entry.recommended === true
                     width: recoLabel.implicitWidth + 12
@@ -297,6 +313,7 @@ Flickable {
                         visible: row.downloading
                         spacing: 8
                         Progress {
+                            label: "下载进度 " + row.entry.name
                             anchors.verticalCenter: parent.verticalCenter
                             width: 84
                             from: 0

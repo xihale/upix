@@ -1,6 +1,6 @@
 import QtQuick
 
-// 76px navigation rail. Active entry = amber icon/text plus a 2px signal tick
+// 76px navigation rail. Active entry = accent icon/text plus a 2px signal tick
 // on the left edge; no sliding pill. Wordmark tops the column.
 Rectangle {
     id: rail
@@ -49,10 +49,30 @@ Rectangle {
                 readonly property bool active: rail.view === modelData.view
                 width: 60
                 height: 60
+                activeFocusOnTab: true
+                Accessible.role: Accessible.PageTab
+                Accessible.name: navItem.modelData.label
+                Accessible.selected: navItem.active
+                Accessible.onPressAction: rail.select(navItem.modelData.view)
+
                 TapHandler {
                     gesturePolicy: TapHandler.ReleaseWithinBounds
                     cursorShape: Qt.PointingHandCursor
                     onTapped: rail.select(navItem.modelData.view)
+                }
+                Keys.onReturnPressed: rail.select(navItem.modelData.view)
+                Keys.onEnterPressed: rail.select(navItem.modelData.view)
+                Keys.onSpacePressed: rail.select(navItem.modelData.view)
+
+                // Focus ring: the accent hairline, one step inside the hit box.
+                Rectangle {
+                    anchors.fill: parent
+                    anchors.margins: 2
+                    radius: 8
+                    color: "transparent"
+                    border.width: 1
+                    border.color: Theme.primary
+                    visible: navItem.activeFocus
                 }
                 Rectangle {
                     visible: navItem.active

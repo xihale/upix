@@ -5,7 +5,7 @@ import QtQuick.Controls.Basic
 // 主机 page: header (title + host status + stop) above one pairing panel —
 // QR field | hairline | instrument column with a shared label grid — and a
 // quiet log strip under the panel. Idle frames the QR field with the same
-// registration marks as the empty stage; amber stays on the status dot,
+// registration marks as the empty stage; the accent stays on the status dot,
 // the start CTA and progress only.
 Rectangle {
     id: page
@@ -155,14 +155,18 @@ Rectangle {
                             Text {
                                 width: parent.width
                                 horizontalAlignment: Text.AlignHCenter
-                                text: snap.cliFound ? "在手机上扫码配对" : "未找到 upix-cli"
+                                // The start click is otherwise invisible until
+                                // the card lands.
+                                text: !snap.cliFound ? "未找到 upix-cli"
+                                      : h.running ? "正在启动主机…"
+                                      : "在手机上扫码配对"
                                 font.pixelSize: 15
                                 font.weight: Font.Medium
                                 color: Theme.onSurface
                             }
                             Text {
                                 width: parent.width
-                                visible: snap.cliFound
+                                visible: snap.cliFound && !h.running
                                 horizontalAlignment: Text.AlignHCenter
                                 wrapMode: Text.Wrap
                                 text: "同一 Wi-Fi 下的手机扫码，即可把照片发到这台电脑。"
@@ -214,11 +218,18 @@ Rectangle {
                                         visible: h.fingerprint !== ""
                                         anchors.verticalCenter: parent.verticalCenter
                                         width: 24; height: 24
+                                        activeFocusOnTab: copyBtn.visible
+                                        Accessible.role: Accessible.Button
+                                        Accessible.name: "复制指纹"
+                                        Accessible.onPressAction: Desk.copyFingerprint()
+
                                         HoverHandler { id: copyHover; cursorShape: Qt.PointingHandCursor }
                                         Rectangle {
                                             anchors.fill: parent
                                             radius: 8
                                             color: copyHover.hovered ? Theme.high : "transparent"
+                                            border.width: copyBtn.activeFocus ? 1 : 0
+                                            border.color: Theme.primary
                                         }
                                         Icon {
                                             anchors.centerIn: parent
@@ -230,6 +241,9 @@ Rectangle {
                                         ToolTip.text: "复制指纹"
                                         ToolTip.delay: 400
                                         TapHandler { onTapped: Desk.copyFingerprint() }
+                                        Keys.onReturnPressed: Desk.copyFingerprint()
+                                        Keys.onEnterPressed: Desk.copyFingerprint()
+                                        Keys.onSpacePressed: Desk.copyFingerprint()
                                     }
                                 }
                                 Text {
@@ -338,8 +352,23 @@ Rectangle {
                                     font.family: Theme.mono
                                     color: Theme.onSurface
                                     selectByMouse: true
+                                    // Reachable with Tab (TextInput defaults to
+                                    // click-to-focus only).
+                                    activeFocusOnTab: true
+                                    Accessible.name: "端口"
+                                    Accessible.description: "1 到 65535"
                                     validator: IntValidator { bottom: 1; top: 65535 }
-                                    onEditingFinished: Desk.setHostPort(parseInt(text) || 0)
+                                    onEditingFinished: {
+                                        var p = parseInt(text)
+                                        if (p > 0 && p <= 65535) {
+                                            Desk.setHostPort(p)
+                                        } else {
+                                            // A rejected value used to sit in the
+                                            // field while the desk kept the old
+                                            // port; put the real one back.
+                                            text = Qt.binding(function () { return h.port })
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -377,6 +406,7 @@ Rectangle {
                             }
                             Progress {
                                 width: parent.width
+                                label: "手机任务"
                                 from: 0
                                 to: 100
                                 value: Math.max(0, h.taskPercent)

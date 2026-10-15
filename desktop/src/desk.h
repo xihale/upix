@@ -3,8 +3,8 @@
 // pure function; every command is a Q_INVOKABLE that mutates state and runs
 // the CLI asynchronously. Never blocks the GUI thread; never spawns itself.
 #pragma once
+#include <QByteArray>
 #include <QProcess>
-#include <QQmlEngine>
 #include <QTimer>
 #include <QVariantMap>
 
@@ -67,7 +67,6 @@ public:
 
 signals:
     void snapChanged();
-    void requestView(const QString& view);
 
 private:
     // snapshot mutation + 70 ms coalesced notify
@@ -75,19 +74,40 @@ private:
     void touch();                 // schedule emit
     void notifyNow();
     void setNotice(const QString& msg);
+    // Job phase guard: the run state must survive input edits (adding a file
+    // to a running queue used to reset `job` and strand the rest of the run).
+    bool jobRunning() const;
+    void resetJobCard();
 
-    // process helpers — all async, merged channels, line-oriented
+    // process helpers — all async, merged channels
     QProcess* spawn(const QString& key, const QStringList& args,
                     const QStringList& env = {});
     void boot();
     void loadPrefs();
-    void savePrefs() const;
+    void savePrefs();             // schedules the coalesced write
+    void flushPrefs();            // the actual write (timer / aboutToQuit)
+    void startNextJob();
+    void readJobOutput(QProcess* process, bool final = false);
+    // One job-stream line: machine events drive the job state; anything else
+    // (human logs on stderr) is kept as failure diagnostics in m_jobOutput.
+    void handleJobLine(const QString& line);
+    void readHostOutput(QProcess* process, bool final = false);
+    void readDownloadOutput(QProcess* process, const QString& name);
     void finishJob(int code);
     void refreshDaemonStatus();
     void hostReset();
 
     QVariantMap m_snap;
     QTimer m_coalesce;
+    QTimer m_prefsSave;
+    QVariantMap m_runSnap;
+    int m_runIndex = 0;
+    bool m_cancelRequested = false;
+    bool m_hostStopping = false;  // host exit was requested (stop), not a failure
+    QByteArray m_jobPending;
+    QByteArray m_jobOutput;       // non-event diagnostics only
+    QByteArray m_hostPending;
+    QByteArray m_downloadPending;
 
     static inline Desk* g_desk = nullptr;
 

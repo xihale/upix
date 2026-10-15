@@ -1,7 +1,8 @@
 // image://qr/<payload> — renders the phone-pairing QR.
-// Payload is percent-encoded by QML. Two accepted forms:
-//  1. the CLI's ASCII half-block card (█▀▄/space), parsed module-exact;
-//  2. any text (e.g. the v2 JSON card) generated via the vendored Nayuki lib.
+// The payload is percent-encoded by QML (HostPage passes encodeURIComponent of
+// the card JSON) and decoded here, then encoded as an ECC-M symbol by the
+// vendored Nayuki lib. Any text works; the pre-v2 ASCII half-block card
+// (█▀▄/space) is not parsed.
 #pragma once
 #include <QQuickImageProvider>
 

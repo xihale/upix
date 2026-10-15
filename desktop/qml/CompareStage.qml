@@ -11,6 +11,24 @@ Rectangle {
     color: Theme.containerLow
     radius: 12
 
+    // The divider is the one pointer-only control in the app; it takes tab
+    // focus and moves with the arrow keys.
+    activeFocusOnTab: true
+    Accessible.role: Accessible.Slider
+    Accessible.name: "对比分割线"
+    Accessible.description: Math.round(pos * 100) + "% 结果"
+    Accessible.onIncreaseAction: stage.nudge(0.02)
+    Accessible.onDecreaseAction: stage.nudge(-0.02)
+
+    function nudge(delta) {
+        sweepBg.stop()
+        stage.pos = Math.min(0.98, Math.max(0.02, stage.pos + delta))
+    }
+    Keys.onLeftPressed: stage.nudge(-0.02)
+    Keys.onRightPressed: stage.nudge(0.02)
+    Keys.onUpPressed: stage.nudge(-0.02)
+    Keys.onDownPressed: stage.nudge(0.02)
+
     // One whole device pixel, shared by the clip seam, the 1px rule and the
     // handle. Rounding them separately left the seam and the rule on adjacent
     // columns at fractional positions, which read as a doubled line mid-drag.
@@ -63,7 +81,7 @@ Rectangle {
         height: 28
         radius: 8
         color: Theme.surface
-        border.color: Theme.outlineV
+        border.color: stage.activeFocus ? Theme.primary : Theme.outlineV
         border.width: 1
         Icon {
             anchors.centerIn: parent

@@ -1,7 +1,8 @@
 #include "desk.h"
-#include "parser.h"
+#include "machine.h"
 
 #include <QClipboard>
+#include <QCoreApplication>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
@@ -20,6 +21,7 @@
 namespace {
 
 constexpr int CoalesceMs = 70;
+constexpr int PrefsSaveMs = 400;
 
 QString prefsPath() {
     return QDir(QStandardPaths::writableLocation(QStandardPaths::ConfigLocation))
@@ -219,6 +221,12 @@ Desk::Desk(QObject* parent) : QObject(parent) {
     m_coalesce.setSingleShot(true);
     m_coalesce.setInterval(CoalesceMs);
     connect(&m_coalesce, &QTimer::timeout, this, &Desk::notifyNow);
+    m_prefsSave.setSingleShot(true);
+    m_prefsSave.setInterval(PrefsSaveMs);
+    connect(&m_prefsSave, &QTimer::timeout, this, &Desk::flushPrefs);
+    if (QCoreApplication::instance())
+        connect(QCoreApplication::instance(), &QCoreApplication::aboutToQuit, this,
+                &Desk::flushPrefs);
 
     loadPrefs();
     // Fixture mode (--shot) never touches the CLI.
@@ -268,8 +276,8 @@ void Desk::boot() {
         connect(p, &QProcess::finished, this, [this, p](int code, QProcess::ExitStatus) {
             const QString out = QString::fromUtf8(p->readAll());
             if (code == 0 && !out.trimmed().isEmpty()) {
-                s()["cliVersion"] =
-                    parser::parseVersion(out.section(QLatin1Char('\n'), 0, 0));
+                // The version line is machine-readable by definition.
+                s()["cliVersion"] = out.section(QLatin1Char('\n'), 0, 0).trimmed();
                 touch();
             }
         });
@@ -283,29 +291,38 @@ QProcess* Desk::spawn(const QString& key, const QStringList& args,
     const QString cli = findCli();
     if (cli.isEmpty()) return nullptr;
 
-    QProcess*& slot = m_procs[key];
-    if (slot) {
-        slot->disconnect(this);
-        slot->deleteLater();
+    // Take (never hold a reference into) the slot: an exec failure is reported
+    // from inside waitForStarted() below, which can run finishJob() and remove
+    // the entry — a `QProcess*&` here would then be dereferencing freed hash
+    // storage.
+    if (QProcess* stale = m_procs.take(key)) {
+        stale->disconnect(this);
+        stale->deleteLater();
     }
-    slot = new QProcess(this);
-    slot->setProcessChannelMode(QProcess::MergedChannels);
+    QProcess* proc = new QProcess(this);
+    proc->setProcessChannelMode(QProcess::MergedChannels);
     QProcessEnvironment e = QProcessEnvironment::systemEnvironment();
     for (const QString& kv : env) {
         const int eq = kv.indexOf(QLatin1Char('='));
         e.insert(kv.left(eq), kv.mid(eq + 1));
     }
-    slot->setProcessEnvironment(e);
-    connect(slot, &QProcess::errorOccurred, this, [this, key](QProcess::ProcessError) {
-        if (key == QLatin1String("job")) finishJob(-1);
+    proc->setProcessEnvironment(e);
+    connect(proc, &QProcess::errorOccurred, this, [this, key, proc](QProcess::ProcessError) {
+        // Only the job stream is stateful; a superseded process must not touch
+        // the run it no longer belongs to.
+        if (key != QLatin1String("job") || m_procs.value(key) != proc) return;
+        readJobOutput(proc, true);  // keep whatever it printed before dying
+        finishJob(-1);
     });
-    slot->start(cli, args);
-    if (!slot->waitForStarted(3000)) {
-        slot->deleteLater();
-        slot = nullptr;
+    m_procs.insert(key, proc);
+    proc->start(cli, args);
+    if (!proc->waitForStarted(3000)) {
+        if (m_procs.value(key) == proc) m_procs.remove(key);
+        proc->disconnect(this);
+        proc->deleteLater();
         return nullptr;
     }
-    return slot;
+    return proc;
 }
 
 void Desk::touch() {
@@ -321,6 +338,21 @@ void Desk::setNotice(const QString& msg) {
     s()["notice"] = msg;
     s()["noticeSeq"] = s()["noticeSeq"].toInt() + 1;
     touch();
+}
+
+bool Desk::jobRunning() const {
+    return m_snap.value(QStringLiteral("job"))
+               .toMap()
+               .value(QStringLiteral("phase"))
+               .toString() == QLatin1String("running");
+}
+
+// Drop a stale result card (done/error/cancelled) when the selection changes.
+// A live run owns the card: resetting it mid-run made the queue unobservable
+// and stranded every input that had not been started yet.
+void Desk::resetJobCard() {
+    if (jobRunning()) return;
+    s()["job"] = QVariantMap(defaultSnap().value("job").toMap());
 }
 
 void Desk::loadPrefs() {
@@ -339,7 +371,14 @@ void Desk::loadPrefs() {
     }
 }
 
-void Desk::savePrefs() const {
+// Dragging 质量/分块 emitted setQuality()/setTileSize() per pointer move, each
+// one rewriting this file. Coalesce the write; flushPrefs() (aboutToQuit) makes
+// sure the last edit of a session is not lost.
+void Desk::savePrefs() { m_prefsSave.start(); }
+
+void Desk::flushPrefs() {
+    if (!m_prefsSave.isActive()) return;  // nothing pending: never write on exit
+    m_prefsSave.stop();
     QJsonObject o;
     o.insert(QStringLiteral("model"), m_snap.value(QStringLiteral("model")).toString());
     o.insert(QStringLiteral("format"), m_snap.value(QStringLiteral("format")).toString());
@@ -363,6 +402,7 @@ void Desk::addPaths(const QStringList& paths) {
     QVariantList inputs = s()["inputs"].toList();
     int folderCount = s()["folderCount"].toInt();
     QString cover = s()["cover"].toString();
+    int skipped = 0;
 
     for (const QString& raw : paths) {
         QString path = raw;
@@ -370,11 +410,33 @@ void Desk::addPaths(const QStringList& paths) {
             path = QUrl(path).toLocalFile();
         path = QDir::cleanPath(path);
         QFileInfo info(path);
-        if (!info.exists()) continue;
+        if (!info.exists()) {
+            ++skipped;
+            continue;
+        }
 
-        if (info.isDir()) {
-            QDirIterator it(path, imageExtensions(), QDir::Files,
-                            QDirIterator::Subdirectories);
+        const bool isDir = info.isDir();
+        if (!isDir && !isImageFile(path)) {
+            ++skipped;
+            continue;
+        }
+        bool duplicate = false;
+        for (const QVariant& value : inputs) {
+            const QVariantMap entry = value.toMap();
+            if (entry.value("path").toString() == path && entry.value("dir").toBool() == isDir) {
+                duplicate = true;
+                break;
+            }
+        }
+        if (duplicate) continue;
+
+        // `count`/`cover` are kept per entry so removing one input can restore
+        // the badge count and the stage cover (they used to go stale).
+        QVariantMap entry = inputEntry(path, isDir);
+        if (isDir) {
+            QStringList filters = imageExtensions();
+            for (QString& extension : filters) extension.prepend(QStringLiteral("*."));
+            QDirIterator it(path, filters, QDir::Files, QDirIterator::Subdirectories);
             QStringList files;
             while (it.hasNext()) files.append(it.next());
             files.sort();
@@ -382,41 +444,52 @@ void Desk::addPaths(const QStringList& paths) {
                 setNotice(QStringLiteral("文件夹里没有图片"));
                 continue;
             }
-            folderCount = files.size();
-            cover = QUrl::fromLocalFile(files.first()).toString();
-            inputs = QVariantList{inputEntry(path, true)};
-        } else if (isImageFile(path)) {
-            bool dup = false;
-            for (const QVariant& v : inputs)
-                if (v.toMap().value("path") == path) { dup = true; break; }
-            if (dup) continue;
-            if (inputs.size() == 1 && inputs.first().toMap().value("dir").toBool())
-                inputs.clear();
-            inputs.append(inputEntry(path, false));
-            folderCount = 0;
-            cover.clear();
+            folderCount += files.size();
+            entry["count"] = files.size();
+            entry["cover"] = QUrl::fromLocalFile(files.first()).toString();
+        } else {
+            folderCount += 1;
+            entry["count"] = 1;
+            entry["cover"] = QUrl::fromLocalFile(path).toString();
         }
+        if (cover.isEmpty()) cover = entry.value("cover").toString();
+        inputs.append(entry);
     }
     s()["inputs"] = inputs;
     s()["folderCount"] = folderCount;
     s()["cover"] = cover;
-    s()["job"] = QVariantMap(defaultSnap().value("job").toMap());
+    resetJobCard();
     touch();
+    // A drop/pick that produced nothing is otherwise indistinguishable from a
+    // drop that was ignored: say how many entries were dropped.
+    if (skipped > 0)
+        setNotice(QStringLiteral("已忽略 %1 个不支持的文件").arg(skipped));
 }
 
 void Desk::clearInputs() {
     s()["inputs"] = QVariantList{};
     s()["folderCount"] = 0;
     s()["cover"] = QString();
-    s()["job"] = QVariantMap(defaultSnap().value("job").toMap());
+    resetJobCard();
     touch();
 }
 
 void Desk::removeInput(const QString& path) {
     QVariantList inputs;
-    for (const QVariant& v : s()["inputs"].toList())
-        if (v.toMap().value("path") != path) inputs.append(v);
+    int folderCount = 0;
+    QString cover;
+    for (const QVariant& v : s()["inputs"].toList()) {
+        const QVariantMap entry = v.toMap();
+        if (entry.value("path") == path) continue;
+        inputs.append(v);
+        folderCount += entry.value("count").toInt();
+        if (cover.isEmpty()) cover = entry.value("cover").toString();
+    }
     s()["inputs"] = inputs;
+    s()["folderCount"] = folderCount;
+    s()["cover"] = cover;
+    // Unchanged from before: only a pristine (idle) card is reset here; a
+    // finished run keeps its outputs reachable from the remaining list.
     if (s()["job"].toMap().value("phase").toString() == QLatin1String("idle"))
         s()["job"] = QVariantMap(defaultSnap().value("job").toMap());
     touch();
@@ -440,146 +513,224 @@ void Desk::start() {
         setNotice(QStringLiteral("未找到 upix-cli"));
         return;
     }
+    // Ctrl+Return / a second CTA tap during a run used to restart the queue:
+    // spawn() killed the in-flight CLI, cleared the collected outputs and
+    // silently dropped every input that had not run yet.
+    if (jobRunning()) {
+        setNotice(QStringLiteral("正在处理中，先停止再开始"));
+        return;
+    }
     const QVariantList inputs = s()["inputs"].toList();
     if (inputs.isEmpty() || s()["model"].toString().isEmpty()) return;
 
-    QStringList args{QStringLiteral("-i"), inputs.first().toMap().value("path").toString(),
-                     QStringLiteral("-m"), s()["model"].toString(),
-                     QStringLiteral("--output-quality"), QString::number(s()["quality"].toInt())};
-    const QString fmt = s()["format"].toString();
-    if (!fmt.isEmpty()) args << QStringLiteral("--output-format") << fmt;
-    if (s()["autoTile"].toBool()) args << QStringLiteral("--auto-tile");
-    else args << QStringLiteral("--tile-size") << QString::number(s()["tileSize"].toInt());
-    if (s()["force"].toBool()) args << QStringLiteral("-f");
-    const bool dir = inputs.first().toMap().value("dir").toBool();
-    // --auto-tile is folder-only: on the CLI it gates out the warm-daemon
-    // delegation (the optimizer must benchmark the inline engine; ServeRequest
-    // cannot carry it). Without it a single image delegates to the daemon —
-    // which auto-spawns one and applies the engine's recommended tile size.
-    // A pinned tile size rides along in the request either way.
-    if (dir && s()["autoTile"].toBool()) args << QStringLiteral("--auto-tile");
-    if (!s()["autoTile"].toBool())
-        args << QStringLiteral("--tile-size") << QString::number(s()["tileSize"].toInt());
-    if (dir) {
-        if (s()["gpu"].toBool()) args << QStringLiteral("--gpu");
-        else args << QStringLiteral("-j") << QString::number(s()["jobs"].toInt());
-    }
-
+    m_runSnap = s();
+    m_runIndex = 0;
+    m_cancelRequested = false;
+    m_jobPending.clear();
+    m_jobOutput.clear();
     QVariantMap job = defaultSnap().value("job").toMap();
     job["phase"] = QStringLiteral("running");
-    job["total"] = dir ? inputs.size() : 1;
+    job["total"] = inputs.size();
+    job["index"] = 1;
     s()["job"] = job;
     touch();
+    startNextJob();
+}
 
-    QProcess* p = spawn(QStringLiteral("job"), args,
-                        {QStringLiteral("UPIX_PROGRESS=1")});
-    if (!p) {
+void Desk::startNextJob() {
+    const QVariantList inputs = m_runSnap.value("inputs").toList();
+    if (m_cancelRequested || m_runIndex >= inputs.size()) {
+        QVariantMap job = s()["job"].toMap();
+        job["phase"] = m_cancelRequested ? QStringLiteral("cancelled") : QStringLiteral("done");
+        if (!m_cancelRequested) job["percent"] = 100;
+        if (job.value("message").toString().isEmpty())
+            job["message"] = m_cancelRequested ? QStringLiteral("已取消") : QStringLiteral("完成");
+        s()["job"] = job;
+        touch();
+        refreshDaemonStatus();
+        return;
+    }
+
+    const QVariantMap input = inputs.at(m_runIndex).toMap();
+    const QVariantMap settings = m_runSnap;
+    QStringList args{QStringLiteral("-i"), input.value("path").toString(),
+                     QStringLiteral("-m"), settings.value("model").toString(),
+                     QStringLiteral("--output-quality"), QString::number(settings.value("quality").toInt())};
+    const QString fmt = settings.value("format").toString();
+    if (!fmt.isEmpty()) args << QStringLiteral("--output-format") << fmt;
+    const bool isDir = input.value("dir").toBool();
+    const bool autoTile = settings.value("autoTile").toBool();
+    if (isDir && autoTile) args << QStringLiteral("--auto-tile");
+    else if (!autoTile) args << QStringLiteral("--tile-size") << QString::number(settings.value("tileSize").toInt());
+    if (settings.value("force").toBool()) args << QStringLiteral("-f");
+    if (isDir) {
+        if (settings.value("gpu").toBool()) args << QStringLiteral("--gpu");
+        else args << QStringLiteral("-j") << QString::number(settings.value("jobs").toInt());
+    }
+
+    QVariantMap job = s()["job"].toMap();
+    job["index"] = m_runIndex + 1;
+    job["percent"] = 0;
+    job["tilesDone"] = 0;
+    job["tilesTotal"] = 0;
+    job["etaSec"] = 0;
+    job["current"] = QFileInfo(input.value("path").toString()).fileName();
+    s()["job"] = job;
+    m_jobPending.clear();
+    m_jobOutput.clear();
+
+    QProcess* process = spawn(QStringLiteral("job"), args, {QStringLiteral("UPIX_PROGRESS=json")});
+    if (!process) {
         finishJob(-1);
         return;
     }
-    connect(p, &QProcess::readyRead, this, [this, p] {
-        const QStringList lines =
-            QString::fromUtf8(p->readAll()).split(QLatin1Char('\n'));
-        QVariantMap job = s()["job"].toMap();
-        bool dirty = false;
-        for (const QString& line : lines) {
-            const QVariantMap prog = parser::parseProgress(line);
-            if (prog.value("percent").toInt() >= 0) {
-                job["percent"] = prog.value("percent");
-                job["tilesDone"] = prog.value("done");
-                job["tilesTotal"] = prog.value("total");
-                job["etaSec"] = prog.value("eta");
-                dirty = true;
-                continue;
-            }
-            const QString saved = parser::parseSaved(line);
-            if (!saved.isEmpty()) {
-                QVariantList outs = job["outputs"].toList();
-                outs.append(QUrl::fromLocalFile(saved).toString());
-                job["outputs"] = outs;
-                dirty = true;
-                continue;
-            }
-            const QString current = parser::parseCurrentFile(line);
-            if (!current.isEmpty()) {
-                job["current"] = current;
-                dirty = true;
-            }
-            const QString note = parser::parseDoneNote(line);
-            if (!note.isEmpty()) {
-                job["message"] = note;
-                dirty = true;
-            }
+    connect(process, &QProcess::readyRead, this, [this, process] { readJobOutput(process); });
+    connect(process, &QProcess::finished, this,
+            [this, process](int code, QProcess::ExitStatus status) {
+                readJobOutput(process, true);
+                finishJob(code == 0 && status == QProcess::NormalExit ? 0 : 1);
+            });
+}
+
+void Desk::readJobOutput(QProcess* process, bool final) {
+    const QByteArray bytes = process->readAll();
+    m_jobPending += bytes;
+    int newline = -1;
+    while ((newline = m_jobPending.indexOf('\n')) >= 0) {
+        const QString line = QString::fromUtf8(m_jobPending.left(newline)).remove(QLatin1Char('\r'));
+        m_jobPending.remove(0, newline + 1);
+        handleJobLine(line);
+    }
+    if (final && !m_jobPending.isEmpty()) {
+        m_jobPending.append('\n');
+        readJobOutput(process, false);
+    }
+}
+
+void Desk::handleJobLine(const QString& line) {
+    const QVariantMap event = machine::parseEvent(line);
+    if (event.isEmpty()) {
+        // Human log line (stderr in machine mode): failure diagnostics only.
+        const QString text = line.trimmed();
+        if (!text.isEmpty()) {
+            m_jobOutput += line.toUtf8();
+            m_jobOutput += '\n';
         }
-        if (dirty) {
-            s()["job"] = job;
-            touch();
-        }
-    });
-    connect(p, &QProcess::finished, this,
-            [this, p](int code, QProcess::ExitStatus st) { finishJob(code == 0 && st == QProcess::NormalExit ? 0 : 1); });
+        return;
+    }
+    QVariantMap job = s()["job"].toMap();
+    const QString type = event.value(QStringLiteral("t")).toString();
+    bool dirty = false;
+    if (type == QLatin1String("progress")) {
+        job["percent"] = event.value(QStringLiteral("pct")).toInt();
+        job["tilesDone"] = event.value(QStringLiteral("done")).toInt();
+        job["tilesTotal"] = event.value(QStringLiteral("total")).toInt();
+        job["etaSec"] = event.value(QStringLiteral("eta")).toInt();
+        dirty = true;
+    } else if (type == QLatin1String("current")) {
+        job["current"] = event.value(QStringLiteral("file")).toString();
+        dirty = true;
+    } else if (type == QLatin1String("saved")) {
+        QVariantList outputs = job["outputs"].toList();
+        outputs.append(QUrl::fromLocalFile(event.value(QStringLiteral("path")).toString()).toString());
+        job["outputs"] = outputs;
+        dirty = true;
+    } else if (type == QLatin1String("note")) {
+        job["message"] = machine::doneNote(event.value(QStringLiteral("message")).toString());
+        dirty = true;
+    }
+    if (dirty) { s()["job"] = job; touch(); }
 }
 
 void Desk::finishJob(int code) {
-    QProcess* p = m_procs.take(QStringLiteral("job"));
-    if (p) {
-        p->disconnect(this);
-        p->deleteLater();
+    QProcess* process = m_procs.take(QStringLiteral("job"));
+    const QString detail = QString::fromUtf8(m_jobOutput).trimmed();
+    const QString processError = process ? process->errorString() : QString();
+    if (process) {
+        process->disconnect(this);
+        process->deleteLater();
     }
     QVariantMap job = s()["job"].toMap();
-    const bool running = job.value("phase").toString() == QLatin1String("running");
-    if (!running) return;
+    if (job.value("phase").toString() != QLatin1String("running")) return;
 
-    if (code == 0) {
-        job["phase"] = QStringLiteral("done");
-        job["percent"] = 100;
-        if (job.value("message").toString().isEmpty())
-            job["message"] = QStringLiteral("完成");
-    } else {
-        job["phase"] = QStringLiteral("error");
-        job["message"] = p ? QString::fromUtf8(p->readAll()).trimmed().section(QLatin1Char('\n'), -1)
-                           : QStringLiteral("无法启动 upix-cli");
-        if (job.value("message").toString().isEmpty())
-            job["message"] = QStringLiteral("处理失败");
-        setNotice(job.value("message").toString());
+    if (m_cancelRequested) {
+        job["phase"] = QStringLiteral("cancelled");
+        job["message"] = QStringLiteral("已取消");
+        s()["job"] = job;
+        touch();
+        return;
     }
+    if (code == 0) {
+        ++m_runIndex;
+        startNextJob();
+        return;
+    }
+    job["phase"] = QStringLiteral("error");
+    job["message"] = !detail.isEmpty() ? detail
+                    : !processError.isEmpty() ? processError
+                    : QStringLiteral("处理失败");
     s()["job"] = job;
+    setNotice(job.value("message").toString());
     touch();
-    // The job may have spawned the warm engine (single-image delegation);
-    // the row would otherwise keep a stale 未运行 until the next restart.
     refreshDaemonStatus();
 }
 
 void Desk::cancel() {
-    QProcess* p = m_procs.value(QStringLiteral("job"));
-    if (!p || p->state() != QProcess::Running) return;
-    p->terminate();
-    if (!p->waitForFinished(50)) {
-        // async kill after grace period; never blocks the GUI thread
-        QPointer<QProcess> guard(p);
-        QTimer::singleShot(2000, this, [guard] {
-            if (guard && guard->state() == QProcess::Running) guard->kill();
-        });
+    if (s()["job"].toMap().value("phase").toString() != QLatin1String("running")) return;
+    m_cancelRequested = true;
+    QProcess* process = m_procs.value(QStringLiteral("job"));
+    if (!process || process->state() != QProcess::Running) {
+        QVariantMap job = s()["job"].toMap();
+        job["phase"] = QStringLiteral("cancelled");
+        job["message"] = QStringLiteral("已取消");
+        s()["job"] = job;
+        touch();
+        return;
     }
+    process->terminate();
+    QPointer<QProcess> guard(process);
+    QTimer::singleShot(2000, this, [guard] {
+        if (guard && guard->state() == QProcess::Running) guard->kill();
+    });
 }
 
 // ---- models ------------------------------------------------------------
 
+namespace {
+QVariantMap oneShotDoc(QProcess* p) {
+    const QJsonDocument doc = QJsonDocument::fromJson(QString::fromUtf8(p->readAll()).toUtf8());
+    return doc.object().toVariantMap();
+}
+}  // namespace
+
 void Desk::refreshModels() {
-    QProcess* p = spawn(QStringLiteral("models"), {QStringLiteral("model"), QStringLiteral("list")});
-    if (!p) return;
+    QProcess* p = spawn(QStringLiteral("models"),
+                        {QStringLiteral("model"), QStringLiteral("list"), QStringLiteral("--json")});
+    if (!p) {
+        // Without a CLI the catalog used to sit on "正在获取" forever.
+        s()["remoteError"] = QStringLiteral("无法启动 upix-cli");
+        touch();
+        return;
+    }
     connect(p, &QProcess::finished, this, [this, p](int code, QProcess::ExitStatus) {
-        if (code != 0) return;
-        const QStringList lines = QString::fromUtf8(p->readAllStandardOutput())
-                                      .split(QLatin1Char('\n'), Qt::SkipEmptyParts);
-        const QVariantMap m = parser::parseModelList(lines);
-        s()["modelsDir"] = m.value("modelsDir");
-        s()["installed"] = m.value("installed");
+        if (code != 0) {
+            s()["remoteError"] = QStringLiteral("本地模型列表获取失败");
+            touch();
+            return;
+        }
+        const QVariantMap m = oneShotDoc(p);
+        s()["modelsDir"] = m.value(QStringLiteral("modelsDir"));
+        s()["installed"] = m.value(QStringLiteral("installed"));
         touch();
 
         QProcess* r = spawn(QStringLiteral("remote"),
-                            {QStringLiteral("model"), QStringLiteral("list-remote")});
-        if (!r) return;
+                            {QStringLiteral("model"), QStringLiteral("list-remote"),
+                             QStringLiteral("--json")});
+        if (!r) {
+            s()["remoteError"] = QStringLiteral("无法启动 upix-cli");
+            touch();
+            return;
+        }
         connect(r, &QProcess::finished, this, [this, r](int code, QProcess::ExitStatus) {
             if (code != 0) {
                 s()["remoteError"] = QStringLiteral("远端列表获取失败");
@@ -587,9 +738,7 @@ void Desk::refreshModels() {
                 return;
             }
             s()["remoteError"] = QString();
-            s()["remote"] = parser::parseRemoteList(
-                QString::fromUtf8(r->readAllStandardOutput())
-                    .split(QLatin1Char('\n'), Qt::SkipEmptyParts));
+            s()["remote"] = oneShotDoc(r).value(QStringLiteral("remote"));
             touch();
         });
     });
@@ -598,15 +747,21 @@ void Desk::refreshModels() {
 void Desk::importModels(const QStringList& paths) {
     if (paths.isEmpty()) return;
     QProcess* p = spawn(QStringLiteral("import"),
-                        QStringList{QStringLiteral("model"), QStringLiteral("import")} + paths);
-    if (!p) return;
+                        QStringList{QStringLiteral("model"), QStringLiteral("import"),
+                                    QStringLiteral("--json")} + paths);
+    if (!p) {
+        setNotice(s()["cliFound"].toBool() ? QStringLiteral("无法启动 upix-cli")
+                                           : QStringLiteral("未找到 upix-cli"));
+        return;
+    }
     connect(p, &QProcess::finished, this, [this, p](int code, QProcess::ExitStatus) {
-        const QString out = QString::fromUtf8(p->readAll());
-        if (code == 0) {
+        const QVariantMap m = oneShotDoc(p);
+        if (code == 0 && m.value(QStringLiteral("ok")).toBool()) {
             setNotice(QStringLiteral("导入完成"));
             refreshModels();
         } else {
-            setNotice(out.section(QLatin1Char('\n'), -2, -2).trimmed());
+            const QString error = m.value(QStringLiteral("error")).toString();
+            setNotice(error.isEmpty() ? QStringLiteral("导入失败") : error);
         }
     });
 }
@@ -614,21 +769,17 @@ void Desk::importModels(const QStringList& paths) {
 void Desk::download(const QString& name) {
     if (s()["downloading"].toString() == name) return;
     QProcess* p = spawn(QStringLiteral("download"),
-                        {QStringLiteral("model"), QStringLiteral("download"), name});
+                        {QStringLiteral("model"), QStringLiteral("download"),
+                         QStringLiteral("--json"), name});
     if (!p) {
-        setNotice(QStringLiteral("未找到 upix-cli"));
+        setNotice(s()["cliFound"].toBool() ? QStringLiteral("无法启动 upix-cli")
+                                           : QStringLiteral("未找到 upix-cli"));
         return;
     }
     s()["downloading"] = name;
     s()["downloadPct"] = 0;
     touch();
-    connect(p, &QProcess::readyRead, this, [this, p, name] {
-        const int pct = parser::parseDownloadPercent(QString::fromUtf8(p->readAll()));
-        if (pct >= 0 && pct != s()["downloadPct"].toInt()) {
-            s()["downloadPct"] = pct;
-            touch();
-        }
-    });
+    connect(p, &QProcess::readyRead, this, [this, p, name] { readDownloadOutput(p, name); });
     connect(p, &QProcess::finished, this, [this, name](int code, QProcess::ExitStatus) {
         s()["downloading"] = QString();
         s()["downloadPct"] = -1;
@@ -641,15 +792,41 @@ void Desk::download(const QString& name) {
     });
 }
 
+void Desk::readDownloadOutput(QProcess* process, const QString& name) {
+    m_downloadPending += process->readAll();
+    int newline = -1;
+    while ((newline = m_downloadPending.indexOf('\n')) >= 0) {
+        const QString line = QString::fromUtf8(m_downloadPending.left(newline));
+        m_downloadPending.remove(0, newline + 1);
+        const QVariantMap event = machine::parseEvent(line);
+        if (event.value(QStringLiteral("t")).toString() != QLatin1String("download")) continue;
+        // Multiple queued names share one stream; only the tracked one drives the bar.
+        if (event.value(QStringLiteral("name")).toString() != name) continue;
+        const int pct = event.value(QStringLiteral("pct")).toInt();
+        if (pct >= 0 && pct != s()["downloadPct"].toInt()) {
+            s()["downloadPct"] = pct;
+            touch();
+        }
+    }
+}
+
 // ---- daemon ------------------------------------------------------------
 
 void Desk::refreshDaemonStatus() {
-    QProcess* p = spawn(QStringLiteral("dstatus"), {QStringLiteral("daemon"), QStringLiteral("status")});
+    QProcess* p = spawn(QStringLiteral("dstatus"),
+                        {QStringLiteral("daemon"), QStringLiteral("status"), QStringLiteral("--json")});
     if (!p) return;
-    connect(p, &QProcess::finished, this, [this, p](int code, QProcess::ExitStatus) {
-        const QVariantMap d = parser::parseDaemonStatus(
-            QString::fromUtf8(p->readAllStandardOutput()).trimmed());
-        s()["daemon"] = d;
+    connect(p, &QProcess::finished, this, [this, p](int, QProcess::ExitStatus) {
+        // Exit code 1 = not running; the document is the source of truth.
+        const QVariantMap d = oneShotDoc(p);
+        QVariantMap daemon;
+        daemon["running"] = d.value(QStringLiteral("running")).toBool();
+        daemon["pid"] = d.value(QStringLiteral("pid")).toInt();
+        const QString socket = d.value(QStringLiteral("socket")).toString();
+        daemon["socketName"] = socket.isEmpty() ? QString() : QFileInfo(socket).fileName();
+        daemon["socketMissing"] = d.value(QStringLiteral("socketMissing")).toBool();
+        daemon["label"] = machine::daemonLabel(d);
+        s()["daemon"] = daemon;
         touch();
     });
 }
@@ -671,70 +848,117 @@ void Desk::hostReset() {
     touch();
 }
 
-void Desk::hostStart() {
-    if (!s()["cliFound"].toBool()) return;
-    hostReset();
-    QProcess* p = spawn(QStringLiteral("host"),
-                        {QStringLiteral("host"), QStringLiteral("start"),
-                         QStringLiteral("-p"), QString::number(s()["host"].toMap().value("port").toInt())});
-    if (!p) return;
-    connect(p, &QProcess::readyRead, this, [this, p] {
-        const QStringList lines = QString::fromUtf8(p->readAll()).split(QLatin1Char('\n'));
-        QVariantMap h = s()["host"].toMap();
-        bool dirty = false;
-        QString device, fp;
-        for (const QString& line : lines) {
-            const parser::HostCard card = parser::parseHostCard(
-                QStringList{QStringLiteral("Connection Information:"), line});
-            if (!card.qrArt.isEmpty()) {
-                h["qr"] = card.qrArt;
-                dirty = true;
-                continue;
-            }
-            if (card.valid) {
-                h["fingerprint"] = card.fingerprint;
-                if (card.port > 0) h["port"] = card.port;
-                QVariantList ips = h["ips"].toList();
-                for (const QString& ip : card.ips)
-                    if (!ips.contains(ip)) ips.append(ip);
-                h["ips"] = ips;
-                h["running"] = true;
-                dirty = true;
-                continue;
-            }
-            if (parser::parsePairing(line, &device, &fp)) {
-                if (!device.isEmpty()) h["pendingDevice"] = device;
-                if (!fp.isEmpty()) h["pendingFp"] = fp;
-                dirty = true;
-                continue;
-            }
-            const int pct = parser::parseHostTaskPercent(line);
-            if (pct >= 0) {
-                h["taskPercent"] = pct;
-                dirty = true;
-            }
+void Desk::readHostOutput(QProcess* process, bool final) {
+    m_hostPending += process->readAll();
+    QStringList lines;
+    int newline = -1;
+    while ((newline = m_hostPending.indexOf('\n')) >= 0) {
+        lines.append(QString::fromUtf8(m_hostPending.left(newline)).remove(QLatin1Char('\r')));
+        m_hostPending.remove(0, newline + 1);
+    }
+    if (final && !m_hostPending.isEmpty()) {
+        lines.append(QString::fromUtf8(m_hostPending).remove(QLatin1Char('\r')));
+        m_hostPending.clear();
+    }
+
+    QVariantMap host = s()["host"].toMap();
+    bool dirty = false;
+    for (const QString& line : lines) {
+        const QVariantMap event = machine::parseEvent(line);
+        if (event.isEmpty()) {
+            // Human log line (stderr in machine mode) → the log strip.
             if (line.contains(QStringLiteral("[INFO]"))) {
-                QVariantList log = h["log"].toList();
+                QVariantList log = host["log"].toList();
                 log.append(line.section(QStringLiteral("] "), 2));
                 while (log.size() > 50) log.removeFirst();
-                h["log"] = log;
+                host["log"] = log;
                 dirty = true;
             }
+            continue;
         }
-        if (dirty) {
-            s()["host"] = h;
-            touch();
+        const QString type = event.value(QStringLiteral("t")).toString();
+        if (type == QLatin1String("card")) {
+            host["fingerprint"] = event.value(QStringLiteral("fingerprint"));
+            const int port = event.value(QStringLiteral("port")).toInt();
+            if (port > 0) host["port"] = port;
+            QVariantList ips = host["ips"].toList();
+            for (const QVariant& ip : event.value(QStringLiteral("ips")).toList())
+                if (!ips.contains(ip)) ips.append(ip);
+            host["ips"] = ips;
+            // v2 invite payload — image://qr renders it directly (no more
+            // half-block art re-parse).
+            host["qr"] = event.value(QStringLiteral("qr"));
+            host["running"] = true;
+            dirty = true;
+        } else if (type == QLatin1String("pairing")) {
+            host["pendingDevice"] = event.value(QStringLiteral("device"));
+            host["pendingFp"] = event.value(QStringLiteral("fingerprint"));
+            dirty = true;
+        } else if (type == QLatin1String("task")) {
+            host["taskPercent"] = event.value(QStringLiteral("pct")).toInt();
+            dirty = true;
         }
-    });
-    connect(p, &QProcess::finished, this, [this](int, QProcess::ExitStatus) {
-        hostReset();
-        refreshDaemonStatus();
-    });
+    }
+    if (dirty) { s()["host"] = host; touch(); }
+}
+
+void Desk::hostStart() {
+    if (!s()["cliFound"].toBool()) return;
+    // A second click while the coordinator is still coming up: spawn() would
+    // kill the very process the user is waiting on and leave the panel to
+    // time out on its own.
+    if (QProcess* live = m_procs.value(QStringLiteral("host"));
+        live && live->state() != QProcess::NotRunning)
+        return;
+    hostReset();
+    m_hostPending.clear();
+    m_hostStopping = false;
+    QProcess* process = spawn(QStringLiteral("host"),
+                              {QStringLiteral("host"), QStringLiteral("start"),
+                               QStringLiteral("--json"),
+                               QStringLiteral("-p"), QString::number(s()["host"].toMap().value("port").toInt())});
+    if (!process) {
+        setNotice(QStringLiteral("无法启动主机"));
+        return;
+    }
+    // The coordinator prints its card (QR) a moment later; without this the
+    // panel sat on "未运行" with an enabled 启动主机 button, and the guard above
+    // then swallowed the second click. `running` here means "process is up".
+    {
+        QVariantMap h = s()["host"].toMap();
+        h["running"] = true;
+        s()["host"] = h;
+        touch();
+    }
+    connect(process, &QProcess::readyRead, this, [this, process] { readHostOutput(process); });
+    connect(process, &QProcess::finished, this,
+            [this, process](int code, QProcess::ExitStatus status) {
+                readHostOutput(process, true);
+                // Exit code is the only signal that host start failed (port in
+                // use, CA missing); without a notice the panel just reset.
+                const bool failed = code != 0 || status != QProcess::NormalExit;
+                const bool stoppedByUser = m_hostStopping;
+                m_hostStopping = false;
+                hostReset();
+                if (failed && !stoppedByUser)
+                    setNotice(QStringLiteral("主机已退出（code %1）").arg(code));
+                refreshDaemonStatus();
+            });
 }
 
 void Desk::hostStop() {
     QProcess* p = m_procs.value(QStringLiteral("host"));
-    if (p && p->state() == QProcess::Running) p->terminate();
+    if (p && p->state() != QProcess::NotRunning) {
+        m_hostStopping = true;  // this exit is the user's, not a failure
+        p->terminate();
+        // Same escalation as cancel(): the panel must not claim "未运行" while
+        // a wedged host still holds the port.
+        QPointer<QProcess> guard(p);
+        QTimer::singleShot(2000, this, [guard] {
+            if (guard && guard->state() != QProcess::NotRunning) guard->kill();
+        });
+    }
+    m_hostPending.clear();
     hostReset();
 }
 
