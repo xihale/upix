@@ -95,5 +95,9 @@ gpu_*.csv
 gpu_*.txt
 gpu_*.log
 
+# Static-analysis runs (semgrep SARIF/raw dumps). Evidence for the audit, not
+# source: keep it out of the repository.
+/static_analysis_semgrep_*/
+
 # python
 __pycache__/

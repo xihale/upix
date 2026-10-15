@@ -13,9 +13,9 @@ on:
         type: string
         default: "0.1.0"
 
+# Least privilege: only `publish` needs write; every other job reads.
 permissions:
-  contents: write
-  pull-requests: read
+  contents: read
 
 concurrency:
   group: release-cli-${{ github.ref }}
@@ -30,24 +30,36 @@ jobs:
       version: ${{ steps.v.outputs.version }}
     steps:
       - id: v
+        env:
+          # Dispatch inputs are attacker-influenced text: keep them out of the
+          # script body (shell injection) and off `$GITHUB_OUTPUT` unvalidated.
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
+          set -euo pipefail
           if [[ "${GITHUB_REF}" == refs/tags/cli-v* ]]; then
-            echo "version=${GITHUB_REF_NAME#cli-v}" >> "$GITHUB_OUTPUT"
+            version="${GITHUB_REF_NAME#cli-v}"
           else
-            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+            version="${INPUT_VERSION}"
           fi
+          # The version becomes an artifact/tag name, so reject anything that
+          # is not a plain version string instead of shipping from a typo.
+          [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]] || {
+            echo "invalid version: '${version}' (allowed: A-Za-z0-9._-)" >&2
+            exit 1
+          }
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
 
   spirv:
     name: spirv pack (linux)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (v4.4.0)
       - uses: ./.github/actions/setup-xmake
         with:
           cache-kind: host
       - uses: ./.github/actions/spirv-pack
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4 (v4.6.2)
         with:
           name: spirv-pack
           path: share/core/spirv_pack.bin
@@ -74,8 +86,8 @@ jobs:
             artifact: macos-arm64
             extra: --native_isa=n
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (v4.4.0)
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4 (v4.3.0)
         with:
           name: spirv-pack
           path: share/core
@@ -91,9 +103,15 @@ jobs:
         env:
           VER: ${{ needs.meta.outputs.version }}
         run: |
+          set -euo pipefail
+          # The tarball is the distributed artifact, so the AGPL-3.0 license
+          # text travels with the binary (§4/§5). `-C` is applied per file
+          # group: the binary comes from the build dir, LICENSE from the
+          # checkout (absolute, so the second -C does not depend on the first).
           tar czf "upix-cli-${VER}-${{ matrix.artifact }}.tar.gz" \
-            -C "build/${{ matrix.plat }}/${{ matrix.arch }}/release" upix-cli
-      - uses: actions/upload-artifact@v4
+            -C "build/${{ matrix.plat }}/${{ matrix.arch }}/release" upix-cli \
+            -C "$GITHUB_WORKSPACE" LICENSE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4 (v4.6.2)
         with:
           name: cli-${{ matrix.artifact }}
           path: upix-cli-*.tar.gz
@@ -117,7 +135,7 @@ jobs:
           - os: macos-latest
             artifact: macos-arm64
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4 (v4.3.0)
         with:
           name: cli-${{ matrix.artifact }}
       - name: Unpack and --version
@@ -147,14 +165,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: write
+      contents: write      # create/update the release + tag
+      pull-requests: read  # generate_release_notes
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (v4.4.0)
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4 (v4.3.0)
         with:
           pattern: cli-*
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2 (v2.6.2)
         with:
           tag_name: cli-v${{ needs.meta.outputs.version }}
           name: Upix CLI ${{ needs.meta.outputs.version }}

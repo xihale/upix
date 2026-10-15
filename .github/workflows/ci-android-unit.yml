@@ -17,13 +17,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (v4.4.0)
       - uses: ./.github/actions/setup-android
         with:
           install-ndk: "false"
       - name: Compile unit-test sources
         run: scripts/compile_android_unit.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4 (v4.6.2)
         with:
           name: android-unit-build
           path: apps/app/build
@@ -36,11 +36,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (v4.4.0)
       - uses: ./.github/actions/setup-android
         with:
           install-ndk: "false"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4 (v4.3.0)
         with:
           name: android-unit-build
           path: apps/app/build

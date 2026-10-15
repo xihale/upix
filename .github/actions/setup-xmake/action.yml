@@ -28,12 +28,12 @@ runs:
             ;;
         esac
 
-    - uses: xmake-io/github-action-setup-xmake@v1
+    - uses: xmake-io/github-action-setup-xmake@3a1a5dddfc7fa625d9a698738334bf55655a861a  # v1 (v1.2.5)
       with:
         xmake-version: "3.1.0"
 
     - name: Cache xmake packages
-      uses: actions/cache@v4
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4 (v4.3.0)
       with:
         path: ~/.xmake/packages
         key: xmake-${{ inputs.cache-kind }}-${{ runner.os }}-${{ hashFiles('xmake.lua', 'share/xmake.lua', 'cli/xmake.lua', 'apps/xmake.lua', 'tools/xmake.lua', 'packages/**') }}
@@ -41,7 +41,7 @@ runs:
           xmake-${{ inputs.cache-kind }}-${{ runner.os }}-
 
     - name: Cache ccache
-      uses: actions/cache@v4
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4 (v4.3.0)
       with:
         path: ~/.ccache
         key: ccache-${{ inputs.cache-kind }}-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
@@ -52,6 +52,11 @@ runs:
     - name: ccache env
       shell: bash
       run: |
-        echo "CCACHE_DIR=$HOME/.ccache" >> "$GITHUB_ENV"
-        echo "CCACHE_MAXSIZE=1G" >> "$GITHUB_ENV"
+        # GITHUB_ENV only reaches later steps, so export here too: without it
+        # `ccache -z` zeroes ccache's default dir (~/.cache/ccache) instead of
+        # the one this action caches (~/.ccache).
+        export CCACHE_DIR="$HOME/.ccache"
+        export CCACHE_MAXSIZE=1G
+        echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
+        echo "CCACHE_MAXSIZE=$CCACHE_MAXSIZE" >> "$GITHUB_ENV"
         ccache -z
