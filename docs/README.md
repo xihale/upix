@@ -6,6 +6,7 @@
 | [DEVELOPMENT.md](DEVELOPMENT.md) | 开发规范：环境、构建/测试/发布流程、代码规范、已知坑 |
 | [DESIGN_LANGUAGE.md](DESIGN_LANGUAGE.md) | Android 端 UI 设计语言（规范性：主题、间距、动效、组件模式） |
 | [serve-tests-design.md](serve-tests-design.md) | serve E2E 测试套件的取舍记录与非确定性断言定标依据 |
+| [model-oracle-design.md](model-oracle-design.md) | 模型效果回归门（golden oracle）的取舍、阈值依据与升级 ncnn 流程 |
 | [../desktop/DESIGN.md](../desktop/DESIGN.md) | 桌面端 Qt Quick 设计语言与架构（组件层、token、动效、无头验证） |
 
 用户向使用说明在根 [README.md](../README.md)；模型目录、分发与发版流程在

@@ -103,7 +103,12 @@ xmake 工程、同一套编译选项——编进 `libupix-native.so`，保证两
   覆盖该类型：GPU 走 `kGroupNormComp`（elempack-1 u32 字格式，reduce+normalize
   两次 dispatch 共享一条 pipeline），CPU 路径逐位复刻内建实现。
 - 全局互斥锁串行化 Vulkan 实例/模型加载（ncnn 的 Vulkan 状态是进程级单例）。
-- alpha 通道走旁路不过神经网络（`bicubic_scale_u8`，Mitchell-Netravali），省约 25% GPU 算力。
+- RGBA 输入不进 4 通道网络：模型是 RGB（`out.c == 3`），把 alpha 一起送进流水线会让
+  `process()` 的输出形状校验（`out.c == channels`）拒绝每个 tile。故按 stride 逐 tile 解交错，
+  只有前 3 个通道进模型，alpha 由 `bicubic_scale_u8`（Mitchell-Netravali）在 host 侧放大后
+  合并回输出第 4 通道；u8 / float 两条入口同一套语义。CLI、批处理和远程入口保留
+  RGBA；RGB 模型处理 RGBA 时使用 host 侧分块与 alpha 合成，推理仍在所选设备运行，
+  RGB 输入继续使用原 GPU 快速管线。
 
 ### 2.3 GPU 精度 profile —— `gpu_precision.hpp`
 
@@ -138,7 +143,8 @@ storage，数学全 fp32——Adreno/Mali 残差块会溢出 fp16 范围）与 *
   FIFO 提交保序。UPIX_PIPELINE_TIMER 显示 p2_submit 等待占比与总耗时双降
   （实测目录模式 SR 段 −11%）。
 - `blend_tile`：重叠区二次衰减权重（`w*w`）+ 归一化，消除接缝。
-- `extract_tile_u8`：逐 tile 转 float，避免整图 float 拷贝。
+- `extract_tile_u8`：逐 tile 转 float，避免整图 float 拷贝；源/目标通道数分开传，
+  RGBA→RGB 时逐 tile 解交错丢掉 alpha（无需整图 RGB 副本）。
 
 ### 2.6 其余模块
 
@@ -166,6 +172,9 @@ auto_tile_size=true 时：
    上层 → TileSizeOptimizer.find_optimal_tile_size(engine, model, config)
             └─ engine.process() 多次 benchmark
 ```
+
+GPU 快速路径失败后尝试通用路径；它仍使用当前引擎，GPU 引擎不会因此重新加载为
+CPU 引擎。OOM 缩小 tile 后仍可能失败，不能把该分支视为保证成功的 CPU 回退。
 
 ---
 
@@ -206,12 +215,14 @@ auto_tile_size=true 时：
   → 服务端 Ed25519 签 transcript 放回 KEY_HELLO（防中间人替换握手参数）
   → X25519 派生并激活会话密钥
   → 客户端在加密帧内发 AUTH_PROOF（自己的 Ed25519 签名）
-  → 服务端验签 → 查 TrustStore（TOFU：首次自动入库存盘，之后 trusted=1）
+  → 服务端验签 → 查 TrustStore（只查询既有批准记录，握手不新增信任）
 ```
 
 **配对批准**：`CONNECT_REQUEST` 走配对门——可信 peer 自动批准；首次 peer 在 PC 侧
 阻塞等待交互批准（stdin `[y/n]`，`--auto-approve` 跳过，供 CI）。手机端首次连接会弹
 指纹确认对话框（`FingerprintConfirmDialog`），严格模式下可钉死预期公钥防 MITM。
+所有客户端都必须先完成 `CONNECT_REQUEST`，任务和模型消息才能进入业务分发；只有明确批准才写入 TrustStore，
+拒绝后的重连仍需审批。`stop()` 先拒绝队列中及已交给 UI 的未决审批，再回收连接线程；迟到的审批回调无效。
 
 **能力协商**：`ClientConnectResponse` 携带 `avif_decode`/`avif_encode` 位（PC 探测
 系统 libavif 填充），手机据此门控 AVIF 输入/输出，而不是假设 PC 一定支持。
@@ -220,6 +231,10 @@ auto_tile_size=true 时：
 
 `coordinator.{hpp,cpp}`（骨架+路由）+ `coordinator_admin.cpp`（模型目录设置）。
 监听 TCP，完成上述握手与配对，然后：
+
+连接数上限为 8，握手接收超时 10s；连接处理线程捕获协议/密钥派生异常，关闭该
+连接而不终止服务。stop() 先 shutdown 活跃 socket，再 join handler，避免静默 peer
+使退出永久阻塞。该超时是 socket I/O 超时，不是整个分块上传的总期限。
 
 - 接收 `MSG_CLIENT_SUBMIT`（请求头 + 压缩的图像文件字节，原始像素不上无线电）。
   双格式兼容：submit 帧 payload = sizeof(struct)+数据 即旧式单帧；=
@@ -249,8 +264,8 @@ auto_tile_size=true 时：
   `MSG_TASK_CANCEL`、轮询发现连接死亡、进度帧发送失败或 coordinator stop() 时置
   每任务 `std::atomic<bool>` cancel——`process_locally` 在入口/引擎锁后/编码前
   检查，`TileProcessor` 逐 tile 检查，取消代价 ≤ 1 个 tile 的白算，任务以
-  success=0/"canceled" 应答且会话可继续服务下一张（多连接各自的任务互不影响，
-  cancel 原子按任务隔离）。工作线程由 handler 在返回前 join，stop() 沿
+  success=0/"canceled" 应答。`MSG_TASK_CANCEL` 取消当前会话全部在途任务，与手机的
+  批次取消语义一致；其他连接不受影响。工作线程由 handler 在返回前 join，stop() 沿
   client_threads_ → handler → worker 链路确定性回收；
 - **会话循环**：响应后连接保持打开，继续收下一张 `CLIENT_SUBMIT`（帧间空闲超时
   60s）。握手/配对每连接只发生一次，整批任务复用同一条 TCP；旧版一次性客户端
@@ -322,6 +337,13 @@ TCP）。二者共享的是协议帧格式与 TileProcessor。
 `daemon {start|stop|status}` / `completions <bash|zsh|fish>`（help 中隐藏）/
 隐藏动词 `__complete`（动态补全后端）。性能探针在独立二进制 `upix-perf`。
 
+**机器可读输出**：GUI/脚本消费面统一为「每 `'\n'` 行一个紧凑 JSON 对象、人读日志走
+stderr」。两档：`--json`（version/model/daemon/host 输出单份文档；host start 输出
+`card`/`pairing`/`task` 事件流）与 `UPIX_PROGRESS=json`（单图/目录进度事件
+`progress`/`saved`/`current`/`note`）。装配在 `common.{hpp,cpp}`
+（`json_escape`/`emit_json_line`/`report_progress`/`build_connection_card`），
+不开启时人读输出逐字节不变。桌面端 `desktop/src/machine.cpp` 是对偶解码器。
+
 **结构**：
 
 | 文件 | 职责 |
@@ -334,6 +356,13 @@ TCP）。二者共享的是协议帧格式与 TileProcessor。
 | `cmd_model.cpp` + `model_downloader.{hpp,cpp}` | 模型列表/导入 + release 清单解析与下载（libcurl） |
 | `cmd_host.cpp` / `cmd_daemon.cpp` | 连接卡（IP/QR/指纹）+ coordinator 生命周期；daemon 控制 |
 | `cmd_complete.cpp` / `cmd_completions.cpp` | cobra 风格动态补全引擎；三 shell 薄适配脚本输出/安装 |
+
+**有效处理配置**：默认值 → JSON 配置 → 显式 CLI 选项，由 `resolve_processing_config` 合并一次，
+单图和目录的 CPU/GPU 路径消费同一份有效配置。无配置且未指定分块大小时才使用引擎推荐值。
+daemon 协议不携带 tile batch size，因此有效 `batch_size != 1` 或开启自动分块时走内联执行。
+
+**CLI 模型安装**：下载、校验及精确 `.param`/`.bin` 配对验证均在独立暂存目录完成，再备份并替换现有文件。
+可处理的提交失败会回滚，回滚失败保留并报告恢复目录；平铺两个文件的替换不保证断电原子性。
 
 **输出标记（SR XMP）**：所有输出图嵌入 XMP 标记 `urn:upix:sr:1`（`share/utils/sr_marker`，
 PNG iTXt / JPEG APP1 / WebP XMP chunk / AVIF mdat 四格式同一份探测代码）。CLI/Android
@@ -396,6 +425,11 @@ OOM 预检与降级、原子写、Zip Slip 防护、payload 上限、双探针�
 系统相册 N 张图经 `InputSourceSpec.encode` 编成 `upix://multi:` 单源一次入队
 （一次规划/一份 checkpoint/一行队列；解析、输出目录与断点续传语义同文件夹批次，
 `source` 为普通字符串字段，旧单 URI 队列文件格式不变）。
+
+checkpoint 的 `taskId` 标识一次运行，nullable `queueItemId` 标识它关联的队列行；两者不互相推导。
+手动恢复只有在该队列行仍存在且运行选项匹配时才更新原行；旧 checkpoint 缺少关联字段时作为独立任务恢复。
+队列与 checkpoint 仓库串行化读写和清除，通过 `AtomicSnapshotFile` 的暂存、备份与原子替换保留上一份有效快照，
+中断写入后优先读取已提交主文件，主文件缺失时恢复备份；磁盘提交成功后才发布仓库 StateFlow。
 
 **Android 本地超分调用链**：
 ```
@@ -526,6 +560,12 @@ UI → NativeImageProcessingRepository → CoordinatorClient（持久会话 + �
   → awaitResult 抛 CancellationException → run 协程按取消收尾（存 checkpoint、关会话）
 ```
 
+`RemoteUploadWindow` 在批次开始固定协商深度：第 0 张只预上传一次，之后按输入索引
+提交、按 FIFO 接收；深度 0 在前一结果返回后才上传下一张。发前上传作业串行衔接，
+防止同一会话的多帧上传交错。`CoordinatorClient` 在同一门闩下记录每个句柄的接收
+计数和延后关闭集合；阻塞接收不持门闩，关闭遇到在途接收时由该句柄最后一次接收
+收尾释放，旧会话的收尾不能释放新会话。
+
 **Android 连接/模型共享（NativeWorker）**：
 ```
 DeviceViewModel → CoordinatorClient → NativeWorker.nativeRequestConnection
@@ -533,6 +573,11 @@ DeviceViewModel → CoordinatorClient → NativeWorker.nativeRequestConnection
   → nativeListPCModels / nativeUploadModelToPC / nativeDownloadModelFromPC
   （模型共享为一次性连接：握手+配对+单操作帧）
 ```
+
+模型安装先写不可被扫描的暂存文件，校验同名 `.param`/`.bin` 配对，再备份旧文件并
+依次就位；任一步失败恢复本次移走的旧文件。CLI 导入、PC 接收上传和 Android 发行
+下载均遵守此规则。两文件 rename 不构成崩溃事务；进程被强杀时仍可能留备份，
+备份恢复失败时必须保留旧内容，不能把失败当作安装成功。
 
 ---
 

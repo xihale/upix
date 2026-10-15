@@ -54,6 +54,11 @@ cd apps
 native。产物 `.so` 拷入 `app/src/main/jniLibs/arm64-v8a/`。AVIF 开关以 gradle
 属性为唯一事实来源（见 §7 坑 1）。CI 分组、缓存与本地 `act` 打通见 §9。
 
+手动入口 `scripts/build_native.sh` 转发到同一实现，NDK 版本统一读取
+`apps/app/build.gradle.kts` 的 `ndkVersion`。主机与原生脚本都逐个解析 AVIF 开关：
+显式 `--avif-*=y/n` > 对应 `UPIX_AVIF_ENCODER/DECODER` 环境变量 > `n`；
+传入其它 xmake 选项也会重置未指定的 codec，避免沿用上次构建配置。
+
 ### 2.3 主机工具
 
 ```bash
@@ -74,22 +79,30 @@ release `.so` 被 strip，符号全无。排查 native 崩溃/GPU 垃圾输出�
 
 ### 3.1 C++ 单元测试（host）
 
-每个测试一个独立二进制（自带 CHECK 宏 + abort，无框架），定义在 `cli/xmake.lua`：
+每个测试一个独立二进制（自带 CHECK 宏 + abort，无框架）。**约定即清单**：一个
+测试 = `cli/tests/test_*.cpp` 一个文件（自带 `main`），`cli/xmake.lua` 在配置期
+扫描这些文件声明同名 target、`scripts/*_host_tests.sh` 扫同一批文件 —— 加一个
+测试文件即可，没有需要同步的清单。target 的差异（依赖/包/额外源文件）集中在
+`cli/xmake.lua` 的 `HOST_TEST_SPECS`，两边不一致时 `after_load` 直接失败
+（文件没有 spec 条目 / spec 条目没有文件）。
 
 ```bash
-xmake build test_crypto && xmake run test_crypto        # 加密/会话/信任库
-xmake build test_protocol && xmake run test_protocol    # 帧协议 round-trip
-xmake build test_distributed_session                    # 分布式会话端到端（可选真实模型，见 §6）
-xmake build test_image_avif                             # AVIF 编解码（依赖系统/内置 libavif）
-xmake build test_sr_marker                              # XMP 标记四格式
-xmake build test_exif                                   # EXIF orientation 解析与烘焙
-xmake build test_gpu_precision                          # GPU 精度 profile（Integrated/Discrete 预设选择）
-xmake build test_model_catalog                          # 模型图检测 × 文件名 scale 三方一致（见 §4.4）
-xmake build test_model_downloader                       # 下载器 sha256 双实现交叉验证
+scripts/build_host_tests.sh   # 只编译（需要 xmake 已按 §2 配好 linux/x86_64）
+scripts/run_host_tests.sh     # 只运行已编译的二进制（不调 xmake；CI test job 无编译器）
+xmake build test_exif && xmake run test_exif   # 单个：EXIF orientation 解析与烘焙
 ```
 
-改动加密、协议、图像编解码、sr_marker 后必须跑对应测试。改 GPU kernel 后跑
-`UPIX_KERNEL_SELFTEST=1` 冒烟（见坑 4）。
+各测试覆盖：`test_crypto` 加密/会话/信任库、`test_protocol` 帧协议 round-trip、
+`test_distributed_session` 分布式会话端到端（可选真实模型，见 §6）、`test_sr_marker`
+XMP 标记四格式、`test_exif` orientation、`test_gpu_precision` GPU 精度 profile、
+`test_model_catalog` 模型图检测 × 文件名 scale 三方一致（见 §4.4）、
+`test_model_scene` 发行目录 44 个模型的场景分类、`test_model_downloader`
+sha256/ZIP 配对/失败保留旧模型、`test_processing_config` JSON 与显式 CLI 分块优先级、
+`test_image_avif` AVIF 编解码。
+
+改动加密、协议、图像编解码、sr_marker 后必须跑对应测试。改 GPU kernel /
+**升级 ncnn** 后跑 `UPIX_KERNEL_SELFTEST=1` 冒烟（见坑 4）与 §3.5 的模型效果
+回归门。
 
 ### 3.1b serve daemon E2E 套件
 
@@ -109,6 +122,15 @@ scripts/run_serve_tests.sh --keep-work        # 保留现场调试
 HFA2k-LUDVAE-SPAN-x2`）。依赖 python3 + numpy + Pillow。每条用例锚定的
 分支、以及并发 fp16 漂移等**非确定性断言的定标依据**见
 `docs/serve-tests-design.md`——不要收紧回位级比较。
+
+`tests/serve/lib.py` 统一管理测试 socket 和前台 daemon：启动失败会终止并回收子进程，
+入口的 `finally` 会停止共享 daemon，再删除工作目录；崩溃后接管同一缓存目录的新 daemon
+也必须按 pidfile 清理。压力套件的 CRC 用例须通过 `raw_roundtrip` 发送完整坏帧，
+不能传给会再次封帧的 `send_request`；断言拒绝请求且未写输出。
+
+I/O 套件 A7 同时检查 CPU/GPU 的 RGBA 多 tile 输出：alpha 保留 0/255 与中间值，
+inline 与 daemon 的 alpha 一致；颜色通道与同一张 RGB 输入的推理结果比较，
+避免只有 alpha 正确、RGB 已黑屏却被判通过。
 
 ASAN 档：`xmake f -m debug && xmake build -y upix-cli`（debug 自带
 ASAN），跑
@@ -140,6 +162,38 @@ scripts/test_remote_e2e.sh    # 起 upix host --auto-approve + 跑 RemoteDistrib
 通用探针用 `upix-perf {list-probes|gpu-efficiency|gpu-concurrency|gpu-reuse}`。
 GPU 管线改动要求 md5/PSNR 双端验证输出不变（性能优化不得改像素）。
 
+`share/perf/probes.cpp` 动态加载 NVML，手写声明必须与驱动的 `nvml.h` ABI 一致：
+`nvmlMemory_t` 字段顺序为 `total, free, used`，时钟枚举为 `GRAPHICS=0, SM=1`。
+改动探针后，用真实驱动 API 核对已用显存与两类时钟；仅检查 JSON 能解析抓不到字段对调。
+
+### 3.5 模型效果回归门（golden oracle）
+
+答案只有一个：**换 ncnn / 改引擎后，像素还是不是同一个模型？**
+6 个发行模型（覆盖 SPAN / SRVGGNetCompact / x1 残差 / RealPLKSR / RRDB+unshuffle /
+Real-CUGAN deconv 六个 arch 分支）跑真实单图 CPU 路径，与 `tests/model_oracle/golden/`
+里提交的 golden PNG 比 PSNR/maxdiff：
+
+```bash
+scripts/run_model_oracle.sh                    # 本机跑（缺模型则跳过并提示）
+scripts/run_model_oracle.sh --require-models   # CI 档：缺模型即失败
+scripts/run_model_oracle.sh --case span-x2     # 单例
+scripts/run_model_oracle.sh --update-golden    # 重新生成 golden（先看打印的漂移）
+```
+
+门限：同机同构建位级一致；跨 CPU ISA / ncnn 版本允许 PSNR ≥ 45 dB 且 maxdiff ≤ 3
+（坏图/错归一化落在 10–30 dB）。失败会写 x8 放大差异图并保留工作目录。
+**升级 ncnn 的流程**：改 `xmake.lua` 版本 → 重建 → 跑 oracle → 若只是亚 LSB 漂移
+（PSNR ≥ 45 dB）直接过；若明显漂移，看差异图确认是引擎改动还是模型回归，
+再决定 `--update-golden`（连同 golden + meta.json 一起提交）还是回退。
+细节与阈值依据：`docs/model-oracle-design.md`。
+
+### 3.6 桌面
+
+`ctest --test-dir desktop/build --output-on-failure` 运行对比分割线与任务队列两套回归。
+真实 CLI 冒烟：`QT_QPA_PLATFORM=offscreen UPIX_CLI="$PWD/build/linux/x86_64/release/upix-cli" desktop/build/upix --smoke`。
+界面截图使用 `desktop/build/upix --shot empty,done,models,host,pairing --out /tmp/upix-shots`；
+无显示服务时同样设置 `QT_QPA_PLATFORM=offscreen`。
+
 ---
 
 ## 4. 代码规范
@@ -165,7 +219,7 @@ GPU 管线改动要求 md5/PSNR 双端验证输出不变（性能优化不得改
   `nativelib/`。
 - UI 一切 token（颜色/间距/形状/动效/字体）必须走 `ui/theme/*`，规范与审查 grep 见
   DESIGN_LANGUAGE.md §11，**改 UI 前先读它**。
-- 字符串资源化（`StringProvider`）；日志界面英文枚举保留是策略（见设计语言 amendment）。
+- 日志级别筛选使用本地化文案；日志正文保留原始枚举（见设计语言 amendment）。
 
 ### 4.3 JNI 桥（`apps/app/src/main/cpp/jni_bridge.cpp`）
 
@@ -208,6 +262,8 @@ GPU 管线改动要求 md5/PSNR 双端验证输出不变（性能优化不得改
   `test_model_downloader` 的独立 sha256 oracle 保留，禁止新增 OpenSSL include。
 - Android 密钥落盘一律走 `KeystoreSecretStore`（Android Keystore AES-GCM），
   不要再引 androidx.security-crypto（Google 已废弃）。
+- Android 的 ncnn 库不提供 RTTI；`upix-core` 的自定义层和 JNI 消费方必须同样关闭 RTTI，
+  JNI 保留异常支持并启用 `--no-undefined`，避免 APK 构建成功却在加载时缺失 `ncnn::Layer` typeinfo。
 
 ---
 
@@ -228,6 +284,8 @@ GPU 管线改动要求 md5/PSNR 双端验证输出不变（性能优化不得改
 | `cli-v0.x.y` | `.github/workflows/release-cli.yml` | `upix-cli-{ver}-linux-x86_64.tar.gz` + `upix-cli-{ver}-macos-arm64.tar.gz` |
 | `android-v0.x.y` | `.github/workflows/release-android.yml` | 签名 `upix-android-{ver}-arm64-v8a.apk` |
 | `models` | 手动 `publish_models.py` | 模型 zip（滚动 release，不打新 tag） |
+
+CLI tarball 内含 `upix-cli` 与根 `LICENSE`（AGPL-3.0 随二进制分发）。
 
 CLI `0.1.0` 和 Android `0.1.0` 只是数字碰巧相同，互不绑定。
 
@@ -264,7 +322,7 @@ keystore 文件在 `~/.config/upix/android-release.jks`，**不进 git**。
 |------|------|
 | `UPIX_MODELS_DIR` | 模型目录覆盖（默认 `$XDG_DATA_HOME/upix/models`） |
 | `UPIX_LOG_LEVEL=debug` | 开启 DEBUG 日志（默认 INFO） |
-| `UPIX_PROGRESS=1` | 单图/目录模式进度输出 |
+| `UPIX_PROGRESS=json` | 单图/目录模式进度以 JSON 事件行输出（stdout；人读进度仍走 stderr）。GUI 消费；`1` 等价旧行为（stderr `\r` 行） |
 | `UPIX_KERNEL_SELFTEST=1` | 引擎初始化时跑 GPU kernel round-trip 自检 |
 | `UPIX_PIPELINE_TIMER` | GPU 流水线与进度帧的分段时间日志 |
 | `UPIX_GPU_DISABLE_FP16=1` | 关闭 fp16 存储——冻结 SPIR-V pack 需要 fp16，引擎会整体回退 CPU |
@@ -294,6 +352,9 @@ keystore 文件在 `~/.config/upix/android-release.jks`，**不进 git**。
 4. **改自定义 GPU kernel 后**：跑 `UPIX_KERNEL_SELFTEST=1` 自检 + 一张真实图双端
    （PC + Android 真机）输出比对。Adreno 的标量 SSBO bug 是**静默垃圾输出**不报错，
    见 ARCHITECTURE §2.2 的规避政策。
+   HWC→CHW 打包 kernel 按 `(channels*cstep+1)/2` 个字做一维 dispatch，工作组的
+   y/z 必须为 1；CHW→HWC float kernel 仍按 `(w,h,channels)` 调度。自检量化参考
+   必须使用实际上传的 fp16 值，不能拿量化前 fp32 值跨字节边界比较。
 5. **多个 `before_build` 注册只有第一个生效**：xmake 不累积钩子，往 target 加钩子
    必须并进现有函数（`share/xmake.lua` 已有注释）。
 6. **探针/测试缓冲按 scale² 预算**：写新的 GPU 探针时输出缓冲要按放大倍数平方预留，
@@ -328,7 +389,8 @@ keystore 文件在 `~/.config/upix/android-release.jks`，**不进 git**。
 ## 9. CI
 
 `ci-*` **默认关掉**（无 push/PR），全部可在 Actions 里 `workflow_dispatch`。
-日常自动跑的只有发版：`cli-v*` / `android-v*` tag，同样也能手动触发。
+自动触发包括发版 tag（`cli-v*` / `android-v*`）和 `deploy-pages.yml`
+（push 到 `main` 且命中 `site/**` 或工作流本身）；两者也可手动触发。
 
 **编译和测试是不同 job**：编译 job 只出 artifact，测试 job 只下载再跑。
 
@@ -344,9 +406,10 @@ keystore 文件在 `~/.config/upix/android-release.jks`，**不进 git**。
 | 工作流 | 编译 job | 测试 job | 自动触发 |
 |--------|----------|----------|----------|
 | `ci-static.yml` | — | UI token grep | 否（手动） |
-| `ci-host.yml` | linux-x86_64 CLI + tests | 直跑 `test_*` + serve E2E（CPU） | 否（手动） |
+| `ci-host.yml` | linux-x86_64 CLI + tests | 直跑 `test_*` + serve E2E（CPU）+ 模型效果 oracle | 否（手动） |
 | `ci-android-unit.yml` | Kotlin unit-test classes | `testDebugUnitTest` | 否（手动） |
 | `ci-android-apk.yml` | android-arm64-v8a debug APK | `unzip -l` 含 `.so` | 否（手动） |
+| `deploy-pages.yml` | `site/`：npm ci → lint → build | GitHub Pages 部署 | push `main`（站点路径过滤） |
 | `release-cli.yml` | linux-x86_64 + macos-arm64 | 各平台 `--version` | tag `cli-v*` |
 | `release-android.yml` | android-arm64-v8a 签名 APK | `jarsigner -verify` | tag `android-v*` |
 
@@ -365,6 +428,10 @@ keystore 文件在 `~/.config/upix/android-release.jks`，**不进 git**。
 GitHub-hosted runner 跳过 Aliyun Maven（`apps/settings.gradle.kts`：
 `GITHUB_ACTIONS && !ACT`）。本地和 `act` 仍走阿里云。
 
+`setup-xmake` 在当前 step 显式 export `CCACHE_DIR/CCACHE_MAXSIZE` 后再清零统计；
+写入 `$GITHUB_ENV` 只影响后续 step。外部 Actions 固定完整 commit SHA，注释保留版本，
+升级时同步更新 SHA 与注释；仓库内复合 action 仍使用相对路径。
+
 ### 9.3 本地用 act 按组打通
 
 先校验 YAML，再按组跑。**不要**一上来 `act push` 全仓库——会拉大型
@@ -378,6 +445,7 @@ act -n --pull=false -W .github/workflows/ci-android-unit.yml
 act -n --pull=false -W .github/workflows/ci-android-apk.yml   # 会 git clone upload-artifact
 act -n --pull=false -W .github/workflows/release-cli.yml
 act -n --pull=false -W .github/workflows/release-android.yml
+act -n --pull=false -W .github/workflows/deploy-pages.yml
 
 # 真跑：从最便宜的组开始。不要 `act push` 一次全开。
 act --pull=false -W .github/workflows/ci-static.yml

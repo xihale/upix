@@ -86,6 +86,11 @@ xmake f --avif-encoder=y --avif-decoder=y && xmake     # both optional, independ
 # or:          UPIX_AVIF_ENCODER=1 UPIX_AVIF_DECODER=1 scripts/build_native.sh release arm64-v8a
 ```
 
+`scripts/build_native.sh` forwards to `apps/scripts/build_native.sh`, the same
+implementation Gradle uses; both read the pinned NDK version from the app build file.
+Each AVIF option resolves independently: explicit flag, then its environment variable,
+then disabled, including when other xmake flags are supplied.
+
 | Option | Effect | arm64 `.so` cost (measured, 2026-08-26) |
 | --- | --- | --- |
 | `avif-encoder` | libavif+aom compiled in: on-device AVIF **output** (the CLI encodes standalone; the Android app unlocks the AVIF format for local processing) | 9.6 → 16.9 MB raw / +3.0 MB gzipped in the APK |
@@ -363,7 +368,10 @@ You can save frequently used settings in a JSON file:
 ```
 `output_quality` and `output_format` from the config (or via `--output-quality`/`--output-format`) determine the compression level and file container used for each processed image.
 
-Load with `--config FILE`. CLI flags override the loaded configuration.
+Load with `--config FILE`. Only explicitly supplied CLI options override the loaded
+tile size, overlap, batch size, auto-tile setting, and min/max bounds. Single-image
+and directory runs use the same merged settings. Auto-tile or a tile batch size
+other than 1 runs inline because the warm daemon cannot carry those settings.
 
 ## Troubleshooting
 

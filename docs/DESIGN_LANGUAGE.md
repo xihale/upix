@@ -398,12 +398,9 @@ Ordered, each independently compilable:
 - [ ] New icons are Outlined (or one of the two Filled exceptions)
 - [ ] Animations use Motion.kt tokens; nothing loops
 
-Quick CI-able greps (all must return empty):
-```bash
-grep -rn "Color(0x" apps/app/src/main/java/io/upix/ui --include="*.kt" | grep -v "/theme/"
-grep -rn "RoundedCornerShape(" apps/app/src/main/java/io/upix/ui --include="*.kt"
-grep -rn "shadowElevation\|defaultElevation\|tonalElevation" apps/app/src/main/java/io/upix/ui --include="*.kt"
-```
+Quick CI check: `scripts/check_ui_tokens.sh` (also run by `ci-static.yml`).
+Matches outside `ui/theme/*` must be empty; every screen is checked.
+The gate must return zero for a clean tree and nonzero for an unapproved match.
 
 ---
 

@@ -25,7 +25,8 @@ zombie pid 罚时 / socket 清理 / 目录创建）。原则：每条用例必�
   junk pidfile 0.1s fallback（F3）、junk 普通文件不被清（F4）。
 - io：3 类损坏输入、4 个尺寸边界（1x1 / 1x300 / 300x1 / 奇宽）、嵌套输出
   目录（F5）、只读目录、怪文件名、SR 标记 refeed、batch 坏成员不中断、
-  4 输出格式矩阵（avif 按能力自动跳过）。
+  4 输出格式矩阵（avif 按能力自动跳过）；A7 验证 RGBA 多 tile 的 alpha 旁路、
+  inline/daemon alpha 一致，以及颜色通道与同图 RGB 推理相符。
 
 ## 已知非确定性（断言据此定标，勿收紧回位级）
 
@@ -38,3 +39,7 @@ zombie pid 罚时 / socket 清理 / 目录创建）。原则：每条用例必�
   跨路径对比必须**显式钉 tile** 才有意义。
 - **并发 fp16**：两进程同时跑时单侧输出也会漂移；并发阶段只断言稳定性
   与尺寸，位级等价只在串行输出间断言。
+- **A7 颜色旁路**：使用同一张图的 RGB 像素作参考，钉住 tile=64、overlap=16。
+  本轮 CPU 两者逐像素一致；GPU host 分块与 RGB 快速管线实测 PSNR=42.4dB、
+  maxdiff=56。沿用 C4 的 PSNR≥24 / maxdiff≤96；旧 GPU 批量布局少派发像素时
+  只有 5.2dB、maxdiff=255，alpha 仍完全正常，因此不能仅检查输出尺寸与 alpha。
