@@ -53,3 +53,9 @@ jobs:
           apk="$(find . -name 'app-debug.apk' -print -quit)"
           [[ -n "$apk" ]] || { echo "APK missing from artifact"; exit 1; }
           unzip -l "$apk" | grep -F 'lib/arm64-v8a/libupix-native.so'
+          # ABI 不允许混装：包内 lib/ 下只准出现 arm64-v8a 一条。
+          abis="$(unzip -Z1 "$apk" 'lib/*' | cut -d/ -f2 | sort -u)"
+          [[ "$abis" == "arm64-v8a" ]] || {
+            echo "ABI mixing: expected only arm64-v8a, got: $abis" >&2
+            exit 1
+          }
