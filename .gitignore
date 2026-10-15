@@ -66,6 +66,16 @@ test_output/
 *.webp
 !docs/*.png
 !docs/*.jpg
+# Model-effect oracle goldens (tests/model_oracle/golden/): reference images
+# committed on purpose — they are the regression baseline, not build output.
+!tests/model_oracle/golden/*.png
+# Landing-page pair (site/public/images/*.webp): these files are shipped, not
+# build output.
+!site/public/images/*.webp
+
+# Landing-page build output and dependencies
+site/node_modules/
+site/dist/
 
 # Release signing (never commit; lives in ~/.config/upix and GH secrets)
 *.jks
