@@ -16,8 +16,8 @@ android {
         targetSdk = libs.versions.targetSdk.get().toInt()
         // Android release channel — independent of the CLI version (root
         // xmake.lua). Release tags: android-v*.
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
