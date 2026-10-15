@@ -1,64 +1,29 @@
 #!/usr/bin/env bash
 # Build the Android native library (libupix-native.so) with xmake.
 #
-# Invoked by the Gradle `xmakeNative` task from the repo root as:
 #   scripts/build_native.sh <mode> <abi> [extra xmake config flags...]
 #   e.g. scripts/build_native.sh release arm64-v8a --avif-encoder=y
+#        UPIX_AVIF_ENCODER=1 UPIX_AVIF_DECODER=1 scripts/build_native.sh release arm64-v8a
 #
-# The optional AVIF codecs can also be enabled through env vars
-# (UPIX_AVIF_ENCODER=1 / UPIX_AVIF_DECODER=1); Gradle passes them as explicit
-# flags via -Pupix.avifEncoder=true / -Pupix.avifDecoder=true.
+# Manual/dev entry point and the path documented in README/DEVELOPMENT. The
+# Gradle task `xmakeNative` (apps/app/build.gradle.kts) executes
+# apps/scripts/build_native.sh, which owns the implementation; this forwards
+# there so the two entries cannot drift. That script pins the NDK from
+# apps/app/build.gradle.kts (`ndkVersion`, the value AGP's auto-installer uses),
+# falls back to apps/local.properties for the SDK root, configures
+# `--runtimes=c++_shared`, and builds the `upix-native` target only.
 #
 # xmake keeps a single global config per project, so this reconfigures to the
 # requested android target on every run; desktop CLI builds simply reconfigure
 # back (`xmake f -p linux -a x86_64`) on their next invocation.
 set -euo pipefail
 
+# Same required-argument contract as before (the Gradle-side script defaults
+# MODE/ABI, this documented manual entry keeps printing its usage instead of
+# silently building a release arm64-v8a library).
 MODE="${1:?usage: build_native.sh <release|debug> <abi> [flags...]}"
 ABI="${2:?usage: build_native.sh <release|debug> <abi> [flags...]}"
 
-cd "$(dirname "$0")/.."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Locate the Android SDK ($ANDROID_HOME/$ANDROID_SDK_ROOT, else ~/Android/Sdk).
-SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Android/Sdk}}"
-if [[ ! -d "$SDK" ]]; then
-    echo "error: Android SDK not found (set ANDROID_HOME)" >&2
-    exit 1
-fi
-
-# Locate an NDK: $ANDROID_NDK_HOME wins, else the newest under <sdk>/ndk/.
-# Without this, xmake's auto-detection can fail once the global config has been
-# switched to another platform and back.
-NDK_ARGS=()
-if [[ -n "${ANDROID_NDK_HOME:-}" && -d "${ANDROID_NDK_HOME:-}" ]]; then
-    NDK_ARGS=(--ndk="$ANDROID_NDK_HOME")
-elif [[ -d "$SDK/ndk" ]]; then
-    NDK_ARGS=(--ndk="$(ls -1 "$SDK/ndk" | sort -V | tail -1 | sed "s|^|$SDK/ndk/|")")
-fi
-
-# Optional AVIF codecs. xmake options are sticky across `xmake f` runs, so the
-# desired state is ALWAYS passed explicitly (y/n): Gradle properties (via CLI
-# flags) are the single source of truth, env vars second, lean default last.
-#   -Pupix.avifEncoder=true / -Pupix.avifDecoder=true  (gradle)
-#   UPIX_AVIF_ENCODER=1 / UPIX_AVIF_DECODER=1          (env)
-flag_state() {
-    case "${1:-}" in
-        1|y|Y|yes|YES|true|TRUE|True) echo y ;;
-        *) echo n ;;
-    esac
-}
-EXTRA_ARGS=()
-if [[ $# -ge 3 ]]; then
-    # Explicit flags forwarded verbatim (Gradle path): --avif-encoder=y ...
-    EXTRA_ARGS+=("${@:3}")
-else
-    EXTRA_ARGS+=(--avif-encoder="$(flag_state "${UPIX_AVIF_ENCODER:-}")")
-    EXTRA_ARGS+=(--avif-decoder="$(flag_state "${UPIX_AVIF_DECODER:-}")")
-fi
-
-# -y auto-confirms package installs. ndk_sdkver must stay >= the app's
-# minSdk (libs.versions.toml: 26); lower levels break API-24+ libc calls
-# such as getifaddrs in share/utils/network.cpp.
-xmake f -p android -a "$ABI" -m "$MODE" --android_sdk="$SDK" "${NDK_ARGS[@]}" \
-    --ndk_sdkver=26 "${EXTRA_ARGS[@]}" --yes
-xmake -y
+exec "${SCRIPT_DIR}/../apps/scripts/build_native.sh" "$MODE" "$ABI" "${@:3}"

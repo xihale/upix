@@ -29,15 +29,23 @@ while [[ $# -gt 0 ]]; do
         --gpu)  MODE="gpu";  shift;;
         --cpu)  MODE="cpu";  shift;;
         --both) MODE="both"; shift;;
-        --tile) TILE="$2"; shift 2;;
-        --repeat) REPEAT="$2"; shift 2;;
+        --tile) TILE="${2:?--tile needs a value}"; shift 2;;
+        --repeat) REPEAT="${2:?--repeat needs a value}"; shift 2;;
         *) echo "unknown arg: $1" >&2; exit 1;;
     esac
 done
 
+[[ -d "$IN_DIR" ]] || { echo "input dir not found: $IN_DIR" >&2; exit 1; }
 mkdir -p "$OUT_DIR"
-CLI="$(dirname "$0")/../build/linux/x86_64/release/upix-cli"
-[[ -x "$CLI" ]] || CLI="xmake run upix-cli"
+# Absolute path: the script may be invoked from any cwd. `xmake run upix-cli`
+# is not a usable fallback here — the sampler keys off the CLI's own PID, which
+# xmake's wrapper process would break.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLI="${SCRIPT_DIR}/../build/linux/x86_64/release/upix-cli"
+[[ -x "$CLI" ]] || {
+    echo "upix-cli not built: $CLI (run scripts/build_cli.sh release)" >&2
+    exit 1
+}
 SAMPLE_MS=50
 RESULTS="$OUT_DIR/results.jsonl"
 : > "$RESULTS"
@@ -49,7 +57,7 @@ sample_gpu_for_pid() {
     while kill -0 "$pid" 2>/dev/null; do
         nvidia-smi --query-gpu=timestamp,utilization.gpu,utilization.memory,memory.used,power.draw \
                    --format=csv,noheader,nounits | tr -d ' ' >> "$csv"
-        sleep $(awk "BEGIN{print $SAMPLE_MS/1000}")
+        sleep "$(awk "BEGIN{print $SAMPLE_MS/1000}")"
     done
 }
 
@@ -91,13 +99,15 @@ run_one() {
         local t1; t1=$(date +%s.%N)
     fi
 
-    local wall=$(awk "BEGIN{printf \"%.3f\", $t1-$t0}")
+    local wall
+    wall=$(awk "BEGIN{printf \"%.3f\", $t1-$t0}")
     # Dimensions
     local in_dim out_dim
     in_dim=$(identify -format '%wx%h' "$img" 2>/dev/null || echo "?")
     out_dim=$(identify -format '%wx%h' "$out" 2>/dev/null || echo "?")
-    local mpx_in=$(awk "BEGIN{split(\"$in_dim\",a,\"x\"); if(a[1]>0) printf \"%.3f\", a[1]*a[2]/1e6; else print \"NA\"}")
-    local mpx_s=$(awk "BEGIN{ if ($mpx_in==\"NA\" || $wall<=0) print \"NA\"; else printf \"%.2f\", $mpx_in/$wall}")
+    local mpx_in mpx_s
+    mpx_in=$(awk "BEGIN{split(\"$in_dim\",a,\"x\"); if(a[1]>0) printf \"%.3f\", a[1]*a[2]/1e6; else print \"NA\"}")
+    mpx_s=$(awk "BEGIN{ if ($mpx_in==\"NA\" || $wall<=0) print \"NA\"; else printf \"%.2f\", $mpx_in/$wall}")
 
     # GPU stats
     local u_stat="NA NA" m_stat="NA NA" p_stat="NA NA"

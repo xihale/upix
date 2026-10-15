@@ -17,6 +17,11 @@ fi
 MODEL="Real-ESRGANv3-anime-x2"
 OUTPUT_DIR="/tmp/benchmark_results"
 
+for tool in nvidia-smi bc column; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "missing required tool: $tool" >&2; exit 1; }
+done
+[ -x "$CLI" ] || { echo "CLI not built: $CLI (run scripts/build_cli.sh release)" >&2; exit 1; }
+
 mkdir -p "$OUTPUT_DIR"
 
 echo "=== Upix Tile Size Performance Benchmark ==="
@@ -49,15 +54,19 @@ run_test() {
     # Wait a moment for monitoring to start
     sleep 0.5
 
-    # Run the processing command and time it
+    # Run the processing command and time it. A pipeline's `$?` is `grep`'s, so
+    # take the CLI's own status from PIPESTATUS — a failed run used to be
+    # reported as a normal (fast) result.
     START_TIME=$(date +%s.%N)
-    $CLI -i "$TEST_IMAGE" -o "$output" -m "$MODEL" --tile-size $tile_size --tile-overlap $overlap 2>&1 | grep -E "Processing complete|Progress"
-    EXIT_CODE=$?
+    CLI_STATUS=0
+    "$CLI" -i "$TEST_IMAGE" -o "$output" -m "$MODEL" \
+        --tile-size "$tile_size" --tile-overlap "$overlap" 2>&1 \
+        | grep -E "Processing complete|Progress" || CLI_STATUS=${PIPESTATUS[0]}
     END_TIME=$(date +%s.%N)
 
     # Stop monitoring
-    kill $MONITOR_PID 2>/dev/null || true
-    wait $MONITOR_PID 2>/dev/null || true
+    kill "$MONITOR_PID" 2>/dev/null || true
+    wait "$MONITOR_PID" 2>/dev/null || true
 
     # Calculate duration
     DURATION=$(echo "$END_TIME - $START_TIME" | bc -l)
@@ -73,20 +82,24 @@ run_test() {
 
     # Count tiles from output
     if [ -f "$output" ]; then
+        # Human-readable size is informational here, and $output is generated
+        # from two integers under a fixed /tmp dir — no filename to mangle, so
+        # SC2012 is a false positive and `ls -lh`'s exact format is worth keeping.
+        # shellcheck disable=SC2012
         OUTPUT_SIZE=$(ls -lh "$output" | awk '{print $5}')
     else
         OUTPUT_SIZE="FAILED"
     fi
 
-    echo "Result: Duration=${DURATION}s, Avg GPU=${AVG_GPU_UTIL}%, Max Mem=${MAX_MEM}MiB, Output=${OUTPUT_SIZE}"
+    echo "Result: Duration=${DURATION}s, Avg GPU=${AVG_GPU_UTIL}%, Max Mem=${MAX_MEM}MiB, Output=${OUTPUT_SIZE}, CLI exit=${CLI_STATUS}"
     echo ""
 
     # Log to CSV
-    echo "$tile_size,$overlap,$DURATION,$AVG_GPU_UTIL%,$MAX_MEM" >> "$OUTPUT_DIR/results.csv"
+    echo "$tile_size,$overlap,$DURATION,$AVG_GPU_UTIL%,$MAX_MEM,$CLI_STATUS" >> "$OUTPUT_DIR/results.csv"
 }
 
 # Initialize results CSV
-echo "tile_size,overlap,duration_sec,avg_gpu_util_percent,max_memory_mib" > "$OUTPUT_DIR/results.csv"
+echo "tile_size,overlap,duration_sec,avg_gpu_util_percent,max_memory_mib,cli_exit" > "$OUTPUT_DIR/results.csv"
 
 # Run tests
 for i in "${!TILE_SIZES[@]}"; do

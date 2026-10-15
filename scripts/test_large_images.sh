@@ -2,13 +2,24 @@
 
 # Test large image processing performance
 # Tests 4K and 8K images with different tile sizes
+#
+# Outputs (test_output/, large_image_test.log, test_4k.png, test_8k.png) stay in
+# the current directory; the CLI and required tools are resolved explicitly so a
+# missing binary fails with a message instead of a bare "command not found".
 
 set -e
 
-CLI="./build/linux/x86_64/release/upix-cli"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+CLI="${PROJECT_ROOT}/build/linux/x86_64/release/upix-cli"
 MODEL="Real-ESRGANv3-anime-x2"
 OUTPUT_DIR="test_output"
 LOG_FILE="large_image_test.log"
+
+for tool in convert bc; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "missing required tool: $tool" >&2; exit 1; }
+done
+[ -x "$CLI" ] || { echo "CLI not built: $CLI (run scripts/build_cli.sh release)" >&2; exit 1; }
 
 mkdir -p "$OUTPUT_DIR"
 
@@ -24,7 +35,7 @@ generate_test_image() {
 
     if [ ! -f "$output" ]; then
         echo "Generating ${width}x${height} test image..."
-        convert -size ${width}x${height} plasma:fractal "$output"
+        convert -size "${width}x${height}" plasma:fractal "$output"
     fi
 }
 
@@ -37,12 +48,13 @@ test_image() {
 
     echo "Testing: $label (tile=$tile_size, overlap=$overlap)" | tee -a "$LOG_FILE"
 
-    local start=$(date +%s.%N)
-    $CLI -i "$input" -o "$OUTPUT_DIR/output_${label}.png" \
+    local start end duration
+    start=$(date +%s.%N)
+    "$CLI" -i "$input" -o "$OUTPUT_DIR/output_${label}.png" \
         -m "$MODEL" --tile-size "$tile_size" --tile-overlap "$overlap" --gpu
-    local end=$(date +%s.%N)
+    end=$(date +%s.%N)
 
-    local duration=$(echo "$end - $start" | bc)
+    duration=$(echo "$end - $start" | bc)
     echo "  Time: ${duration}s" | tee -a "$LOG_FILE"
     echo "" | tee -a "$LOG_FILE"
 }

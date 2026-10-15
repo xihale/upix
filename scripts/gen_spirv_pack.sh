@@ -14,7 +14,7 @@ FORCE=0
 for a in "$@"; do
     case "$a" in
         --force) FORCE=1 ;;
-        -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
         *) echo "unknown arg: $a" >&2; exit 2 ;;
     esac
 done
@@ -31,7 +31,7 @@ fi
 
 mkdir -p build/host-dump-config
 export XMAKE_CONFIGDIR="$PWD/build/host-dump-config"
-xmake f -p linux -a x86_64 -m release "${CC_ARGS[@]}" --check --yes
+xmake f -p linux -a x86_64 -m release ${CC_ARGS[@]+"${CC_ARGS[@]}"} --check --yes
 xmake -y dump-spirv
 DUMP="./build/linux/x86_64/release/dump-spirv"
 [[ -x "$DUMP" ]] || { echo "dump-spirv missing: $DUMP" >&2; exit 1; }

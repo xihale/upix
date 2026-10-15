@@ -1,10 +1,38 @@
 #!/usr/bin/env bash
 # Cross-compile libupix-native.so with xmake and drop it in jniLibs/.
-# Usage: build_native.sh [debug|release] [abi]
+# Usage: build_native.sh [debug|release] [abi] [extra xmake flags...]
+#
+# Single implementation of the Android native build: the Gradle task
+# `xmakeNative` (apps/app/build.gradle.kts) executes this file, and the
+# repo-root scripts/build_native.sh forwards here with the same arguments.
 set -euo pipefail
 
 MODE="${1:-release}"
-ABI="${2:-arm64-v8a}"
+if [[ $# -gt 0 ]]; then shift; fi
+ABI="${1:-arm64-v8a}"
+if [[ $# -gt 0 ]]; then shift; fi
+
+# Reset each sticky codec option independently unless explicitly supplied.
+flag_state() {
+    case "${1:-}" in
+        1|y|Y|yes|YES|true|TRUE|True) echo y ;;
+        *) echo n ;;
+    esac
+}
+EXTRA_ARGS=("$@")
+has_flag() {
+    local prefix="$1" arg
+    for arg in "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"; do
+        [[ "$arg" == "$prefix"* ]] && return 0
+    done
+    return 1
+}
+if ! has_flag --avif-encoder=; then
+    EXTRA_ARGS+=(--avif-encoder="$(flag_state "${UPIX_AVIF_ENCODER:-}")")
+fi
+if ! has_flag --avif-decoder=; then
+    EXTRA_ARGS+=(--avif-decoder="$(flag_state "${UPIX_AVIF_DECODER:-}")")
+fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APPS_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ROOT="$(cd "${APPS_DIR}/.." && pwd)"
@@ -39,5 +67,5 @@ cd "${ROOT}"
 echo "==> xmake android ${MODE} ${ABI}"
 xmake config -p android -a "${ABI}" -m "${MODE}" \
     --ndk="${NDK_PATH}" --android_sdk="${SDK_PATH}" --ndk_sdkver="${NDK_API_LEVEL}" \
-    --runtimes=c++_shared -y
+    --runtimes=c++_shared "${EXTRA_ARGS[@]}" -y
 xmake build upix-native

@@ -10,11 +10,11 @@
 #        install + launch + watch logcat for crash/ANR/native-fault, report.
 #        Device-agnostic: identical on real devices and Waydroid.
 #
-# Usage:
-#   ./scripts/android_test.sh                 # unit + build + smoke (if a device is up)
-#   RUN_LINT=1 ./scripts/android_test.sh      # also run lint (non-blocking)
-#   SMOKE_SECONDS=30 ./scripts/android_test.sh
-#   ./scripts/android_test.sh --skip-device   # offline phases only
+# Usage (from the repo root; the script cd's to apps/ itself):
+#   apps/scripts/android_test.sh                 # unit + build + smoke (if a device is up)
+#   RUN_LINT=1 apps/scripts/android_test.sh      # also run lint (non-blocking)
+#   SMOKE_SECONDS=30 apps/scripts/android_test.sh
+#   apps/scripts/android_test.sh --skip-device   # offline phases only
 #
 # Exit codes: 0 = all run phases passed; 1 = a blocking phase failed; 2 = usage.
 
@@ -33,7 +33,7 @@ for a in "$@"; do
   case "$a" in
     --skip-device) SKIP_DEVICE=1 ;;
     --lint)        RUN_LINT=1 ;;
-    -h|--help)     sed -n '2,24p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,19p' "$0"; exit 0 ;;
     *) echo "unknown arg: $a" >&2; exit 2 ;;
   esac
 done
@@ -50,7 +50,7 @@ warn()  { printf "${C_YELLOW}⚠ %s${C_OFF}\n" "$*" >&2; }
 die()   { printf "${C_RED}✗ %s${C_OFF}\n" "$*" >&2; exit 1; }
 
 GRADLE="./gradlew"
-cd "$APPS_DIR"
+cd "$APPS_DIR" || die "cannot cd to $APPS_DIR"
 
 # --- Phase 1: unit tests ----------------------------------------------------
 phase "Unit tests (testDebugUnitTest)"

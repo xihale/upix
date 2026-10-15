@@ -32,14 +32,7 @@ flag_state() {
         *) echo n ;;
     esac
 }
-EXTRA_ARGS=()
-if [[ $# -ge 1 ]]; then
-    # Explicit flags forwarded verbatim.
-    EXTRA_ARGS+=("$@")
-else
-    EXTRA_ARGS+=(--avif-encoder="$(flag_state "${UPIX_AVIF_ENCODER:-}")")
-    EXTRA_ARGS+=(--avif-decoder="$(flag_state "${UPIX_AVIF_DECODER:-}")")
-fi
+EXTRA_ARGS=("$@")
 
 PLAT="${UPIX_PLAT:-linux}"
 ARCH="${UPIX_ARCH:-x86_64}"
@@ -55,6 +48,12 @@ has_flag() {
     done
     return 1
 }
+if ! has_flag --avif-encoder=; then
+    EXTRA_ARGS+=(--avif-encoder="$(flag_state "${UPIX_AVIF_ENCODER:-}")")
+fi
+if ! has_flag --avif-decoder=; then
+    EXTRA_ARGS+=(--avif-decoder="$(flag_state "${UPIX_AVIF_DECODER:-}")")
+fi
 if [[ "$PLAT" == linux ]]; then
     if ! has_flag --cxx=; then
         if [[ -n "${CXX:-}" ]]; then

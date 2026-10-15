@@ -116,6 +116,16 @@ def build_zip(name: str, param: Path, bin_path: Path, out_dir: Path) -> Path:
     return zip_path
 
 
+def sha256_file(path: Path, chunk: int = 1 << 20) -> str:
+    """Stream a model zip through sha256 instead of read_bytes(): the archives
+    reach hundreds of MB and this runs per uploaded model."""
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(chunk), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def scale_from_name(name: str) -> int:
     """Infer scale from the trailing -xN / _xN / xN convention. The number
     may be followed by non-digits (e.g. "Real-ESRGAN-x4plus", "…-x4v3").
@@ -275,7 +285,7 @@ def main() -> int:
         if asset:
             doomed.add(asset["name"])  # overwritten
         zip_path = build_zip(name, param, bin_path, staging)
-        sha256 = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+        sha256 = sha256_file(zip_path)
         entries.append(entry(name, zip_path.stat().st_size, sha256))
         to_upload.append(zip_path)
         print(f"built {zip_path.name}: {zip_path.stat().st_size} bytes sha256={sha256[:12]}…")
