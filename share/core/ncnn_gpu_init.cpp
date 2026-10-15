@@ -72,6 +72,16 @@ std::mutex g_vulkan_init_mutex;
 
                 ncnn::create_gpu_instance();
                 int gpu_count = ncnn::get_gpu_count();
+                if (gpu_count == 0) {
+                    // ncnn's instance creation is one-shot: gpu.cpp sets
+                    // g_instance.created on the first call and every later call
+                    // returns immediately with the same result. Retrying can
+                    // therefore never discover a device that was absent on the
+                    // first pass — it only adds ~4.4s of sleeps and six warnings
+                    // before the CPU fallback runs.
+                    LOG_WARNING("Engine", "No Vulkan device present; not retrying");
+                    break;
+                }
                 if (gpu_count > 0) {
                     int best_gpu_idx = -1;
                     int best_score = std::numeric_limits<int>::min();
@@ -135,6 +145,7 @@ std::mutex g_vulkan_init_mutex;
         model_has_border_crop_ = false;
         scale_factor_ = 2;
         scale_detected_ = false;
+        input_channels_ = 3;
 
         // The graph walk itself lives in core/model_graph.cpp (pure param-file
         // analysis, shared with ModelManager and test_model_catalog); this

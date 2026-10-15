@@ -11,6 +11,19 @@
 
 namespace upix {
 
+namespace {
+
+// Upper bound for a head Reorg (space-to-depth) stride read out of the param
+// file: real values are 2/4, and the bound keeps stride² free of overflow.
+constexpr int kMaxReorgStride = 16;
+
+// Upper bound for the blob counts a param line declares. The counts are text
+// from the file; sizing a vector from a claimed 2000000000 blobs would throw
+// out of this optional-returning parser.
+constexpr int kMaxBlobCount = 1024;
+
+} // namespace
+
 auto scale_from_filename(std::string_view name) -> int {
     int from_name = 0;
     for (size_t i = 0; i + 1 < name.size(); ++i) {
@@ -18,7 +31,11 @@ auto scale_from_filename(std::string_view name) -> int {
         if (!std::isdigit(static_cast<unsigned char>(name[i + 1]))) continue;
         int n = 0;
         size_t j = i + 1;
-        while (j < name.size() && std::isdigit(static_cast<unsigned char>(name[j]))) {
+        // Stop accumulating past the accepted range: an unbounded digit run
+        // ("x99999999999") would overflow `n` and could wrap into a value the
+        // 1..8 filter accepts.
+        while (j < name.size() && n <= 8 &&
+               std::isdigit(static_cast<unsigned char>(name[j]))) {
             n = n * 10 + (name[j] - '0');
             ++j;
         }
@@ -36,22 +53,26 @@ auto detect_model_graph(const std::string& param_path)
 
     ModelGraphInfo info;
 
-    // Input layer dims: "Input  <name>  <in> <out>  <blob>  0=W 1=H 2=C"
+    // Input layer dims: "Input  <name>  <in> <out>  <blob>  0=W 1=H 2=C".
+    // Prefix-matched and every parse guarded: a truncated or hand-edited param
+    // must leave the dims at their defaults, not throw std::invalid_argument
+    // out of this optional-returning API. The leading space in " 0=" keeps a
+    // blob name that ends in a digit from being read as a param.
+    auto param_int = [](const std::string& text, std::string_view key) -> std::optional<int> {
+        const size_t pos = text.find(key);
+        if (pos == std::string::npos) return std::nullopt;
+        try {
+            return std::stoi(text.substr(pos + key.size()));
+        } catch (const std::exception&) {
+            return std::nullopt;
+        }
+    };
     std::string line;
     while (std::getline(file, line)) {
-        if (line.find("Input") != std::string::npos) {
-            size_t pos = line.find("0=");
-            if (pos != std::string::npos) {
-                info.input_width = std::stoi(line.substr(pos + 2));
-            }
-            pos = line.find("1=");
-            if (pos != std::string::npos) {
-                info.input_height = std::stoi(line.substr(pos + 2));
-            }
-            pos = line.find("2=");
-            if (pos != std::string::npos) {
-                info.input_channels = std::stoi(line.substr(pos + 2));
-            }
+        if (line.rfind("Input", 0) == 0) {
+            if (const auto w = param_int(line, " 0=")) info.input_width = *w;
+            if (const auto h = param_int(line, " 1=")) info.input_height = *h;
+            if (const auto c = param_int(line, " 2=")) info.input_channels = *c;
         }
     }
 
@@ -95,7 +116,8 @@ auto detect_model_graph(const std::string& param_path)
             std::string type, name;
             int bottom_count = -1, top_count = -1;
             if (iss >> type >> name >> bottom_count >> top_count
-                && bottom_count >= 0 && top_count >= 0) {
+                && bottom_count >= 0 && top_count >= 0
+                && bottom_count <= kMaxBlobCount && top_count <= kMaxBlobCount) {
                 std::vector<std::string> bottoms(static_cast<size_t>(bottom_count));
                 std::vector<std::string> tops(static_cast<size_t>(top_count));
                 bool tokens_ok = true;
@@ -119,18 +141,19 @@ auto detect_model_graph(const std::string& param_path)
                     if (type == "Reorg") {
                         const int stride = param_i(" 0=");
                         const int mode = param_i(" 1=");
-                        if (!upsampler_seen && stride > 1 && mode <= 0) {
+                        if (!upsampler_seen && stride > 1 && stride <= kMaxReorgStride &&
+                            mode <= 0) {
                             head_reorg_stride = stride;
                         }
                     } else if (type == "Deconvolution") {
                         const int stride = param_i(" 3=");
-                        if (stride >= 1) {
+                        if (stride >= 1 && stride <= kMaxGraphScaleFactor) {
                             deconvs.push_back({tops.empty() ? "" : tops.back(), stride});
                             upsampler_seen = upsampler_seen || stride > 1;
                         }
                     } else if (type == "PixelShuffle") {
                         const int ratio = param_i(" 0=");
-                        if (ratio >= 1) {
+                        if (ratio >= 1 && ratio <= kMaxGraphScaleFactor) {
                             pixelshuffles.push_back({tops.empty() ? "" : tops.back(), ratio});
                             upsampler_seen = upsampler_seen || ratio > 1;
                         }
@@ -149,9 +172,15 @@ auto detect_model_graph(const std::string& param_path)
                 }
             };
             if (param(" 0=") == 2.0) continue;  // fixed output size, not a scale
-            found_interp = true;
+            // A scale-based Interp always carries 1=<height scale>. Without it
+            // the layer is not a scale witness at all: treating it as one (the
+            // default 1.0) pinned the net at x1 and suppressed the filename
+            // fallback the engine relies on.
+            if (line.find(" 1=") == std::string::npos) continue;
             const double h_scale = param(" 1=");
-            if (h_scale > 0.0) interp_product *= h_scale;
+            if (!(h_scale > 0.0)) continue;
+            found_interp = true;
+            interp_product *= h_scale;
             if (h_scale > 1.0) upsampler_seen = true;
         }
         if (line.rfind("Crop", 0) == 0) {
@@ -169,15 +198,28 @@ auto detect_model_graph(const std::string& param_path)
             };
             if (param_i(" 0=") == 3) {
                 const int stride = param_i(" 3=");
-                if (stride >= 1) {
+                // Bounded: an unclamped stride token propagates into every
+                // width*scale multiply downstream (int overflow).
+                if (stride >= 1 && stride <= kMaxGraphScaleFactor) {
                     deconv_scale = stride;
                 }
             }
         }
     }
+    // A graph-derived scale is accepted only inside the supported range: every
+    // caller multiplies image dimensions by it in `int`, so a param file whose
+    // upsampler arithmetic lands outside 1..kMaxGraphScaleFactor must be
+    // reported as "not detected" (callers then trust the filename convention)
+    // instead of exported as a bogus scale.
+    int interp_scale = 0;
     if (found_interp) {
-        const int detected = static_cast<int>(interp_product + 0.5);
-        if (detected >= 1) info.scale_factor = detected;
+        const double detected = interp_product + 0.5;
+        if (detected >= 1.0 && detected <= static_cast<double>(kMaxGraphScaleFactor)) {
+            interp_scale = static_cast<int>(detected);
+        }
+    }
+    if (interp_scale >= 1) {
+        info.scale_factor = interp_scale;
     } else if (deconv_scale >= 1) {
         info.scale_factor = deconv_scale;
     } else if (!pixelshuffles.empty()) {
@@ -198,6 +240,11 @@ auto detect_model_graph(const std::string& param_path)
             for (const auto& ps : pixelshuffles) {
                 if (ps.top == net_output_blob) {
                     trunk *= ps.ratio;
+                    if (trunk < 1 || trunk > kMaxGraphScaleFactor) {
+                        // Implausible product: report no graph scale rather than
+                        // an out-of-range one that overflows callers' int math.
+                        break;
+                    }
                     info.scale_factor = static_cast<int>(trunk);
                     ps_trunk_detected = true;
                     // Real-CUGAN se/pro x4 nets are known to execute to
@@ -226,7 +273,8 @@ auto detect_model_graph(const std::string& param_path)
                 std::string type, name;
                 int bottom_count = -1, top_count = -1;
                 if (!(iss >> type >> name >> bottom_count >> top_count)
-                    || bottom_count < 0 || top_count < 0) {
+                    || bottom_count < 0 || top_count < 0
+                    || bottom_count > kMaxBlobCount || top_count > kMaxBlobCount) {
                     continue;
                 }
                 std::vector<std::string> bottoms(static_cast<size_t>(bottom_count));
@@ -239,7 +287,13 @@ auto detect_model_graph(const std::string& param_path)
                 if (type == "PixelShuffle") {
                     size_t pos = line.find(" 0=");
                     try {
-                        if (pos != std::string::npos) ratio = std::stoi(line.substr(pos + 3));
+                        if (pos != std::string::npos) {
+                            const int parsed = std::stoi(line.substr(pos + 3));
+                            // Bounded here as well as in the first pass: this
+                            // map drives the BFS product below, where an
+                            // unclamped token would overflow the accumulator.
+                            ratio = (parsed >= 1 && parsed <= kMaxGraphScaleFactor) ? parsed : 0;
+                        }
                     } catch (const std::exception&) {
                         ratio = 0;
                     }
@@ -263,6 +317,12 @@ auto detect_model_graph(const std::string& param_path)
                 if (type_it->second.first == "PixelShuffle" && type_it->second.second >= 1) {
                     ps_scale *= type_it->second.second;
                     any_trunk_ps = true;
+                    if (ps_scale > kMaxGraphScaleFactor) {
+                        // Already outside the accepted range: the range check
+                        // below rejects it either way, and stopping keeps a long
+                        // chain from overflowing the accumulator first.
+                        break;
+                    }
                 }
                 const auto bottom_it = producer_bottoms.find(blob);
                 if (bottom_it != producer_bottoms.end()) {
@@ -278,7 +338,7 @@ auto detect_model_graph(const std::string& param_path)
     if (head_reorg_stride > 1 && info.scale_factor % head_reorg_stride == 0) {
         info.scale_factor /= head_reorg_stride;
     }
-    info.scale_detected = found_interp || deconv_scale >= 1 || ps_trunk_detected;
+    info.scale_detected = interp_scale >= 1 || deconv_scale >= 1 || ps_trunk_detected;
 
     return info;
 }

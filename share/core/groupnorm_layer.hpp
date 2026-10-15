@@ -189,7 +189,6 @@ public:
             stats_.create(static_cast<int>(stats_elems), 4u, 1, opt.workspace_vkallocator);
         }
 
-        opt_keep_ = opt;
         std::vector<ncnn::vk_constant_type> constants(9);
         constants[0].i = static_cast<int>(w);
         constants[1].i = static_cast<int>(h);
@@ -254,10 +253,6 @@ private:
                 for (int i = 0; i < size; i++) {
                     ptr0[i] = (ptr0[i] * a + b) * gam + bet;
                 }
-                if (channels == 16 && size == 2244 && q == 0) {
-                    fprintf(stderr, "[GN write] out[0]=%.5f plane0=%p (input first was %.5f)\n",
-                            ptr0[0], (void*)x, x[0]);
-                }
             }
         } else {
             for (int q = 0; q < channels; q++) {
@@ -274,21 +269,6 @@ private:
     mutable ncnn::VkMat stats_;
     ncnn::VkMat weights_gpu_;
 #endif
-
-public:
-    // TEMP-DEBUG (removed before commit): download stats to host
-public:
-    std::vector<float> debug_read_stats() const {
-        std::vector<float> out(stats_.w, 0.f);
-        if (stats_.w == 0) return out;
-        ncnn::VkCompute cmd(vkdev);
-        ncnn::Mat host(stats_.w, static_cast<size_t>(4));
-        cmd.record_download(stats_, host, opt_keep_);
-        cmd.submit_and_wait();
-        memcpy(out.data(), host.data, stats_.w * sizeof(float));
-        return out;
-    }
-    mutable ncnn::Option opt_keep_;
 
 private:
     int group_ = 1;

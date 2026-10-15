@@ -12,15 +12,18 @@
 #include "utils/logger.hpp"
 #include "utils/unix_socket.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <limits>
 #ifdef __linux__
 #include <malloc.h>
 #endif
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <system_error>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -176,12 +179,13 @@ auto ServeDaemon::ensure_model_loaded(const std::string& model_name) -> int {
     return switch_model(*engine_, *models_, loaded_model_name_, model_name, "Daemon") ? 0 : 1;
 }
 
-auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
+auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock,
+                                const std::atomic<bool>& cancel) -> void {
     // sock owns the fd; closed exactly once on return. The guard keeps the
     // idle-timeout accounting truthful for this connection's whole lifetime.
     ConnGuard conn{active_conns_, last_active_ms_};
     try {
-        handle_client_inner(sock);
+        handle_client_inner(sock, cancel);
     } catch (const std::exception& e) {
         LOG_ERROR("Daemon", "request failed with exception: {}", e.what());
         try {
@@ -194,8 +198,18 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock) -> void {
     }
 }
 
-auto ServeDaemon::handle_client_inner(std::unique_ptr<UnixSocket>& sock)
+auto ServeDaemon::handle_client_inner(std::unique_ptr<UnixSocket>& sock,
+                                      const std::atomic<bool>& cancel)
     -> void {
+    // Bound every read AND write on this connection. Without this, a client
+    // that connects and sends nothing parks its thread in receive_all()
+    // forever (the idle timeout then never fires), and a client that stops
+    // draining freezes a send_all() — which happens while engine_mutex_ is
+    // held during inference, stalling every other connection. 30 s is far
+    // beyond any legitimate request/response gap on a local socket.
+    constexpr int kServeIoTimeoutMs = 30 * 1000;
+    sock->set_timeout(kServeIoTimeoutMs);
+
     // ── 1. Read request header ──────────────────────────────────────────────
     std::vector<uint8_t> hdr_buf(Protocol::HEADER_SIZE);
     if (!sock->receive_all(hdr_buf.data(), hdr_buf.size())) {
@@ -320,8 +334,28 @@ auto ServeDaemon::handle_client_inner(std::unique_ptr<UnixSocket>& sock)
         // Scale comes from the model that was just ensured under this lock.
         const int scale = engine_->get_scale_factor();
         used_scale = scale;
-        out_w = image.width() * scale;
-        out_h = image.height() * scale;
+        // 64-bit math, then range-check before narrowing: an overflowed int
+        // would size the output Image from a bogus (often negative → huge)
+        // value. Mirrors the coordinator's/CLI's guard on the same product.
+        const int64_t out_w64 = static_cast<int64_t>(image.width()) * scale;
+        const int64_t out_h64 = static_cast<int64_t>(image.height()) * scale;
+        const uint64_t bytes_per_pixel =
+            static_cast<uint64_t>(std::max(1, image.channels()));
+        const bool size_overflow =
+            out_w64 > 0 && out_h64 > 0 &&
+            static_cast<uint64_t>(out_w64) >
+                std::numeric_limits<size_t>::max() /
+                    (static_cast<uint64_t>(out_h64) * bytes_per_pixel);
+        if (out_w64 <= 0 || out_h64 <= 0 ||
+            out_w64 > std::numeric_limits<int>::max() ||
+            out_h64 > std::numeric_limits<int>::max() || size_overflow) {
+            send_serve_error(*sock, "upscaled output out of range");
+            LOG_ERROR("Daemon", "Upscaled output out of range: {}x{} at {}x",
+                      image.width(), image.height(), scale);
+            return;
+        }
+        out_w = static_cast<int>(out_w64);
+        out_h = static_cast<int>(out_h64);
         out_image = Image(out_w, out_h, image.channels());
 
         TileConfig tc;
@@ -344,11 +378,12 @@ auto ServeDaemon::handle_client_inner(std::unique_ptr<UnixSocket>& sock)
             static_cast<int32_t>(req.tile_overlap), 0, tc.tile_size / 2));
         tc.batch_size = 1;
 
-        std::atomic<bool> cancel{false};
         // Stream tile progress to the client so it can render the same live
         // progress line the inline path shows. Throttled to whole-percent
         // changes; a failed progress send is non-fatal (the terminal response
-        // reports real errors).
+        // reports real errors). `cancel` is owned by this connection's
+        // ConnThread: drain_connections() sets it at shutdown so the remaining
+        // tiles are skipped instead of holding teardown for minutes.
         int last_sent_pct = -1;
         auto progress_sink = [&](const ProcessingProgress& prog) {
             const int pct = static_cast<int>(prog.percentage());
@@ -459,6 +494,10 @@ auto ServeDaemon::reap_finished_connections() -> void {
 }
 
 auto ServeDaemon::drain_connections() -> void {
+    // Cancel first: a request already inside inference stops at the next tile
+    // boundary instead of running to completion (minutes) before the joins
+    // below can return.
+    for (auto& ct : conn_threads_) ct->cancel.store(true);
     // Interrupt readers before joining: a client that connected but never sent
     // bytes would block recv() forever and hang the joins below. ::shutdown on
     // the dup'd watch fd wakes the blocked recv() with an error; the watch fd
@@ -515,19 +554,31 @@ auto ServeDaemon::run() -> void {
         const int watch_fd = ::dup(sock->fd());
         // Heap-held entry: the connection thread needs a stable pointer to
         // its own record (a growing vector<ConnThread> would invalidate one).
+        // The record is handed to the vector BEFORE the thread starts: the
+        // push_back can allocate, and a failure there must never leave a
+        // running thread writing e->done through a freed pointer.
         auto entry = std::make_unique<ConnThread>();
-        entry->watch_fd = watch_fd;
-        entry->thread = std::jthread(
-            [this, e = entry.get(), c = std::move(sock)]() mutable {
-                handle_client(std::move(c));
-                // glibc keeps freed heap for reuse; hand it back so RSS
-                // tracks live allocations, not the largest request served.
-#ifdef __linux__
-                malloc_trim(0);
-#endif
-                e->done.store(true);  // reaper may now join us
-            });
+        ConnThread* e = entry.get();
+        e->watch_fd = watch_fd;
         conn_threads_.push_back(std::move(entry));
+        try {
+            e->thread = std::jthread(
+                [this, e, c = std::move(sock)]() mutable {
+                    handle_client(std::move(c), e->cancel);
+                    // glibc keeps freed heap for reuse; hand it back so RSS
+                    // tracks live allocations, not the largest request served.
+#ifdef __linux__
+                    malloc_trim(0);
+#endif
+                    e->done.store(true);  // reaper may now join us
+                });
+        } catch (const std::system_error& ex) {
+            // Thread creation failed (EAGAIN): drop the record and give the
+            // connection slot back so the idle timeout keeps working.
+            LOG_ERROR("Daemon", "cannot start connection thread: {}", ex.what());
+            conn_threads_.pop_back();
+            active_conns_.fetch_sub(1);
+        }
     }
     // Same teardown path for stop(), fatal error, and idle exit.
     drain_connections();

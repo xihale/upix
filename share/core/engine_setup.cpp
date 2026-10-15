@@ -1,5 +1,6 @@
 #include "engine_setup.hpp"
 
+#include "core/model_graph.hpp"
 #include "utils/logger.hpp"
 
 #include <algorithm>
@@ -144,9 +145,12 @@ auto probe_model_sanity(const std::filesystem::path& param_path,
     for (size_t i = 0; i < input.size(); ++i) {
         input[i] = static_cast<float>(i % 251) / 250.0f;  // deterministic gradient
     }
-    const int scale = std::max(engine.get_scale_factor(), 1);
-    std::vector<float> output(static_cast<size_t>(kProbeSize * scale) *
-                              (kProbeSize * scale) * 3);
+    // Size the output exactly as the engine's shape check will: both bounds are
+    // clamped and the multiply is done in size_t, so a bogus graph scale cannot
+    // overflow `int` (or under-allocate) here.
+    const int scale = std::clamp(engine.get_scale_factor(), 1, kMaxGraphScaleFactor);
+    const size_t probe_out_w = static_cast<size_t>(kProbeSize) * static_cast<size_t>(scale);
+    std::vector<float> output(probe_out_w * probe_out_w * 3);
     auto run = engine.process(input.data(), output.data(),
                               kProbeSize, kProbeSize, 3);
     if (!run) {

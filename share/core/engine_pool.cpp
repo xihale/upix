@@ -1,6 +1,7 @@
 #include "engine_pool.hpp"
 #include "utils/logger.hpp"
 #include <algorithm>
+#include <cstdlib>
 #include <format>
 #include <fstream>
 #include <set>
@@ -54,15 +55,16 @@ EnginePool::EnginePool(size_t pool_size, const std::string& param_path, const st
     // CPU engines split the machine's physical cores so that
     // pool_size * threads_per_engine ~= physical cores (ncnn guidance: at
     // most 8 threads per net). Without this, every engine spawns one thread
-    // per logical CPU and N engines oversubscribe the machine N-fold.
-    int threads_per_engine = 1;
+    // per logical CPU and N engines oversubscribe the machine N-fold. The
+    // budget is computed for GPU pools too: a GPU pool whose Vulkan init
+    // fails runs CPU engines, and those need the same cap.
+    const int physical_cores = detect_physical_core_count();
+    const int engines = static_cast<int>(pool_size);
+    int threads_per_engine = std::clamp((physical_cores + engines - 1) / engines, 1, 8);
+    if (const char* env_t = std::getenv("UPIX_CPU_THREADS_PER_ENGINE")) {
+        try { threads_per_engine = std::clamp(std::stoi(env_t), 1, 16); } catch (...) {}
+    }
     if (device_type == DeviceType::CPU) {
-        const int physical_cores = detect_physical_core_count();
-        const int engines = static_cast<int>(pool_size);
-        threads_per_engine = std::clamp((physical_cores + engines - 1) / engines, 1, 8);
-        if (const char* env_t = std::getenv("UPIX_CPU_THREADS_PER_ENGINE")) {
-            try { threads_per_engine = std::clamp(std::stoi(env_t), 1, 16); } catch (...) {}
-        }
         LOG_INFO("EnginePool", "CPU thread budget: {} physical cores / {} engines = {} inference threads per engine",
                  physical_cores, pool_size, threads_per_engine);
     }
@@ -80,7 +82,11 @@ EnginePool::EnginePool(size_t pool_size, const std::string& param_path, const st
             }
         }
 
-        if (device_type == DeviceType::CPU) {
+        // Keyed on the device the engine actually came up on, not the requested
+        // one: a GPU pool whose Vulkan init failed falls back to CPU, and those
+        // engines would otherwise keep ncnn's one-thread-per-logical-CPU
+        // default — the N-fold oversubscription this budget exists to prevent.
+        if (engine->current_device() == DeviceType::CPU) {
             engine->set_inference_threads(threads_per_engine);
         }
 
@@ -91,7 +97,7 @@ EnginePool::EnginePool(size_t pool_size, const std::string& param_path, const st
         }
 
         engines_.push_back(std::move(engine));
-        available_.push(engines_.back().get());
+        available_.push_back(engines_.back().get());
     }
 
     LOG_INFO("EnginePool", "Created pool with {} engines on {}",
@@ -105,15 +111,31 @@ Engine* EnginePool::acquire() {
     // Wait for a free engine instead of throwing: callers are allowed to have
     // more concurrent tasks than engines (e.g. a worker pool racing acquire).
     available_cv_.wait(lock, [this] { return !available_.empty(); });
-    Engine* e = available_.front();
-    available_.pop();
+    Engine* e = available_.back();
+    available_.pop_back();
     return e;
 }
 
 void EnginePool::release(Engine* engine) {
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        available_.push(engine);
+        // Only pool-owned engines, and only once: an unchecked push lets a
+        // caller bug (double release, foreign or null pointer) grow the free
+        // list past pool_size, and acquire() then hands the same engine to two
+        // workers at once — two threads inside one ncnn::Net. The free list is
+        // a vector (a handful of entries) so the duplicate scan is cheap.
+        const bool owned = engine != nullptr &&
+            std::any_of(engines_.begin(), engines_.end(),
+                        [engine](const std::unique_ptr<Engine>& e) { return e.get() == engine; });
+        if (!owned) {
+            LOG_WARNING("EnginePool", "release() called with an engine that is not in this pool; ignoring");
+            return;
+        }
+        if (std::find(available_.begin(), available_.end(), engine) != available_.end()) {
+            LOG_WARNING("EnginePool", "release() called twice for the same engine; ignoring");
+            return;
+        }
+        available_.push_back(engine);
     }
     available_cv_.notify_one();
 }

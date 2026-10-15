@@ -13,7 +13,9 @@ target("upix-native")
     add_files("app/src/main/cpp/jni_bridge.cpp")
     add_includedirs("$(projectdir)/share/core/distributed")
     add_syslinks("android", "log", "vulkan")
-    add_cxflags("-fexceptions", "-frtti")
+    -- ncnn's Android archive omits RTTI; consumers must not reference Layer typeinfo.
+    add_cxflags("-fexceptions", "-fno-rtti")
+    add_ldflags("-Wl,--no-undefined")
 
     after_build(function (target)
         local abi = target:arch()

@@ -5,7 +5,6 @@
 #include <memory>
 #include <mutex>
 #include <condition_variable>
-#include <queue>
 #include "core/engine.hpp"
 
 namespace upix {
@@ -18,6 +17,9 @@ public:
     // Blocks until an engine is free. Never throws for exhausted pools:
     // callers may run more tasks than engines.
     Engine* acquire();
+    // Returns an engine to the pool. Foreign / null pointers and duplicate
+    // releases are rejected with a warning (they would hand one engine to two
+    // workers at once) instead of corrupting the free list.
     void release(Engine* engine);
     
     // Non-copyable
@@ -26,7 +28,9 @@ public:
     
  private:
     std::vector<std::unique_ptr<Engine>> engines_;
-    std::queue<Engine*> available_;
+    // Free list; a vector rather than a queue so release() can scan for
+    // duplicates.
+    std::vector<Engine*> available_;
     std::mutex mutex_;
     std::condition_variable available_cv_;
 };

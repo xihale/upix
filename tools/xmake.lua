@@ -45,7 +45,13 @@ target("upix-core")
             target:add("deps", "dump-spirv")
         end
     end)
+    -- Host counterpart of share/xmake.lua's android-scoped hook: generate the
+    -- pack with the freshly built dump-spirv when it is missing, and bump
+    -- spirv_pack.S's mtime so .incbin re-reads it. Only one `before_build`
+    -- survives per target (registrations are not cumulative), hence the
+    -- symmetric platform guards in both hooks.
     before_build(function (target)
+        if is_plat("android") then return end
         if not os.isfile(spirv_pack) then
             import("core.project.project")
             local dump = project.target("dump-spirv")

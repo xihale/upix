@@ -24,6 +24,10 @@ target("upix-core")
     if is_plat("linux", "bsd") then
         add_syslinks("dl")
     end
+    if is_plat("android") then
+        -- Custom ncnn layers inherit from a base built without Android RTTI.
+        add_cxflags("-fno-rtti")
+    end
 
     add_files(
         "core/*.cpp",
@@ -45,13 +49,18 @@ target("upix-core")
 
     -- Android NDK cannot run dump-spirv. If the pack is missing, spawn an
     -- isolated host xmake so the in-progress android config is not overwritten.
-    -- Single hook (multiple before_build registrations are not cumulative):
-    -- also bump the .S mtime whenever the pack is newer. .incbin does not
+    -- Scope: android only — the host flow is owned by tools/xmake.lua's
+    -- upix-core hook. `before_build` registrations are not cumulative (a second
+    -- registration on the same target replaces this one), so each hook
+    -- early-returns outside its own platform and the pair stays correct no
+    -- matter which `includes()` in the root project file runs last.
+    -- Also bump the .S mtime whenever the pack is newer. .incbin does not
     -- track the packed blob as a build dependency — without this a stale pack
     -- silently ships.
     before_build(function (target)
+        if not is_plat("android") then return end
         local asm = path.join(os.scriptdir(), "core", "spirv_pack.S")
-        if is_plat("android") and not os.isfile(spirv_pack) then
+        if not os.isfile(spirv_pack) then
             print("generating " .. spirv_pack)
             local cfgdir = path.join(os.projectdir(), "build", "host-dump-config")
             os.mkdir(cfgdir)

@@ -203,6 +203,10 @@ if not is_plat("android") then
     add_requires("libzip")
 end
 
+-- share/ declares upix-core (and its android-side SPIR-V pack hook); tools/
+-- declares dump-spirv and the host-side hook on upix-core. Each hook is scoped
+-- to its own platform, so this order is not load-bearing — but keep share/
+-- first: upix-core must exist before anything depends on it.
 includes("share")
 if is_plat("android") then
     includes("apps")

@@ -72,9 +72,14 @@ private:
     // Handle one client connection on its own thread. Takes ownership of the
     // socket; the fd is closed exactly once when sock is destroyed on return.
     // The body runs inside handle_client's try/catch so an allocation failure
-    // answers the client instead of terminating the daemon.
-    auto handle_client(std::unique_ptr<UnixSocket> sock) -> void;
-    auto handle_client_inner(std::unique_ptr<UnixSocket>& sock) -> void;
+    // answers the client instead of terminating the daemon. `cancel` is the
+    // owning ConnThread's flag: drain_connections() sets it so an in-flight
+    // inference aborts at the next tile boundary instead of holding teardown
+    // (and the process) hostage until the whole image is done.
+    auto handle_client(std::unique_ptr<UnixSocket> sock,
+                       const std::atomic<bool>& cancel) -> void;
+    auto handle_client_inner(std::unique_ptr<UnixSocket>& sock,
+                             const std::atomic<bool>& cancel) -> void;
 
     // Ensure engine has `model_name` loaded; reload if it differs. Serialized
     // by engine_mutex_. Returns the param/bin resolution error if lookup fails.
@@ -94,10 +99,13 @@ private:
     // One accepted connection: its thread plus a dup() of the connection fd
     // used only to ::shutdown() it during teardown (waking a recv() that is
     // blocked on an unresponsive client). The dup is closed after shutdown.
+    // `cancel` is read by the connection's request pipeline (TileProcessor
+    // polls it between tiles) so teardown also interrupts a long inference.
     struct ConnThread {
         std::jthread thread;
         int watch_fd = -1;
         std::atomic<bool> done{false};
+        std::atomic<bool> cancel{false};
     };
 
     std::unique_ptr<Engine> engine_;

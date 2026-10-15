@@ -14,6 +14,12 @@ namespace upix {
 // scripts/publish_models.py's scale_from_name.
 auto scale_from_filename(std::string_view name) -> int;
 
+// Largest net scale accepted from the param graph. Every caller multiplies
+// image dimensions by the scale in `int`, so a value outside 1..this bound is
+// reported as "not detected" (scale_detected = false) and the filename-derived
+// convention is used instead.
+inline constexpr int kMaxGraphScaleFactor = 16;
+
 // What the param graph alone says about a model — derived from the layer
 // walk, never from the filename. Pure file analysis: no net load, no GPU,
 // usable from tests and tools.

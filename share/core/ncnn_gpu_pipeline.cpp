@@ -100,6 +100,12 @@ ncnn::Mat record_u8_download(ncnn::VkCompute& cmd, const ncnn::VkMat& gpu_u8,
     const int words = static_cast<int>(gpu_u8.total());
     ncnn::Mat tmp;
     tmp.create(words, static_cast<size_t>(4), 1);
+    if (tmp.empty() || tmp.data == nullptr) {
+        // Host allocation refused: recording the clone against an empty
+        // destination would be a null dereference inside ncnn, and the callers
+        // memcpy out of this scratch. They check for an empty return.
+        return tmp;
+    }
     cmd.record_clone(gpu_u8, tmp, opt);
     return tmp;
 }
@@ -290,6 +296,15 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             task_pad_infos.emplace_back(std::move(pad_infos));
         }
         if (total_tiles == 0) {
+            // Nothing to process: the other tile pipelines normalize an empty
+            // accumulator, so they hand back a black frame. Returning success
+            // with the caller's output buffer untouched published uninitialized
+            // memory as a valid image instead.
+            for (const auto& state : states) {
+                if (state.task->output_data != nullptr) {
+                    std::memset(state.task->output_data, 0, state.out_total);
+                }
+            }
             return {};
         }
 
@@ -429,6 +444,14 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             if (out_gpu.elempack != 1) {
                 ncnn::VkMat out_unpacked;
                 vkdev_->convert_packing(out_gpu, out_unpacked, 1, cmd, opt);
+                if (out_unpacked.data == nullptr) {
+                    // The packing utility shader can fail (allocation refused,
+                    // unsupported pack). Without this check the successfully
+                    // extracted blob was overwritten by the empty destination,
+                    // and the shape check below then reported a bogus "out of
+                    // GPU memory" for a failure that is not OOM.
+                    return std::unexpected(EngineError{211, "Vulkan output unpacking failed"});
+                }
                 out_gpu = out_unpacked;
             }
 
@@ -555,6 +578,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                     // Net input: blend-space tile grown by model_prepadding_.
                     auto pooled_input = acquire_tile_input(pad_info.net_in_w, pad_info.net_in_h, state.task->channels);
                     ncnn::VkMat in_gpu_chw = std::move(pooled_input.second);
+                    if (auto oom = check_vkmat_allocated(in_gpu_chw, "tile net input")) {
+                        return std::unexpected(*oom);
+                    }
 
                     pre_bindings[0] = state.in_gpu_full;
                     pre_bindings[1] = in_gpu_chw;
@@ -626,6 +652,10 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                                         normalize_quantize_dispatcher);
 
                     state.u8_download_scratch = record_u8_download(cmd, state.out_gpu_u8, opt);
+                    if (state.u8_download_scratch.data == nullptr) {
+                        return std::unexpected(EngineError{kErrOutOfMemory,
+                            "out of host memory for u8 download scratch"});
+                    }
                 }
             }
 
@@ -699,7 +729,12 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                                     normalize_quantize_constants,
                                     normalize_quantize_dispatcher);
 
-                scratches.push_back(record_u8_download(cmd, state.out_gpu_u8, opt));
+                ncnn::Mat state_scratch = record_u8_download(cmd, state.out_gpu_u8, opt);
+                if (state_scratch.data == nullptr) {
+                    return std::unexpected(EngineError{kErrOutOfMemory,
+                        "out of host memory for u8 download scratch"});
+                }
+                scratches.push_back(std::move(state_scratch));
             }
 
             int submit_ret = cmd.submit_and_wait();
@@ -973,6 +1008,14 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             if (out_gpu.elempack != 1) {
                 ncnn::VkMat out_unpacked;
                 vkdev_->convert_packing(out_gpu, out_unpacked, 1, cmd, opt);
+                if (out_unpacked.data == nullptr) {
+                    // The packing utility shader can fail (allocation refused,
+                    // unsupported pack). Without this check the successfully
+                    // extracted blob was overwritten by the empty destination,
+                    // and the shape check below then reported a bogus "out of
+                    // GPU memory" for a failure that is not OOM.
+                    return std::unexpected(EngineError{211, "Vulkan output unpacking failed"});
+                }
                 out_gpu = out_unpacked;
             }
 
@@ -1071,6 +1114,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                         // Net input: blend-space tile grown by model_prepadding_.
                         ncnn::VkMat in_gpu_chw;
                         in_gpu_chw.create(pad_info.net_in_w, pad_info.net_in_h, channels, in_elemsize, 1, blob_vkallocator);
+                        if (auto oom = check_vkmat_allocated(in_gpu_chw, "tile net input")) {
+                            return std::unexpected(*oom);
+                        }
 
                         std::vector<ncnn::VkMat> pre_bindings(2);
                         pre_bindings[0] = in_gpu_full;
@@ -1212,6 +1258,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
 
                     ncnn::VkMat in_gpu_chw;
                     in_gpu_chw.create(pad_info.net_in_w, pad_info.net_in_h, channels, in_elemsize, 1, blob_vkallocator);
+                    if (auto oom = check_vkmat_allocated(in_gpu_chw, "tile net input")) {
+                        return std::unexpected(*oom);
+                    }
 
                     std::vector<ncnn::VkMat> pre_bindings(2);
                     pre_bindings[0] = in_gpu_hwc;
@@ -1535,6 +1584,14 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             if (out_gpu.elempack != 1) {
                 ncnn::VkMat out_unpacked;
                 vkdev_->convert_packing(out_gpu, out_unpacked, 1, cmd, opt);
+                if (out_unpacked.data == nullptr) {
+                    // The packing utility shader can fail (allocation refused,
+                    // unsupported pack). Without this check the successfully
+                    // extracted blob was overwritten by the empty destination,
+                    // and the shape check below then reported a bogus "out of
+                    // GPU memory" for a failure that is not OOM.
+                    return std::unexpected(EngineError{211, "Vulkan output unpacking failed"});
+                }
                 out_gpu = out_unpacked;
             }
 
@@ -1751,6 +1808,10 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                     return std::unexpected(EngineError{210, std::format("Vulkan submit failed (error {})", submit_ret)});
                 }
                 if (slot.pending_is_last) {
+                    if (slot.pending_scratch.data == nullptr) {
+                        return std::unexpected(EngineError{kErrOutOfMemory,
+                            "out of host memory for u8 download scratch"});
+                    }
                     output_downloaded = true;
                     std::memcpy(output_data, static_cast<const uint8_t*>(slot.pending_scratch.data),
                                 out_total);
@@ -1827,6 +1888,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                         // Net input: blend-space tile grown by model_prepadding_.
                         ncnn::VkMat in_gpu_chw;
                         in_gpu_chw.create(pad_info.net_in_w, pad_info.net_in_h, channels, in_elemsize, 1, blob_vkallocator);
+                        if (auto oom = check_vkmat_allocated(in_gpu_chw, "tile net input")) {
+                            return std::unexpected(*oom);
+                        }
 
                         std::vector<ncnn::VkMat> pre_bindings(2);
                         pre_bindings[0] = in_gpu_full;
@@ -1990,6 +2054,9 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
 
                     ncnn::VkMat in_gpu_chw;
                     in_gpu_chw.create(pad_info.net_in_w, pad_info.net_in_h, channels, in_elemsize, 1, blob_vkallocator);
+                    if (auto oom = check_vkmat_allocated(in_gpu_chw, "tile net input")) {
+                        return std::unexpected(*oom);
+                    }
 
                     std::vector<ncnn::VkMat> pre_bindings(2);
                     pre_bindings[0] = in_gpu_hwc;
@@ -2032,6 +2099,10 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                     return std::unexpected(EngineError{210, std::format("Vulkan submit failed (error {})", submit_ret)});
                 }
                 if (is_last_batch) {
+                    if (u8_scratch.data == nullptr) {
+                        return std::unexpected(EngineError{kErrOutOfMemory,
+                            "out of host memory for u8 download scratch"});
+                    }
                     output_downloaded = true;
                     std::memcpy(output_data, static_cast<const uint8_t*>(u8_scratch.data),
                                 out_total);
@@ -2067,6 +2138,10 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             int submit_ret = cmd.submit_and_wait();
             if (submit_ret != 0) {
                 return std::unexpected(EngineError{214, std::format("Vulkan normalize+quantize/download failed (error {})", submit_ret)});
+            }
+            if (u8_scratch.data == nullptr) {
+                return std::unexpected(EngineError{kErrOutOfMemory,
+                    "out of host memory for u8 download scratch"});
             }
             std::memcpy(output_data, static_cast<const uint8_t*>(u8_scratch.data),
                         out_total);
@@ -2177,11 +2252,18 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         ncnn::VkCompute cmd(vkdev_);
         std::vector<ncnn::VkMat> keep;
         ncnn::VkMat in_hwc;
-        stage_raw_input(cmd, staging, src.data(), src.size() * sizeof(float), 4u,
-                        opt, in_hwc, keep);
+        if (!stage_raw_input(cmd, staging, src.data(), src.size() * sizeof(float), 4u,
+                             opt, in_hwc, keep)) {
+            LOG_WARNING("Engine", "SELFTEST aborted: input staging allocation failed");
+            return;
+        }
 
         ncnn::VkMat chw;
         chw.create(W, H, C, 2u, 1, blob);
+        if (auto oom = check_vkmat_allocated(chw, "selftest chw")) {
+            LOG_WARNING("Engine", "SELFTEST aborted: {}", oom->message);
+            return;
+        }
         std::vector<ncnn::VkMat> pb(2);
         pb[0] = in_hwc;
         pb[1] = chw;
@@ -2193,6 +2275,10 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
 
         ncnn::VkMat out_hwc;
         out_hwc.create(W, H, C, 4u, 1, blob);
+        if (auto oom = check_vkmat_allocated(out_hwc, "selftest out_hwc")) {
+            LOG_WARNING("Engine", "SELFTEST aborted: {}", oom->message);
+            return;
+        }
         std::vector<ncnn::VkMat> qb(2);
         qb[0] = chw;
         qb[1] = out_hwc;
@@ -2241,9 +2327,16 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         ncnn::VkCompute cmd2(vkdev_);
         std::vector<ncnn::VkMat> keep2;
         ncnn::VkMat u8_full;
-        stage_u8_input(cmd2, staging, src8.data(), src8.size(), opt, u8_full, keep2);
+        if (!stage_u8_input(cmd2, staging, src8.data(), src8.size(), opt, u8_full, keep2)) {
+            LOG_WARNING("Engine", "SELFTEST aborted: u8 staging allocation failed");
+            return;
+        }
         ncnn::VkMat chw2;
         chw2.create(W, H, C, 2u, 1, blob);
+        if (auto oom = check_vkmat_allocated(chw2, "selftest u8 chw")) {
+            LOG_WARNING("Engine", "SELFTEST aborted: {}", oom->message);
+            return;
+        }
         std::vector<ncnn::VkMat> rb(2);
         rb[0] = u8_full;
         rb[1] = chw2;
@@ -2315,7 +2408,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             const size_t half_bytes = tile_vals.size() * 2;
             std::vector<uint8_t> f16bytes(half_bytes);
             for (size_t e = 0; e < tile_vals.size(); ++e) {
-                // float -> fp16 nearest (values are small rationals; use float bits trick)
+                // Stage positive synthetic values as truncated fp16 words.
                 const float v = tile_vals[e];
                 uint16_t h;
                 // simple conversion via rounding float bits
@@ -2331,13 +2424,32 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                 else { h = static_cast<uint16_t>(sgn | (static_cast<uint32_t>(ex) << 10) | ma); }
                 f16bytes[e * 2] = static_cast<uint8_t>(h & 0xFF);
                 f16bytes[e * 2 + 1] = static_cast<uint8_t>(h >> 8);
+                // The CPU oracle must quantize the fp16 value actually uploaded,
+                // rather than the original float on the other side of a byte boundary.
+                const auto exponent = (h >> 10) & 0x1Fu;
+                const auto mantissa = h & 0x3FFu;
+                tile_vals[e] = exponent == 0
+                    ? std::ldexp(static_cast<float>(mantissa), -24)
+                    : std::ldexp(1.0f + static_cast<float>(mantissa) / 1024.0f,
+                                 static_cast<int>(exponent) - 15);
             }
             ncnn::VkMat tile_f16;
-            stage_raw_input(cmd3, staging, f16bytes.data(), half_bytes, 2u,
-                            opt, tile_f16, keep3);
+            if (!stage_raw_input(cmd3, staging, f16bytes.data(), half_bytes, 2u,
+                                 opt, tile_f16, keep3)) {
+                LOG_WARNING("Engine", "SELFTEST aborted: fp16 tile staging allocation failed");
+                return;
+            }
             ncnn::VkMat acc, wgt;
             acc.create(TW, TH, C, 4u, 1, blob);
             wgt.create(static_cast<int>(TW * TH), 4u, 1, blob);
+            if (auto oom = check_vkmat_allocated(acc, "selftest tile accumulator")) {
+                LOG_WARNING("Engine", "SELFTEST aborted: {}", oom->message);
+                return;
+            }
+            if (auto oom = check_vkmat_allocated(wgt, "selftest tile weight map")) {
+                LOG_WARNING("Engine", "SELFTEST aborted: {}", oom->message);
+                return;
+            }
             // Zero the accumulators: blend accumulates with +=.
             {
                 std::vector<ncnn::VkMat> cb(1);
@@ -2371,6 +2483,10 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             // Part 4: normalize+quantize over the blended result.
             ncnn::VkMat u8out;
             u8out.create((TW * TH * C + 3) / 4, 4u, 1, blob);
+            if (auto oom = check_vkmat_allocated(u8out, "selftest u8 output")) {
+                LOG_WARNING("Engine", "SELFTEST aborted: {}", oom->message);
+                return;
+            }
             std::vector<ncnn::VkMat> nb(3);
             nb[0] = acc;
             nb[1] = wgt;
@@ -2387,6 +2503,10 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
             {
                 const int words = (TW * TH * C + 3) / 4;
                 u8_dl.create(words, static_cast<size_t>(4), 1);
+                if (u8_dl.data == nullptr) {
+                    LOG_WARNING("Engine", "SELFTEST aborted: host download scratch allocation failed");
+                    return;
+                }
                 cmd3.record_clone(u8out, u8_dl, opt);
             }
             const int rc3 = cmd3.submit_and_wait();
@@ -2405,8 +2525,6 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
                                      off, c, gota[di], want);
                             ++badb;
                         }
-                        const int eb = c * cs + off; // element index in the source plane
-                        (void)eb;
                         const uint8_t wantb = static_cast<uint8_t>(
                             std::lround(std::clamp(want * 255.0f, 0.0f, 255.0f)));
                         if (got8[di] != wantb && badq < 6) {
@@ -2480,7 +2598,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         }
 
         preproc_hwc_to_chw_ = std::make_unique<ncnn::Pipeline>(vkdev_);
-        preproc_hwc_to_chw_->set_optimal_local_size_xyz(8, 8, 1);
+        preproc_hwc_to_chw_->set_optimal_local_size_xyz(64, 1, 1);
         if (preproc_hwc_to_chw_->create(spirv_hwc_to_chw.data(), spirv_hwc_to_chw.size() * 4, {}) != 0) {
             LOG_WARNING("Engine", "Failed to create Vulkan HWC->CHW pipeline");
             preproc_hwc_to_chw_.reset();
@@ -2501,7 +2619,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         quantize_hwc_to_u8_.reset();
         if (u8_shader_ready) {
             preproc_hwc_u8_to_chw_ = std::make_unique<ncnn::Pipeline>(vkdev_);
-            preproc_hwc_u8_to_chw_->set_optimal_local_size_xyz(8, 8, 1);
+            preproc_hwc_u8_to_chw_->set_optimal_local_size_xyz(64, 1, 1);
             if (preproc_hwc_u8_to_chw_->create(spirv_hwc_u8_to_chw.data(), spirv_hwc_u8_to_chw.size() * 4, {}) != 0) {
                 LOG_WARNING("Engine", "Failed to create Vulkan HWC-u8->CHW pipeline");
                 preproc_hwc_u8_to_chw_.reset();
@@ -2510,7 +2628,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
 
             if (u8_shader_ready) {
                 postproc_chw_to_hwc_u8_ = std::make_unique<ncnn::Pipeline>(vkdev_);
-                postproc_chw_to_hwc_u8_->set_optimal_local_size_xyz(8, 8, 1);
+                postproc_chw_to_hwc_u8_->set_optimal_local_size_xyz(64, 1, 1);
                 if (postproc_chw_to_hwc_u8_->create(spirv_chw_to_hwc_u8.data(), spirv_chw_to_hwc_u8.size() * 4, {}) != 0) {
                     LOG_WARNING("Engine", "Failed to create Vulkan CHW->HWC-u8 pipeline");
                     postproc_chw_to_hwc_u8_.reset();
@@ -2569,7 +2687,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         }
 
         preproc_hwc_crop_to_chw_ = std::make_unique<ncnn::Pipeline>(vkdev_);
-        preproc_hwc_crop_to_chw_->set_optimal_local_size_xyz(8, 8, 1);
+        preproc_hwc_crop_to_chw_->set_optimal_local_size_xyz(64, 1, 1);
         if (preproc_hwc_crop_to_chw_->create(spirv_crop.data(), spirv_crop.size() * 4, {}) != 0) {
             LOG_WARNING("Engine", "Failed to create Vulkan HWC crop pipeline");
             preproc_hwc_crop_to_chw_.reset();
@@ -2579,7 +2697,7 @@ auto check_vkmat_allocated(const ncnn::VkMat& mat, std::string_view what)
         preproc_hwc_crop_u8_to_chw_.reset();
         if (crop_u8_ready) {
             preproc_hwc_crop_u8_to_chw_ = std::make_unique<ncnn::Pipeline>(vkdev_);
-            preproc_hwc_crop_u8_to_chw_->set_optimal_local_size_xyz(8, 8, 1);
+            preproc_hwc_crop_u8_to_chw_->set_optimal_local_size_xyz(64, 1, 1);
             if (preproc_hwc_crop_u8_to_chw_->create(spirv_crop_u8.data(), spirv_crop_u8.size() * 4, {}) != 0) {
                 LOG_WARNING("Engine", "Failed to create Vulkan HWC-u8 crop pipeline");
                 preproc_hwc_crop_u8_to_chw_.reset();
@@ -2819,6 +2937,9 @@ auto NCNNEngineImpl::process_vulkan_with_gpu_layout_run(
         const size_t in_elemsize = opt.use_fp16_storage ? 2u : 4u;
         ncnn::VkMat in_gpu_chw;
         in_gpu_chw.create(width, height, channels, in_elemsize, 1, blob_vkallocator);
+        if (auto oom = check_vkmat_allocated(in_gpu_chw, "whole-image net input")) {
+            return std::unexpected(*oom);
+        }
 
         std::vector<ncnn::VkMat> pre_bindings(2);
         pre_bindings[0] = in_gpu_hwc;
@@ -2889,6 +3010,9 @@ auto NCNNEngineImpl::process_vulkan_with_gpu_layout_run(
         if (out_gpu.elempack != 1) {
             ncnn::VkMat out_unpacked;
             vkdev_->convert_packing(out_gpu, out_unpacked, 1, cmd, opt);
+            if (out_unpacked.data == nullptr) {
+                return std::unexpected(EngineError{211, "Vulkan output unpacking failed"});
+            }
             out_gpu = out_unpacked;
         }
 
@@ -2901,6 +3025,9 @@ auto NCNNEngineImpl::process_vulkan_with_gpu_layout_run(
 
         ncnn::VkMat out_gpu_hwc;
         out_gpu_hwc.create(static_cast<int>(out_total), 4u, blob_vkallocator);
+        if (auto oom = check_vkmat_allocated(out_gpu_hwc, "whole-image output staging")) {
+            return std::unexpected(*oom);
+        }
 
         std::vector<ncnn::VkMat> post_bindings(2);
         post_bindings[0] = out_gpu;

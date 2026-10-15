@@ -3,8 +3,10 @@
 #include "core/model_metadata.hpp"
 #include "utils/logger.hpp"
 #include <cctype>
+#include <cmath>
 #include <format>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <algorithm>
 #include <unordered_set>
@@ -26,6 +28,16 @@ std::string normalize_model_name(std::string s) {
     }
     return s;
 }
+
+// Upper bound for a head Reorg (pixel_unshuffle) stride read from a param file.
+// Real values are 2 or 4; the bound keeps the stride² divisor below anything
+// that could overflow and rejects garbage tokens outright.
+constexpr int kMaxReorgStride = 16;
+
+// Upper bound for the blob counts a .param line declares. Real layers connect a
+// handful of blobs; the bound stops a hostile/truncated line from sizing a
+// vector (or a loop) from a count like 2000000000.
+constexpr int kMaxBlobCount = 1024;
 }  // namespace
 
 ModelManager::ModelManager(const std::filesystem::path& models_dir)
@@ -38,20 +50,65 @@ void ModelManager::set_models_directory(const std::filesystem::path& dir) {
 auto ModelManager::scan_models() -> expected<std::vector<ModelInfo>, ModelManagerError> {
     models_.clear();
     
-    if (!std::filesystem::exists(models_dir_)) {
+    std::error_code exists_ec;
+    const bool dir_exists = std::filesystem::exists(models_dir_, exists_ec);
+    if (exists_ec || !dir_exists) {
         LOG_WARNING("ModelManager", "Models directory does not exist: {}", models_dir_.string());
         return models_;
     }
     
     std::vector<std::filesystem::path> param_files;
-    // Recursively search for .param files, following directory symlinks
+    // Recursively search for .param files, following directory symlinks (models
+    // are routinely symlinked in from another drive). The scan must never
+    // throw: scan_models() reports failures through `expected`, but an
+    // unreadable sub-directory or a dangling link would otherwise escape as
+    // std::filesystem_error and terminate the CLI/daemon at startup. Errors
+    // are reported through the error_code overloads instead — a partially
+    // unreadable tree still yields every model that could be read. Depth is
+    // capped because follow_directory_symlink turns a link cycle inside
+    // models/ into unbounded traversal.
+    constexpr int kMaxScanDepth = 8;
     auto iter_opts = std::filesystem::directory_options::follow_directory_symlink;
-    for (const auto& entry : std::filesystem::recursive_directory_iterator(models_dir_, iter_opts)) {
-        if (entry.is_regular_file() && entry.path().extension() == ".param") {
-            param_files.push_back(entry.path());
+    try {
+        std::error_code ec;
+        std::filesystem::recursive_directory_iterator it(models_dir_, iter_opts, ec);
+        const std::filesystem::recursive_directory_iterator end;
+        for (; it != end; it.increment(ec)) {
+            if (ec) {
+                LOG_WARNING("ModelManager", "Model scan aborted at {}: {}",
+                            it->path().string(), ec.message());
+                break;
+            }
+            if (it.depth() >= kMaxScanDepth) {
+                // Deep enough that only a symlink cycle reaches here; keep the
+                // entries at this level and stop descending.
+                LOG_DEBUG("ModelManager", "Model scan depth cap reached at {}",
+                          it->path().string());
+                it.disable_recursion_pending();
+                continue;
+            }
+            // Case-insensitive: model directories copied from a
+            // case-insensitive filesystem ("X2.PARAM") must still be
+            // catalogued, matching how the batch input scan folds extensions.
+            std::string ext = it->path().extension().string();
+            for (char& c : ext) {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            }
+            std::error_code type_ec;
+            if (ext == ".param" && it->is_regular_file(type_ec) && !type_ec) {
+                param_files.push_back(it->path());
+            }
         }
+    } catch (const std::filesystem::filesystem_error& e) {
+        LOG_WARNING("ModelManager", "Model scan failed on {}: {}", models_dir_.string(),
+                    e.what());
     }
     
+    // Directory order is filesystem-dependent; sort so the catalog — and in
+    // particular the "first available" default model an empty -m selects —
+    // is reproducible across machines and filesystems.
+    std::sort(param_files.begin(), param_files.end());
+
     for (const auto& param_path : param_files) {
         auto result = parse_param_file(param_path);
         if (result.has_value()) {
@@ -112,9 +169,21 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
     // "parent_dir-param_stem" to disambiguate.
     std::string param_stem = path.stem().string();  // e.g., "x2", "x3"
     std::string parent_name = path.parent_path().stem().string();
-    const bool in_models_root =
-        std::filesystem::weakly_canonical(path.parent_path()) ==
-        std::filesystem::weakly_canonical(models_dir_);
+    // weakly_canonical's throwing overload would escape parse_param_file's
+    // contract on a denied/IO-error path component; the error_code form plus a
+    // lexical fallback keeps the comparison total.
+    const auto same_directory = [](const std::filesystem::path& a,
+                                   const std::filesystem::path& b) {
+        std::error_code ec_a;
+        std::error_code ec_b;
+        const auto canon_a = std::filesystem::weakly_canonical(a, ec_a);
+        const auto canon_b = std::filesystem::weakly_canonical(b, ec_b);
+        if (ec_a || ec_b) {
+            return a.lexically_normal() == b.lexically_normal();
+        }
+        return canon_a == canon_b;
+    };
+    const bool in_models_root = same_directory(path.parent_path(), models_dir_);
     info.name = in_models_root ? param_stem : (parent_name + "-" + param_stem);
     info.param_path = path;
     
@@ -171,8 +240,18 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
             } catch (...) {
             }
 
+            // Float form ("0=0.5"): require full consumption and an in-range
+            // value — stod alone accepts a leading number and ignores the tail
+            // ("1=2abc" -> 2) and an out-of-int-range cast is UB.
             try {
-                return static_cast<int>(std::stod(value_str));
+                size_t parsed = 0;
+                const double value = std::stod(value_str, &parsed);
+                if (parsed != value_str.size() || !std::isfinite(value) ||
+                    value < static_cast<double>(std::numeric_limits<int>::min()) ||
+                    value > static_cast<double>(std::numeric_limits<int>::max())) {
+                    return std::nullopt;
+                }
+                return static_cast<int>(value);
             } catch (...) {
                 return std::nullopt;
             }
@@ -194,7 +273,11 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
             continue;
         }
 
-        if (bottom_count < 0 || top_count < 0) {
+        if (bottom_count < 0 || top_count < 0 ||
+            bottom_count > kMaxBlobCount || top_count > kMaxBlobCount) {
+            // The counts are attacker-controlled text: sizing a vector from a
+            // claimed 2e9 blobs would throw out of this expected-returning
+            // parser. No real layer has more than a handful of connections.
             continue;
         }
 
@@ -265,7 +348,8 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
             const auto stride = read_param_int(param_tokens, 0);
             const auto mode = read_param_int(param_tokens, 1);
             if (depends_on_input && !seen_net_conv && stride.has_value() &&
-                stride.value() > 1 && (!mode.has_value() || mode.value() == 0)) {
+                stride.value() > 1 && stride.value() <= kMaxReorgStride &&
+                (!mode.has_value() || mode.value() == 0)) {
                 head_reorg_stride = stride.value();
             }
             continue;
@@ -307,23 +391,47 @@ auto ModelManager::parse_param_file(const std::filesystem::path& path)
         }
 
         seen_net_conv = true;
-        if (head_reorg_stride > 1 &&
-            inferred_channels % (head_reorg_stride * head_reorg_stride) == 0) {
-            info.input_channels = inferred_channels / (head_reorg_stride * head_reorg_stride);
+        // 64-bit: the stride comes from the param file, so stride*stride in
+        // `int` is an overflow waiting for a hostile/corrupt token.
+        const long long reorg_sq = static_cast<long long>(head_reorg_stride) * head_reorg_stride;
+        if (head_reorg_stride > 1 && static_cast<long long>(inferred_channels) % reorg_sq == 0) {
+            info.input_channels = static_cast<int>(inferred_channels / reorg_sq);
         } else {
             info.input_channels = inferred_channels;
         }
         inferred_input_channels = true;
     }
     
-    std::string bin_path_str = path.string();
-    bin_path_str.replace(bin_path_str.find(".param"), 6, ".bin");
-    info.bin_path = bin_path_str;
-    
-    if (std::filesystem::exists(path)) {
-        info.total_size = std::filesystem::file_size(path);
-        if (std::filesystem::exists(info.bin_path)) {
-            info.total_size += std::filesystem::file_size(info.bin_path);
+    // Derive the weights path from the path itself. Replacing the first
+    // ".param" substring (the previous implementation) threw out_of_range when
+    // the param path did not end in ".param", and rewrote a *parent* component
+    // whenever one contained that substring ("models/my.param.dir/x2.param").
+    std::filesystem::path bin_path = path;
+    bin_path.replace_extension(".bin");
+    {
+        std::error_code ec;
+        // Model directories copied from a case-insensitive filesystem pair
+        // "x2.PARAM" with "x2.BIN"; fall back to that spelling only when the
+        // lowercase one is absent.
+        if (path.extension() == ".PARAM" && !std::filesystem::exists(bin_path, ec)) {
+            std::filesystem::path alt = path;
+            alt.replace_extension(".BIN");
+            if (std::filesystem::exists(alt, ec)) {
+                bin_path = alt;
+            }
+        }
+    }
+    info.bin_path = bin_path;
+
+    // error_code overloads: the throwing file_size would escape declare-time
+    // contracts when an import replaces the file between the two probes.
+    std::error_code size_ec;
+    const auto param_size = std::filesystem::file_size(path, size_ec);
+    if (!size_ec) {
+        info.total_size = param_size;
+        const auto bin_size = std::filesystem::file_size(info.bin_path, size_ec);
+        if (!size_ec) {
+            info.total_size += bin_size;
         }
     }
     
