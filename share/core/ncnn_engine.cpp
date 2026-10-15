@@ -365,6 +365,16 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
             return std::unexpected(EngineError{3, "Processing cancelled"});
         }
 
+        // Validated before the GPU section: it derives buffer sizes from
+        // width*height*channels, so a null buffer or a non-positive dimension
+        // must not reach it.
+        if (input == nullptr || output == nullptr) {
+            return std::unexpected(EngineError{18, "Null input/output buffer"});
+        }
+        if (width <= 0 || height <= 0 || channels <= 0) {
+            return std::unexpected(EngineError{11, "Invalid input dimensions"});
+        }
+
 #if NCNN_VULKAN
         if (current_device_ == DeviceType::GPU_VULKAN) {
             if (vkdev_ == nullptr || !gpu_layout_pipeline_ready_) {
@@ -379,20 +389,17 @@ NCNNEngineImpl::~NCNNEngineImpl() { unload_model(); }
                 return std::unexpected(EngineError{22, "Vulkan layout pipeline failed: " + vk_result.error().message});
             }
             // Device memory refused (preflight or mid-run): fall through to the
-            // CPU section below — no device memory needed, same pre-padding
-            // semantics (replicate border), so tile callers keep working.
+            // generic extractor below, which uses ncnn's own staging instead of
+            // the custom layout pipelines. This is NOT a CPU fallback — the net
+            // keeps use_vulkan_compute, so its layers still execute on the same
+            // device (and a device-wide shortfall fails there too). Pre-padding
+            // semantics are identical (replicate border), so tile callers keep
+            // working.
             LOG_WARNING("Engine", vk_result.error().message +
-                ", falling back to CPU path");
+                ", falling back to the generic extractor path (device unchanged)");
         }
 #endif
         
-        if (input == nullptr || output == nullptr) {
-            return std::unexpected(EngineError{18, "Null input/output buffer"});
-        }
-        if (width <= 0 || height <= 0 || channels <= 0) {
-            return std::unexpected(EngineError{11, "Invalid input dimensions"});
-        }
-
         const int expected_out_width = width * scale_factor_;
         const int expected_out_height = height * scale_factor_;
         
@@ -603,12 +610,16 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
         if (input == nullptr || output == nullptr) {
             return std::unexpected(EngineError{18, "Null input/output buffer"});
         }
+        if (width <= 0 || height <= 0 || channels <= 0) {
+            return std::unexpected(EngineError{11, "Invalid input dimensions"});
+        }
         if (cancel_flag) {
             return std::unexpected(EngineError{3, "Processing cancelled"});
         }
 
 #if NCNN_VULKAN
-        if (current_device_ == DeviceType::GPU_VULKAN) {
+        if (current_device_ == DeviceType::GPU_VULKAN &&
+            !(channels == 4 && input_channels_ == 3)) {
             if (vkdev_ == nullptr) {
                 const std::string detail = format_vulkan_runtime_snapshot("process_u8_device_not_ready", width, height, channels);
                 return std::unexpected(EngineError{23, "GPU device not ready; " + detail});            }
@@ -682,7 +693,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                 }
             }
 
-            bool fell_back_to_cpu = false;
+            bool fell_back_from_gpu_layout = false;
             // supports_gpu_tile_pipeline() (not just gpu_tile_pipeline_ready_):
             // Crop-layer models without a known prepadding margin must skip
             // both tile pipelines and would fail with error 201 the moment
@@ -757,12 +768,13 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                     if (!is_oom_error(tile_result.error())) {
                         return std::unexpected(EngineError{24, "Vulkan float tile pipeline failed: " + tile_result.error().message});
                     }
-                    // GPU full-output buffers still do not fit — skip the
-                    // whole-image compatibility path (it needs even more)
-                    // and continue to the CPU tile path below.
+                    // Device memory still does not fit the full-output buffers
+                    // — skip the whole-image compatibility path (it needs even
+                    // more) and continue to the host-side tiled path below. Not
+                    // a CPU fallback: the engine keeps its device.
                     LOG_WARNING("Engine", tile_result.error().message +
-                        ", falling back to CPU tile pipeline");
-                    fell_back_to_cpu = true;
+                        ", falling back to the tiled path (device unchanged)");
+                    fell_back_from_gpu_layout = true;
                 } else {
                     return float_to_u8_checked(output_float.data(), output, out_total);
                 }
@@ -774,9 +786,9 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
             const size_t compat_out_total =
                 static_cast<size_t>(compat_out_width) * compat_out_height * channels;
 
-            if (!fell_back_to_cpu) {
-                // Whole-image host staging: the CPU path below allocates the
-                // same float buffers, so a shortfall here is terminal —
+            if (!fell_back_from_gpu_layout) {
+                // Whole-image host staging: the generic path below allocates
+                // the same float buffers, so a shortfall here is terminal —
                 // refuse cleanly instead of throwing mid-run. Every sibling
                 // path preflights this; the compat path never did. The
                 // device budget is preflighted at the entry of
@@ -788,7 +800,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                 }
             }
 
-            if (!fell_back_to_cpu) {
+            if (!fell_back_from_gpu_layout) {
                 LOG_WARNING("Engine", "Vulkan tile pipeline unavailable, switching to non-tile Vulkan float compatibility path");
 
                 std::vector<float> input_float = u8_to_float_buffer(input, compat_in_total);
@@ -808,15 +820,18 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                 if (!is_oom_error(vk_result.error())) {
                     return std::unexpected(EngineError{24, "Vulkan float compatibility path failed: " + vk_result.error().message});
                 }
-                // Device memory shortfall: the CPU tile path below needs no
-                // device memory at all (its host staging already passed the
-                // preflight above).
+                // Device memory shortfall in the whole-image Vulkan path: the
+                // tiled path below bounds the per-tile working set, and its
+                // host staging already passed the preflight above. The device is
+                // unchanged — this is not a CPU fallback.
                 LOG_WARNING("Engine", vk_result.error().message +
-                    ", falling back to CPU tile pipeline");
+                    ", falling back to the tiled path (device unchanged)");
             }
         }
 #endif
-        // CPU path: tile the image to avoid OOM on large photos.
+        // Host-side tiled path: tile the image to bound the host accumulator and
+        // the per-tile working set. The engine keeps its device, so a Vulkan
+        // engine still runs these tiles on the GPU.
         const int out_width = width * scale_factor_;
         const int out_height = height * scale_factor_;
         const size_t in_total = static_cast<size_t>(width) * height * channels;
@@ -1034,7 +1049,7 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
             // Pre-padding models: run each item through the single-image path,
             // which pads the border on the way in and crops it on the way out.
             if (model_prepadding_ > 0) {
-                bool fell_back_to_cpu = false;
+                bool fell_back_from_gpu_layout = false;
                 for (size_t i = 0; i < inputs.size(); ++i) {
                     if (cancel_flag) {
                         return std::unexpected(EngineError{3, "Processing cancelled"});
@@ -1047,14 +1062,15 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                         }
                         // Device memory refused (preflight or mid-run). Skip the
                         // batched Vulkan section below — it never pads — and
-                        // finish the whole batch on the CPU tail.
+                        // finish the batch through the per-item generic path
+                        // (same device, no CPU guarantee).
                         LOG_WARNING("Engine", item_result.error().message +
-                            ", falling back to CPU whole-image path");
-                        fell_back_to_cpu = true;
+                            ", falling back to the per-item generic path (device unchanged)");
+                        fell_back_from_gpu_layout = true;
                         break;
                     }
                 }
-                if (!fell_back_to_cpu) {
+                if (!fell_back_from_gpu_layout) {
                     return {};
                 }
                 return Engine::process_batch(inputs, outputs, width, height, channels, cancel_flag);
@@ -1105,6 +1121,12 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
 
                 ncnn::VkMat in_gpu_chw;
                 in_gpu_chw.create(width, height, channels, in_elemsize, 1, blob_vkallocator);
+                if (in_gpu_chw.data == nullptr) {
+                    // VkMat::create fails silently (empty mat); binding it to a
+                    // pipeline would dereference a null buffer inside ncnn.
+                    return std::unexpected(EngineError{kErrOutOfMemory,
+                        "out of GPU memory allocating Vulkan batch input"});
+                }
 
                 std::vector<ncnn::VkMat> pre_bindings(2);
                 pre_bindings[0] = in_gpu_hwc;
@@ -1117,9 +1139,9 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
                 pre_constants[3].i = static_cast<int>(in_gpu_chw.cstep);
 
                 ncnn::VkMat pre_dispatcher;
-                pre_dispatcher.w = width;
-                pre_dispatcher.h = height;
-                pre_dispatcher.c = channels;
+                pre_dispatcher.w = (channels * static_cast<int>(in_gpu_chw.cstep) + 1) / 2;
+                pre_dispatcher.h = 1;
+                pre_dispatcher.c = 1;
                 cmd.record_pipeline(preproc_hwc_to_chw_.get(), pre_bindings, pre_constants, pre_dispatcher);
 
                 ncnn::Extractor ex = net_->create_extractor();
@@ -1166,6 +1188,10 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
 
                 ncnn::VkMat out_gpu_hwc;
                 out_gpu_hwc.create(static_cast<int>(out_total), 4u, blob_vkallocator);
+                if (out_gpu_hwc.data == nullptr) {
+                    return std::unexpected(EngineError{kErrOutOfMemory,
+                        "out of GPU memory allocating Vulkan batch output"});
+                }
 
                 std::vector<ncnn::VkMat> post_bindings(2);
                 post_bindings[0] = out_gpu;
@@ -1285,6 +1311,10 @@ auto check_host_memory(size_t need_bytes, const std::pair<size_t, size_t>& mem_i
     std::string NCNNEngineImpl::model_name() const { return model_name_; }
     int NCNNEngineImpl::get_scale_factor() const { return scale_factor_; }
     bool NCNNEngineImpl::scale_factor_detected() const { return scale_detected_; }
+    // Detected by detect_model_info from the param graph (defaults to 3 when
+    // the param carries no input dims); the host-side tile pipeline reads it to
+    // decide whether an alpha channel can be split off before inference.
+    int NCNNEngineImpl::model_input_channels() const { return input_channels_; }
 
     void NCNNEngineImpl::set_scale_factor(int scale) {
         if (scale > 0) scale_factor_ = scale;

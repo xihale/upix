@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <new>
 #include <stdexcept>
 #include <memory>
 #include <print>
@@ -84,10 +85,26 @@ namespace {
         if (!file.is_open()) {
             return std::unexpected(ImageError{1, "Cannot open file: " + path.string()});
         }
-        size_t size = file.tellg();
+        // file_size (error_code) instead of tellg(): tellg returns -1 for a
+        // non-seekable source (FIFO, /dev/stdin, most /proc entries) and the
+        // implicit size_t conversion turned that into a SIZE_MAX-sized vector
+        // whose std::length_error escaped this expected-returning API and
+        // terminated callers that had no handler. The read below still rejects
+        // a file that changed size in between.
+        std::error_code size_ec;
+        const auto file_size = std::filesystem::file_size(path, size_ec);
+        if (size_ec) {
+            return std::unexpected(ImageError{2, "Cannot determine file size: " + path.string()});
+        }
         file.seekg(0, std::ios::beg);
-        std::vector<uint8_t> buffer(size);
-        if (!file.read(reinterpret_cast<char*>(buffer.data()), size)) {
+        std::vector<uint8_t> buffer;
+        try {
+            buffer.resize(static_cast<size_t>(file_size));
+        } catch (const std::bad_alloc&) {
+            return std::unexpected(ImageError{2, "File too large to load: " + path.string()});
+        }
+        if (!file.read(reinterpret_cast<char*>(buffer.data()),
+                       static_cast<std::streamsize>(file_size))) {
             return std::unexpected(ImageError{2, "Failed to read file: " + path.string()});
         }
         return buffer;
@@ -355,6 +372,30 @@ namespace {
             return std::unexpected(ImageError{3, "Cannot open file for writing: " + tmp.string()});
         }
 
+        // The color-type table has one entry per supported channel count, and
+        // the libdeflate path validates the same way. Without this the index
+        // read past the array (adjacent .rodata) and then handed libpng a color
+        // type inconsistent with the width*channels stride.
+        const int channels = image.channels();
+        if (channels < 1 || channels > 4) {
+            std::error_code rm_ec;
+            std::filesystem::remove(tmp, rm_ec);
+            return std::unexpected(ImageError{3, "Unsupported channel count for PNG: " +
+                                              std::to_string(channels)});
+        }
+
+        // Row pointer table: built before the setjmp below so a libpng
+        // longjmp cannot jump past its construction (which the standard
+        // declares undefined and which leaked the table on every write error).
+        std::vector<png_bytep> rows;
+        try {
+            rows.resize(static_cast<size_t>(image.height()));
+        } catch (const std::bad_alloc&) {
+            std::error_code rm_ec;
+            std::filesystem::remove(tmp, rm_ec);
+            return std::unexpected(ImageError{5, "Out of memory for PNG row table"});
+        }
+
         png_structp png = png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
         if (!png) {
             std::error_code rm_ec;
@@ -381,7 +422,6 @@ namespace {
             png_set_compression_level(png, level < 1 ? 1 : level);
             png_set_filter(png, 0, PNG_FILTER_AVG);
 
-            const int channels = image.channels();
             png_set_IHDR(png, info,
                          static_cast<png_uint_32>(image.width()),
                          static_cast<png_uint_32>(image.height()),
@@ -398,7 +438,6 @@ namespace {
             }
             png_write_info(png, info);
 
-            std::vector<png_bytep> rows(static_cast<size_t>(image.height()));
             const size_t stride = static_cast<size_t>(image.width()) * channels;
             std::ranges::transform(std::views::iota(0, image.height()), rows.begin(),
                 [&](int y) {
@@ -427,18 +466,44 @@ namespace {
             size_t size;
             size_t offset;
         };
-        
-        png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
-        if (!png) return std::unexpected(ImageError{5, "Failed to create PNG read struct"});
-        
-        png_infop info = png_create_info_struct(png);
-        if (!info) {
-            png_destroy_read_struct(&png, nullptr, nullptr);
+
+        // libpng reports errors by longjmp'ing to the jmp_buf installed below.
+        // A longjmp skips the destructors of automatic objects created after
+        // the setjmp (the standard calls that undefined), which used to leak the
+        // destination Image and its row table on every corrupt or truncated
+        // file. Everything that has to outlive a longjmp therefore lives in
+        // this heap state, allocated *before* the setjmp: the frame locals
+        // created under it are plain ints/pointers only, and the state's
+        // destructor releases both the libpng structs and the buffers on every
+        // exit path, including the exception path.
+        struct PngDecodeState {
+            png_structp png = nullptr;
+            png_infop info = nullptr;
+            Image image;
+            std::vector<png_bytep> rows;
+            PngDecodeState() = default;
+            ~PngDecodeState() {
+                if (png != nullptr) {
+                    png_destroy_read_struct(&png, &info, nullptr);
+                }
+            }
+            PngDecodeState(const PngDecodeState&) = delete;
+            PngDecodeState& operator=(const PngDecodeState&) = delete;
+        };
+
+        auto state = std::make_unique<PngDecodeState>();
+        state->png = png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr);
+        if (!state->png) return std::unexpected(ImageError{5, "Failed to create PNG read struct"});
+
+        state->info = png_create_info_struct(state->png);
+        if (!state->info) {
             return std::unexpected(ImageError{5, "Failed to create PNG info struct"});
         }
-        
+
+        png_structp const png = state->png;
+        png_infop const info = state->info;
+
         if (setjmp(png_jmpbuf(png))) {
-            png_destroy_read_struct(&png, &info, nullptr);
             return std::unexpected(ImageError{5, "Error during PNG reading"});
         }
         
@@ -454,10 +519,10 @@ namespace {
                         });
         
         png_read_info(png, info);
-        int width = png_get_image_width(png, info);
-        int height = png_get_image_height(png, info);
-        png_byte color_type = png_get_color_type(png, info);
-        png_byte bit_depth = png_get_bit_depth(png, info);
+        const int width = png_get_image_width(png, info);
+        const int height = png_get_image_height(png, info);
+        const png_byte color_type = png_get_color_type(png, info);
+        const png_byte bit_depth = png_get_bit_depth(png, info);
 
         if (bit_depth == 16) {
             png_set_strip_16(png);
@@ -479,23 +544,35 @@ namespace {
 
         png_read_update_info(png, info);
 
-        int channels = png_get_channels(png, info);
-        if (channels <= 0) {
-            png_destroy_read_struct(&png, &info, nullptr);
+        const int channels = png_get_channels(png, info);
+        if (width <= 0 || height <= 0) {
+            return std::unexpected(ImageError{5, "Invalid PNG dimensions"});
+        }
+        if (channels <= 0 || channels > 4) {
             return std::unexpected(ImageError{5, "Invalid channel count from PNG"});
         }
 
-        Image img(width, height, channels);
-        std::vector<png_bytep> row_pointers(height);
-        const size_t stride = static_cast<size_t>(width) * channels;
-        std::ranges::transform(std::views::iota(0, height), row_pointers.begin(),
-            [&](int y) { return img.data() + static_cast<size_t>(y) * stride; });
+        // Assigning into the state constructs and destroys the temporary before
+        // any longjmp can happen; the members themselves were constructed above
+        // the setjmp, so a later longjmp cannot skip their release.
+        try {
+            state->image = Image(width, height, channels);
+            state->rows.resize(static_cast<size_t>(height));
+        } catch (const std::bad_alloc&) {
+            return std::unexpected(ImageError{5, "Out of memory decoding PNG"});
+        }
+        if (!state->image.valid()) {
+            return std::unexpected(ImageError{5, "Out of memory decoding PNG"});
+        }
+
+        const size_t stride = static_cast<size_t>(width) * static_cast<size_t>(channels);
+        std::ranges::transform(std::views::iota(0, height), state->rows.begin(),
+            [&](int y) { return state->image.data() + static_cast<size_t>(y) * stride; });
         
-        png_read_image(png, row_pointers.data());
+        png_read_image(png, state->rows.data());
         png_read_end(png, nullptr);
-        png_destroy_read_struct(&png, &info, nullptr);
         
-        return img;
+        return std::move(state->image);
     }
 
     // libjpeg's default error_exit calls exit() — on ANY thread that is fatal
@@ -644,7 +721,9 @@ auto Image::load(const std::filesystem::path& path)
 
 auto Image::load_raw(const std::filesystem::path& path)
     -> expected<std::vector<uint8_t>, ImageError> {
-    if (!std::filesystem::exists(path)) {
+    std::error_code exists_ec;
+    const bool present = std::filesystem::exists(path, exists_ec);
+    if (exists_ec || !present) {
         return std::unexpected(ImageError{1, "File not found: " + path.string()});
     }
     return read_file(path);
@@ -803,7 +882,13 @@ auto Image::save_to_memory(const std::string& format, int quality,
                 return std::unexpected(ImageError{21, "JPEG memory encode failed"});
             }
 
-            std::vector<uint8_t> encoded(out_buffer, out_buffer + out_size);
+            std::vector<uint8_t> encoded;
+            try {
+                encoded.assign(out_buffer, out_buffer + out_size);
+            } catch (const std::bad_alloc&) {
+                std::free(out_buffer);
+                return std::unexpected(ImageError{21, "JPEG output too large to copy"});
+            }
             std::free(out_buffer);
             return encoded;
         }
@@ -837,6 +922,19 @@ auto Image::save_to_memory(const std::string& format, int quality,
             if (!WebPPictureInit(&pic)) {
                 return std::unexpected(ImageError{19, "WebP picture init failed"});
             }
+            // The writer callback appends into `encoded` and can raise
+            // bad_alloc from inside WebPEncode; the picture's ARGB buffer (a
+            // full image) used to leak on that path because the explicit
+            // WebPPictureFree below was skipped. `pic` is declared first, so
+            // this guard is destroyed (and frees) before it goes out of scope.
+            struct PictureGuard {
+                WebPPicture* picture;
+                explicit PictureGuard(WebPPicture* value) : picture(value) {}
+                ~PictureGuard() { WebPPictureFree(picture); }
+                PictureGuard(const PictureGuard&) = delete;
+                PictureGuard& operator=(const PictureGuard&) = delete;
+            };
+            const PictureGuard picture_guard{&pic};
             pic.width = width_;
             pic.height = height_;
             pic.writer = webp_vector_writer;
@@ -852,7 +950,6 @@ auto Image::save_to_memory(const std::string& format, int quality,
                 pic.custom_ptr = &encoded;
                 ok = WebPEncode(&cfg, &pic) != 0 && !encoded.empty();
             }
-            WebPPictureFree(&pic);
 
             if (!ok) {
                 return std::unexpected(ImageError{19, "WebP encode failed"});
@@ -950,7 +1047,8 @@ auto convert_image_channels(const Image& source, int target_channels)
 
 auto normalize_image_channels(Image& image, int expected_channels,
                               std::string_view what) -> bool {
-    if (expected_channels <= 0 || image.channels() == expected_channels) {
+    if (expected_channels <= 0 || image.channels() == expected_channels ||
+        (image.channels() == 4 && expected_channels == 3)) {
         return true;
     }
     auto converted = convert_image_channels(image, expected_channels);

@@ -59,6 +59,7 @@ public:
     std::string model_name() const override;
     int get_scale_factor() const override;
     bool scale_factor_detected() const override;
+    int model_input_channels() const override;
 
     std::string debug_blob_scan(const uint8_t* input, int width, int height, int channels) override;
 

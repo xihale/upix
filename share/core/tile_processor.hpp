@@ -26,6 +26,10 @@ public:
         const TileConfig& config
     ) -> std::vector<TileRegion>;
     
+    // Float tiled pipeline. A 4-channel image fed to an engine whose model
+    // takes 3 input channels (engine.model_input_channels() == 3) has its alpha
+    // split off: the net sees RGB and the output's 4th channel is carried by
+    // the same host-side bicubic the u8 path's alpha bypass uses.
     auto process_image(
         const float* input_data,
         float* output_data,
@@ -51,10 +55,15 @@ public:
         bool enable_alpha_bicubic = true
     ) -> expected<void, TileProcessorError>;
     
+    // Extract one tile as interleaved floats. `src_channels` is the source
+    // pixel stride, `dst_channels` the tile stride; copying only the leading
+    // `dst_channels` is how an RGBA source feeds an RGB model (or vice versa)
+    // without a whole-image conversion.
     static auto extract_tile(
         const float* image_data,
         int image_width,
-        int channels,
+        int src_channels,
+        int dst_channels,
         const TileRegion& region
     ) -> std::vector<float>;
 
@@ -62,7 +71,8 @@ public:
     static auto extract_tile_u8(
         const uint8_t* image_data,
         int image_width,
-        int channels,
+        int src_channels,
+        int dst_channels,
         const TileRegion& region
     ) -> std::vector<float>;
 

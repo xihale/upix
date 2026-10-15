@@ -82,7 +82,11 @@ auto walk_boxes(std::span<const uint8_t> data, size_t begin, size_t end,
         } else if (size32 == 0) {
             box_size = end - offset;
         }
-        if (box_size < header || offset + box_size > end) {
+        // Compare against the remaining length rather than offset+box_size: for
+        // a 64-bit largesize near 2^64 that addition wraps, the walk continues
+        // with payload_end below payload_begin, and the ispe branch below then
+        // reads past the buffer (payload_end - payload_begin underflows).
+        if (box_size < header || box_size > static_cast<uint64_t>(end - offset)) {
             return;
         }
         const size_t payload_begin = offset + header;

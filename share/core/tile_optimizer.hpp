@@ -324,6 +324,19 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
     // 测试的 tile 大小列表
     std::vector<int> test_sizes = {64, 128, 192, 256, 320, 384, 448, 512};
 
+    // Fallback used whenever no candidate survives: stay inside the window the
+    // caller gave, because a size outside [min_tile_size, max_tile_size] would
+    // silently violate a config the caller already validated (the CLI rejects
+    // such configs, and the probe is the only place that can honor it here).
+    const auto fallback_tile_size = [&]() -> int {
+        const int lo = std::max({config.min_tile_size, model.min_tile_size, kTileSizeMin});
+        const int hi = std::min(config.max_tile_size, model.max_tile_size);
+        if (hi < lo) {
+            return kDefaultTileSize;  // contradictory window: validate() owns it
+        }
+        return std::clamp(kDefaultTileSize, lo, hi);
+    };
+
     // 根据配置过滤
     test_sizes.erase(
         std::remove_if(test_sizes.begin(), test_sizes.end(),
@@ -346,8 +359,11 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
     );
 
     if (test_sizes.empty()) {
-        LOG_WARNING("TileOptimizer", "No valid tile sizes after filtering, using default 256");
-        return 256;
+        const int fallback = fallback_tile_size();
+        LOG_WARNING("TileOptimizer",
+                    "No valid tile sizes after filtering, using {} (clamped to the configured window)",
+                    fallback);
+        return fallback;
     }
 
     // Probe + selection run under one lock: benchmarking must be serialized
@@ -360,8 +376,14 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
     // 获取设备信息
     auto profile = profile_device(engine);
 
-    // 计算可用内存上限 (MB)
-    size_t usable_memory_mb = static_cast<size_t>(profile.available_memory_mb * 0.8);
+    // 计算可用内存上限 (MB). An unknown total (0 on platforms without a
+    // memory probe, see Engine::get_memory_info) must not reject every
+    // candidate: the memory filter is skipped, exactly like the host-memory
+    // preflight does for an unknown amount.
+    const bool memory_known = profile.available_memory_mb > 0;
+    const size_t usable_memory_mb = memory_known
+        ? static_cast<size_t>(static_cast<double>(profile.available_memory_mb) * 0.8)
+        : 0;
 
     // 第一阶段：基准测试，收集所有通过内存约束的候选尺寸及其估算时间
     struct Candidate {
@@ -439,7 +461,7 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
             }
 
             // 内存约束检查：必须不超过可用内存的 80%
-            if (bench.memory_usage_mb > usable_memory_mb) {
+            if (memory_known && bench.memory_usage_mb > usable_memory_mb) {
                 LOG_WARNING("TileOptimizer", "  Skipping tile_size={}: memory usage {}MB exceeds usable {}MB",
                             size, bench.memory_usage_mb, usable_memory_mb);
                 continue;
@@ -458,7 +480,9 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
             int total_tiles = tiles_x * tiles_y;
 
             // 估算总处理时间（秒）
-            float estimated_time_sec = total_tiles / bench.tiles_per_second;
+            const float estimated_time_sec = bench.tiles_per_second > 0.0f
+                ? static_cast<float>(total_tiles) / bench.tiles_per_second
+                : std::numeric_limits<float>::max();
 
             LOG_DEBUG("TileOptimizer", "  tile_size={} tiles/sec={} memory={}MB total_tiles={} est_time={}s",
                       size, bench.tiles_per_second, bench.memory_usage_mb, total_tiles,
@@ -473,8 +497,11 @@ inline auto TileSizeOptimizer::find_optimal_tile_size(
     }
 
     if (candidates.empty()) {
-        LOG_WARNING("TileOptimizer", "No valid tile size candidates, using fallback 256");
-        return 256;
+        const int fallback = fallback_tile_size();
+        LOG_WARNING("TileOptimizer",
+                    "No valid tile size candidates, using {} (clamped to the configured window)",
+                    fallback);
+        return fallback;
     }
 
     // 找出最小估算时间

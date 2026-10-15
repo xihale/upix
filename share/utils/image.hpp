@@ -86,9 +86,9 @@ private:
 auto convert_image_channels(const Image& source, int target_channels)
     -> expected<Image, ImageError>;
 
-// Normalize [image] to the model's declared input channel count in place.
-// Same-count inputs pass through untouched; failures keep [image] intact and
-// return false with a logged reason. `what` names the image in log lines.
+// Normalize model input channels in place, retaining RGBA for RGB models:
+// the tile processor sends RGB through inference and scales alpha separately.
+// Failures keep [image] intact and log the reason with [what].
 auto normalize_image_channels(Image& image, int expected_channels,
                               std::string_view what) -> bool;
 

@@ -176,6 +176,13 @@ public:
     // params whose upsampling structure defeats the scan.
     virtual bool scale_factor_detected() const { return false; }
 
+    // Channel count the loaded model reads on its input blob (3 = RGB). The
+    // host-side tile pipeline uses it to decide whether a 4-channel image's
+    // alpha can be split off before inference: handing alpha to a 3-channel
+    // model makes process()'s output-shape check demand a 4th channel the net
+    // never emits. 0 = unknown, which keeps the caller's channel count.
+    virtual int model_input_channels() const { return 0; }
+
     // Provide the scale factor parsed from the model filename (parsed by
     // model_manager, e.g. "x4" -> 4). Called after load_model(); engines
     // with a successful param-graph detection ignore it. No-op for engines

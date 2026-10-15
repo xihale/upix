@@ -63,10 +63,15 @@ auto TileProcessor::compute_tile_layout(int image_width, int image_height,
 
 namespace {
 
-// Shared plumbing for the CPU tiled pipelines used by process_image (float)
-// and process_image_u8. The two entry points differ only in tile extraction
-// (float memcpy vs u8→float) and the final normalize/store step; batching,
-// engine invocation, blending and error handling are identical.
+// Shared plumbing for the host-side tiled pipelines used by process_image
+// (float) and process_image_u8. The two entry points differ only in tile
+// extraction (float memcpy vs u8→float) and the final normalize/store step;
+// batching, engine invocation, blending and error handling are identical.
+//
+// Device note: everything in this file except the engine call runs on the host
+// (tile extraction, blend, normalize). The inference itself runs on whatever
+// device the Engine was initialized with, so the "host-side"/"CPU" naming here
+// describes where the staging and blending happen, never a CPU guarantee.
 
 // One batch of same-sized tiles staged between the load/proc/blend stages.
 struct BatchWork {
@@ -86,10 +91,13 @@ struct CompletedBatch {
     std::vector<std::vector<float>> output_buffers;
 };
 
-// Driver for the CPU tile pipeline. ExtractFn extracts one tile as floats:
-//   std::vector<float>(int image_width, int channels, const TileRegion&).
+// Driver for the host-side tiled pipeline. ExtractFn extracts one tile as
+// floats:
+//   std::vector<float>(int image_width, int model_channels, const TileRegion&).
 // FinalizeFn consumes the accumulated float output after blending:
 //   void(std::vector<float>& output_buffer, const std::vector<float>& weight_buffer).
+// Only extraction/blending/finalizing are host work — the engine call inside
+// runs on the engine's own device (GPU for a Vulkan engine).
 // UseLoadThread selects the scheduling shape, which differs between the two
 // entry points and is preserved exactly:
 //   true  — three stages: dedicated load thread feeding a bounded ready queue
@@ -97,6 +105,10 @@ struct CompletedBatch {
 //           (float path).
 //   false — two stages: one-ahead batch prefetch via std::async on the main
 //           thread, blend thread (u8 path).
+// `model_channels` is the channel count the engine and the blend work in — the
+// model's own count, which is 3 when an RGBA image was split for an RGB model.
+// The output accumulator and the engine call both follow it; the FinalizeFn
+// maps it back onto the caller's real pixel stride.
 template <bool UseLoadThread, typename ExtractFn, typename FinalizeFn>
 auto run_tiled_cpu_pipeline(
     TileProcessor& processor,
@@ -105,7 +117,7 @@ auto run_tiled_cpu_pipeline(
     const TileConfig& config,
     int input_width,
     int input_height,
-    int channels,
+    int model_channels,
     const std::function<void(const ProcessingProgress&)>& progress_callback,
     const std::atomic<bool>& cancel_flag,
     ExtractFn extract_tile_fn,
@@ -121,7 +133,7 @@ auto run_tiled_cpu_pipeline(
         const auto [total_mb, avail_mb] = engine.get_memory_info();
         if (avail_mb > 0) {
             const size_t host_need = static_cast<size_t>(output_width) * output_height *
-                                     (static_cast<size_t>(channels) + 1) * sizeof(float);
+                                     (static_cast<size_t>(model_channels) + 1) * sizeof(float);
             if (host_need > avail_mb * 1024 * 1024) {
                 return std::unexpected(TileProcessorError{
                     kErrOutOfMemory,
@@ -131,7 +143,7 @@ auto run_tiled_cpu_pipeline(
         }
     }
 
-    std::vector<float> output_buffer(static_cast<size_t>(output_width) * output_height * channels, 0.0f);
+    std::vector<float> output_buffer(static_cast<size_t>(output_width) * output_height * model_channels, 0.0f);
     std::vector<float> weight_buffer(static_cast<size_t>(output_width) * output_height, 0.0f);
 
     ProcessingProgress progress;
@@ -169,12 +181,12 @@ auto run_tiled_cpu_pipeline(
         batch.batch_outputs.reserve(batch_count);
 
         for (size_t j = batch.begin; j < batch.end; ++j) {
-            batch.input_buffers.push_back(extract_tile_fn(input_width, channels, regions[j]));
+            batch.input_buffers.push_back(extract_tile_fn(input_width, model_channels, regions[j]));
             batch.batch_inputs.push_back(batch.input_buffers.back().data());
 
             int tile_out_w = static_cast<int>(regions[j].width) * scale_factor;
             int tile_out_h = static_cast<int>(regions[j].height) * scale_factor;
-            batch.output_buffers.emplace_back(static_cast<size_t>(tile_out_w) * tile_out_h * channels);
+            batch.output_buffers.emplace_back(static_cast<size_t>(tile_out_w) * tile_out_h * model_channels);
             batch.batch_outputs.push_back(batch.output_buffers.back().data());
         }
 
@@ -238,7 +250,7 @@ auto run_tiled_cpu_pipeline(
                     const auto& region = regions[completed_batch.begin + idx];
                     processor.blend_tile(completed_batch.output_buffers[idx].data(), output_buffer.data(),
                                          weight_buffer.data(),
-                                         output_width, output_height, channels, region, scale_factor, config.overlap);
+                                         output_width, output_height, model_channels, region, scale_factor, config.overlap);
                     progress.completed_tiles++;
                     progress.current_tile_x = region.x;
                     progress.current_tile_y = region.y;
@@ -339,7 +351,7 @@ auto run_tiled_cpu_pipeline(
                 current_batch->batch_outputs,
                 static_cast<int>(current_batch->width),
                 static_cast<int>(current_batch->height),
-                channels,
+                model_channels,
                 cancel_flag
             );
             if (!result.has_value()) {
@@ -387,7 +399,7 @@ auto run_tiled_cpu_pipeline(
                 current_batch->batch_outputs,
                 static_cast<int>(current_batch->width),
                 static_cast<int>(current_batch->height),
-                channels,
+                model_channels,
                 cancel_flag
             );
             if (!result.has_value()) {
@@ -447,19 +459,37 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
                                     const std::atomic<bool>& cancel_flag)
     -> expected<void, TileProcessorError> {
 
-    auto regions = compute_tile_layout(input_width, input_height, config);
+    if (input_data == nullptr || output_data == nullptr) {
+        return std::unexpected(TileProcessorError{3, "Null image buffer for processing"});
+    }
+    if (input_width <= 0 || input_height <= 0 || channels <= 0) {
+        return std::unexpected(TileProcessorError{4, "Invalid image dimensions"});
+    }
 
-    if (engine.supports_gpu_tile_pipeline()) {
-        TileConfig gpu_config = config;
-        if (gpu_config.batch_size < 1) {
-            gpu_config.batch_size = 1;
-        }
-        if (engine.current_device() == DeviceType::GPU_VULKAN && gpu_config.batch_size == 1) {
-            gpu_config.batch_size = 2;
+    // One normalized config for every stage. compute_tile_layout clamps the
+    // overlap to tile_size-1, so blend_tile must weight that same overlap —
+    // passing the raw value let a config with overlap >= tile_size lay out
+    // 1-pixel steps but blend them with a whole-tile fade ramp. The tile
+    // pipeline_config carries the size the OOM ladder last ran with, so the
+    // blend weights always match the regions handed to the host-side stage.
+    TileConfig pipeline_config = config;
+    pipeline_config.tile_size = std::max(1, pipeline_config.tile_size);
+    pipeline_config.overlap =
+        std::clamp(pipeline_config.overlap, 0, pipeline_config.tile_size - 1);
+    pipeline_config.batch_size = std::max(1, pipeline_config.batch_size);
+
+    auto regions = compute_tile_layout(input_width, input_height, pipeline_config);
+
+    if (engine.supports_gpu_tile_pipeline() &&
+        !(channels == 4 && engine.model_input_channels() == 3)) {
+        if (engine.current_device() == DeviceType::GPU_VULKAN && pipeline_config.batch_size == 1) {
+            // Keep the device fed when the caller left the default batch size.
+            pipeline_config.batch_size = 2;
         }
         // OOM ladder: shrink the tile (the per-tile working set scales with
-        // tile²); when that stops helping, fall through to the CPU pipeline
-        // below, where the full-output accumulator lives in host RAM.
+        // tile²); when that stops helping, fall through to the host-side tiled
+        // pipeline below (which blends with exactly what the ladder ended on;
+        // the inference device is unchanged).
         while (true) {
             auto result = engine.process_tiles_gpu(
                 input_data,
@@ -468,7 +498,7 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
                 input_height,
                 channels,
                 regions,
-                gpu_config,
+                pipeline_config,
                 progress_callback,
                 cancel_flag
             );
@@ -478,44 +508,74 @@ auto TileProcessor::process_image(const float* input_data, float* output_data,
             if (!is_oom_error(result.error())) {
                 return std::unexpected(TileProcessorError{1, "GPU tile processing failed: " + result.error().message});
             }
-            if (gpu_config.tile_size <= 64) {
+            if (pipeline_config.tile_size <= 64) {
                 LOG_WARNING("TileProcessor",
-                    "GPU out of memory at tile_size=64, falling back to CPU blending");
+                    "GPU out of memory at tile_size=64, falling back to host-side blending (inference device unchanged)");
                 break;
             }
-            gpu_config.tile_size = std::max(64, gpu_config.tile_size / 2);
-            gpu_config.overlap = std::min(gpu_config.overlap, gpu_config.tile_size / 4);
+            pipeline_config.tile_size = std::max(64, pipeline_config.tile_size / 2);
+            pipeline_config.overlap = std::min(pipeline_config.overlap, pipeline_config.tile_size / 4);
             LOG_WARNING("TileProcessor",
-                "GPU out of memory, retrying with tile_size={}", gpu_config.tile_size);
-            regions = compute_tile_layout(input_width, input_height, gpu_config);
+                "GPU out of memory, retrying with tile_size={}", pipeline_config.tile_size);
+            regions = compute_tile_layout(input_width, input_height, pipeline_config);
         }
     }
 
     const int output_width = input_width * engine.get_scale_factor();
     const int output_height = input_height * engine.get_scale_factor();
 
-    // CPU float path: dedicated load thread + bounded ready queue (deep
+    // An RGBA image fed to an RGB model: the alpha channel is not part of the
+    // model's input, and the net never emits a 4th channel, so keeping it in
+    // the pipeline makes process()'s output-shape check reject every tile
+    // ("expected=WxHx4, actual=WxHx3"). Split it instead — the net sees RGB
+    // only (a quarter less input staging) and the output's 4th channel is
+    // filled from the host-side bicubic below, the same kernel
+    // process_image_u8's alpha bypass uses, so both entry points agree.
+    const bool alpha_split = (channels == 4 && engine.model_input_channels() == 3);
+    const int model_channels = alpha_split ? 3 : channels;
+
+    std::vector<uint8_t> alpha_output;
+    if (alpha_split) {
+        std::vector<uint8_t> alpha_input(static_cast<size_t>(input_width) * input_height);
+        for (size_t i = 0; i < alpha_input.size(); ++i) {
+            alpha_input[i] = static_cast<uint8_t>(std::lround(std::clamp(
+                input_data[i * static_cast<size_t>(channels) + 3], 0.0f, 1.0f) * 255.0f));
+        }
+        alpha_output.resize(static_cast<size_t>(output_width) * output_height);
+        bicubic_scale_u8(alpha_input.data(), input_width, input_height,
+                         alpha_output.data(), output_width, output_height);
+        LOG_INFO("TileProcessor", "Alpha channel bypassed neural network (bicubic)");
+    }
+
+    // Host-side float path: dedicated load thread + bounded ready queue (deep
     // prefetch keeps the engine fed), memcpy tile extraction, float normalize.
     return run_tiled_cpu_pipeline</*UseLoadThread=*/true>(
-        *this, engine, regions, config, input_width, input_height, channels,
+        *this, engine, regions, pipeline_config, input_width, input_height, model_channels,
         progress_callback, cancel_flag,
         [&](int image_width, int ch, const TileRegion& region) {
-            return extract_tile(input_data, image_width, ch, region);
+            return extract_tile(input_data, image_width, channels, ch, region);
         },
         [&](std::vector<float>& output_buffer, const std::vector<float>& weight_buffer) {
             const size_t pixel_count = static_cast<size_t>(output_width) * output_height;
             for (size_t p = 0; p < pixel_count; ++p) {
                 const float w = weight_buffer[p];
-                if (w <= 1e-6f) {
-                    continue;
-                }
-                const size_t base = p * static_cast<size_t>(channels);
-                for (int c = 0; c < channels; ++c) {
-                    output_buffer[base + static_cast<size_t>(c)] /= w;
+                const size_t src_base = p * static_cast<size_t>(model_channels);
+                const size_t dst_base = p * static_cast<size_t>(channels);
+                for (int c = 0; c < model_channels; ++c) {
+                    // Unweighted pixels (no tile contributed) stay 0, which is
+                    // what the accumulator already held for them.
+                    output_data[dst_base + static_cast<size_t>(c)] =
+                        w > 1e-6f ? output_buffer[src_base + static_cast<size_t>(c)] / w : 0.0f;
                 }
             }
 
-            std::copy(output_buffer.begin(), output_buffer.end(), output_data);
+            if (alpha_split) {
+                for (size_t p = 0; p < pixel_count; ++p) {
+                    output_data[p * static_cast<size_t>(channels) + 3] =
+                        static_cast<float>(alpha_output[p]) / 255.0f;
+                }
+                LOG_INFO("TileProcessor", "Merged bicubic alpha into output");
+            }
         });
 }
 
@@ -534,19 +594,29 @@ auto TileProcessor::process_image_u8(
     if (input_data == nullptr || output_data == nullptr) {
         return std::unexpected(TileProcessorError{3, "Null image buffer for u8 processing"});
     }
+    if (input_width <= 0 || input_height <= 0 || channels <= 0) {
+        return std::unexpected(TileProcessorError{4, "Invalid image dimensions"});
+    }
 
-    auto regions = compute_tile_layout(input_width, input_height, config);
-    if (engine.supports_gpu_tile_pipeline_u8()) {
-        TileConfig gpu_config = config;
-        if (gpu_config.batch_size < 1) {
-            gpu_config.batch_size = 1;
-        }
-        if (engine.current_device() == DeviceType::GPU_VULKAN && gpu_config.batch_size == 1) {
-            gpu_config.batch_size = 2;
+    // Same normalized config as the float path: the blend weights must use the
+    // overlap the layout actually applied, and the host-side stage must see the
+    // size the OOM ladder ended on.
+    TileConfig pipeline_config = config;
+    pipeline_config.tile_size = std::max(1, pipeline_config.tile_size);
+    pipeline_config.overlap =
+        std::clamp(pipeline_config.overlap, 0, pipeline_config.tile_size - 1);
+    pipeline_config.batch_size = std::max(1, pipeline_config.batch_size);
+
+    auto regions = compute_tile_layout(input_width, input_height, pipeline_config);
+    if (engine.supports_gpu_tile_pipeline_u8() &&
+        !(channels == 4 && enable_alpha_bicubic && engine.model_input_channels() == 3)) {
+        if (engine.current_device() == DeviceType::GPU_VULKAN && pipeline_config.batch_size == 1) {
+            pipeline_config.batch_size = 2;
         }
 
         // OOM ladder (same as the float path): shrink the tile, then blend on
-        // the CPU with only tile-sized GPU work.
+        // the host with only tile-sized GPU work (the inference device is
+        // unchanged — this is not a CPU fallback).
         while (true) {
             auto result = engine.process_tiles_gpu_u8(
                 input_data,
@@ -555,7 +625,7 @@ auto TileProcessor::process_image_u8(
                 input_height,
                 channels,
                 regions,
-                gpu_config,
+                pipeline_config,
                 progress_callback,
                 cancel_flag
             );
@@ -565,32 +635,40 @@ auto TileProcessor::process_image_u8(
             if (!is_oom_error(result.error())) {
                 return std::unexpected(TileProcessorError{1, "GPU u8 tile processing failed: " + result.error().message});
             }
-            if (gpu_config.tile_size <= 64) {
+            if (pipeline_config.tile_size <= 64) {
                 LOG_WARNING("TileProcessor",
-                    "GPU out of memory at tile_size=64, falling back to CPU blending");
+                    "GPU out of memory at tile_size=64, falling back to host-side blending (inference device unchanged)");
                 break;
             }
-            gpu_config.tile_size = std::max(64, gpu_config.tile_size / 2);
-            gpu_config.overlap = std::min(gpu_config.overlap, gpu_config.tile_size / 4);
+            pipeline_config.tile_size = std::max(64, pipeline_config.tile_size / 2);
+            pipeline_config.overlap = std::min(pipeline_config.overlap, pipeline_config.tile_size / 4);
             LOG_WARNING("TileProcessor",
-                "GPU out of memory, retrying with tile_size={}", gpu_config.tile_size);
-            regions = compute_tile_layout(input_width, input_height, gpu_config);
+                "GPU out of memory, retrying with tile_size={}", pipeline_config.tile_size);
+            regions = compute_tile_layout(input_width, input_height, pipeline_config);
         }
     }
 
-    // Per-tile CPU path: extract from u8, convert to float per-tile, process, blend.
+    // Per-tile host path: extract from u8, convert to float per-tile, process, blend.
     // This avoids the full-image u8→float copy, saving O(W*H*C) float allocation.
     const int scale_factor = engine.get_scale_factor();
     const int output_width = input_width * scale_factor;
     const int output_height = input_height * scale_factor;
 
-    // Alpha channel bicubic bypass for RGBA images (saves 25% GPU compute)
+    // Alpha channel bypass for RGBA images: the 3-channel model must not be
+    // handed a 4th channel it never emits back (process()'s output-shape check
+    // would reject every tile), so the tiles handed to the engine are RGB and
+    // alpha is scaled here on the host and merged into the output's 4th
+    // channel at the end. `enable_alpha_bicubic=false` keeps alpha on the
+    // network input path, which only a 4-channel model can consume.
+    const bool alpha_bicubic = channels == 4 && enable_alpha_bicubic &&
+                               engine.model_input_channels() == 3;
+    const int model_channels = alpha_bicubic ? 3 : channels;
+
     std::vector<uint8_t> alpha_output;
-    const bool has_alpha = (channels == 4);
-    if (has_alpha && enable_alpha_bicubic) {
+    if (alpha_bicubic) {
         std::vector<uint8_t> alpha_input(static_cast<size_t>(input_width) * input_height);
         for (size_t i = 0; i < alpha_input.size(); ++i) {
-            alpha_input[i] = input_data[i * 4 + 3];
+            alpha_input[i] = input_data[i * static_cast<size_t>(channels) + 3];
         }
         alpha_output.resize(static_cast<size_t>(output_width) * output_height);
         bicubic_scale_u8(alpha_input.data(), input_width, input_height,
@@ -598,34 +676,37 @@ auto TileProcessor::process_image_u8(
         LOG_INFO("TileProcessor", "Alpha channel bypassed neural network (bicubic)");
     }
 
-    // CPU u8 path: one-ahead batch prefetch (per-tile u8→float extraction keeps
+    // Host-side u8 path: one-ahead batch prefetch (per-tile u8→float extraction keeps
     // the memory footprint low), u8 normalize/quantize on the way out.
     return run_tiled_cpu_pipeline</*UseLoadThread=*/false>(
-        *this, engine, regions, config, input_width, input_height, channels,
+        *this, engine, regions, pipeline_config, input_width, input_height, model_channels,
         progress_callback, cancel_flag,
         [&](int image_width, int ch, const TileRegion& region) {
-            // Per-tile u8→float extraction (avoids full-image float copy)
-            return extract_tile_u8(input_data, image_width, ch, region);
+            // Per-tile u8→float extraction (avoids full-image float copy);
+            // drops the alpha channel when the net only wants RGB.
+            return extract_tile_u8(input_data, image_width, channels, ch, region);
         },
         [&](std::vector<float>& output_float, const std::vector<float>& weight_buffer) {
-            // Normalize and convert float output to u8
+            // Normalize and convert float output to u8, back onto the caller's
+            // pixel stride (which is wider than the model's when alpha was split).
             const size_t pixel_count = static_cast<size_t>(output_width) * output_height;
             for (size_t p = 0; p < pixel_count; ++p) {
                 const float w = weight_buffer[p];
                 if (w <= 1e-6f) {
                     continue;
                 }
-                const size_t base = p * static_cast<size_t>(channels);
-                for (int c = 0; c < channels; ++c) {
-                    const float v = std::clamp((output_float[base + c] / w) * 255.0f, 0.0f, 255.0f);
-                    output_data[base + c] = static_cast<uint8_t>(v);
+                const size_t src_base = p * static_cast<size_t>(model_channels);
+                const size_t dst_base = p * static_cast<size_t>(channels);
+                for (int c = 0; c < model_channels; ++c) {
+                    const float v = std::clamp((output_float[src_base + c] / w) * 255.0f, 0.0f, 255.0f);
+                    output_data[dst_base + c] = static_cast<uint8_t>(v);
                 }
             }
 
             // Replace alpha with bicubic-scaled alpha (bypasses neural network for alpha)
-            if (has_alpha && enable_alpha_bicubic && !alpha_output.empty()) {
+            if (alpha_bicubic && !alpha_output.empty()) {
                 for (size_t i = 0; i < pixel_count; ++i) {
-                    output_data[i * 4 + 3] = alpha_output[i];
+                    output_data[i * static_cast<size_t>(channels) + 3] = alpha_output[i];
                 }
                 LOG_INFO("TileProcessor", "Merged bicubic alpha into output");
             }
@@ -633,18 +714,31 @@ auto TileProcessor::process_image_u8(
 }
 
 auto TileProcessor::extract_tile(const float* image_data, int image_width,
-                                  int channels, const TileRegion& region) -> std::vector<float> {
+                                  int src_channels, int dst_channels,
+                                  const TileRegion& region) -> std::vector<float> {
     
-    std::vector<float> tile(static_cast<size_t>(region.width) * region.height * channels);
+    std::vector<float> tile(static_cast<size_t>(region.width) * region.height * dst_channels);
     
     for (uint32_t y = 0; y < region.height; ++y) {
-        const size_t src_idx = (static_cast<size_t>(region.y + y) * image_width + region.x) * channels;
-        const size_t dst_idx = static_cast<size_t>(y) * region.width * channels;
-        std::memcpy(
-            tile.data() + dst_idx,
-            image_data + src_idx,
-            static_cast<size_t>(region.width) * channels * sizeof(float)
-        );
+        const size_t src_idx = (static_cast<size_t>(region.y + y) * image_width + region.x) * src_channels;
+        const size_t dst_idx = static_cast<size_t>(y) * region.width * dst_channels;
+        if (src_channels == dst_channels) {
+            std::memcpy(
+                tile.data() + dst_idx,
+                image_data + src_idx,
+                static_cast<size_t>(region.width) * dst_channels * sizeof(float)
+            );
+        } else {
+            // De-interleave: keep the leading dst_channels of every source
+            // pixel (how an RGBA source feeds an RGB model).
+            for (uint32_t x = 0; x < region.width; ++x) {
+                std::memcpy(
+                    tile.data() + dst_idx + static_cast<size_t>(x) * dst_channels,
+                    image_data + src_idx + static_cast<size_t>(x) * src_channels,
+                    static_cast<size_t>(dst_channels) * sizeof(float)
+                );
+            }
+        }
     }
     
     return tile;
@@ -653,16 +747,29 @@ auto TileProcessor::extract_tile(const float* image_data, int image_width,
 // Per-tile extraction from u8 data with u8→float conversion on-the-fly.
 // Avoids the full-image u8→float copy, saving O(W*H*C) float allocation.
 auto TileProcessor::extract_tile_u8(const uint8_t* image_data, int image_width,
-                                     int channels, const TileRegion& region) -> std::vector<float> {
-    const size_t tile_pixels = static_cast<size_t>(region.width) * region.height * channels;
-    std::vector<float> tile(tile_pixels);
+                                     int src_channels, int dst_channels,
+                                     const TileRegion& region) -> std::vector<float> {
+    const size_t tile_values = static_cast<size_t>(region.width) * region.height * dst_channels;
+    std::vector<float> tile(tile_values);
     constexpr float kInv255 = 1.0f / 255.0f;
 
     for (uint32_t y = 0; y < region.height; ++y) {
-        const size_t src_idx = (static_cast<size_t>(region.y + y) * image_width + region.x) * channels;
-        const size_t dst_idx = static_cast<size_t>(y) * region.width * channels;
-        for (size_t c = 0, cw = static_cast<size_t>(region.width) * channels; c < cw; ++c) {
-            tile[dst_idx + c] = static_cast<float>(image_data[src_idx + c]) * kInv255;
+        const size_t src_idx = (static_cast<size_t>(region.y + y) * image_width + region.x) * src_channels;
+        const size_t dst_idx = static_cast<size_t>(y) * region.width * dst_channels;
+        if (src_channels == dst_channels) {
+            for (size_t c = 0, cw = static_cast<size_t>(region.width) * dst_channels; c < cw; ++c) {
+                tile[dst_idx + c] = static_cast<float>(image_data[src_idx + c]) * kInv255;
+            }
+        } else {
+            // De-interleave: convert only the leading dst_channels of each
+            // source pixel (how an RGBA source feeds an RGB model).
+            for (uint32_t x = 0; x < region.width; ++x) {
+                const uint8_t* src_px = image_data + src_idx + static_cast<size_t>(x) * src_channels;
+                float* dst_px = tile.data() + dst_idx + static_cast<size_t>(x) * dst_channels;
+                for (int c = 0; c < dst_channels; ++c) {
+                    dst_px[c] = static_cast<float>(src_px[c]) * kInv255;
+                }
+            }
         }
     }
 
@@ -789,8 +896,13 @@ void TileProcessor::bicubic_scale_u8(
                 }
             }
 
+            // The kernel has negative lobes, so weight_sum can collapse to
+            // (near) zero on degenerate size pairs; the division then yields
+            // inf/NaN, whose cast to uint8_t is undefined. Bounded resize
+            // ratios never reach it — clamp to black when it happens.
+            const float value = std::abs(weight_sum) > 1e-6f ? sum / weight_sum : 0.0f;
             dst[static_cast<size_t>(dy) * dst_w + static_cast<size_t>(dx)] = static_cast<uint8_t>(
-                std::clamp(sum / weight_sum, 0.0f, 255.0f));
+                std::clamp(value, 0.0f, 255.0f));
         }
     }
 }
