@@ -61,11 +61,11 @@ using nvmlDeviceGetName_t = int (*)(nvmlDevice_t, char*, unsigned);
 
 // NVML struct layouts (must match the library's ABI; these are stable).
 struct nvmlUtilization_st { unsigned gpu, memory; };
-struct nvmlMemory_st { unsigned long long total, used, free; };
+struct nvmlMemory_st { unsigned long long total, free, used; };
 
 // NVML clock type enum values (from nvml.h).
-constexpr unsigned NVML_CLOCK_SM = 0;
-constexpr unsigned NVML_CLOCK_GRAPHICS = 1;
+constexpr unsigned NVML_CLOCK_GRAPHICS = 0;
+constexpr unsigned NVML_CLOCK_SM = 1;
 
 struct NvmlApi {
     void* lib = nullptr;

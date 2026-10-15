@@ -13,6 +13,7 @@
 //   upix-perf gpu-concurrency [options]
 //   upix-perf gpu-reuse       [options]
 #include <algorithm>
+#include <cmath>
 #include <cstdlib>
 #include <iostream>
 #include <memory>
@@ -75,10 +76,22 @@ auto default_models_dir() -> std::string {
 
 // Parse a "<N>s" / "<N>" duration string to seconds, matching the legacy
 // "strip trailing s then stod" rule (moved verbatim from cli/src/cmd_perf.cpp).
-auto parse_seconds(const std::string& s) -> double {
+// Returns nullopt for non-numeric input instead of letting std::stod throw out
+// of main() — an uncaught exception aborts the tool where a usage error is
+// expected.
+auto parse_seconds(const std::string& s) -> std::optional<double> {
     std::string t = s;
     if (!t.empty() && t.back() == 's') t.pop_back();
-    return std::stod(t);
+    try {
+        size_t parsed = 0;
+        const double value = std::stod(t, &parsed);
+        if (parsed != t.size() || !std::isfinite(value) || value < 0.0) {
+            return std::nullopt;
+        }
+        return value;
+    } catch (...) {
+        return std::nullopt;
+    }
 }
 
 // Resolve a model by name (or fall back to the first available). Returns a
@@ -87,14 +100,15 @@ auto resolve_model(std::vector<upix::ModelInfo>& models, const std::string& name
     -> const upix::ModelInfo* {
     if (models.empty()) return nullptr;
     if (name.empty()) return &models[0];
-    auto it = std::find_if(models.begin(), models.end(),
-        [&](const auto& m) { return m.name == name; });
-    if (it == models.end()) {
-        LOG_ERROR("Perf", "model not found: " + name);
-        for (const auto& m : models) LOG_INFO("Perf", "  available: " + m.name);
-        return nullptr;
+    // Same tolerant lookup the CLI uses (case/separator folding, unambiguous
+    // base-name match), so "--model realesrgan-x4plus" resolves exactly as it
+    // does for `upix process -m`.
+    if (const auto* match = upix::ModelManager::find_model(models, name)) {
+        return match;
     }
-    return &*it;
+    LOG_ERROR("Perf", "model not found: " + name);
+    for (const auto& m : models) LOG_INFO("Perf", "  available: " + m.name);
+    return nullptr;
 }
 
 // Shared body for gpu-efficiency / gpu-concurrency / gpu-reuse: resolve model,
@@ -122,8 +136,15 @@ auto run_probe(const PerfArgs& a) -> int {
     cfg.tile_width = a.tile_size;
     cfg.tile_height = a.tile_size;
     cfg.scale = sel->scale_factor;
-    cfg.duration_s = parse_seconds(a.duration_s);
-    cfg.warmup_s = parse_seconds(a.warmup_s);
+    const auto duration_s = parse_seconds(a.duration_s);
+    const auto warmup_s = parse_seconds(a.warmup_s);
+    if (!duration_s.has_value() || !warmup_s.has_value()) {
+        LOG_ERROR("Perf", "invalid --duration/--warmup (expected seconds, e.g. 6s): \"" +
+                          a.duration_s + "\" / \"" + a.warmup_s + "\"");
+        return 1;
+    }
+    cfg.duration_s = *duration_s;
+    cfg.warmup_s = *warmup_s;
     cfg.sample_ms = a.sample_ms;
 
     if (a.subcommand == "gpu-efficiency") {
