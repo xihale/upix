@@ -60,6 +60,7 @@ logs/
 
 # Test / debug outputs
 test_output/
+desktop/Testing/
 *.png
 *.jpg
 *.jpeg

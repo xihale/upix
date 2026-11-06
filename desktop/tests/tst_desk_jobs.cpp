@@ -28,6 +28,7 @@ private slots:
     void failedToStartSurfacesError();
     void folderCountAndCoverFollowInputRemoval();
     void unsupportedDropIsReported();
+    void cliVersionGateFlagsOldCliAndPassesNew();
 
 private:
     QString addImage(const QString& name);
@@ -50,6 +51,9 @@ void TstDesktopJobs::initTestCase() {
 case "$1" in
   daemon)
     [ "$2" = status ] && printf '{"running":true,"pid":4321,"socket":"/home/u/.cache/upix/serve.sock","socketMissing":false}\n'
+    exit 0 ;;
+  --version|-V)
+    printf 'v%s avif:system-dlopen\n' "${UPIX_TEST_CLI_VERSION:-0.2.0}"
     exit 0 ;;
 esac
 printf '%s\n' "$*" >> "$UPIX_TEST_LOG"
@@ -101,6 +105,8 @@ void TstDesktopJobs::cleanup() {
     // broken CLI path or a non-default mode.
     qputenv("UPIX_CLI", m_cli.toUtf8());
     qputenv("UPIX_TEST_MODE", "success");
+    qputenv("UPIX_FAKE", "1");
+    qunsetenv("UPIX_TEST_CLI_VERSION");
 }
 
 QString TstDesktopJobs::addImage(const QString& name) {
@@ -398,6 +404,23 @@ void TstDesktopJobs::unsupportedDropIsReported() {
     QVERIFY(desk.snap().value("inputs").toList().isEmpty());
     QCOMPARE(desk.snap().value("notice").toString(),
              QStringLiteral("已忽略 2 个不支持的文件"));
+}
+
+// The real boot path (not fixture mode) probes `--version`: a CLI older than
+// the desktop's machine-readable contract (UPIX_PROGRESS=json, post cli-v0.1.0)
+// must surface cliCompatible=false for the HostPage warning; same-repo builds
+// and newer CLIs pass.
+void TstDesktopJobs::cliVersionGateFlagsOldCliAndPassesNew() {
+    qputenv("UPIX_TEST_CLI_VERSION", "0.1.0");
+    qputenv("UPIX_FAKE", "");  // empty = run the real boot path
+    Desk desk;
+    QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("cliFound"), QVariant(true), 3000);
+    QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("cliCompatible"), QVariant(false), 3000);
+    QVERIFY(desk.snap().value("cliVersion").toString().startsWith(QStringLiteral("v0.1.0")));
+
+    qputenv("UPIX_TEST_CLI_VERSION", "0.2.0");
+    Desk newer;
+    QTRY_COMPARE_WITH_TIMEOUT(newer.snap().value("cliCompatible"), QVariant(true), 3000);
 }
 
 } // namespace

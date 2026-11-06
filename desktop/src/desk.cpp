@@ -15,6 +15,7 @@
 #include <QJsonObject>
 #include <QMimeData>
 #include <QPointer>
+#include <QRegularExpression>
 #include <QStandardPaths>
 #include <QUrl>
 
@@ -22,6 +23,33 @@ namespace {
 
 constexpr int CoalesceMs = 70;
 constexpr int PrefsSaveMs = 400;
+
+// Minimum upix-cli the desktop talks to. The GUI's progress display rides on
+// UPIX_PROGRESS=json events, which landed after the released cli-v0.1.0
+// (commit 6dddc1c) — bump together with the CLI contract, and keep xmake's
+// set_version() at or above this so same-repo builds never warn about themselves.
+constexpr const char* kMinCliVersion = "0.2.0";
+
+// Leading "v", then the first digits-and-dots run: "v0.2.0-3-gabc" → 0.2.0.
+// Unparseable (dev builds) counts as compatible; we warn, never block.
+bool cliVersionAtLeast(const QString& version, const char* min) {
+    const QRegularExpression leadingNums{QStringLiteral("^v?(\\d+(?:\\.\\d+)*)")};
+    const auto m = leadingNums.match(version.trimmed());
+    if (!m.hasMatch()) return true;
+    const auto part = [](const QString& s, int i) {
+        const QStringList bits = s.split(QLatin1Char('.'));
+        return i < bits.size() ? bits[i].toInt() : 0;
+    };
+    const QString v = m.captured(1);
+    const QStringList minBits = QString::fromLatin1(min).split(QLatin1Char('.'));
+    const auto minPart = [&minBits](int i) {
+        return i < minBits.size() ? minBits[i].toInt() : 0;
+    };
+    for (int i = 0; i < 3; ++i) {
+        if (part(v, i) != minPart(i)) return part(v, i) > minPart(i);
+    }
+    return true;
+}
 
 QString prefsPath() {
     return QDir(QStandardPaths::writableLocation(QStandardPaths::ConfigLocation))
@@ -49,6 +77,7 @@ QVariantMap defaultSnap() {
     return QVariantMap{
         {"cliFound", false},
         {"cliVersion", QString()},
+        {"cliCompatible", true},
         {"inputs", QVariantList{}},
         {"folderCount", 0},
         {"cover", QString()},
@@ -97,7 +126,7 @@ QVariantMap defaultSnap() {
 QVariantMap fakeSnap(const QString& state) {
     QVariantMap s = defaultSnap();
     s["cliFound"] = true;
-    s["cliVersion"] = QStringLiteral("v0.1.0 avif:system-dlopen");
+    s["cliVersion"] = QStringLiteral("v0.2.0 avif:system-dlopen");
     s["model"] = QStringLiteral("AnimeSharp-x4");
     s["modelsDir"] = QStringLiteral("/home/xihale/.local/share/upix/models");
     s["installed"] = QVariantList{
@@ -277,7 +306,9 @@ void Desk::boot() {
             const QString out = QString::fromUtf8(p->readAll());
             if (code == 0 && !out.trimmed().isEmpty()) {
                 // The version line is machine-readable by definition.
-                s()["cliVersion"] = out.section(QLatin1Char('\n'), 0, 0).trimmed();
+                const QString version = out.section(QLatin1Char('\n'), 0, 0).trimmed();
+                s()["cliVersion"] = version;
+                s()["cliCompatible"] = cliVersionAtLeast(version, kMinCliVersion);
                 touch();
             }
         });
@@ -301,6 +332,14 @@ QProcess* Desk::spawn(const QString& key, const QStringList& args,
     }
     QProcess* proc = new QProcess(this);
     proc->setProcessChannelMode(QProcess::MergedChannels);
+#ifdef Q_OS_WIN
+    // The CLI is a console-subsystem binary; without CREATE_NO_WINDOW every
+    // spawn (version probe, models, daemon status, every job) flashes a
+    // console window. Literal over <windows.h> to keep this TU lean.
+    proc->setCreateProcessArgumentsArgument([](QProcess::CreateProcessArguments* a) {
+        a->flags |= 0x08000000;  // CREATE_NO_WINDOW
+    });
+#endif
     QProcessEnvironment e = QProcessEnvironment::systemEnvironment();
     for (const QString& kv : env) {
         const int eq = kv.indexOf(QLatin1Char('='));

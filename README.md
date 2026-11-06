@@ -17,7 +17,7 @@ Usage: [Single image](#single-image) — [Warm-engine daemon](#warm-engine-daemo
 - Multi-threaded directory processing via `--jobs` (CPU engines)
 - Offload to a PC over the LAN: QR pairing, end-to-end encrypted (X25519 + Ed25519 + secretbox)
 - Outputs carry an XMP marker; re-feeding an already-upscaled image skips by default
-- Cross-platform: Linux/macOS/Windows CLI + Android app + desktop workbench (`desktop/`, Qt 6 Quick)
+- Cross-platform: Linux/macOS/Windows CLI + Android app + desktop workbench (`desktop/`, Qt 6 Quick). Binary releases: linux-x86_64 and macos-arm64; Windows builds from source (MSVC 2022+), and the desktop zip (`cpack -DUPIX_CLI_BIN=…`) bundles the GUI + CLI side by side.
 
 ## Build
 
@@ -62,11 +62,25 @@ cd desktop
 
 `ctest --test-dir desktop/build` runs the compare-divider regression (real
 mouse events; drag tracking, clamps, single-column seam).
+
+The GUI probes `upix-cli --version` at boot and warns on the host page when
+the CLI predates the machine-readable progress contract (< v0.2.0).
+
 `--shot empty,picked,running,done,error,models,host,pairing --out shots-qt`
 renders those states headless to PNG (add `--anim` for entry-motion frames,
 `--sweep` for the compare sweep, `QT_SCALE_FACTOR=2` for 200%).
 `--smoke` runs a real end-to-end upscale against `upix-cli` and exits non-zero
 on failure. `UPIX_THEME=light|dark` pins the color scheme.
+
+Windows: the GUI builds as a windowed (non-console) app and launches the CLI
+without console flashes (`CREATE_NO_WINDOW`). A distributable zip bundles
+`upix.exe` + `upix-cli.exe` side by side — all `Desk::findCli` needs, no PATH
+edits or installer:
+
+```bash
+cmake -S . -B build -G Ninja -DUPIX_CLI_BIN=/path/to/upix-cli.exe
+cmake --build build && cpack --config build/CPackConfig.cmake   # upix-<ver>-win64.zip
+```
 
 ### Optional AVIF codecs (opt-in)
 
@@ -184,14 +198,15 @@ Process all images in a directory (recursively), preserving directory structure:
 ./upix-cli input_dir                     # → input_dir_<model>/ next to it
 
 # Flag form, when preferred
-./upix-cli -i input_dir -o output_dir -m Real-ESRGANv3-anime-x2 --jobs 4   # CPU parallel
-./upix-cli -i input_dir -o output_dir --gpu                                # GPU sequential
+./upix-cli -i input_dir -o output_dir -m Real-ESRGANv3-anime-x2 --jobs 4   # 4 CPU engines
+./upix-cli -i input_dir -o output_dir --gpu                                # GPU: engine count auto-fits VRAM (≤4)
 ```
 
-**Important GPU behavior**:
-- When `--gpu` is enabled, directory processing **does not** use `--jobs` to parallelize images. Instead, images are processed sequentially on a single shared GPU engine to avoid Vulkan context corruption.
-- The `--batch-size` flag **does** affect GPU directory mode: it controls how many tiles are batched together per inference call, increasing GPU occupancy and throughput per image.
-- For maximum directory throughput with GPU, use `--gpu` without `--jobs`. For CPU parallelism, use `--jobs` without `--gpu`.
+**Directory concurrency** — `--jobs` works for CPU and GPU alike:
+
+- CPU: `--jobs N` runs N engines in parallel (default 1; clamped to the machine's parallelism and task count).
+- GPU: without `--jobs`, the engine count (≤4) is auto-picked so the projected output footprint fits ~90% of the VRAM budget; an explicit `--jobs N` is honored but capped to that same VRAM-safe count, with a warning when the cap applies. `--jobs 1` pins the single-engine pipeline.
+- `--batch-size` is orthogonal: it batches tiles per GPU dispatch inside each engine, independent of how many images run in parallel.
 
 ### Model Management
 
@@ -343,10 +358,9 @@ all three shells only fire completions for commands resolvable through
 
 - **Tile size**: The optimal tile size depends on GPU memory and image resolution. When `--tile-size` is not given, both the warm-engine daemon and the inline path use the engine's VRAM-aware recommendation (identical output either way). 256 works for most GPUs with ≥4GB VRAM. Larger tiles (384, 512) reduce seam artifacts and overhead for high-resolution images (>4K). Smaller tiles (128) are better for memory-constrained devices.
 - **Overlap**: 10-15% of tile size is recommended (e.g., 16 for 256).
-- **CPU vs GPU**: Single-image and directory modes both support GPU via `--gpu`. For directory mode, GPU forces sequential image processing to avoid Vulkan context corruption; CPU mode uses `--jobs` for parallel image processing.
+- **CPU vs GPU**: Single-image and directory modes both support GPU via `--gpu`. In directory mode `--jobs` controls image-level parallelism on both devices; GPU additionally auto-picks an engine count (≤4) from the VRAM budget when `--jobs` is not given.
 - **Batch size**: The `--batch-size` flag controls how many tiles are batched together in a single inference call. Tiles are only batched if they have identical dimensions (same width and height), so edge tiles may be processed separately. Increasing batch size can improve GPU occupancy and throughput per image; the CPU also benefits but to a lesser extent. The default is 1 (no batching).
-- **Parallelism**: `--jobs` controls image-level parallelism for CPU engines only. For best CPU performance, set `--jobs` to the number of physical cores (or slightly higher if I/O bound).
-- **GPU utilization**: In GPU directory mode with `--batch-size 1`, typical GPU utilization is ~50%. Using a larger `--batch-size` can increase occupancy and improve throughput.
+- **Parallelism**: Throughput in directory mode scales with image-level engines (`--jobs`) × per-dispatch tile batches (`--batch-size`). For CPU, set `--jobs` to the number of physical cores (or slightly higher if I/O bound).
 
 ## Configuration File
 
@@ -377,8 +391,8 @@ other than 1 runs inline because the warm daemon cannot carry those settings.
 
 - **No models found**: Run `./upix-cli model list-remote && ./upix-cli model download <name>`, or use `--models-dir` to point at an existing directory (or export `UPIX_MODELS_DIR`). On Android, use 模型 → 下载模型.
 - **Out of memory**: Reduce tile size or reduce `--jobs`. For GPU mode, close other applications to free VRAM. If GPU memory is insufficient, try smaller tile sizes (128 or 192).
-- **Slow GPU performance**: Increase `--batch-size` to improve GPU occupancy. Ensure you are not using `--jobs` with `--gpu` (they are incompatible). For large directories, consider using CPU mode with `--jobs` for parallel image processing, or process images individually with `--gpu`.
-- **Crashes with GPU in directory mode**: This should no longer occur as GPU directory mode now uses a single shared engine sequentially. If you experience crashes, ensure you are using the latest version.
+- **Slow GPU performance**: Increase `--batch-size` to improve GPU occupancy; directory mode also scales across engines (auto-picked from VRAM, or `--jobs` to pin).
+- **Crashes with GPU in directory mode**: GPU directory engines are admitted by a VRAM budget check, so crashes are usually driver- or VRAM-related; ensure you are using the latest version and, if a crash persists, pin `--jobs 1`.
 
 ## Development
 

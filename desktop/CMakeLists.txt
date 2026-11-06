@@ -12,7 +12,7 @@ if(Qt6_VERSION VERSION_GREATER_EQUAL "6.8")
     qt_policy(SET QTP0004 NEW)
 endif()
 
-qt_add_executable(upix
+qt_add_executable(upix WIN32
     src/main.cpp
     src/theme.cpp
     src/machine.cpp
@@ -50,6 +50,30 @@ qml/HostPage.qml
 qml/PairingSheet.qml
 qml/Grouping.js
 )
+
+# ---- Windows zip: upix.exe + upix-cli.exe side by side ----------------------
+# The GUI finds the CLI via the sibling-exe rule (Desk::findCli), so the zip
+# is the whole install: no PATH edits, no registry, no installer.
+if(WIN32)
+    install(TARGETS upix RUNTIME DESTINATION .)
+    # Qt DLLs + QML modules via the Qt 6.5+ deploy script (windeployqt under
+    # the hood), run at install time.
+    qt_generate_deploy_qml_app_script(
+        TARGET upix
+        OUTPUT_SCRIPT upix_deploy_script
+    )
+    install(SCRIPT ${upix_deploy_script})
+    set(UPIX_CLI_BIN "" CACHE FILEPATH "upix-cli.exe to bundle next to the GUI in the zip")
+    if(UPIX_CLI_BIN)
+        install(FILES ${UPIX_CLI_BIN} DESTINATION .)
+    else()
+        message(WARNING "UPIX_CLI_BIN not set: the zip ships without upix-cli "
+                        "and the GUI will report 未找到 upix-cli until the CLI is "
+                        "placed next to upix.exe")
+    endif()
+    set(CPACK_GENERATOR "ZIP")
+    include(CPack)
+endif()
 
 
 # Regression tests. `ctest` in the build dir; the divider test drives the real

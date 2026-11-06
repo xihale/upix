@@ -16,6 +16,13 @@ tokens still tints the few stock pieces that remain (scrollbars, tooltips,
 native dialogs). `QImageReader` allocation limit is lifted (upscaler outputs
 exceed Qt's 256 MB decode ceiling).
 
+**CLI contract guardrails:** the GUI requires `upix-cli >= kMinCliVersion`
+(`src/desk.cpp`; 0.2.0 — the first CLI with `UPIX_PROGRESS=json` events) and
+warns on HostPage when the probe reports older. Windows: CLI spawns pass
+`CREATE_NO_WINDOW` (no console flashes); a release zip is `cpack` with
+`-DUPIX_CLI_BIN=<path>/upix-cli.exe` — `upix.exe` + `upix-cli.exe` side by
+side, which is all `Desk::findCli` needs.
+
 **Component layer (`qml/`, all token-driven):**
 
 | File | Role |

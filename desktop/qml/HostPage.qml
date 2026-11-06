@@ -158,6 +158,7 @@ Rectangle {
                                 // The start click is otherwise invisible until
                                 // the card lands.
                                 text: !snap.cliFound ? "未找到 upix-cli"
+                                      : snap.cliCompatible === false ? "upix-cli 版本过旧"
                                       : h.running ? "正在启动主机…"
                                       : "在手机上扫码配对"
                                 font.pixelSize: 15
@@ -166,7 +167,17 @@ Rectangle {
                             }
                             Text {
                                 width: parent.width
-                                visible: snap.cliFound && !h.running
+                                visible: snap.cliFound && snap.cliCompatible === false
+                                horizontalAlignment: Text.AlignHCenter
+                                wrapMode: Text.Wrap
+                                text: "检测到 " + (snap.cliVersion || "").split(" ")[0]
+                                      + "，进度显示与配对可能异常。请升级 upix-cli 至 v0.2.0 以上。"
+                                font.pixelSize: 12
+                                color: Theme.muted
+                            }
+                            Text {
+                                width: parent.width
+                                visible: snap.cliFound && snap.cliCompatible !== false && !h.running
                                 horizontalAlignment: Text.AlignHCenter
                                 wrapMode: Text.Wrap
                                 text: "同一 Wi-Fi 下的手机扫码，即可把照片发到这台电脑。"
