@@ -3,6 +3,7 @@
 #include "config.hpp"
 #include "utils/logger.hpp"
 #include "utils/benchmark.hpp"
+#include "utils/platform.hpp"
 #include "glaze/glaze.hpp"
 #include <algorithm>
 #include <chrono>
@@ -195,7 +196,7 @@ inline auto tile_cache_path() -> std::filesystem::path {
     std::filesystem::path base = (xdg && *xdg) ? std::filesystem::path(xdg)
                                                : std::filesystem::path();
     if (base.empty()) {
-        const char* home = std::getenv("HOME");
+        const char* home = upix::user_home();
         if (!home || !*home) {
             return {};
         }

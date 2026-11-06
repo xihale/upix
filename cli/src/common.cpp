@@ -1,5 +1,6 @@
 // Shared CLI helpers — see common.hpp for the interface.
 #include "common.hpp"
+#include "utils/platform.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -106,7 +107,7 @@ auto default_models_dir() -> std::string {
     if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg) {
         return std::format("{}/upix/models", xdg);
     }
-    if (const char* home = std::getenv("HOME"); home && *home) {
+    if (const char* home = upix::user_home(); home && *home) {
         return std::format("{}/.local/share/upix/models", home);
     }
     return "./models";  // no HOME/XDG at all (degenerate): keep something usable

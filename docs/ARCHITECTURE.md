@@ -203,7 +203,7 @@ CPU 引擎。OOM 缩小 tile 后仍可能失败，不能把该分支视为保证
 | 模块 | 职责 |
 |------|------|
 | `share/utils/crypto_sodium.{hpp,cpp}` | X25519 ECDH（共享点经 BLAKE2b + domain separator 硬化成 32B 会话密钥）、Ed25519 签名/验签、`crypto_secretbox`（XSalsa20-Poly1305）seal/open |
-| `identity.{hpp,cpp}` | 持久 Ed25519 身份（`~/.upix/identity`，0600）；`TrustStore` 白名单（`~/.upix/trusted_clients`，每行一个 base64 公钥）；`fingerprint()` = sha256(pubkey) 前 8 字节大写 hex |
+| `identity.{hpp,cpp}` | 持久 Ed25519 身份（`~/.upix/identity`，0600；HOME 未设时回退 `%USERPROFILE%`，见 `utils/platform.hpp`）；`TrustStore` 白名单（`~/.upix/trusted_clients`，每行一个 base64 公钥）；`fingerprint()` = sha256(pubkey) 前 8 字节大写 hex |
 | `crypto_session.{hpp,cpp}` | `EncryptedSession` 封帧/解帧：wire = `[14B 头][nonce 24B][密文+MAC 16B]` |
 | `share/utils/network.{hpp,cpp}` | `TCPSocket`/`TCPServer`（基于 `StreamSocket` fd 基类 + I/O 锁防并发半发半收）、crc32（zlib）、本机 IP 枚举 |
 
@@ -350,7 +350,7 @@ stderr」。两档：`--json`（version/model/daemon/host 输出单份文档；h
 |------|------|
 | `main.cpp` | 薄入口：拦截 `__complete`，其余交 CLI11 树 dispatch |
 | `cli_app.cpp` | CLI11 命令树（所有子命令的选项/校验/回调） |
-| `args.hpp` / `common.{hpp,cpp}` | 参数 struct；模型目录解析（`$UPIX_MODELS_DIR` > `$XDG_DATA_HOME/upix/models`）、输出命名、日志装配等共用逻辑 |
+| `args.hpp` / `common.{hpp,cpp}` | 参数 struct；模型目录解析（`$UPIX_MODELS_DIR` > `$XDG_DATA_HOME/upix/models` > `~/.local/share/upix/models`，HOME 未设回退 `%USERPROFILE%`）、输出命名、日志装配等共用逻辑 |
 | `cmd_process.cpp` | 单图超分（daemon 委托 + 内联路径） |
 | `process_batch.cpp` | 目录模式批处理（CPU EnginePool / GPU 多引擎 prepare→SR→save 流水线） |
 | `cmd_model.cpp` + `model_downloader.{hpp,cpp}` | 模型列表/导入 + release 清单解析与下载（libcurl） |

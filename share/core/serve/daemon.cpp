@@ -1,4 +1,5 @@
 #include "core/serve/daemon.hpp"
+#include "utils/platform.hpp"
 
 #include "core/engine.hpp"
 #include "core/config.hpp"
@@ -109,7 +110,7 @@ auto default_serve_socket_path() -> std::string {
     if (cache && *cache) {
         base = cache;
     } else {
-        const char* home = std::getenv("HOME");
+        const char* home = upix::user_home();
         if (!home || !*home) return {};
         base = std::string(home) + "/.cache";
     }

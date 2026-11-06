@@ -1,6 +1,7 @@
 #pragma once
 
 #include "utils/crypto_sodium.hpp"
+#include "utils/platform.hpp"
 #include <array>
 #include <cstdint>
 #include <cstdlib>
@@ -58,11 +59,11 @@ auto base64_decode(std::string_view s) -> std::optional<std::vector<uint8_t>>;
 // Default on-disk locations for the long-term identity and trust whitelist.
 // Used by the CLI; Android stores these via its own app-private paths.
 inline auto default_identity_path() -> std::filesystem::path {
-    const char* home = std::getenv("HOME");
+    const char* home = user_home();
     return std::filesystem::path(home ? home : ".") / ".upix" / "identity";
 }
 inline auto default_trust_path() -> std::filesystem::path {
-    const char* home = std::getenv("HOME");
+    const char* home = user_home();
     return std::filesystem::path(home ? home : ".") / ".upix" / "trusted_clients";
 }
 
