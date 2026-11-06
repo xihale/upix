@@ -48,10 +48,31 @@ struct KeyHash {
     }
 };
 
-// .S/.incbin replaced: the Rust side injects the pack bytes at startup via
-// upix_engine_set_spirv_pack (include_bytes!("csrc/spirv_pack.bin")).
+// Pack bytes come from one of two sources, same parser either way:
+//  - xmake builds (Android .so, desktop/CLI C++) embed share/core/spirv_pack.S
+//    (.incbin of the packed blob) and use the symbols directly.
+//  - the Rust FFI build (crates/upix-engine-ffi) compiles with
+//    -DUPIX_SPIRV_PACK_EXTERNAL, gets no .S, and injects the bytes at startup
+//    via upix_engine_set_spirv_pack(include_bytes!("csrc/spirv_pack.bin")).
+#if !defined(UPIX_SPIRV_PACK_EXTERNAL)
+extern "C" {
+// Defined by spirv_pack.S (.incbin); C linkage, never namespaced.
+extern const unsigned char upix_spirv_pack_blob[];
+extern const unsigned char upix_spirv_pack_blob_end[];
+}
+#endif
+} // namespace
+
+namespace {
+
+#if defined(UPIX_SPIRV_PACK_EXTERNAL)
 const unsigned char* g_blob = nullptr;
 size_t g_blob_size = 0;
+#else
+const unsigned char* g_blob = upix_spirv_pack_blob;
+size_t g_blob_size =
+    static_cast<size_t>(upix_spirv_pack_blob_end - upix_spirv_pack_blob);
+#endif
 } // namespace
 
 extern "C" void upix_engine_set_spirv_pack(const unsigned char* data, size_t size) {

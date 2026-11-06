@@ -25,6 +25,25 @@ libcurl、openssl、libzip、qr-code-generator-cpp，可选 libavif）全部经
 
 ## 2. 构建速查
 
+### 2.0 Rust workspace（`rust-rewrite` 分支）
+
+```bash
+cargo build -p upix-cli          # target/debug/upix-cli
+cargo test --workspace           # 160 tests（gui 已从 workspace 排除）
+cargo test -p upix-net --test golden   # wire 金标（对 C++ 实现的逐字节断言）
+UPIX_GPU_TESTS=1 cargo test -p upix-engine-ffi -- --include-ignored  # 真机 Vulkan
+```
+
+要点：
+- `upix-engine-ffi` 的 build.rs 需要一份 linux/x86_64 的静态 ncnn——自动扫
+  `~/.xmake/packages/n/ncnn/20260526/*/manifest.txt`（`shared=false vulkan=true
+  online_spirv=false`），或用 `UPIX_NCNN_DIR` 指定。
+- 引擎源码就是 `share/core/` 的那批文件，原地编译；改引擎时 cargo 与 xmake 同时受影响。
+- clap 命令树在 `crates/upix-cli/src/{cli_def,args}.rs`，语义对照 `cli/src/`。
+- `crates/upix-gui/`（nsh）暂停中：不在 workspace members 内，自带 `rust-toolchain.toml`
+  锁 1.98.1（nsh-core 0.4.0 要求 ≥1.95）；恢复时先提 workspace 工具链再移回 members。
+- 不要提交 `share/` 的引擎源码副本——单一源是硬约束。
+
 ### 2.1 PC CLI
 
 ```bash

@@ -1,0 +1,8 @@
+# nsh-core 0.4.0 uses `if let` match guards and
+# `isolate_lowest_one`/`isolate_most_least_significant_one`, which this
+# workspace's default rustc 1.94.1 rejects. 1.98.1 is the newest toolchain
+# rustup already has installed. Deviation from CONTRACT §1 (rustc 1.94.1)
+# — reported to the integration owner: the workspace-wide default must
+# move to ≥ 1.95 to build upix-gui.
+[toolchain]
+channel = "1.98.1"

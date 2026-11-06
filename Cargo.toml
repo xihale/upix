@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# upix-gui (nsh) needs rustc ≥ 1.95 (nsh-core 0.4.0). The repo toolchain
+# file pins 1.98.1, which rustup already has; do not build this workspace
+# with the older 1.94.1 default.
 
 [workspace.package]
 version = "0.3.0"

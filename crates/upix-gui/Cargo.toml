@@ -2,7 +2,41 @@
 name = "upix-gui"
 version.workspace = true
 edition.workspace = true
+publish = false
 
-# NSH app — dependency set comes from the `nsh init --template rust` template
-# (pinned to the installed nsh version). The GUI agent owns this manifest.
+# NSH app (docs/rewrite/CONTRACT.md §8). nsh v0.4.0, locked: every nsh-* crate
+# must stay at the CLI's version — a mismatch is a build problem.
 [dependencies]
+nsh-core = "=0.4.0"
+nsh-base = "=0.4.0"
+env_logger.workspace = true
+log.workspace = true
+upix-core.workspace = true
+upix-img.workspace = true
+upix-net.workspace = true
+upix-host.workspace = true
+upix-engine-ffi = { workspace = true, optional = true }
+
+# QR pairing card → PNG (grayscale) → `data:` URI for the image element.
+qrcode = { version = "0.14", default-features = false }
+base64 = "0.22"
+png = "0.17"
+sha2 = "0.10"
+# JPEG re-encode for the mock backend (same crate family the img crate pins).
+jpeg-encoder = "0.6"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nsh-platform-linux = { version = "=0.4.0", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos = { version = "=0.4.0", default-features = false }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+nsh-platform-windows = { version = "=0.4.0", default-features = false }
+
+# `integration` (default): real upix-core / upix-img / upix-host / ncnn
+# calls. `--no-default-features` keeps MockBackend / MockHostService for the
+# pick → progress → compare path without a model or a C++ engine.
+[features]
+default = ["integration"]
+integration = ["dep:upix-engine-ffi"]

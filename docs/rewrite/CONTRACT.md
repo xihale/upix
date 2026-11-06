@@ -228,6 +228,12 @@ GPU 路径测试 `#[ignore]`（`UPIX_GPU_TESTS=1` 时跑）。测试模型缺失
 
 ## 8. §gui
 
+> **状态：进行中（2026-11-06 恢复）。** `crates/upix-gui` 已回到 workspace
+> members。工具链是仓库根 `rust-toolchain.toml` 的 1.98.1（nsh-core 0.4.0
+> 需要 rustc ≥ 1.95）。默认 feature `integration` 直连 core/img/host/engine-ffi：
+> 本地放大、Coordinator、`modelctl` 下载。`--no-default-features` 仍走
+> MockBackend，供无模型时的选图→进度→对比。
+
 **框架**：nsh v0.4.0（锁 `=0.4.0`），纯 Rust 模式（无 TSX/QuickJS，参照 `examples/gallery-rs`）。
 先装 CLI（`curl -fsSL https://nsh.dev/install.sh | sh`），`nsh init /tmp/nsh-probe --template rust`
 读模板拿到确切依赖名/版本写入 `crates/upix-gui/Cargo.toml`；再 `npx skills add longbridge/nsh`

@@ -54,6 +54,33 @@ xmake 工程、同一套编译选项——编进 `libupix-native.so`，保证两
 **模型不随二进制分发**：CLI 与 App 都从 [models release](https://github.com/xihale/upix/releases/tag/models)
 按需下载（`upix model download` / App 模型页），或导入本地 `.param`/`.bin`。
 
+### 0.1 Rust 实现（`rust-rewrite` 分支）
+
+PC 侧正在整体迁到 Rust：`crates/` 是 cargo workspace，**唯一 C++ 岛**是引擎。
+
+| crate | 角色 | 对应旧实现 |
+|------|------|-----------|
+| `upix-core` | tile 管线/优化器/引擎池/模型管理/配置 | `share/core/`（除引擎本体） |
+| `upix-img` | png/jpeg/webp/avif(dlopen) 编解码、EXIF 旋正、SR marker | `share/utils/image*`、`sr_marker*` |
+| `upix-net` | 帧协议、X25519/Ed25519/secretbox 会话、身份与信任库、TCP/UDS | `share/core/distributed/`、`share/utils/{network,crypto}*` |
+| `upix-host` | coordinator（配对门/取消/分块提交/模型运维）+ 热引擎 daemon | `share/core/distributed/coordinator.cpp`、`share/core/serve/` |
+| `upix-engine-ffi` | ncnn/Vulkan 引擎的 C ABI + 安全包装 | `share/core/ncnn_*`、`vulkan_shaders`、`spirv_pack` |
+| `upix-cli` | clap 命令树、daemon 委托、completions | `cli/` |
+| `upix-gui` | nsh 界面（**暂停**，workspace 排除） | `apps/`、`desktop/` 的一部分 |
+
+**单一引擎源**：`share/core/` 的引擎源码不复制——xmake 与 cargo 各自原样编译
+同一批文件。差别只有 SPIR-V pack：xmake 用 `share/core/spirv_pack.S`（`.incbin`），
+cargo 构建定义 `UPIX_SPIRV_PACK_EXTERNAL` 由 Rust 侧运行时注入
+（`crates/upix-engine-ffi/csrc/spirv_pack.bin`）。
+
+**等价性是证据**：wire 协议/身份/帧布局由 C++ 实现导出的金标向量逐字节断言
+（`crates/upix-net/tests/golden/`）；真实放大在 CPU、GPU、daemon 三条路径与 C++
+CLI 输出逐像素一致（CPU vs GPU 自身的 ±222 差值来自 ncnn 后端，两侧一致）。
+
+**过渡态**：GUI 暂缓期间，旧 C++ 树（`share/ cli/ apps/ desktop/`）保持可构建，
+继续承载 Android 与桌面工作台；`share/` 中被 Rust 取代的子系统在 GUI 迁移完成后才删除。
+
+
 ---
 
 ## 1. 子系统划分

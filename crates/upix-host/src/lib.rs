@@ -18,7 +18,8 @@ pub use coordinator::{
 };
 pub use pairing::{build_connection_card, pairing_qr_payload, ConnectionCard};
 pub use serve::{
-    default_serve_socket_path, ensure_running, request, run_daemon, run_daemon_fg, status, stop,
+    default_serve_socket_path, ensure_running, request, run_daemon, run_daemon_fg, status,
+    stop,
     write_pid_file, DaemonStatus, ServeConfig, ServeDaemonHandle, ServeDevice, ServeOutcome,
     ServeRequestArgs, DEFAULT_IDLE_TIMEOUT_S,
 };

@@ -2,6 +2,30 @@
 
 Upix is an image super-resolution system with a standalone CLI (and Android app) plus encrypted LAN offloading: the phone pairs with a PC and delegates the GPU work. It uses modern C++ (C++23), ncnn for inference, and supports popular image formats via libpng, libjpeg, libwebp, and (optionally) libavif.
 
+## Rust workspace (`rust-rewrite` branch)
+
+The PC implementation is being rewritten in Rust: `crates/` is a cargo workspace
+(`upix-cli`, `upix-core`, `upix-img`, `upix-net`, `upix-host`, `upix-engine-ffi`)
+that shares one engine: the ncnn/Vulkan engine stays C++ and is compiled in
+place from `share/core/` behind a C ABI (`upix-engine-ffi`), so the same sources
+still feed the xmake builds. Nothing else is C++.
+
+```bash
+cargo build -p upix-cli                              # -> target/debug/upix-cli
+cargo test --workspace                               # 160 tests
+./target/debug/upix-cli input.png -m NomosUni-SPAN-x2 --cpu --no-daemon
+```
+
+Parity is pinned by evidence, not intent: the wire protocol, identity files and
+frame layout are asserted byte-for-byte against vectors dumped from the C++
+implementation (`crates/upix-net/tests/golden/`), and a real upscale is
+pixel-identical to the C++ CLI on CPU, GPU and daemon paths.
+
+Status: the CLI, core pipeline, codecs, protocol and PC-side daemon/coordinator
+are ported. The GUI (nsh) is paused — `crates/upix-gui/` is excluded from the
+workspace, and the legacy C++ tree (`share/ cli/ apps/ desktop/`) still builds
+the Android app and desktop workbench as before.
+
 ## Contents
 
 **[Features](#features) · [Build](#build) · [Usage](#usage) · [Performance Notes](#performance-notes) · [Configuration File](#configuration-file) · [Troubleshooting](#troubleshooting) · [Development](#development) · [License](#license)**

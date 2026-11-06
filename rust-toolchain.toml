@@ -1,0 +1,4 @@
+# nsh-core 0.4.0 (crates/upix-gui) needs rustc >= 1.95.
+# 1.98.1 is already installed via rustup.
+[toolchain]
+channel = "1.98.1"

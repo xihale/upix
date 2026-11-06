@@ -1,10 +1,11 @@
 //! Builds the workspace's only C++ FFI island: the ncnn/Vulkan engine subset
-//! (git-mv'd from share/ into csrc/upix/) plus the extern "C" shim.
+//! plus the extern "C" shim.
 //!
-//! Engine sources are compiled verbatim — no semantic edits. The share/ tree
-//! still supplies `engine.hpp`, `tile_processor.{hpp,cpp}`, `model_graph.{hpp,cpp}`
-//! and `utils/benchmark.{hpp,cpp}` at build time (the engine's declared deps);
-//! see CONTRACT §7 and the delivery report for the cutover note.
+//! The engine sources stay in `share/` and are compiled in place, unmodified:
+//! the same files feed the xmake builds (Android .so, desktop) and this crate,
+//! so there is exactly one copy. The only engine-adjacent difference is the
+//! SPIR-V pack source: xmake embeds `share/core/spirv_pack.S`, while this build
+//! defines UPIX_SPIRV_PACK_EXTERNAL and injects csrc/spirv_pack.bin at startup.
 
 use std::env;
 use std::fs;
@@ -21,12 +22,7 @@ fn main() {
         .to_path_buf();
     let share = workspace.join("share");
 
-    for dir in [
-        csrc.join("upix/core"),
-        csrc.join("upix/utils"),
-        share.join("core"),
-        share.join("utils"),
-    ] {
+    for dir in [csrc.clone(), share.join("core"), share.join("utils")] {
         println!("cargo:rerun-if-changed={}", dir.display());
     }
 
@@ -60,17 +56,15 @@ fn main() {
 
     // --- compile ------------------------------------------------------------
     // Engine sources must stay pristine: they compile against
-    //   -I share      -> engine.hpp, tile_processor*, model_graph*, benchmark*
-    //   -I csrc/upix  -> moved tile_types/expected/logger + engine subset headers
-    // Include order matters: moved csrc/upix/core/tile_types.hpp must shadow the
-    // deleted share copy only via fallthrough, never the reverse.
+    //   -I share      -> engine.hpp, tile_types.hpp, tile_processor*,
+    //                    model_graph*, utils/{expected,logger,benchmark}
+    //   -I csrc       -> shim.h
     let mut build = cc::Build::new();
     build
         .cpp(true)
         .flag_if_supported("-std=c++23")
+        .define("UPIX_SPIRV_PACK_EXTERNAL", None)
         .include(&csrc)
-        .include(&csrc.join("upix"))
-        .include(&csrc.join("upix/core"))
         .include(&share)
         .include(&share.join("core"))
         .include(&ncnn_include)
@@ -78,10 +72,10 @@ fn main() {
 
     let sources = [
         csrc.join("shim.cpp"),
-        csrc.join("upix/core/ncnn_engine.cpp"),
-        csrc.join("upix/core/ncnn_gpu_init.cpp"),
-        csrc.join("upix/core/ncnn_gpu_pipeline.cpp"),
-        csrc.join("upix/core/spirv_pack.cpp"),
+        share.join("core/ncnn_engine.cpp"),
+        share.join("core/ncnn_gpu_init.cpp"),
+        share.join("core/ncnn_gpu_pipeline.cpp"),
+        share.join("core/spirv_pack.cpp"),
         share.join("core/tile_processor.cpp"),
         share.join("core/model_graph.cpp"),
         share.join("utils/benchmark.cpp"),
