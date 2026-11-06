@@ -16,6 +16,10 @@ sha2 = "0.10"
 crc32fast = "1"
 base64 = "0.22"
 if-addrs = "0.13"
+libc = "0.2"
+zeroize = "1"
 
 [dev-dependencies]
+serde.workspace = true
 serde_json.workspace = true
+tempfile = "3"

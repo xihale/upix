@@ -9,3 +9,13 @@ upix-net.workspace = true
 upix-img.workspace = true
 thiserror.workspace = true
 log.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+libc = "0.2"
+sha2 = "0.10"
+base64 = "0.22"
+ureq = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+png = "0.18"

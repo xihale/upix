@@ -48,10 +48,18 @@ struct KeyHash {
     }
 };
 
-extern "C" {
-extern const unsigned char upix_spirv_pack_blob[];
-extern const unsigned char upix_spirv_pack_blob_end[];
+// .S/.incbin replaced: the Rust side injects the pack bytes at startup via
+// upix_engine_set_spirv_pack (include_bytes!("csrc/spirv_pack.bin")).
+const unsigned char* g_blob = nullptr;
+size_t g_blob_size = 0;
+} // namespace
+
+extern "C" void upix_engine_set_spirv_pack(const unsigned char* data, size_t size) {
+    g_blob = data;
+    g_blob_size = size;
 }
+
+namespace {
 
 std::vector<unsigned char> g_raw;
 std::unordered_map<Key, std::span<const uint32_t>, KeyHash> g_index;
@@ -122,9 +130,12 @@ bool load_embedded() {
         return !g_index.empty();
     }
     g_loaded = true;
-    const auto* blob = upix_spirv_pack_blob;
-    const size_t blob_size =
-        static_cast<size_t>(upix_spirv_pack_blob_end - upix_spirv_pack_blob);
+    if (g_blob == nullptr) {
+        LOG_WARNING("Engine", "SPIR-V pack not injected by host");
+        return false;
+    }
+    const unsigned char* blob = g_blob;
+    const size_t blob_size = g_blob_size;
     if (!inflate_if_needed(blob, blob_size) ||
         !parse_pack(g_raw.data(), g_raw.size())) {
         LOG_WARNING("Engine", "SPIR-V pack is empty or corrupt");
