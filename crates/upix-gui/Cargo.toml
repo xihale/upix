@@ -1,0 +1,8 @@
+[package]
+name = "upix-gui"
+version.workspace = true
+edition.workspace = true
+
+# NSH app — dependency set comes from the `nsh init --template rust` template
+# (pinned to the installed nsh version). The GUI agent owns this manifest.
+[dependencies]

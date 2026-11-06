@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+
+[workspace.dependencies]
+upix-core = { path = "crates/upix-core" }
+upix-img = { path = "crates/upix-img" }
+upix-net = { path = "crates/upix-net" }
+upix-host = { path = "crates/upix-host" }
+upix-engine-ffi = { path = "crates/upix-engine-ffi" }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+anyhow = "1"
+env_logger = "0.11"

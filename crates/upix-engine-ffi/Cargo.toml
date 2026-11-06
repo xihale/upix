@@ -1,0 +1,12 @@
+[package]
+name = "upix-engine-ffi"
+version.workspace = true
+edition.workspace = true
+links = "upix_engine"
+
+[dependencies]
+upix-core.workspace = true
+log.workspace = true
+
+[build-dependencies]
+cc = "1"

@@ -1,0 +1,11 @@
+[package]
+name = "upix-host"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+upix-core.workspace = true
+upix-net.workspace = true
+upix-img.workspace = true
+thiserror.workspace = true
+log.workspace = true
