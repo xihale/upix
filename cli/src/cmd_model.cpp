@@ -15,10 +15,10 @@
 #include "args.hpp"
 #include "cli_app.hpp"
 #include "common.hpp"  // default_models_dir
-#include "model_downloader.hpp"
+#include "core/model_downloader.hpp"
 #include "utils/logger.hpp"
-#include "core/engine_setup.hpp"  // probe_model_sanity
 #include "core/model_manager.hpp"
+#include "core/model_install.hpp"
 #include "core/model_metadata.hpp"
 
 namespace fs = std::filesystem;
@@ -27,8 +27,8 @@ namespace {
 
 // Case/dash-insensitive name match against the manifest (same normalization
 // idea as ModelManager::get_model).
-auto find_remote(const std::vector<upix::cli::RemoteModel>& models,
-                 const std::string& name) -> const upix::cli::RemoteModel* {
+auto find_remote(const std::vector<upix::RemoteModel>& models,
+                 const std::string& name) -> const upix::RemoteModel* {
     auto norm = [](std::string s) {
         for (char& c : s) {
             c = (c == '_' || c == ' ') ? '-' : static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
@@ -121,7 +121,7 @@ int cmd_model_list(const args::Model& a) {
 int cmd_model_list_remote(const args::Model& a) {
     if (a.json) enable_machine_output();
     std::string error;
-    auto remote = upix::cli::fetch_remote_models(a.repo, error);
+    auto remote = upix::fetch_remote_models(a.repo, error);
     if (!remote) {
         LOG_ERROR("Model", "Failed to fetch remote models: {}", error);
         return 1;
@@ -129,7 +129,7 @@ int cmd_model_list_remote(const args::Model& a) {
 
     if (a.json) {
         std::string json = std::format("{{\"manifestUrl\":\"{}\",\"remote\":[",
-                                       json_escape(upix::cli::manifest_url(a.repo)));
+                                       json_escape(upix::manifest_url(a.repo)));
         bool first = true;
         for (const auto& m : *remote) {
             if (!first) json += ",";
@@ -146,7 +146,7 @@ int cmd_model_list_remote(const args::Model& a) {
     }
 
     std::println("Models available in the release ({}):",
-                 upix::cli::manifest_url(a.repo));
+                 upix::manifest_url(a.repo));
     if (remote->empty()) {
         std::println("  (manifest is empty)");
     }
@@ -167,7 +167,7 @@ int cmd_model_download(const args::Model& a) {
     }
 
     std::string error;
-    auto remote = upix::cli::fetch_remote_models(a.repo, error);
+    auto remote = upix::fetch_remote_models(a.repo, error);
     if (!remote) {
         LOG_ERROR("Model", "Failed to fetch remote models: {}", error);
         return 1;
@@ -194,8 +194,8 @@ int cmd_model_download(const args::Model& a) {
             std::fflush(stdout);
         }
         auto last_pct = -1;
-        auto result = upix::cli::download_model(*m, dir.string(),
-            [&](const upix::cli::DownloadProgress& p) {
+        auto result = upix::download_model(*m, dir.string(),
+            [&](const upix::DownloadProgress& p) {
                 if (p.total > 0) {
                     int pct = static_cast<int>(p.downloaded * 100 / p.total);
                     if (pct != last_pct && pct % 10 == 0) {
@@ -232,9 +232,9 @@ int cmd_model_download(const args::Model& a) {
     return failures == 0 ? 0 : 1;
 }
 
-// Import local .param/.bin files (user-provided models): each file is copied
-// into the models dir; pairs are matched by stem. A .zip is copied as-is for
-// later manual extraction? No — keep it simple: only .param/.bin.
+// Import local .param/.bin files (user-provided models) — pair matching,
+// staged install and rollback live in share (core/model_install.cpp); this
+// command keeps only the human/JSON presentation.
 int cmd_model_import(const args::Model& a) {
     if (a.json) enable_machine_output();
     if (a.files.empty()) {
@@ -243,179 +243,26 @@ int cmd_model_import(const args::Model& a) {
     }
 
     fs::path dir = a.models_dir.empty() ? fs::path(default_models_dir()) : fs::path(a.models_dir);
-    std::error_code ec;
-    fs::create_directories(dir, ec);
-    if (ec) {
-        LOG_ERROR("Model", "Cannot create models directory {}: {}", dir.string(), ec.message());
-        return 1;
-    }
-
-    int failures = 0;
-    std::string first_error;
-    std::vector<std::string> imported;
-    std::vector<fs::path> params, bins;
-    for (const auto& raw : a.files) {
-        fs::path src(raw);
-        std::string ext = src.extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        if (ext == ".param") params.push_back(src);
-        else if (ext == ".bin") bins.push_back(src);
-        else {
-            LOG_ERROR("Model", "Unsupported file type (expected .param/.bin): {}", raw);
-            if (first_error.empty()) first_error = std::format("Unsupported file type: {}", raw);
-            failures++;
-        }
-    }
-
-    // Match pairs by stem.
-    for (const auto& param : params) {
-        auto it = std::find_if(bins.begin(), bins.end(), [&](const fs::path& b) {
-            return b.stem() == param.stem();
-        });
-        if (it == bins.end()) {
-            LOG_ERROR("Model", "No matching .bin for {}", param.string());
-            if (first_error.empty()) first_error = std::format("No matching .bin for {}", param.string());
-            failures++;
-            continue;
-        }
-        const fs::path dst_param = dir / param.filename();
-        const fs::path dst_bin = dir / it->filename();
-        // Refuse destinations that are not regular files (a directory, fifo, …):
-        // the install renames over them, which either fails halfway through the
-        // pair or would move the user's own entry aside. A symlink to a regular
-        // file is accepted — that is how a model name is pointed at a copy.
-        auto inspect_destination = [&](const fs::path& path, bool& present) -> bool {
-            std::error_code st_ec;
-            const auto status = fs::symlink_status(path, st_ec);
-            if (status.type() == fs::file_type::not_found &&
-                (!st_ec || st_ec == std::errc::no_such_file_or_directory)) {
-                present = false;
-                return true;
-            }
-            if (st_ec) return false;
-            present = true;
-            if (status.type() == fs::file_type::regular) return true;
-            if (status.type() == fs::file_type::symlink) {
-                std::error_code target_ec;
-                const auto target = fs::status(path, target_ec);
-                return !target_ec && target.type() == fs::file_type::regular;
-            }
-            return false;
-        };
-        bool had_param = false;
-        bool had_bin = false;
-        ec.clear();
-        if (!inspect_destination(dst_param, had_param) ||
-            !inspect_destination(dst_bin, had_bin)) {
-            LOG_ERROR("Model", "Destination is not a regular file: {}",
-                      (!had_param ? dst_param : dst_bin).string());
-            if (first_error.empty()) {
-                first_error = std::format("Destination is not a regular file: {}",
-                                          dst_param.string());
-            }
-            failures++;
-            continue;
-        }
-        const bool replacing = had_param || had_bin;
-        // Stage both copies beside their destinations, back the previous pair
-        // up, then rename into place. A failed or partial copy must never leave
-        // a .param without its matching .bin (the scanner would list a model
-        // that cannot load), and a failure after the first rename must put the
-        // previous pair back.
-        const fs::path tmp_param =
-            dir / (param.filename().string() + ".upix-import");
-        const fs::path tmp_bin = dir / (it->filename().string() + ".upix-import");
-        const fs::path bak_param =
-            dir / (param.filename().string() + ".upix-backup");
-        const fs::path bak_bin = dir / (it->filename().string() + ".upix-backup");
-        bool saved_param = false;
-        bool saved_bin = false;
-        bool installed_param = false;
-        bool installed_bin = false;
-        bool ok = true;
-        fs::copy_file(param, tmp_param, fs::copy_options::overwrite_existing, ec);
-        if (!ec) {
-            fs::copy_file(*it, tmp_bin, fs::copy_options::overwrite_existing, ec);
-        }
-        if (ec) {
-            ok = false;
-        }
-        if (ok && had_param) {
-            fs::rename(dst_param, bak_param, ec);
-            saved_param = !ec;
-            ok = saved_param;
-        }
-        if (ok && had_bin) {
-            fs::rename(dst_bin, bak_bin, ec);
-            saved_bin = !ec;
-            ok = saved_bin;
-        }
-        if (ok) {
-            fs::rename(tmp_param, dst_param, ec);
-            installed_param = !ec;
-            ok = installed_param;
-        }
-        if (ok) {
-            fs::rename(tmp_bin, dst_bin, ec);
-            installed_bin = !ec;
-            ok = installed_bin;
-        }
-        if (!ok) {
-            std::error_code rm_ec;
-            if (installed_param) fs::remove(dst_param, rm_ec);
-            if (installed_bin) fs::remove(dst_bin, rm_ec);
-            fs::remove(tmp_param, rm_ec);
-            fs::remove(tmp_bin, rm_ec);
-            // Restore only what this attempt moved aside.
-            if (saved_param) fs::rename(bak_param, dst_param, rm_ec);
-            if (saved_bin) fs::rename(bak_bin, dst_bin, rm_ec);
-            LOG_ERROR("Model", "Import failed: {}: {}", param.string(), ec.message());
-            if (first_error.empty()) first_error = std::format("Import failed: {}", param.string());
-            failures++;
-            continue;
-        }
-        {
-            std::error_code rm_ec;
-            if (saved_param) fs::remove(bak_param, rm_ec);
-            if (saved_bin) fs::remove(bak_bin, rm_ec);
-        }
-        if (replacing) {
-            LOG_WARNING("Model", "Replaced existing model files for {}",
-                        param.stem().string());
-        }
-        std::println("Imported {}\n  {}\n  {}", param.stem().string(),
-                     dst_param.string(), dst_bin.string());
-        imported.push_back(param.stem().string());
-        // One synthetic forward against a throwaway CPU engine: non-finite
-        // output = conversion mis-executes on this ncnn build. Warn-only —
-        // the import stands, the user decides.
-        if (auto warning = upix::probe_model_sanity(dst_param, dst_bin)) {
-            LOG_WARNING("Model", "{}: {}", param.stem().string(), *warning);
-        }
-        bins.erase(it);
-    }
-    for (const auto& b : bins) {
-        LOG_ERROR("Model", "No matching .param for {}", b.string());
-        if (first_error.empty()) first_error = std::format("No matching .param for {}", b.string());
-        failures++;
+    auto result = upix::import_model_files(a.files, dir);
+    for (const auto& warning : result.warnings) {
+        LOG_WARNING("Model", "{}", warning);
     }
     if (a.json) {
         std::string json;
-        if (failures == 0) {
+        if (result.ok) {
             json = R"({"ok":true,"imported":[)";
-            for (size_t i = 0; i < imported.size(); ++i) {
+            for (size_t i = 0; i < result.imported.size(); ++i) {
                 if (i > 0) json += ",";
-                json += std::format(R"("{}")", json_escape(imported[i]));
+                json += std::format(R"("{}")", json_escape(result.imported[i]));
             }
             json += "]}";
         } else {
             json = std::format(R"({{"ok":false,"error":"{}"}})",
-                               json_escape(first_error));
+                               json_escape(result.error));
         }
         emit_json_line(json);
     }
-    return failures == 0 ? 0 : 1;
+    return result.ok ? 0 : 1;
 }
 
 }  // namespace

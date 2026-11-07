@@ -1,6 +1,6 @@
 // See model_downloader.hpp. libcurl for HTTP(S), glaze for the manifest JSON,
 // libsodium for sha256, libzip for extraction.
-#include "model_downloader.hpp"
+#include "core/model_downloader.hpp"
 
 #include <algorithm>
 #include <array>
@@ -20,7 +20,7 @@
 
 namespace fs = std::filesystem;
 
-namespace upix::cli {
+namespace upix {
 namespace {
 
 // ── libcurl helpers ─────────────────────────────────────────────────────────
@@ -571,4 +571,4 @@ auto download_model(const RemoteModel& model,
     return res;
 }
 
-}  // namespace upix::cli
+}  // namespace upix

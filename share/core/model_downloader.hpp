@@ -17,7 +17,7 @@
 #include <string_view>
 #include <vector>
 
-namespace upix::cli {
+namespace upix {
 
 struct RemoteModel {
     std::string name;
@@ -67,4 +67,4 @@ auto download_model(const RemoteModel& model,
 // Build the manifest URL for a repo ("owner/name" or "" for the default).
 auto manifest_url(const std::string& repo) -> std::string;
 
-}  // namespace upix::cli
+}  // namespace upix

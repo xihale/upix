@@ -36,7 +36,6 @@ target("upix-cli")
         "src/cli_app.cpp",
         "src/common.cpp",
         "src/cmd_model.cpp",
-        "src/model_downloader.cpp",
         "src/cmd_host.cpp",
         "src/cmd_daemon.cpp",
         "src/cmd_completions.cpp",
@@ -71,12 +70,12 @@ local HOST_TEST_SPECS = {
     test_exif = {deps = {"upix-core"}, packages = TEST_CODEC_PKGS, avif = true, syslinks = {"dl"}},
     test_gpu_precision = {packages = {"ncnn~runtime"}, includedirs = {"$(projectdir)/share"}},
     test_model_downloader = {
-        -- src/model_downloader.cpp compiles in directly; openssl is the
-        -- independent sha256 oracle its libsodium implementation is
+        -- share/core/model_downloader.cpp compiles in directly; openssl is
+        -- the independent sha256 oracle its libsodium implementation is
         -- cross-checked against (see root xmake.lua).
         packages = {"libcurl", "openssl", "libzip", "glaze", "libsodium"},
-        includedirs = {"$(projectdir)/cli/src"},
-        extra_files = {"$(projectdir)/cli/src/model_downloader.cpp"},
+        includedirs = {"$(projectdir)/share"},
+        extra_files = {"$(projectdir)/share/core/model_downloader.cpp"},
     },
     test_processing_config = {
         deps = {"upix-core"},

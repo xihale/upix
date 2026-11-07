@@ -35,9 +35,11 @@
 ```
 
 桌面端 `desktop/` 是一等公民前端（docs/SPEC-frontends.md）：单文件放大走 share 的
-serve daemon 协议（进程内直调，仅链接薄客户端 TU，不链引擎）；模型家族分组直接消费
-`share/core/model_families.hpp`；目录/CPU/auto-tile/Windows 及 daemon 不在线时回退
-调用同一份 `upix-cli`（阶段 2 将移除该依赖）。
+serve daemon 协议（进程内直调，仅链接薄客户端 TU，不链引擎）；目录批处理、模型管理
+（列表/远端清单/下载）、daemon 监管（自执行 `--serve-daemon` 模式 + pid/控制端直调）、
+host 配对（`Coordinator` 进程内运行）全部直调 share 类——Linux 桌面不再依赖
+`upix-cli`（阶段 2 已落地，2026-11-07；Windows 保留 QProcess+CLI 桥，TRANSITIONAL）；
+模型家族分组直接消费 `share/core/model_families.hpp`。
 
 | 目录 | 角色 | 构建 | 标准 |
 |------|------|------|------|
@@ -451,11 +453,16 @@ UI → ProcessingViewModel → NativeImageProcessingRepository
 Qt Quick 壳（组件层、token、动效见 [desktop/DESIGN.md](../desktop/DESIGN.md)）。
 `Desk` 持一份 QVariantMap 快照，QML 把渲染当纯函数；所有命令是 Q_INVOKABLE，
 绝不阻塞 GUI 线程。与 share 的关系由 [docs/SPEC-frontends.md](SPEC-frontends.md)
-约束（前端一律平等），现状：单文件放大经 serve daemon 协议进程内直调
-（`ServeJob` 工作线程 + 机器事件 JSON 回灌 `handleJobLine`），分组表来自
-`share/core/model_families.hpp`；目录/模型管理/daemon 监管/host 仍调 CLI
-（阶段 2 触点清单见 SPEC §2）。测试：`tst_desk_jobs`（含假 daemon 三线型与
-分组 golden）与 `tst_compare_drag`（真手势）。
+约束（前端一律平等），现状（阶段 2 已落地，2026-11-07，Linux）：单文件放大经
+serve daemon 协议进程内直调（`ServeJob` 工作线程 + 机器事件 JSON 回灌
+`handleJobLine`）；目录批处理进程内直调 `run_batch`；模型列表/远端清单/下载直调
+`ModelManager`/`download_model`；daemon 监管 = 自执行 `--serve-daemon` 模式
+（`fork+setsid+execv`，源为 `/proc/self/exe`，pid/stop/控制端直调）；host =
+`Coordinator` 在 worker 线程内运行 + `build_connection_card` 产 v2 卡。分组表来自
+`share/core/model_families.hpp`。desktop 不再依赖兄弟 `upix-cli`（Windows 保留
+QProcess+CLI 桥，`Q_OS_WIN` 隔离，TRANSITIONAL）。测试：`tst_desk_jobs`（假
+daemon 五线型、队列/快照/取消/失败语义、目录批真核跑通）与 `tst_compare_drag`
+（真手势）。
 
 ## 6. 构建系统
 

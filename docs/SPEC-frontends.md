@@ -42,28 +42,38 @@
 
 | 触点 | 现状 | 目标阶段 |
 |---|---|---|
-| `job`(单文件) | spawn CLI + UPIX_PROGRESS JSON | **阶段1**:daemon 协议(本文实现) |
-| `job`(目录) | spawn CLI 批处理 | 阶段2(ServeRequest 无目录语义;CLI 保留) |
-| `models`/`remote`/`import` | spawn CLI JSON 文档 | 阶段2(ModelManager 直调) |
-| `download`/`dstatus` | spawn CLI + JSON 行 | 阶段2(download_model 直调) |
-| `daemon`(start/stop/status) | spawn CLI | 阶段2(ServeDaemon/客户端直调) |
-| `host`(配对协调) | spawn CLI + stdin 应答 | 阶段2(coordinator 直调) |
-| `version`(门禁) | spawn CLI | 随阶段2 一起消失 |
-| 家族分组表 | `Grouping.js` 私有 | **阶段0**:`model_families.hpp`(本文实现) |
-| SR 标记执行点 | 仅 CLI 调用方 | **阶段0**:daemon 强制(本文实现) |
+| `job`(单文件) | daemon 协议委派(AI_UNIX 平台、GPU、固定 tile、非 auto-tile) | **已完成**(阶段1) |
+| `job`(目录) | share `run_batch` 进程内直调(真核,含 SR 跳过) | **已完成**(阶段2,2026-11-07) |
+| `models`/`remote`/`import` | share `ModelManager` 直调 | **已完成**(阶段2) |
+| `download`/`dstatus` | share `download_model` + 进度回调直调 | **已完成**(阶段2) |
+| `daemon`(start/stop/status) | 自执行 `--serve-daemon` 模式 + pid/控制端直调 | **已完成**(阶段2) |
+| `host`(配对协调) | share `Coordinator` 进程内直调(worker 线程) | **已完成**(阶段2) |
+| `version`(门禁) | 已删除(同机同版,S5) | **已删除**(阶段2) |
+| 家族分组表 | `model_families.hpp` 单一来源 | **已完成**(阶段0) |
+| SR 标记执行点 | daemon 强制执行 | **已完成**(阶段0) |
+| Windows 桥 | QProcess + CLI(上表触点在该平台保留) | TRANSITIONAL |
 
 ## 3. 阶段与验收
 
 - **阶段0(本次)**:S3/S4 落地——`model_families.hpp` 单一来源,desktop 消费;
   serve 协议加 `force`/`skipped`,daemon 执行 marker 跳过。
   验收:`tst_desk_jobs` 全绿(含新分组 golden 与 daemon 路径测试);xmake 构建 CLI 通过。
-- **阶段1(本次)**:desktop 单文件 job 走 daemon 协议(AI_UNIX 平台、GPU、固定 tile、
+- **阶段1(已落地,2026-11-06)**:desktop 单文件 job 走 daemon 协议(AI_UNIX 平台、GPU、固定 tile、
   非 auto-tile 时);目录/Windows/daemon 不在线时回退 QProcess(TRANSITIONAL,
   由假 CLI 测试覆盖)。
   验收:进度/取消/跳过/出错四条路径都有测试;实机跑通一次委派 upscale。
-- **阶段2(未排期)**:模型管理、daemon 监管、host 全部直调 share 类;
-  兄弟 `upix-cli` 依赖消失;`findCli`/`kMinCliVersion` 删除。
-  验收:desktop 安装包不含 CLI 仍全功能(Windows 除外,见下)。
+- **阶段2(已落地,Linux 2026-11-07)**:模型管理、daemon 监管、host、目录批全部
+  直调 share 类;Linux/桌面构建不再依赖兄弟 `upix-cli`;
+  `findCli`/`kMinCliVersion`/版本门禁已删除(同机同版,S5)。
+  daemon 监管 = desktop 以 `--serve-daemon` 模式自执行(fork+setsid+execv,
+  源为 `/proc/self/exe`),pid/stop/控制端均直调 share;
+  host = `Coordinator` 在 worker 线程内运行,`build_connection_card` 产 v2 卡。
+  验收:desktop 不含 CLI 仍全功能(单文件委派、目录直批、模型列表/下载、
+  daemon 启停、host 卡片,全部实测);测试套全绿(队列/快照/取消/失败/
+  目录批真核跑通)。
+  **Windows 例外**:AF_UNIX 不可用,Windows 桌面保留阶段0 桥(QProcess+CLI,
+  `Desk::spawnCliJob` 等以 `Q_OS_WIN` 隔离),测试相应分支/SKIP,待 Windows
+  的进程内方案单独决策(命名管道或同一套 share 类的 WinSock AF_UNIX)。
 - **Windows 说明**:AF_UNIX 不可用,阶段1 委派路径编译隔离,Windows 桌面按
   阶段0 形态(QProcess)运行,直到阶段2 决定 Windows 的进程内方案。
 
@@ -79,6 +89,7 @@ desktop 与 daemon 同仓发布,但用户可能跑着旧 daemon、装了新桌�
 ## 5. 待办清单(不在本次范围)
 
 - [ ] Android `ModelScenes.kt` 改为经 JNI 取 `model_metadata`(删 Kotlin 副本)。
-- [ ] 阶段2 全部触点(§2 表)。
+- [ ] Windows 桥的进程内方案(命名管道 / WinSock AF_UNIX + 同一套 share 类)。
+- [x] 阶段2 全部触点(§2 表,Linux;2026-11-07)。
 - [ ] CLI 的 UPIX_PROGRESS JSON 发射点迁移到 share 的进度事件结构,
       machine schema 获得唯一权威定义。

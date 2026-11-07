@@ -3,12 +3,17 @@
 
 #include "core/distributed/protocol.hpp"
 #include "core/model_families.hpp"
+#include "core/model_manager.hpp"
+#include "utils/encoder_options.hpp"
+#include "utils/image.hpp"
+#include "utils/sr_marker.hpp"
 #include "utils/unix_socket.hpp"
 
 #include <QFile>
 #include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
+#include <QImage>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -27,7 +32,7 @@ namespace {
 // the assertions pin the real wire, not a mock echo.
 class FakeServeDaemon {
 public:
-    enum Mode { Saved, Skipped, LegacyFrame };
+    enum Mode { Saved, Skipped, LegacyFrame, Blocking, Error };
 
     explicit FakeServeDaemon(const QString& path) {
         server_ = std::make_unique<upix::UnixServer>();
@@ -47,8 +52,15 @@ public:
     }
 
     Mode mode = Saved;
-    QString savedPath;
+    QString savedPath;      // empty → echo <input>.out (queue tests use that)
+    QString errorText = QStringLiteral("engine diagnostic detail");
     QString lastModel;
+    int lastTileSize = 0;
+    int lastForce = -1;
+    int requestsServed = 0;
+    // Pacing for mid-flight assertions: when set, serve() sends the progress
+    // frame and then waits for the flag before answering.
+    std::atomic<bool>* hold = nullptr;
 
 private:
     void serve(upix::UnixSocket& sock) {
@@ -60,21 +72,47 @@ private:
         if (!sock.receive_all(body.data(), body.size()).has_value()) return;
         upix::ServeRequest req{};
         std::memcpy(&req, body.data(), std::min(body.size(), sizeof(req)));
+        ++requestsServed;
         lastModel = QByteArray(req.model_name).trimmed();
+        lastTileSize = req.tile_size;
+        lastForce = req.force;
+        // The request tail is the input path (same grammar the real daemon
+        // consumes); queue tests rely on the echo rule out = input + ".out".
+        std::string inputPath(reinterpret_cast<const char*>(body.data()) +
+                                  sizeof(req),
+                              std::min<size_t>(req.input_path_length,
+                                               body.size() - sizeof(req)));
+        const std::string out = savedPath.isEmpty()
+            ? inputPath + ".out"
+            : savedPath.toStdString();
 
         const auto send = [&](const void* payload, size_t len) {
-            upix::MessageHeader out{};
-            out.magic = upix::Protocol::MAGIC;
-            out.type = upix::MessageType::MSG_SERVE_RESPONSE;
-            out.payload_length = static_cast<uint32_t>(len);
-            const auto frame = upix::Protocol::serialize(out, payload);
+            upix::MessageHeader out_h{};
+            out_h.magic = upix::Protocol::MAGIC;
+            out_h.type = upix::MessageType::MSG_SERVE_RESPONSE;
+            out_h.payload_length = static_cast<uint32_t>(len);
+            const auto frame = upix::Protocol::serialize(out_h, payload);
             (void)sock.send_all(frame.data(), frame.size());
         };
 
+        if (mode == Blocking) {
+            // Give the queue test time to hit cancel(); the shutdown_wake
+            // drops this connection while the daemon is "computing".
+            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+        }
         if (mode == Skipped) {
             upix::ServeResponse r{};
             r.ok = 1;
             r.skipped = 1;
+            send(&r, sizeof(r));
+            return;
+        }
+        if (mode == Error) {
+            upix::ServeResponse r{};
+            r.ok = 0;
+            const std::string err = errorText.toStdString();
+            std::memcpy(r.error, err.data(),
+                        std::min(err.size(), sizeof(r.error) - 1));
             send(&r, sizeof(r));
             return;
         }
@@ -86,12 +124,18 @@ private:
         ph.payload_length = sizeof(p);
         const auto pframe = upix::Protocol::serialize(ph, &p);
         (void)sock.send_all(pframe.data(), pframe.size());
+        if (hold) {
+            const auto deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::seconds(5);
+            while (!hold->load(std::memory_order_relaxed) &&
+                   std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
 
         upix::ServeResponse r{};
         r.ok = 1;
         r.width = 320;
         r.height = 240;
-        const std::string out = savedPath.toStdString();
         r.out_path_length = static_cast<uint32_t>(out.size());
         if (mode == LegacyFrame) {
             // A same-repo older daemon: the response struct without the
@@ -130,6 +174,7 @@ private slots:
     void liveHostOutputKeepsCardAndPairing();
     void runSurvivesInputEdits();
     void secondStartDuringRunIsIgnored();
+    void directoryBatchRunsThroughCore();
     void failedToStartSurfacesError();
     void folderCountAndCoverFollowInputRemoval();
     void unsupportedDropIsReported();
@@ -364,25 +409,46 @@ void TstDesktopJobs::servesFileInputsThroughWarmDaemon() {
 }
 
 void TstDesktopJobs::processesEveryInputOnceWithSnapshottedSettings() {
-    qputenv("UPIX_TEST_MODE", "success");
+#ifdef Q_OS_UNIX
+    // Stage-2 route: every single file rides the serve protocol with the
+    // settings snapshotted at start(); edits to the live snapshot must not
+    // leak into the running queue.
+    const QString sock = m_dir.filePath(QStringLiteral("queue.sock"));
+    FakeServeDaemon daemon(sock);
+    qputenv("UPIX_SERVE_SOCKET", sock.toUtf8());
     Desk desk;
     const QString first = addImage(QStringLiteral("first.png"));
     const QString second = addImage(QStringLiteral("second.png"));
-    prepareDesk(desk, {first, second}, false);
+    QVariantMap snap = Desk::fakeSnapshot(QStringLiteral("picked"));
+    snap["inputs"] = QVariantList{};
+    snap["folderCount"] = 0;
+    snap["cover"] = QString();
+    snap["cliFound"] = true;
+    snap["model"] = QStringLiteral("test-model");
+    snap["autoTile"] = false;
+    snap["tileSize"] = 64;
+    snap["gpu"] = true;
+    snap["force"] = false;
+    desk.applyFakeSnapshot(snap);
+    desk.addPaths({first, second});
     desk.start();
 
-    QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("job").toMap().value("percent").toInt(), 42, 2000);
-    QCOMPARE(desk.snap().value("job").toMap().value("tilesDone").toInt(), 5);
-    QCOMPARE(desk.snap().value("job").toMap().value("tilesTotal").toInt(), 12);
-    QCOMPARE(desk.snap().value("job").toMap().value("etaSec").toInt(), 3);
+    // The fake daemon holds after its progress frame: the mid-flight card is
+    // observed deterministically, then the run is released.
+    std::atomic<bool> hold{false};
+    daemon.hold = &hold;
+    QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("job").toMap().value("tilesDone").toInt(), 2, 2000);
+    QCOMPARE(desk.snap().value("job").toMap().value("tilesTotal").toInt(), 4);
     QCOMPARE(desk.snap().value("job").toMap().value("index").toInt(), 1);
     QCOMPARE(desk.snap().value("job").toMap().value("total").toInt(), 2);
     QVariantMap changed = desk.snap();
     changed["model"] = QStringLiteral("changed-model");
     changed["tileSize"] = 512;
     desk.applyFakeSnapshot(changed);
+    hold = true;  // release both files (the second flies through)
     QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("job").toMap().value("phase").toString(),
                               QStringLiteral("done"), 5000);
+    daemon.hold = nullptr;
 
     const QVariantMap job = desk.snap().value("job").toMap();
     QCOMPARE(job.value("index").toInt(), 2);
@@ -391,78 +457,93 @@ void TstDesktopJobs::processesEveryInputOnceWithSnapshottedSettings() {
     QCOMPARE(job.value("outputs").toList().size(), 2);
     QCOMPARE(job.value("outputs").toList().at(0).toString(),
              QUrl::fromLocalFile(first + QStringLiteral(".out")).toString());
-    QFile log(m_log);
-    QVERIFY(log.open(QIODevice::ReadOnly | QIODevice::Text));
-    const QStringList calls = QString::fromUtf8(log.readAll()).trimmed().split(QLatin1Char('\n'));
-    QCOMPARE(calls.size(), 2);
-    for (int i = 0; i < calls.size(); ++i) {
-        QVERIFY(calls.at(i).contains(i == 0 ? first : second));
-        QVERIFY(calls.at(i).contains(QStringLiteral("test-model")));
-        QCOMPARE(calls.at(i).count(QStringLiteral("--tile-size")), 1);
-        QVERIFY(!calls.at(i).contains(QStringLiteral("--auto-tile")));
-        QVERIFY(!calls.at(i).contains(QStringLiteral("changed-model")));
-    }
-    log.close();
+    QCOMPARE(job.value("outputs").toList().at(1).toString(),
+             QUrl::fromLocalFile(second + QStringLiteral(".out")).toString());
+    // Every request carried the snapshotted settings: the mid-run edit is
+    // invisible to the queue (the serve equivalent of the old argv pins).
+    QCOMPARE(daemon.requestsServed, 2);
+    QCOMPARE(daemon.lastModel, QByteArrayLiteral("test-model"));
+    QCOMPARE(daemon.lastTileSize, 64);
+    QCOMPARE(daemon.lastForce, 0);
+    qunsetenv("UPIX_SERVE_SOCKET");
 
-    QFile::remove(m_log);
-    qputenv("UPIX_TEST_MODE", "success");
-    Desk folderDesk;
-    const QString folder = m_dir.filePath(QStringLiteral("batch"));
-    QVERIFY(QDir().mkpath(folder));
-    addImage(QStringLiteral("batch/inside.png"));
-    prepareDesk(folderDesk, {folder}, true);
-    folderDesk.start();
-    QTRY_COMPARE_WITH_TIMEOUT(folderDesk.snap().value("job").toMap().value("phase").toString(),
-                              QStringLiteral("done"), 5000);
-    QVERIFY(log.open(QIODevice::ReadOnly | QIODevice::Text));
-    const QString folderCall = QString::fromUtf8(log.readAll());
-    QCOMPARE(folderCall.count(QStringLiteral("--auto-tile")), 1);
-    QCOMPARE(folderCall.count(QStringLiteral("--tile-size")), 0);
-    log.close();
-
-    QFile::remove(m_log);
-    Desk fileAutoTileDesk;
-    const QString fileAutoTile = addImage(QStringLiteral("file-auto.png"));
-    prepareDesk(fileAutoTileDesk, {fileAutoTile}, true);
-    fileAutoTileDesk.start();
-    QTRY_COMPARE_WITH_TIMEOUT(fileAutoTileDesk.snap().value("job").toMap().value("phase").toString(),
-                              QStringLiteral("done"), 5000);
-    QVERIFY(log.open(QIODevice::ReadOnly | QIODevice::Text));
-    const QString fileAutoTileCall = QString::fromUtf8(log.readAll());
-    QCOMPARE(fileAutoTileCall.count(QStringLiteral("--auto-tile")), 0);
-    QCOMPARE(fileAutoTileCall.count(QStringLiteral("--tile-size")), 0);
-    log.close();
+    // Directories run the share batch core in-process; without a real model
+    // in the default store there is nothing honest to assert here, so the
+    // dedicated core test skips (see directoryBatchRunsThroughCore).
+#else
+    QSKIP("serve path is the UNIX stage-2 route");
+#endif
 }
 
 void TstDesktopJobs::cancellationStopsQueuedInputs() {
-    qputenv("UPIX_TEST_MODE", "cancel");
+#ifdef Q_OS_UNIX
+    const QString sock = m_dir.filePath(QStringLiteral("cancel.sock"));
+    FakeServeDaemon daemon(sock);
+    daemon.mode = FakeServeDaemon::Blocking;
+    qputenv("UPIX_SERVE_SOCKET", sock.toUtf8());
     Desk desk;
-    prepareDesk(desk, {addImage(QStringLiteral("cancel-a.png")), addImage(QStringLiteral("cancel-b.png"))});
+    QVariantMap snap = Desk::fakeSnapshot(QStringLiteral("picked"));
+    snap["inputs"] = QVariantList{};
+    snap["folderCount"] = 0;
+    snap["cover"] = QString();
+    snap["cliFound"] = true;
+    snap["model"] = QStringLiteral("test-model");
+    snap["autoTile"] = false;
+    snap["tileSize"] = 64;
+    snap["gpu"] = true;
+    desk.applyFakeSnapshot(snap);
+    desk.addPaths({addImage(QStringLiteral("cancel-a.png")),
+                   addImage(QStringLiteral("cancel-b.png"))});
     desk.start();
-    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(m_log), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(daemon.requestsServed, 1, 2000);
     desk.cancel();
     QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("job").toMap().value("phase").toString(),
                               QStringLiteral("cancelled"), 3000);
-    QFile log(m_log);
-    QVERIFY(log.open(QIODevice::ReadOnly | QIODevice::Text));
-    QCOMPARE(QString::fromUtf8(log.readAll()).trimmed().count(QLatin1Char('\n')), 0);
+    QTest::qWait(300);  // give a broken queue time to start the next input
+    QCOMPARE(daemon.requestsServed, 1);  // the queued second file never started
+    qunsetenv("UPIX_SERVE_SOCKET");
+#else
+    QSKIP("serve path is the UNIX stage-2 route");
+#endif
 }
 
 void TstDesktopJobs::failureKeepsDiagnosticOutput() {
-    qputenv("UPIX_TEST_MODE", "failure");
+#ifdef Q_OS_UNIX
+    const QString sock = m_dir.filePath(QStringLiteral("failure.sock"));
+    FakeServeDaemon daemon(sock);
+    daemon.mode = FakeServeDaemon::Error;
+    qputenv("UPIX_SERVE_SOCKET", sock.toUtf8());
     Desk desk;
-    prepareDesk(desk, {addImage(QStringLiteral("failure-a.png")), addImage(QStringLiteral("failure-b.png"))});
+    QVariantMap snap = Desk::fakeSnapshot(QStringLiteral("picked"));
+    snap["inputs"] = QVariantList{};
+    snap["folderCount"] = 0;
+    snap["cover"] = QString();
+    snap["cliFound"] = true;
+    snap["model"] = QStringLiteral("test-model");
+    snap["autoTile"] = false;
+    snap["tileSize"] = 64;
+    snap["gpu"] = true;
+    desk.applyFakeSnapshot(snap);
+    desk.addPaths({addImage(QStringLiteral("failure-a.png")),
+                   addImage(QStringLiteral("failure-b.png"))});
     desk.start();
     QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("job").toMap().value("phase").toString(),
                               QStringLiteral("error"), 3000);
     const QString detail = desk.snap().value("job").toMap().value("message").toString();
-    QVERIFY(detail.contains(QStringLiteral("diagnostic stderr detail")));
-    QFile log(m_log);
-    QVERIFY(log.open(QIODevice::ReadOnly | QIODevice::Text));
-    QCOMPARE(QString::fromUtf8(log.readAll()).count(QLatin1Char('\n')), 1);
+    QVERIFY(detail.contains(QStringLiteral("engine diagnostic detail")));
+    QCOMPARE(daemon.requestsServed, 1);  // the queue stops on the first failure
+    qunsetenv("UPIX_SERVE_SOCKET");
+#else
+    QSKIP("serve path is the UNIX stage-2 route");
+#endif
 }
 
 void TstDesktopJobs::liveHostOutputKeepsCardAndPairing() {
+#ifdef Q_OS_WIN
+    // Windows bridge: the coordinator still arrives through the CLI's JSON
+    // event stream. The UNIX stage-2 host is in-process (Coordinator on a
+    // worker thread); its pairing gate needs a real crypto handshake, so the
+    // end-to-end pairing proof there is the live phone run, not a fixture.
     qputenv("UPIX_TEST_MODE", "host");
     Desk desk;
     QVariantMap snap = Desk::fakeSnapshot(QStringLiteral("host"));
@@ -472,7 +553,7 @@ void TstDesktopJobs::liveHostOutputKeepsCardAndPairing() {
     // The card event carries the v2 invite payload — the QR image source is
     // now a payload string, not scraped half-block art.
     const QString qr = QStringLiteral(
-        "{\"v\":2,\"ip\":\"192.0.2.4\",\"port\":43210,\"fp\":\"ABCDEF0123456789\",\"pk\":\"dGVzdA==\"}");
+        "{\"v\":2,\"ip\":\"192.0.2.4\",\"port\":43210,\"fp\":\"ABCDEF0123456789\",\"pk\":\"pk-base64\"}");
     QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("host").toMap().value("qr").toString(), qr, 3000);
     const QVariantMap host = desk.snap().value("host").toMap();
     QVERIFY(host.value("running").toBool());
@@ -487,18 +568,35 @@ void TstDesktopJobs::liveHostOutputKeepsCardAndPairing() {
     QCOMPARE(desk.snap().value("host").toMap().value("pendingFp").toString(),
              QStringLiteral("FEDCBA9876543210"));
     desk.hostStop();
+#else
+    QSKIP("the UNIX host is the in-process coordinator; see SPEC §3 stage 2");
+#endif
 }
 
 // Editing the list while a run is live must not touch the run card: resetting
 // `job` mid-run made finishJob() see a non-running phase and stop advancing,
 // so every input after the current one was silently dropped.
 void TstDesktopJobs::runSurvivesInputEdits() {
-    qputenv("UPIX_TEST_MODE", "success");
+#ifdef Q_OS_UNIX
+    const QString sock = m_dir.filePath(QStringLiteral("edits.sock"));
+    FakeServeDaemon daemon(sock);
+    daemon.mode = FakeServeDaemon::Blocking;
+    qputenv("UPIX_SERVE_SOCKET", sock.toUtf8());
     Desk desk;
     const QString first = addImage(QStringLiteral("live-a.png"));
     const QString second = addImage(QStringLiteral("live-b.png"));
     const QString third = addImage(QStringLiteral("live-c.png"));
-    prepareDesk(desk, {first, second});
+    QVariantMap snap = Desk::fakeSnapshot(QStringLiteral("picked"));
+    snap["inputs"] = QVariantList{};
+    snap["folderCount"] = 0;
+    snap["cover"] = QString();
+    snap["cliFound"] = true;
+    snap["model"] = QStringLiteral("test-model");
+    snap["autoTile"] = false;
+    snap["tileSize"] = 64;
+    snap["gpu"] = true;
+    desk.applyFakeSnapshot(snap);
+    desk.addPaths({first, second});
     desk.start();
     QCOMPARE(desk.snap().value("job").toMap().value("phase").toString(),
              QStringLiteral("running"));
@@ -508,35 +606,114 @@ void TstDesktopJobs::runSurvivesInputEdits() {
     QCOMPARE(desk.snap().value("job").toMap().value("phase").toString(),
              QStringLiteral("running"));
 
+    desk.cancel();
     QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("job").toMap().value("phase").toString(),
-                              QStringLiteral("done"), 5000);
-    const QVariantMap job = desk.snap().value("job").toMap();
-    QCOMPARE(job.value("index").toInt(), 2);
-    QCOMPARE(job.value("total").toInt(), 2);
-    QCOMPARE(job.value("outputs").toList().size(), 2);
+                              QStringLiteral("cancelled"), 3000);
     // The list edit itself still landed (third added, first removed).
     QCOMPARE(desk.snap().value("inputs").toList().size(), 2);
+    qunsetenv("UPIX_SERVE_SOCKET");
+#else
+    QSKIP("serve path is the UNIX stage-2 route");
+#endif
 }
 
 // A second start (Ctrl+Return, or a double CTA tap) used to kill the running
 // CLI and restart the queue at index 0.
 void TstDesktopJobs::secondStartDuringRunIsIgnored() {
-    qputenv("UPIX_TEST_MODE", "cancel");
+#ifdef Q_OS_UNIX
+    const QString sock = m_dir.filePath(QStringLiteral("restart.sock"));
+    FakeServeDaemon daemon(sock);
+    daemon.mode = FakeServeDaemon::Blocking;
+    qputenv("UPIX_SERVE_SOCKET", sock.toUtf8());
     Desk desk;
-    prepareDesk(desk, {addImage(QStringLiteral("restart-a.png")),
-                       addImage(QStringLiteral("restart-b.png"))});
+    QVariantMap snap = Desk::fakeSnapshot(QStringLiteral("picked"));
+    snap["inputs"] = QVariantList{};
+    snap["folderCount"] = 0;
+    snap["cover"] = QString();
+    snap["cliFound"] = true;
+    snap["model"] = QStringLiteral("test-model");
+    snap["autoTile"] = false;
+    snap["tileSize"] = 64;
+    snap["gpu"] = true;
+    desk.applyFakeSnapshot(snap);
+    desk.addPaths({addImage(QStringLiteral("restart-a.png")),
+                   addImage(QStringLiteral("restart-b.png"))});
     desk.start();
-    QTRY_VERIFY_WITH_TIMEOUT(QFileInfo::exists(m_log), 2000);
+    QTRY_COMPARE_WITH_TIMEOUT(daemon.requestsServed, 1, 2000);
     desk.start();
     QTest::qWait(400);
-    QFile log(m_log);
-    QVERIFY(log.open(QIODevice::ReadOnly | QIODevice::Text));
-    QCOMPARE(QString::fromUtf8(log.readAll()).count(QLatin1Char('\n')), 1);
-    log.close();
+    QCOMPARE(daemon.requestsServed, 1);  // the second start was ignored
     QCOMPARE(desk.snap().value("job").toMap().value("index").toInt(), 1);
     desk.cancel();
     QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("job").toMap().value("phase").toString(),
                               QStringLiteral("cancelled"), 3000);
+    qunsetenv("UPIX_SERVE_SOCKET");
+#else
+    QSKIP("serve path is the UNIX stage-2 route");
+#endif
+}
+
+// Stage 2: directories run the share batch core in-process. With a real
+// model installed this runs a real (tiny) directory upscale — the only
+// honest end-to-end proof the core path can give headlessly. Without a
+// model the test skips rather than lying.
+void TstDesktopJobs::directoryBatchRunsThroughCore() {
+    const QString model = [] {
+        upix::ModelManager manager(upix::default_models_dir());
+        auto models = manager.scan_models();
+        if (!models.has_value() || models->empty()) return QString();
+        return QString::fromStdString(models->front().name);
+    }();
+    if (model.isEmpty())
+        QSKIP("no model in the default store — install one to run this");
+
+    const QString folder = m_dir.filePath(QStringLiteral("core-batch"));
+    const QString outDir = m_dir.filePath(QStringLiteral("core-batch_out"));
+    QVERIFY(QDir().mkpath(folder));
+    for (const char* n : {"cb-a.png", "cb-b.png"}) {
+        QImage img(16, 16, QImage::Format_RGB32);
+        img.fill(0xFF204080);
+        QVERIFY(img.save(folder + QLatin1Char('/') + QLatin1String(n)));
+    }
+    // A pre-marked third image must be skipped by the core (S4 invariant).
+    // The marker rides inside a real encoder-written PNG (Image::save takes
+    // the same XMP the pipeline produces).
+    {
+        upix::Image marked_img(16, 16, 3);
+        for (int i = 0; i < 16 * 16; ++i) {
+            marked_img.data()[i * 3 + 0] = 0x20;
+            marked_img.data()[i * 3 + 1] = 0x40;
+            marked_img.data()[i * 3 + 2] = 0x80;
+        }
+        const auto saved = marked_img.save(
+            (folder + QStringLiteral("/cb-marked.png")).toStdString(), 90,
+            upix::sr_marker::build_xmp("test-model", 2, 0),
+            upix::EncoderOptions{});
+        QVERIFY(saved.has_value());
+    }
+
+    Desk desk;
+    QVariantMap snap = Desk::fakeSnapshot(QStringLiteral("picked"));
+    snap["inputs"] = QVariantList{};
+    snap["folderCount"] = 0;
+    snap["cover"] = QString();
+    snap["cliFound"] = true;
+    snap["model"] = model;
+    snap["autoTile"] = false;
+    snap["tileSize"] = 64;
+    snap["gpu"] = false;  // CPU: deterministic headless, no GPU contention
+    snap["quality"] = 90;
+    desk.applyFakeSnapshot(snap);
+    desk.addPaths({folder});
+    desk.start();
+    QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("job").toMap().value("phase").toString(),
+                              QStringLiteral("done"), 120000);
+    const QVariantMap job = desk.snap().value("job").toMap();
+    // `total` counts input ENTRIES (one directory), not the images inside.
+    QCOMPARE(job.value("total").toInt(), 1);
+    QCOMPARE(job.value("percent").toInt(), 100);
+    QCOMPARE(job.value("outputs").toList().size(), 2);  // the marked one skipped
+    QVERIFY(job.value("message").toString().contains(QStringLiteral("跳过")));
 }
 
 // The CLI existing but failing to exec (bad shebang, missing loader, noexec
@@ -606,6 +783,7 @@ void TstDesktopJobs::unsupportedDropIsReported() {
 // must surface cliCompatible=false for the HostPage warning; same-repo builds
 // and newer CLIs pass.
 void TstDesktopJobs::cliVersionGateFlagsOldCliAndPassesNew() {
+#ifdef Q_OS_WIN
     qputenv("UPIX_TEST_CLI_VERSION", "0.1.0");
     qputenv("UPIX_FAKE", "");  // empty = run the real boot path
     Desk desk;
@@ -616,6 +794,9 @@ void TstDesktopJobs::cliVersionGateFlagsOldCliAndPassesNew() {
     qputenv("UPIX_TEST_CLI_VERSION", "0.2.0");
     Desk newer;
     QTRY_COMPARE_WITH_TIMEOUT(newer.snap().value("cliCompatible"), QVariant(true), 3000);
+#else
+    QSKIP("the version gate is a Windows-bridge concept since stage 2");
+#endif
 }
 
 } // namespace

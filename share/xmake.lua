@@ -6,6 +6,14 @@ target("upix-core")
 
     add_packages("ncnn~runtime", "libwebp", "libpng", "libjpeg", "glaze", "libsodium")
     add_packages("libdeflate")
+    -- Model release downloads (core/model_downloader.cpp): desktop + CLI
+    -- only — Android fetches models through its own store flow and must not
+    -- grow the curl/zip link deps.
+    if is_plat("android") then
+        remove_files("core/model_downloader.cpp")
+    else
+        add_packages("libcurl", "libzip")
+    end
     -- image.cpp post-muxes XMP via libwebpmux; xmake-repo does not always
     -- propagate that extra lib to dependents on macosx.
     add_links("webpmux")

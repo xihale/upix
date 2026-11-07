@@ -1,12 +1,37 @@
 #pragma once
 
+#include <cstdlib>
+#include <format>
 #include <string>
 #include <vector>
 #include <filesystem>
 #include <optional>
 #include "utils/expected.hpp"
+#include "utils/platform.hpp"
 
 namespace upix {
+
+// The one models-dir policy ($UPIX_MODELS_DIR > $XDG_DATA_HOME/upix/models >
+// ~/.local/share/upix/models, HOME 未设回退 %USERPROFILE%), shared by CLI,
+// desktop and daemon — the GUI used to learn this path by asking the CLI
+// (docs/SPEC-frontends.md S3).
+inline auto default_models_dir() -> std::string {
+    if (const char* env = std::getenv("UPIX_MODELS_DIR"); env && *env) {
+        return env;
+    }
+    if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg) {
+        return std::format("{}/upix/models", xdg);
+    }
+#if defined(_WIN32)
+    if (const char* profile = std::getenv("USERPROFILE"); profile && *profile) {
+        return std::format("{}/upix/models", profile);
+    }
+#endif
+    if (const char* home = user_home(); home && *home) {
+        return std::format("{}/.local/share/upix/models", home);
+    }
+    return "./models";  // no HOME/XDG at all (degenerate): keep something usable
+}
 
 struct ModelInfo {
     std::string name;

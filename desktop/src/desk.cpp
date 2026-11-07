@@ -19,10 +19,19 @@
 #include <QStandardPaths>
 #include <QUrl>
 
-#include "core/config.hpp"                // kDefaultTileOverlap
+#include "core/batch.hpp"                // stage 2: directory/single-file runs
+#include "core/config.hpp"                // kDefaultTileOverlap, derive_default_output
+#include "core/distributed/connection_card.hpp"  // stage 2: host card
+#include "core/distributed/coordinator.hpp"      // stage 2: pairing
+#include "core/distributed/identity.hpp"  // identity + trust paths
 #include "core/distributed/protocol.hpp"  // Serve frames + Protocol framing
+#include "core/model_downloader.hpp"      // stage 2: release manifest + download
 #include "core/model_families.hpp"        // S3: the one family/grouping table
+#include "core/model_install.hpp"         // stage 2: staged import
+#include "core/model_manager.hpp"         // stage 2: scan + default_models_dir
+#include "core/model_metadata.hpp"        // scene/recommended classification
 #include "core/serve/daemon.hpp"          // default_serve_socket_path (inline)
+#include "core/serve/daemon_control.hpp"  // stage 2: supervision
 #include "utils/encoder_options.hpp"
 #include "utils/unix_socket.hpp"
 
@@ -31,13 +40,19 @@
 #include <chrono>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
+#include <optional>
 #include <thread>
+#include <vector>
+
+#include <unistd.h>
 
 namespace {
 
 constexpr int CoalesceMs = 70;
 constexpr int PrefsSaveMs = 400;
 
+#ifdef Q_OS_WIN
 // Minimum upix-cli the desktop talks to. The GUI's progress display rides on
 // UPIX_PROGRESS=json events, which landed after the released cli-v0.1.0
 // (commit 6dddc1c) — bump together with the CLI contract, and keep xmake's
@@ -64,6 +79,11 @@ bool cliVersionAtLeast(const QString& version, const char* min) {
     }
     return true;
 }
+#endif  // Q_OS_WIN
+
+#ifndef UPIX_VERSION
+#define UPIX_VERSION "dev"
+#endif
 
 QString prefsPath() {
     return QDir(QStandardPaths::writableLocation(QStandardPaths::ConfigLocation))
@@ -324,13 +344,73 @@ struct Desk::ServeJob {
 
 Desk::~Desk() {
 #ifdef Q_OS_UNIX
-    // Joins the delegation worker (its queued callbacks target this object,
-    // so nothing may outlive the member state it touches).
+    // Joins the delegation workers (their queued callbacks target this
+    // object, so nothing may outlive the member state they touch).
     delete m_serveJob;
     m_serveJob = nullptr;
+    delete m_batchJob;
+    m_batchJob = nullptr;
+    delete m_hostRun;
+    m_hostRun = nullptr;
 #endif
     if (g_desk == this) g_desk = nullptr;
 }
+
+#ifdef Q_OS_UNIX
+
+// Stage-2 batch runs (docs/SPEC-frontends.md §3): share's run_batch on a
+// worker thread — directories, CPU, auto-tile, and any single file the warm
+// daemon cannot serve. Events are marshalled onto the GUI thread as the same
+// machine JSON lines the CLI job stream speaks; Desk deletes the job
+// (joining the thread) on completion, cancellation, or shutdown.
+struct Desk::BatchJob {
+    explicit BatchJob(Desk* d) : desk(d) {}
+    ~BatchJob() {
+        cancelled.store(true, std::memory_order_relaxed);
+        if (thread.joinable()) thread.join();
+    }
+    void requestCancel() { cancelled.store(true, std::memory_order_relaxed); }
+
+    QPointer<Desk> desk;
+    std::thread thread;
+    std::atomic<bool> cancelled{false};
+    std::atomic<bool> done{false};
+    upix::BatchRequest request;
+};
+
+// Stage-2 host: the pairing coordinator lives on a worker thread of THIS
+// process. Card, approvals and progress are marshalled as snapshot edits;
+// approvals resolve through resolve_approval (the CLI wrote "y\n" to a
+// subprocess stdin — that boundary is gone).
+struct Desk::HostRun {
+    explicit HostRun(Desk* d) : desk(d) {}
+    ~HostRun() {
+        stopping.store(true, std::memory_order_relaxed);
+        coordinator.stop();
+        if (thread.joinable()) thread.join();
+    }
+    void requestStop() {
+        stopping.store(true, std::memory_order_relaxed);
+        coordinator.stop();
+    }
+    void decide(bool allow) {
+        std::lock_guard<std::mutex> lock(pendingMutex);
+        if (pending) coordinator.resolve_approval(pending->id, allow);
+        pending.reset();
+    }
+
+    QPointer<Desk> desk;
+    std::thread thread;
+    std::atomic<bool> stopping{false};
+    std::atomic<int> taskPct{-1};
+    std::mutex pendingMutex;
+    std::optional<upix::PendingApproval> pending;
+    upix::Coordinator coordinator;
+    uint16_t port = 0;
+    bool stoppingIsUserAction = false;  // read by the GUI thread after join
+};
+
+#endif  // Q_OS_UNIX
 
 Desk::Desk(QObject* parent) : QObject(parent) {
     g_desk = this;
@@ -351,6 +431,7 @@ Desk::Desk(QObject* parent) : QObject(parent) {
     boot();
 }
 
+#ifdef Q_OS_WIN
 QString Desk::findCli() const {
     // 1. explicit override
     const QString env = qEnvironmentVariable("UPIX_CLI");
@@ -378,8 +459,20 @@ QString Desk::findCli() const {
     }
     return QString();
 }
+#endif  // Q_OS_WIN
 
 void Desk::boot() {
+#ifdef Q_OS_UNIX
+    // Stage 2 (docs/SPEC-frontends.md §3): the full core is linked in — no
+    // CLI probe, no version gate. cliFound now means "backend ready", which
+    // is always true here; QML gates read it unchanged.
+    s()["cliFound"] = true;
+    s()["cliVersion"] = QStringLiteral(UPIX_VERSION);
+    s()["cliCompatible"] = true;
+    touch();
+    refreshModels();
+    refreshDaemonStatus();
+#else
     const QString cli = findCli();
     s()["cliFound"] = !cli.isEmpty();
     touch();
@@ -403,10 +496,12 @@ void Desk::boot() {
     }
     refreshModels();
     refreshDaemonStatus();
+#endif
 }
 
 QProcess* Desk::spawn(const QString& key, const QStringList& args,
                       const QStringList& env) {
+#ifdef Q_OS_WIN
     const QString cli = findCli();
     if (cli.isEmpty()) return nullptr;
 
@@ -450,6 +545,15 @@ QProcess* Desk::spawn(const QString& key, const QStringList& args,
         return nullptr;
     }
     return proc;
+#else
+    // UNIX uses in-process workers end to end (stage 2); the CLI bridge is
+    // Windows-only. No smoke path reaches this either (runSmoke resolves the
+    // CLI itself).
+    Q_UNUSED(key)
+    Q_UNUSED(args)
+    Q_UNUSED(env)
+    return nullptr;
+#endif
 }
 
 void Desk::touch() {
@@ -698,14 +802,17 @@ void Desk::startNextJob() {
     // Warm-daemon delegation (docs/SPEC-frontends.md §3 stage 1): a single
     // file with a pinned tile size on the GPU rides the serve protocol
     // in-process. Everything else — dirs, auto-tile (the optimizer is not in
-    // ServeRequest), CPU, Windows — stays on the CLI batch path below, which
-    // is also the fallback when no daemon answers.
+    // ServeRequest), CPU — runs the share batch core in-process (stage 2);
+    // a daemon that will not answer falls back to the same core with its own
+    // engine, so the CLI bridge is Windows-only now.
     if (!isDir && settings.value("gpu").toBool() && !autoTile) {
         startServeJob(input, settings);
         return;
     }
-#endif
+    startBatchJob();
+#else
     spawnCliJob();
+#endif
 }
 
 void Desk::spawnCliJob() {
@@ -895,13 +1002,478 @@ void Desk::onServeDone(int code, const QString& detail) {
     m_serveJob = nullptr;
     delete job;
     if (code == 2) {
-        // No daemon answered: the TRANSITIONAL CLI path (same settings, same
-        // card state — the card was reset before the gate).
-        spawnCliJob();
+        // No daemon answered: the same settings run through the share batch
+        // core with its own engine (same card state — the card was reset
+        // before the gate).
+        startBatchJob();
         return;
     }
     m_jobOutput = detail.toUtf8();
     finishJob(code);
+}
+
+namespace {
+// JSON lines for the job stream, built with QJson — filenames are user data
+// and must be escaped by a real parser, not string surgery.
+template <typename...Pairs>
+QString machineLine(Pairs&&... pairs) {
+    QJsonObject o;
+    (o.insert(pairs.first, pairs.second), ...);
+    return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
+}
+}  // namespace
+
+void Desk::startBatchJob() {
+    const QVariantList inputs = m_runSnap.value("inputs").toList();
+    const QVariantMap input = inputs.at(m_runIndex).toMap();
+    const QVariantMap settings = m_runSnap;
+    const std::string path =
+        std::filesystem::absolute(
+            std::filesystem::path(input.value("path").toString().toStdString()))
+            .lexically_normal().string();
+    const bool isDir = input.value("dir").toBool();
+    const QString model = settings.value("model").toString();
+
+    auto job = new BatchJob(this);
+    m_batchJob = job;
+    upix::BatchRequest& req = job->request;
+    req.models_dir = upix::default_models_dir();
+    req.model_name = model.toStdString();
+
+    // Same effective config the CLI job carried (no config file, explicit
+    // tile): auto-tile on, or a pinned size; never the engine probe.
+    upix::ProcessingConfig& cfg = req.config;
+    const QString fmt = settings.value("format").toString();
+    if (!fmt.isEmpty())
+        cfg.output_format = upix::normalize_output_format(fmt.toStdString());
+    cfg.output_quality = settings.value("quality").toInt();
+    cfg.tile_size = settings.value("tileSize").toInt();
+    cfg.tile_overlap = upix::kDefaultTileOverlap;
+    cfg.auto_tile_size = settings.value("autoTile").toBool();
+    req.use_gpu = settings.value("gpu").toBool();
+    cfg.use_gpu = req.use_gpu;
+    req.force = settings.value("force").toBool();
+    req.jobs = settings.value("jobs").toInt();
+    // CLI parity: `-j` only ever shipped for CPU directories; GPU dirs let
+    // the VRAM admission control decide (run_batch, jobs_explicit=false).
+    req.jobs_explicit = isDir && !req.use_gpu;
+
+    std::string error;
+    if (isDir) {
+        const std::string outDir =
+            upix::derive_default_output(path, req.model_name, true);
+        auto tasks = upix::gather_directory_tasks(path, outDir, error);
+        if (!tasks.has_value()) {
+            onBatchDone(1, QString::fromStdString(error));
+            return;
+        }
+        req.tasks = std::move(*tasks);
+    } else {
+        const std::string out = upix::derive_default_output(path, req.model_name, false);
+        req.tasks.emplace_back(path, out);
+    }
+
+    job->thread = std::thread([this, job] {
+        auto emitLine = [this, job](QString line) {
+            if (!job->desk) return;
+            QMetaObject::invokeMethod(job->desk,
+                                      [this, line] { handleJobLine(line); },
+                                      Qt::QueuedConnection);
+        };
+        auto finish = [this, job](int code, QString detail) {
+            if (job->done.exchange(true)) return;
+            if (!job->desk) return;
+            QMetaObject::invokeMethod(job->desk,
+                                      [this, code, detail] { onBatchDone(code, detail); },
+                                      Qt::QueuedConnection);
+        };
+
+        upix::BatchCallbacks cb;
+        cb.on_current = [&emitLine](const std::string& file) {
+            emitLine(machineLine(
+                qMakePair(QStringLiteral("t"), QStringLiteral("current")),
+                qMakePair(QStringLiteral("file"),
+                          QString::fromStdString(file))));
+        };
+        cb.on_saved = [&emitLine](const std::string& out) {
+            emitLine(machineLine(
+                qMakePair(QStringLiteral("t"), QStringLiteral("saved")),
+                qMakePair(QStringLiteral("path"),
+                          QString::fromStdString(out))));
+        };
+        cb.on_skipped = [&emitLine](const std::string&) {
+            emitLine(machineLine(
+                qMakePair(QStringLiteral("t"), QStringLiteral("note")),
+                qMakePair(QStringLiteral("message"),
+                          QStringLiteral("已是超分结果,已跳过"))));
+        };
+        cb.on_progress = [&emitLine](const upix::ProcessingProgress& prog,
+                                     int eta) {
+            if (prog.total_tiles <= 0) return;
+            const int pct = std::min(
+                100, static_cast<int>(prog.completed_tiles) * 100 /
+                         static_cast<int>(prog.total_tiles));
+            emitLine(machineLine(
+                qMakePair(QStringLiteral("t"), QStringLiteral("progress")),
+                qMakePair(QStringLiteral("pct"), pct),
+                qMakePair(QStringLiteral("done"),
+                          static_cast<int>(prog.completed_tiles)),
+                qMakePair(QStringLiteral("total"),
+                          static_cast<int>(prog.total_tiles)),
+                qMakePair(QStringLiteral("eta"), std::max(0, eta))));
+        };
+
+        auto stats = upix::run_batch(job->request, cb, job->cancelled);
+        if (!stats.has_value()) {
+            finish(1, {});
+            return;
+        }
+        finish(stats->succeeded + stats->skipped == stats->total ? 0 : 1, {});
+    });
+}
+
+void Desk::onBatchDone(int code, const QString& detail) {
+    BatchJob* job = m_batchJob;
+    m_batchJob = nullptr;
+    delete job;
+    m_jobOutput = detail.toUtf8();
+    finishJob(code);
+}
+
+void Desk::daemonSpawnSelf() {
+    const std::string socket = upix::default_serve_socket_path();
+    if (socket.empty()) {
+        setNotice(QStringLiteral("无法定位 daemon socket 路径"));
+        return;
+    }
+    if (upix::serve_daemon_status(socket).running) {
+        refreshDaemonStatus();
+        return;
+    }
+    // Re-exec THIS binary headlessly (docs/SPEC-frontends.md stage 2): the
+    // daemonized child runs the same core, no CLI involved. The pid file is
+    // written by the child after a successful start, so `daemon stop`/status
+    // semantics stay identical to the CLI-managed daemon.
+    const QString exe = QCoreApplication::applicationFilePath();
+    std::vector<std::string> args{exe.toStdString(),
+                                  "--serve-daemon",
+                                  "--socket", socket,
+                                  "--models-dir", upix::default_models_dir()};
+    const QString model = s()["model"].toString();
+    if (!model.isEmpty()) {
+        args.push_back("--model");
+        args.push_back(model.toStdString());
+    }
+    args.push_back("--idle-timeout");
+    args.push_back("600");
+    std::vector<char*> argv;
+    argv.reserve(args.size() + 1);
+    for (auto& a : args) argv.push_back(a.data());
+    argv.push_back(nullptr);
+
+    const pid_t pid = ::fork();
+    if (pid < 0) {
+        setNotice(QStringLiteral("daemon 启动失败: fork"));
+        return;
+    }
+    if (pid == 0) {
+        ::setsid();
+        ::close(STDIN_FILENO);
+        ::close(STDOUT_FILENO);
+        ::close(STDERR_FILENO);
+        ::execv(args[0].c_str(), argv.data());
+        _exit(127);  // exec failed — never unwind back into Qt
+    }
+    // Engine init + model load take seconds before the pid file appears;
+    // probe twice so the panel settles without a manual refresh.
+    QTimer::singleShot(2500, this, [this] { refreshDaemonStatus(); });
+    QTimer::singleShot(7000, this, [this] { refreshDaemonStatus(); });
+}
+
+void Desk::refreshDaemonStatus() {
+#ifdef Q_OS_UNIX
+    const std::string socket = upix::default_serve_socket_path();
+    QVariantMap daemon;
+    if (socket.empty()) {
+        daemon["running"] = false;
+        daemon["pid"] = 0;
+        daemon["socketName"] = QString();
+        daemon["socketMissing"] = false;
+        daemon["label"] = QStringLiteral("未运行");
+        s()["daemon"] = daemon;
+        touch();
+        return;
+    }
+    const auto st = upix::serve_daemon_status(socket);
+    QVariantMap doc;
+    doc["running"] = st.running;
+    doc["stale"] = st.stale;
+    doc["pid"] = static_cast<int>(st.pid);
+    doc["socket"] = QString::fromStdString(st.socket_path);
+    doc["socketMissing"] = st.socket_missing;
+    daemon["running"] = st.running;
+    daemon["pid"] = static_cast<int>(st.pid);
+    daemon["socketName"] = st.running
+        ? QFileInfo(QString::fromStdString(st.socket_path)).fileName()
+        : QString();
+    daemon["socketMissing"] = st.socket_missing;
+    daemon["label"] = machine::daemonLabel(doc);
+    s()["daemon"] = daemon;
+    touch();
+#else
+    QProcess* p = spawn(QStringLiteral("dstatus"),
+                        {QStringLiteral("daemon"), QStringLiteral("status"), QStringLiteral("--json")});
+    if (!p) return;
+    connect(p, &QProcess::finished, this, [this, p](int, QProcess::ExitStatus) {
+        // Exit code 1 = not running; the document is the source of truth.
+        const QVariantMap d = oneShotDoc(p);
+        QVariantMap daemon;
+        daemon["running"] = d.value(QStringLiteral("running")).toBool();
+        daemon["pid"] = d.value(QStringLiteral("pid")).toInt();
+        const QString socket = d.value(QStringLiteral("socket")).toString();
+        daemon["socketName"] = socket.isEmpty() ? QString() : QFileInfo(socket).fileName();
+        daemon["socketMissing"] = d.value(QStringLiteral("socketMissing")).toBool();
+        daemon["label"] = machine::daemonLabel(d);
+        s()["daemon"] = daemon;
+        touch();
+    });
+#endif
+}
+
+void Desk::daemonAction(const QString& action) {
+#ifdef Q_OS_UNIX
+    if (action == QLatin1String("start")) {
+        daemonSpawnSelf();
+        return;
+    }
+    if (action == QLatin1String("stop")) {
+        // serve_daemon_stop waits up to ~3 s for the accept loop to unwind:
+        // off the GUI thread, refresh queued when it settles.
+        std::thread([this] {
+            upix::serve_daemon_stop(upix::default_serve_socket_path());
+            QMetaObject::invokeMethod(this, [this] { refreshDaemonStatus(); },
+                                      Qt::QueuedConnection);
+        }).detach();
+        return;
+    }
+    refreshDaemonStatus();
+#else
+    QProcess* p = spawn(QStringLiteral("daemon"), {QStringLiteral("daemon"), action});
+    if (!p) return;
+    connect(p, &QProcess::finished, this, [this](int, QProcess::ExitStatus) {
+        refreshDaemonStatus();
+    });
+#endif
+}
+
+void Desk::handleHostEvent(const QString& kind, const QVariantMap& data) {
+    QVariantMap h = s()["host"].toMap();
+    bool dirty = true;
+    if (kind == QLatin1String("card")) {
+        h["fingerprint"] = data.value(QStringLiteral("fingerprint"));
+        h["ips"] = data.value(QStringLiteral("ips"));
+        const int port = data.value(QStringLiteral("port")).toInt();
+        if (port > 0) h["port"] = port;
+        h["qr"] = data.value(QStringLiteral("qr"));
+        h["running"] = true;
+        QVariantList log = h["log"].toList();
+        log.append(QStringLiteral("Coordinator running."));
+        h["log"] = log;
+    } else if (kind == QLatin1String("pairing")) {
+        h["pendingDevice"] = data.value(QStringLiteral("device"));
+        h["pendingFp"] = data.value(QStringLiteral("fingerprint"));
+    } else if (kind == QLatin1String("task")) {
+        h["taskPercent"] = data.value(QStringLiteral("pct"));
+    } else if (kind == QLatin1String("log")) {
+        QVariantList log = h["log"].toList();
+        log.append(data.value(QStringLiteral("line")));
+        while (log.size() > 50) log.removeFirst();
+        h["log"] = log;
+    } else if (kind == QLatin1String("error")) {
+        setNotice(data.value(QStringLiteral("message")).toString());
+        hostReset();
+        return;
+    } else if (kind == QLatin1String("finished")) {
+        const bool user = data.value(QStringLiteral("stoppedByUser")).toBool();
+        m_hostStopping = false;
+        hostReset();
+        if (!user)
+            setNotice(QStringLiteral("主机已退出"));
+        refreshDaemonStatus();
+        return;
+    } else {
+        dirty = false;
+    }
+    if (dirty) {
+        s()["host"] = h;
+        touch();
+    }
+}
+
+void Desk::hostStart() {
+#ifdef Q_OS_UNIX
+    if (m_hostRun) return;  // the coordinator is already up / coming up
+    hostReset();
+    m_hostStopping = false;
+    const int port = s()["host"].toMap().value("port").toInt();
+    auto run = new HostRun(this);
+    m_hostRun = run;
+    QVariantMap h = s()["host"].toMap();
+    h["running"] = true;  // "starting" — the card event flips the panel live
+    s()["host"] = h;
+    touch();
+
+    run->thread = std::thread([this, run, port] {
+        auto emitHost = [this, run](const QString& kind, const QVariantMap& data) {
+            if (!run->desk) return;
+            QMetaObject::invokeMethod(run->desk,
+                                      [this, run, kind, data] { handleHostEvent(kind, data); },
+                                      Qt::QueuedConnection);
+        };
+
+        auto identity = upix::IdentityKey::load_or_create(upix::default_identity_path());
+        run->coordinator.set_models_directory(upix::default_models_dir());
+        run->coordinator.set_trust_store_path(upix::default_trust_path());
+        run->coordinator.on_task_progress() = [run](float progress) {
+            run->taskPct.store(progress < 0 ? -1
+                                            : static_cast<int>(progress * 100));
+        };
+        auto started = run->coordinator.start(static_cast<uint16_t>(port), identity);
+        if (!started.has_value()) {
+            QVariantMap d;
+            d["message"] = QStringLiteral("主机启动失败: %1")
+                               .arg(QString::fromStdString(started.error().message));
+            emitHost(QStringLiteral("error"), d);
+            return;
+        }
+
+        const upix::ConnectionCard card =
+            upix::build_connection_card(static_cast<uint16_t>(port),
+                                        identity.public_key());
+        QVariantMap cardData;
+        cardData["fingerprint"] = QString::fromStdString(card.fingerprint);
+        QVariantList ips;
+        for (const auto& a : card.addresses)
+            if (!ips.contains(QString::fromStdString(a)))
+                ips.append(QString::fromStdString(a));
+        cardData["ips"] = ips;
+        cardData["port"] = port;
+        cardData["qr"] = QString::fromStdString(card.qr_payload);
+        emitHost(QStringLiteral("card"), cardData);
+
+        int lastPct = -1;
+        while (!run->stopping.load(std::memory_order_relaxed) &&
+               run->coordinator.is_running()) {
+            // First-time pairing gate: surface the request, the user decides.
+            auto pend = run->coordinator.pop_pending_approval();
+            if (pend.has_value()) {
+                {
+                    std::lock_guard<std::mutex> lock(run->pendingMutex);
+                    run->pending = pend;
+                }
+                QVariantMap d;
+                d["device"] = QString::fromStdString(pend->device_name);
+                d["fingerprint"] = QString::fromStdString(pend->fingerprint);
+                emitHost(QStringLiteral("pairing"), d);
+            }
+            const int pct = run->taskPct.load(std::memory_order_relaxed);
+            if (pct != lastPct) {
+                lastPct = pct;
+                QVariantMap d;
+                d["pct"] = pct;
+                emitHost(QStringLiteral("task"), d);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(120));
+        }
+        QVariantMap d;
+        d["stoppedByUser"] = run->stopping.load(std::memory_order_relaxed);
+        emitHost(QStringLiteral("finished"), d);
+    });
+#else
+    if (!s()["cliFound"].toBool()) return;
+    // A second click while the coordinator is still coming up: spawn() would
+    // kill the very process the user is waiting on and leave the panel to
+    // time out on its own.
+    if (QProcess* live = m_procs.value(QStringLiteral("host"));
+        live && live->state() != QProcess::NotRunning)
+        return;
+    hostReset();
+    m_hostStopping = false;
+    QProcess* process = spawn(QStringLiteral("host"),
+                              {QStringLiteral("host"), QStringLiteral("start"),
+                               QStringLiteral("--json"),
+                               QStringLiteral("-p"), QString::number(s()["host"].toMap().value("port").toInt())});
+    if (!process) {
+        setNotice(QStringLiteral("无法启动主机"));
+        return;
+    }
+    // The coordinator prints its card (QR) a moment later; without this the
+    // panel sat on "未运行" with an enabled 启动主机 button, and the guard above
+    // then swallowed the second click. `running` here means "process is up".
+    {
+        QVariantMap h = s()["host"].toMap();
+        h["running"] = true;
+        s()["host"] = h;
+        touch();
+    }
+    connect(process, &QProcess::readyRead, this, [this, process] { readHostOutput(process); });
+    connect(process, &QProcess::finished, this,
+            [this, process](int code, QProcess::ExitStatus status) {
+                readHostOutput(process, true);
+                // Exit code is the only signal that host start failed (port in
+                // use, CA missing); without a notice the panel just reset.
+                const bool failed = code != 0 || status != QProcess::NormalExit;
+                const bool stoppedByUser = m_hostStopping;
+                m_hostStopping = false;
+                hostReset();
+                if (failed && !stoppedByUser)
+                    setNotice(QStringLiteral("主机已退出（code %1）").arg(code));
+                refreshDaemonStatus();
+            });
+#endif
+}
+
+void Desk::hostStop() {
+#ifdef Q_OS_UNIX
+    if (m_hostRun) {
+        m_hostStopping = true;  // this exit is the user's, not a failure
+        m_hostRun->requestStop();  // the worker posts "finished"
+        return;
+    }
+    m_hostPending.clear();
+    hostReset();
+#else
+    QProcess* p = m_procs.value(QStringLiteral("host"));
+    if (p && p->state() != QProcess::NotRunning) {
+        m_hostStopping = true;  // this exit is the user's, not a failure
+        p->terminate();
+        // Same escalation as cancel(): the panel must not claim "未运行" while
+        // a wedged host still holds the port.
+        QPointer<QProcess> guard(p);
+        QTimer::singleShot(2000, this, [guard] {
+            if (guard && guard->state() != QProcess::NotRunning) guard->kill();
+        });
+    }
+    m_hostPending.clear();
+    hostReset();
+#endif
+}
+
+void Desk::hostDecide(bool allow) {
+#ifdef Q_OS_UNIX
+    if (m_hostRun) m_hostRun->decide(allow);
+#else
+    QProcess* p = m_procs.value(QStringLiteral("host"));
+    if (p && p->state() == QProcess::Running &&
+        !s()["host"].toMap()["pendingDevice"].toString().isEmpty()) {
+        p->write(allow ? "y\n" : "n\n");
+    }
+#endif
+    QVariantMap h = s()["host"].toMap();
+    h["pendingDevice"] = QString();
+    h["pendingFp"] = QString();
+    s()["host"] = h;
+    touch();
 }
 
 #endif  // Q_OS_UNIX
@@ -993,10 +1565,16 @@ void Desk::cancel() {
     if (s()["job"].toMap().value("phase").toString() != QLatin1String("running")) return;
     m_cancelRequested = true;
 #ifdef Q_OS_UNIX
-    // Wake the worker; it reports back through onServeDone and the
-    // m_cancelRequested branch of finishJob closes the card out.
+    // Wake whichever worker owns the run; both report back through their
+    // done events and the m_cancelRequested branch of finishJob closes the
+    // card out. The batch core checks the flag at every queue hand-off and
+    // tile boundary, so even a huge directory stops within seconds.
     if (m_serveJob) {
         m_serveJob->requestCancel();
+        return;
+    }
+    if (m_batchJob) {
+        m_batchJob->requestCancel();
         return;
     }
 #endif
@@ -1026,6 +1604,70 @@ QVariantMap oneShotDoc(QProcess* p) {
 }  // namespace
 
 void Desk::refreshModels() {
+#ifdef Q_OS_UNIX
+    // Stage 2: scan + remote catalog straight from share. The installed list
+    // lands before the (slower, network) remote catalog so the page paints
+    // usable content immediately.
+    std::thread([this] {
+        const std::string dir = upix::default_models_dir();
+        QVariantList installed;
+        QVariantList installedGroups;
+        QString scanError;
+        {
+            upix::ModelManager manager(dir);
+            auto models = manager.scan_models();
+            if (models.has_value()) {
+                for (const auto& m : *models) {
+                    const auto meta = upix::classify_model_scene(m.name);
+                    installed.append(QVariantMap{
+                        {QStringLiteral("name"), QString::fromStdString(m.name)},
+                        {QStringLiteral("scale"), m.scale_factor},
+                        {QStringLiteral("size"),
+                         QString::number(static_cast<double>(m.total_size) / 1048576.0,
+                                         'f', 0) + QStringLiteral(" MB")},
+                        {QStringLiteral("scene"), QString::fromStdString(std::string(meta.scene))},
+                        {QStringLiteral("recommended"), meta.recommended}});
+                }
+                installedGroups = groupedCatalog(installed);
+            } else {
+                scanError = QString::fromStdString(models.error().message);
+            }
+        }
+        QMetaObject::invokeMethod(this, [this, dir, installed, installedGroups, scanError] {
+            if (!scanError.isEmpty()) {
+                s()["remoteError"] = scanError;
+            } else {
+                s()["modelsDir"] = QString::fromStdString(dir);
+                s()["installed"] = installed;
+                s()["installedGroups"] = installedGroups;
+            }
+            touch();
+        }, Qt::QueuedConnection);
+
+        std::string remoteError;
+        QVariantList remote;
+        if (auto r = upix::fetch_remote_models(std::string(), remoteError)) {
+            for (const auto& m : *r) {
+                const auto meta = upix::classify_model_scene(m.name);
+                remote.append(QVariantMap{
+                    {QStringLiteral("name"), QString::fromStdString(m.name)},
+                    {QStringLiteral("scale"), m.scale},
+                    {QStringLiteral("size"),
+                     QString::number(static_cast<double>(m.size_bytes) / 1048576.0,
+                                     'f', 1) + QStringLiteral(" MB")},
+                    {QStringLiteral("scene"), QString::fromStdString(std::string(meta.scene))},
+                    {QStringLiteral("recommended"), meta.recommended}});
+            }
+            remoteError.clear();
+        }
+        QMetaObject::invokeMethod(this, [this, remote,
+                                         err = QString::fromStdString(remoteError)] {
+            s()["remoteError"] = err;
+            s()["remote"] = remote;
+            touch();
+        }, Qt::QueuedConnection);
+    }).detach();
+#else
     QProcess* p = spawn(QStringLiteral("models"),
                         {QStringLiteral("model"), QStringLiteral("list"), QStringLiteral("--json")});
     if (!p) {
@@ -1066,10 +1708,27 @@ void Desk::refreshModels() {
             touch();
         });
     });
+#endif
 }
 
 void Desk::importModels(const QStringList& paths) {
     if (paths.isEmpty()) return;
+#ifdef Q_OS_UNIX
+    std::thread([this, paths] {
+        std::vector<std::string> files;
+        for (const QString& p : paths) files.push_back(p.toStdString());
+        auto result = upix::import_model_files(files, upix::default_models_dir());
+        QMetaObject::invokeMethod(this, [this, result] {
+            if (result.ok) {
+                setNotice(QStringLiteral("导入完成"));
+                refreshModels();
+            } else {
+                setNotice(result.error.empty() ? QStringLiteral("导入失败")
+                                               : QString::fromStdString(result.error));
+            }
+        }, Qt::QueuedConnection);
+    }).detach();
+#else
     QProcess* p = spawn(QStringLiteral("import"),
                         QStringList{QStringLiteral("model"), QStringLiteral("import"),
                                     QStringLiteral("--json")} + paths);
@@ -1088,10 +1747,80 @@ void Desk::importModels(const QStringList& paths) {
             setNotice(error.isEmpty() ? QStringLiteral("导入失败") : error);
         }
     });
+#endif
 }
+
+namespace {
+// Case/dash-insensitive manifest match (same idea as the CLI's find_remote;
+// exact matches are the normal path — names come from the same manifest).
+auto findRemote(const std::vector<upix::RemoteModel>& models,
+                const std::string& name) -> const upix::RemoteModel* {
+    auto norm = [](std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+        s.erase(std::remove_if(s.begin(), s.end(), [](char c) {
+                    return c == '-' || c == '_' || c == ' ';
+                }), s.end());
+        return s;
+    };
+    const std::string want = norm(name);
+    for (const auto& m : models)
+        if (norm(m.name) == want) return &m;
+    return nullptr;
+}
+}  // namespace
 
 void Desk::download(const QString& name) {
     if (s()["downloading"].toString() == name) return;
+#ifdef Q_OS_UNIX
+    s()["downloading"] = name;
+    s()["downloadPct"] = 0;
+    touch();
+    std::thread([this, name] {
+        auto post = [this](std::function<void()> body) {
+            QMetaObject::invokeMethod(this, [this, body] { body(); },
+                                      Qt::QueuedConnection);
+        };
+        std::string error;
+        auto remote = upix::fetch_remote_models(std::string(), error);
+        const upix::RemoteModel* m =
+            remote.has_value() ? findRemote(*remote, name.toStdString()) : nullptr;
+        if (!m) {
+            post([this, name] {
+                s()["downloading"] = QString();
+                s()["downloadPct"] = -1;
+                setNotice(QStringLiteral("下载失败（清单里找不到）: ") + name);
+                touch();
+            });
+            return;
+        }
+        auto result = upix::download_model(*m, upix::default_models_dir(),
+            [this, name](const upix::DownloadProgress& p) {
+                if (p.total <= 0) return;
+                const int pct = static_cast<int>(p.downloaded * 100 / p.total);
+                QMetaObject::invokeMethod(this, [this, pct] {
+                    if (pct >= 0 && pct != s()["downloadPct"].toInt()) {
+                        s()["downloadPct"] = pct;
+                        touch();
+                    }
+                }, Qt::QueuedConnection);
+            });
+        post([this, name, result] {
+            s()["downloading"] = QString();
+            s()["downloadPct"] = -1;
+            if (result.ok) {
+                setNotice(QStringLiteral("已下载 ") + name);
+                refreshModels();
+            } else {
+                setNotice(QStringLiteral("下载失败: ") + name +
+                          (result.message.empty()
+                               ? QString()
+                               : QStringLiteral(" (%1)").arg(
+                                     QString::fromStdString(result.message))));
+            }
+            touch();
+        });
+    }).detach();
+#else
     QProcess* p = spawn(QStringLiteral("download"),
                         {QStringLiteral("model"), QStringLiteral("download"),
                          QStringLiteral("--json"), name});
@@ -1114,6 +1843,7 @@ void Desk::download(const QString& name) {
             setNotice(QStringLiteral("下载失败: ") + name);
         }
     });
+#endif
 }
 
 void Desk::readDownloadOutput(QProcess* process, const QString& name) {
@@ -1135,42 +1865,6 @@ void Desk::readDownloadOutput(QProcess* process, const QString& name) {
 }
 
 // ---- daemon ------------------------------------------------------------
-
-void Desk::refreshDaemonStatus() {
-    QProcess* p = spawn(QStringLiteral("dstatus"),
-                        {QStringLiteral("daemon"), QStringLiteral("status"), QStringLiteral("--json")});
-    if (!p) return;
-    connect(p, &QProcess::finished, this, [this, p](int, QProcess::ExitStatus) {
-        // Exit code 1 = not running; the document is the source of truth.
-        const QVariantMap d = oneShotDoc(p);
-        QVariantMap daemon;
-        daemon["running"] = d.value(QStringLiteral("running")).toBool();
-        daemon["pid"] = d.value(QStringLiteral("pid")).toInt();
-        const QString socket = d.value(QStringLiteral("socket")).toString();
-        daemon["socketName"] = socket.isEmpty() ? QString() : QFileInfo(socket).fileName();
-        daemon["socketMissing"] = d.value(QStringLiteral("socketMissing")).toBool();
-        daemon["label"] = machine::daemonLabel(d);
-        s()["daemon"] = daemon;
-        touch();
-    });
-}
-
-void Desk::daemonAction(const QString& action) {
-    QProcess* p = spawn(QStringLiteral("daemon"), {QStringLiteral("daemon"), action});
-    if (!p) return;
-    connect(p, &QProcess::finished, this, [this](int, QProcess::ExitStatus) {
-        refreshDaemonStatus();
-    });
-}
-
-// ---- host --------------------------------------------------------------
-
-void Desk::hostReset() {
-    QVariantMap h = defaultSnap().value("host").toMap();
-    h["port"] = s()["host"].toMap().value("port");
-    s()["host"] = h;
-    touch();
-}
 
 void Desk::readHostOutput(QProcess* process, bool final) {
     m_hostPending += process->readAll();
@@ -1226,66 +1920,6 @@ void Desk::readHostOutput(QProcess* process, bool final) {
     if (dirty) { s()["host"] = host; touch(); }
 }
 
-void Desk::hostStart() {
-    if (!s()["cliFound"].toBool()) return;
-    // A second click while the coordinator is still coming up: spawn() would
-    // kill the very process the user is waiting on and leave the panel to
-    // time out on its own.
-    if (QProcess* live = m_procs.value(QStringLiteral("host"));
-        live && live->state() != QProcess::NotRunning)
-        return;
-    hostReset();
-    m_hostPending.clear();
-    m_hostStopping = false;
-    QProcess* process = spawn(QStringLiteral("host"),
-                              {QStringLiteral("host"), QStringLiteral("start"),
-                               QStringLiteral("--json"),
-                               QStringLiteral("-p"), QString::number(s()["host"].toMap().value("port").toInt())});
-    if (!process) {
-        setNotice(QStringLiteral("无法启动主机"));
-        return;
-    }
-    // The coordinator prints its card (QR) a moment later; without this the
-    // panel sat on "未运行" with an enabled 启动主机 button, and the guard above
-    // then swallowed the second click. `running` here means "process is up".
-    {
-        QVariantMap h = s()["host"].toMap();
-        h["running"] = true;
-        s()["host"] = h;
-        touch();
-    }
-    connect(process, &QProcess::readyRead, this, [this, process] { readHostOutput(process); });
-    connect(process, &QProcess::finished, this,
-            [this, process](int code, QProcess::ExitStatus status) {
-                readHostOutput(process, true);
-                // Exit code is the only signal that host start failed (port in
-                // use, CA missing); without a notice the panel just reset.
-                const bool failed = code != 0 || status != QProcess::NormalExit;
-                const bool stoppedByUser = m_hostStopping;
-                m_hostStopping = false;
-                hostReset();
-                if (failed && !stoppedByUser)
-                    setNotice(QStringLiteral("主机已退出（code %1）").arg(code));
-                refreshDaemonStatus();
-            });
-}
-
-void Desk::hostStop() {
-    QProcess* p = m_procs.value(QStringLiteral("host"));
-    if (p && p->state() != QProcess::NotRunning) {
-        m_hostStopping = true;  // this exit is the user's, not a failure
-        p->terminate();
-        // Same escalation as cancel(): the panel must not claim "未运行" while
-        // a wedged host still holds the port.
-        QPointer<QProcess> guard(p);
-        QTimer::singleShot(2000, this, [guard] {
-            if (guard && guard->state() != QProcess::NotRunning) guard->kill();
-        });
-    }
-    m_hostPending.clear();
-    hostReset();
-}
-
 void Desk::setHostPort(int port) {
     if (port <= 0 || port > 65535) return;
     QVariantMap h = s()["host"].toMap();
@@ -1295,15 +1929,9 @@ void Desk::setHostPort(int port) {
     touch();
 }
 
-void Desk::hostDecide(bool allow) {
-    QProcess* p = m_procs.value(QStringLiteral("host"));
-    QVariantMap h = s()["host"].toMap();
-    if (p && p->state() == QProcess::Running &&
-        !h["pendingDevice"].toString().isEmpty()) {
-        p->write(allow ? "y\n" : "n\n");
-    }
-    h["pendingDevice"] = QString();
-    h["pendingFp"] = QString();
+void Desk::hostReset() {
+    QVariantMap h = defaultSnap().value("host").toMap();
+    h["port"] = s()["host"].toMap().value("port");
     s()["host"] = h;
     touch();
 }
@@ -1330,7 +1958,6 @@ void Desk::reveal(const QString& path) {
     if (!dir.isEmpty()) QDesktopServices::openUrl(QUrl::fromLocalFile(dir));
 }
 
-// Open the file itself with the default handler (image viewer).
 void Desk::openPath(const QString& path) {
     QString target = path;
     if (target.startsWith(QStringLiteral("file://"))) target = QUrl(target).toLocalFile();

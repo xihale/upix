@@ -10,10 +10,10 @@
 #include <openssl/evp.h>
 #include <zip.h>
 
-#include "model_downloader.hpp"
+#include "core/model_downloader.hpp"
 
 namespace fs = std::filesystem;
-using upix::cli::RemoteModel;
+using upix::RemoteModel;
 using Entry = std::pair<std::string, std::string>;
 
 static void write_file(const fs::path& p, const std::string& data) {
@@ -63,8 +63,8 @@ static RemoteModel model_for(const std::string& name, const fs::path& zip) {
 // is exactly what the production default (UrlPolicy::HttpsOnly) refuses — a
 // manifest's url is remote input, so an unfiltered scheme would let a hostile
 // repo copy an arbitrary local file into the models dir.
-static constexpr upix::cli::UrlPolicy kPolicy =
-    upix::cli::UrlPolicy::AllowLocalFileForTests;
+static constexpr upix::UrlPolicy kPolicy =
+    upix::UrlPolicy::AllowLocalFileForTests;
 
 static bool no_stage_residue(const fs::path& dir) {
     for (const auto& entry : fs::directory_iterator(dir)) {
@@ -84,7 +84,7 @@ int main() {
                               {"metadata/readme.txt", "ignored"}}))
         return std::puts("valid zip build failed"), 1;
     RemoteModel valid = model_for("foo", valid_zip);
-    auto first = upix::cli::download_model(valid, models_dir.string(), {}, kPolicy);
+    auto first = upix::download_model(valid, models_dir.string(), {}, kPolicy);
     if (!first.ok || read_file(models_dir / "foo.param") != "param-one" ||
         read_file(models_dir / "foo.bin") != "bin-one" || !no_stage_residue(models_dir))
         return std::fprintf(stderr, "valid install failed: %s\n", first.message.c_str()), 1;
@@ -92,7 +92,7 @@ int main() {
     fs::path replacement_zip = tmp / "replacement.zip";
     if (!make_zip(replacement_zip, {{"foo.param", "param-two"}, {"foo.bin", "bin-two"}}))
         return std::puts("replacement zip build failed"), 1;
-    auto replacement = upix::cli::download_model(model_for("foo", replacement_zip),
+    auto replacement = upix::download_model(model_for("foo", replacement_zip),
                                                    models_dir.string(), {}, kPolicy);
     if (!replacement.ok || read_file(models_dir / "foo.param") != "param-two" ||
         read_file(models_dir / "foo.bin") != "bin-two" || !no_stage_residue(models_dir))
@@ -110,7 +110,7 @@ int main() {
         fs::path invalid_zip = tmp / ("invalid-" + std::to_string(i) + ".zip");
         if (!make_zip(invalid_zip, invalid_archives[i]))
             return std::puts("invalid zip build failed"), 1;
-        auto rejected = upix::cli::download_model(model_for("foo", invalid_zip),
+        auto rejected = upix::download_model(model_for("foo", invalid_zip),
                                                     models_dir.string(), {}, kPolicy);
         if (rejected.ok || read_file(models_dir / "foo.param") != "param-two" ||
             read_file(models_dir / "foo.bin") != "bin-two" || !no_stage_residue(models_dir))
@@ -119,7 +119,7 @@ int main() {
 
     RemoteModel bad_sha = valid;
     bad_sha.sha256 = "deadbeef";
-    auto rejected_sha = upix::cli::download_model(bad_sha, models_dir.string(), {}, kPolicy);
+    auto rejected_sha = upix::download_model(bad_sha, models_dir.string(), {}, kPolicy);
     if (rejected_sha.ok || read_file(models_dir / "foo.param") != "param-two" ||
         read_file(models_dir / "foo.bin") != "bin-two" || !no_stage_residue(models_dir))
         return std::puts("bad sha changed installed model or left residue"), 1;
@@ -131,7 +131,7 @@ int main() {
     const fs::path path_zip = tmp / "path-name.zip";
     if (!make_zip(path_zip, {{"../escaped.param", "new-param"}, {"../escaped.bin", "new-bin"}}))
         return std::puts("path-name zip build failed"), 1;
-    auto rejected_path = upix::cli::download_model(model_for("../escaped", path_zip),
+    auto rejected_path = upix::download_model(model_for("../escaped", path_zip),
                                                   models_dir.string(), {}, kPolicy);
     if (rejected_path.ok || read_file(outside_param) != "outside-param" ||
         read_file(outside_bin) != "outside-bin" || !no_stage_residue(models_dir))
@@ -140,7 +140,7 @@ int main() {
     fs::remove(models_dir / "foo.bin");
     fs::create_directories(models_dir / "foo.bin");
     write_file(models_dir / "foo.bin" / "keep.txt", "unrelated contents");
-    auto rejected_destination = upix::cli::download_model(
+    auto rejected_destination = upix::download_model(
         model_for("foo", replacement_zip), models_dir.string(), {}, kPolicy);
     if (rejected_destination.ok || read_file(models_dir / "foo.param") != "param-two" ||
         read_file(models_dir / "foo.bin" / "keep.txt") != "unrelated contents" ||

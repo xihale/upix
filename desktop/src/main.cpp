@@ -16,6 +16,8 @@
 #include "qrprovider.h"
 #include "theme.h"
 
+#include "core/serve/daemon_control.hpp"  // --serve-daemon mode body
+
 #include <QDir>
 #include <QElapsedTimer>
 #include <QFileInfo>
@@ -29,18 +31,26 @@
 #include <QQmlEngine>
 #include <QQuickStyle>
 #include <QQuickWindow>
+#include <QStandardPaths>
 #include <QThread>
 #include <QTimer>
 #include <QCommandLineParser>
 
 namespace {
 
-enum class Mode { Gui, Shot, Anim, Sweep, Smoke };
+enum class Mode { Gui, Shot, Anim, Sweep, Smoke, ServeDaemon };
+
+// `--serve-daemon` options (docs/SPEC-frontends.md stage 2: the desktop
+// supervises its own daemon by re-execing itself headlessly — no CLI needed).
+struct ServeOptions {
+    QString socket, modelsDir, model, idleTimeout, device;
+};
 
 struct Options {
     Mode mode = Mode::Gui;
     QStringList states;      // --shot a,b,c
     QString out = "shots-qt";
+    ServeOptions serve;
 };
 
 // argv parsed from the raw array; no QCoreApplication::arguments() here.
@@ -52,8 +62,15 @@ Options parseArgs(int argc, char** argv, bool* reject) {
         QStringLiteral("process"), QStringLiteral("complete"),
         QStringLiteral("completions")};
     bool nextIsOut = false;
+    // Value-taking --serve-daemon flags: the next argv token is the value.
+    QString* serveValueTarget = nullptr;
     for (int i = 1; i < argc; ++i) {
         const QString a = QString::fromLocal8Bit(argv[i]);
+        if (serveValueTarget) {
+            *serveValueTarget = a;
+            serveValueTarget = nullptr;
+            continue;
+        }
         if (nextIsOut) {
             o.out = a;
             nextIsOut = false;
@@ -61,6 +78,18 @@ Options parseArgs(int argc, char** argv, bool* reject) {
         }
         if (a == QLatin1String("--shot")) {
             o.mode = Mode::Shot;
+        } else if (a == QLatin1String("--serve-daemon")) {
+            o.mode = Mode::ServeDaemon;
+        } else if (a == QLatin1String("--socket")) {
+            serveValueTarget = &o.serve.socket;
+        } else if (a == QLatin1String("--models-dir")) {
+            serveValueTarget = &o.serve.modelsDir;
+        } else if (a == QLatin1String("--model")) {
+            serveValueTarget = &o.serve.model;
+        } else if (a == QLatin1String("--idle-timeout")) {
+            serveValueTarget = &o.serve.idleTimeout;
+        } else if (a == QLatin1String("--device")) {
+            serveValueTarget = &o.serve.device;
         } else if (a == QLatin1String("--anim")) {
             o.mode = Mode::Anim;
         } else if (a == QLatin1String("--sweep")) {
@@ -162,11 +191,22 @@ int runHeadlessShots(QGuiApplication& app, QQmlApplicationEngine& engine,
 }
 
 // Real end-to-end run through the discovered CLI: tiny generated PNG in,
-// upscaled file out. Exit 0 on success.
+// upscaled file out. Exit 0 on success. (The smoke tool drives the CLI as a
+// process on purpose — it is the CLI's own integration probe; the desktop's
+// own paths are exercised by tst_desk_jobs and the GUI itself.)
 int runSmoke(QGuiApplication& app) {
-    const QString cli = Desk::instance() ? Desk::instance()->findCli() : QString();
-    fprintf(stderr, "[smoke] cli=%s\n", cli.isEmpty() ? "<none>" : qUtf8Printable(cli));
+    QString cli = qEnvironmentVariable("UPIX_CLI");
+    if (cli.isEmpty()) cli = QStandardPaths::findExecutable(QStringLiteral("upix-cli"));
     if (cli.isEmpty()) {
+        const QDir exeDir =
+            QFileInfo(QCoreApplication::applicationFilePath()).absoluteDir();
+        cli = exeDir.filePath(QStringLiteral("upix-cli"));
+    }
+    const bool haveCli = !cli.isEmpty() && QFileInfo(cli).isFile() &&
+                         QFileInfo(cli).isExecutable();
+    fprintf(stderr, "[smoke] cli=%s\n",
+            haveCli ? qUtf8Printable(cli) : "<none>");
+    if (!haveCli) {
         fprintf(stderr, "smoke: no upix-cli found\n");
         return 1;
     }
@@ -216,6 +256,20 @@ int main(int argc, char** argv) {
     bool reject = false;
     const Options o = parseArgs(argc, argv, &reject);
     if (reject) return 2;
+
+    // The serve-daemon mode is a headless process body (forked/execed by the
+    // GUI to host the warm engine, or by the user's init): it must never
+    // construct a QGuiApplication or a window — the same rule as the
+    // CLI-style refusal below.
+    if (o.mode == Mode::ServeDaemon) {
+        upix::ServeDaemonOptions so;
+        so.socket_path = o.serve.socket.toStdString();
+        so.models_dir = o.serve.modelsDir.toStdString();
+        so.model_name = o.serve.model.toStdString();
+        so.idle_timeout_s = o.serve.idleTimeout.toInt();
+        so.force_cpu = o.serve.device == QLatin1String("cpu");
+        return upix::run_serve_daemon(so);
+    }
 
     // 2. DPI policy before the application object
     QGuiApplication::setHighDpiScaleFactorRoundingPolicy(

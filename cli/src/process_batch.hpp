@@ -1,8 +1,9 @@
-// Directory batch path, split out of cmd_process (Layer 2 Task 4).
+// Directory batch path — now a thin adapter over share's batch core
+// (docs/SPEC-frontends.md S1: the pipeline lives in share; the desktop drives
+// the same upix::run_batch directly, in-process).
 //
-// run_batch() is the verbatim move of the former `if (is_dir) { ... }` block
-// out of cmd_process(). cmd_process is a free function at global scope, so
-// run_batch is declared at global scope too (no namespace).
+// This adapter owns only the CLI seams: the signal-driven cancel flag, the
+// UPIX_PROGRESS machine/ human encoding, and the exit-code mapping.
 #pragma once
 
 #include "args.hpp"

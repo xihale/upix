@@ -1,26 +1,30 @@
 // `upix daemon {start, stop, status}` — manage the local warm-engine daemon.
 //
-// start:  fork into background (unless --fg), open the Unix socket, load a warm
-//         ncnn engine, and serve single-image upscale requests so that
-//         `upix process` skips the ~490ms init+load fixed cost. Exits by
-//         itself after --idle-timeout seconds without a request (0 = never).
-// stop:   read the daemon's pid file and SIGTERM it.
-// status: read-only report — pid file, liveness, socket reachability.
+// start:  fork into background (unless --fg) and run share's
+//         run_serve_daemon() (open the Unix socket, load a warm ncnn engine,
+//         serve single-image upscale requests so that `upix process` skips
+//         the ~490ms init+load fixed cost; exits by itself after
+//         --idle-timeout seconds without a request, 0 = never).
+// stop:   share's serve_daemon_stop() — verified pid + SIGTERM + exit wait.
+// status: share's serve_daemon_status() — read-only report.
+//
+// The desktop drives the very same three functions in-process
+// (docs/SPEC-frontends.md stage 2), so a desktop without a CLI installed
+// still supervises the daemon.
 #include <csignal>
 #include <filesystem>
-#include <fstream>
+#include <format>
 #include <print>
 #include <string>
 
 #include <unistd.h>
-#include <cstring>
-#include <cerrno>
 
 #include "args.hpp"
 #include "cli_app.hpp"
 #include "common.hpp"
+#include "core/serve/daemon.hpp"      // default_serve_socket_path
+#include "core/serve/daemon_control.hpp"
 #include "utils/logger.hpp"
-#include "core/serve/daemon.hpp"
 
 namespace fs = std::filesystem;
 
@@ -35,125 +39,49 @@ int cmd_daemon(const args::Daemon& a) {
         return 1;
     }
 
-    std::string pid_path = socket_path + ".pid";
-
     if (a.subcommand == "stop") {
-        // Read pid, send SIGTERM. The daemon's run() loop observes the
-        // resulting g_running=false and exits; its destructor unlinks the
-        // socket, and the start path unlinks the pid file.
-        std::ifstream pf(pid_path);
-        if (!pf) {
-            std::println(stderr, "stop: daemon not running (no pid file at {})", pid_path);
-            return 1;
+        if (a.json) enable_machine_output();
+        const bool stopped = upix::serve_daemon_stop(socket_path);
+        if (a.json) {
+            emit_json_line(std::format(R"({{"stopped":{}}})",
+                                       stopped ? "true" : "false"));
         }
-        pid_t pid = 0;
-        pf >> pid;
-        if (pid <= 0) {
-            std::println(stderr, "stop: corrupt pid file at {}", pid_path);
-            return 1;
-        }
-        // Same guard the start path applies: the pid file is untrusted input.
-        // Signalling whatever pid a stale or corrupted file names would turn
-        // `daemon stop` into an arbitrary-pid SIGTERM primitive.
-        if (!pid_is_upix_daemon(pid)) {
-            std::println(stderr,
-                         "stop: pid {} is not a live upix daemon — removing "
-                         "stale pid file",
-                         pid);
-            std::filesystem::remove(pid_path);
-            return 1;
-        }
-        if (::kill(pid, SIGTERM) < 0) {
-            std::println(stderr, "stop: kill pid {} failed: {}", pid,
-                         std::strerror(errno));
-            // Stale pid file: clean it up so next start isn't confused.
-            if (errno == ESRCH) std::filesystem::remove(pid_path);
-            return 1;
-        }
-        // Wait for the daemon to actually exit: its accept() loop only wakes
-        // on the next poll tick (~500 ms), so returning immediately would
-        // leave `daemon status` reporting "running" for a moment after stop.
-        for (int i = 0; i < 60; ++i) {  // up to 3 s
-            if (!pid_is_upix_daemon(pid)) {
-                std::println("stopped (pid {})", pid);
-                return 0;
-            }
-            ::usleep(50 * 1000);
-        }
-        std::println("stop signal sent; pid {} still exiting (processing a request?)", pid);
-        return 0;
+        return stopped ? 0 : 1;
     }
 
     if (a.subcommand == "status") {
-        // Plain stdout — a status line is user-facing output, not a log.
-        // --json: same facts as the prose line, as one document. Exit code
-        // semantics are unchanged (1 = not running); consumers parse the
-        // document regardless of the exit code. `stale` covers every
-        // pid-file-without-live-daemon case (dead pid, corrupt file) — for
-        // UI purposes they are all "the file lies".
+        const auto st = upix::serve_daemon_status(socket_path);
         if (a.json) {
-            std::ifstream pf(pid_path);
-            if (!pf) {
-                emit_json_line(R"({"running":false,"stale":false})");
+            if (!st.running) {
+                emit_json_line(std::format(
+                    R"({{"running":false,"stale":{}}})",
+                    st.stale ? "true" : "false"));
                 return 1;
             }
-            pid_t pid = 0;
-            pf >> pid;
-            if (pid <= 0 || !pid_is_upix_daemon(pid)) {
-                emit_json_line(R"({"running":false,"stale":true})");
-                return 1;
-            }
-            std::error_code ec;
-            const bool sock_up = std::filesystem::exists(socket_path, ec);
             emit_json_line(std::format(
                 R"({{"running":true,"pid":{},"socket":"{}","socketMissing":{}}})",
-                pid, json_escape(socket_path), sock_up ? "false" : "true"));
+                st.pid, json_escape(st.socket_path),
+                st.socket_missing ? "true" : "false"));
             return 0;
         }
-        std::ifstream pf(pid_path);
-        if (!pf) {
-            std::println("not running");
-            return 1;
-        }
-        pid_t pid = 0;
-        pf >> pid;
-        if (pid <= 0) {
-            std::println(stderr, "status: corrupt pid file at {}", pid_path);
-            return 1;
-        }
-        if (!pid_is_upix_daemon(pid)) {
-            std::println("not running (stale pid file)");
+        if (!st.running) {
+            if (st.stale) std::println("not running (stale pid file)");
+            else std::println("not running");
             return 1;
         }
         // Liveness alone can race with shutdown; the socket is the real contract.
-        std::error_code ec;
-        const bool sock_up = std::filesystem::exists(socket_path, ec);
-        if (sock_up)
-            std::println("running (pid {}, socket {})", pid, socket_path);
-        else
+        if (st.socket_missing)
             std::println("running (pid {}, socket {} — socket file missing!)",
-                         pid, socket_path);
+                         st.pid, st.socket_path);
+        else
+            std::println("running (pid {}, socket {})", st.pid, st.socket_path);
         return 0;
     }
 
     // ── start ────────────────────────────────────────────────────────────────
-    // Guard: if a pid file exists and names a live upix daemon, refuse
-    // (already running). kill(0) alone would also bless zombies and recycled
-    // pids and wedge every future start.
-    {
-        std::ifstream pf(pid_path);
-        if (pf) {
-            pid_t existing = 0;
-            pf >> existing;
-            if (pid_is_upix_daemon(existing)) {
-                std::println(stderr, "daemon already running (pid {})", existing);
-                return 1;
-            }
-            // pid file present but process dead → stale, overwrite below.
-        }
-    }
-
-    // Background via single fork + setsid (detaches controlling terminal).
+    // Background via single fork + setsid (detaches controlling terminal);
+    // the child runs share's run_serve_daemon body, which owns the pid file
+    // and the signal wiring.
     if (!a.foreground) {
         pid_t pid = ::fork();
         if (pid < 0) { LOG_ERROR("Daemon", "fork failed"); return 1; }
@@ -164,43 +92,6 @@ int cmd_daemon(const args::Daemon& a) {
         ::close(STDERR_FILENO);
     }
 
-    upix::ServeDaemon daemon;
-    daemon.set_idle_timeout(a.idle_timeout_s);
-    int rc = daemon.start(socket_path, a.models_dir, a.model_name,
-                          a.force_cpu ? upix::ServeDevice::CPU
-                                      : upix::ServeDevice::GPU);
-    if (rc != 0) {
-        // We never wrote the pid file on a failed start, so whatever sits
-        // there belongs to someone else. Remove it only when it describes no
-        // live upix daemon: a lost start race (bind refused because another
-        // daemon holds the socket) must not unlink the winner's pid file.
-        std::ifstream pf(pid_path);
-        pid_t owner = 0;
-        if (pf) pf >> owner;
-        if (!pid_is_upix_daemon(owner)) {
-            std::filesystem::remove(pid_path);
-        }
-        return rc;
-    }
-
-    // Write pid file after successful start (so stop can find us).
-    std::ofstream(pid_path) << ::getpid();
-
-    // Wire signals to the daemon's stop(). `signal_handler` only sets the
-    // generic g_running flag, which the daemon's run() loop does NOT observe —
-    // so a SIGTERM from `daemon stop` would otherwise leave the daemon stuck in
-    // accept(). g_daemon lets the handler reach in and request the
-    // daemon's own shutdown.
-    g_daemon = &daemon;
-    std::signal(SIGINT, daemon_signal_handler);
-    std::signal(SIGTERM, daemon_signal_handler);
-
-    daemon.run();  // returns when stop_requested_ is set (via signal) or idle timeout
-
-    g_daemon = nullptr;
-
-    // Cleanup on shutdown: daemon destructor unlinks the socket; we unlink pid.
-    std::filesystem::remove(pid_path);
-    LOG_INFO("Daemon", "daemon shutting down");
-    return 0;
+    return upix::run_serve_daemon({socket_path, a.models_dir, a.model_name,
+                                   a.force_cpu, a.idle_timeout_s});
 }

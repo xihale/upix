@@ -1,7 +1,13 @@
 // Desk: the one controller behind the QML. Holds a single QVariantMap
 // snapshot (same shape as the web-era Snapshot JSON) that QML renders as a
 // pure function; every command is a Q_INVOKABLE that mutates state and runs
-// the CLI asynchronously. Never blocks the GUI thread; never spawns itself.
+// the core asynchronously. Never blocks the GUI thread.
+//
+// Platform shape (docs/SPEC-frontends.md §3): Linux/macOS is a first-class
+// frontend over share — model management, daemon supervision, host pairing
+// and directory batches call share classes directly; the only QProcess left
+// is the smoke tool. Windows keeps the stage-0 QProcess CLI bridge (AF_UNIX
+// is unavailable there).
 #pragma once
 #include <QByteArray>
 #include <QProcess>
@@ -53,12 +59,13 @@ public:
 
     ~Desk() override;
 
-    // ---- C++ side ----
-    // CLI discovery: UPIX_CLI -> exe dir sibling named exactly `upix-cli`
-    // -> PATH (`upix-cli`, then `upix`). NEVER resolves to our own binary —
-    // the old fallback returned applicationFilePath() and the app spawned
-    // full GUI copies of itself, which took kwin down with it.
+#ifdef Q_OS_WIN
+    // CLI discovery (Windows bridge only): UPIX_CLI -> exe dir sibling named
+    // exactly `upix-cli` -> PATH (`upix-cli`, then `upix`). NEVER resolves to
+    // our own binary — the old fallback returned applicationFilePath() and
+    // the app spawned full GUI copies of itself, which took kwin down.
     QString findCli() const;
+#endif
 
     // Test/fixture support (--shot): replace the snapshot wholesale.
     void applyFakeSnapshot(const QVariantMap& snap);
@@ -81,7 +88,7 @@ private:
     bool jobRunning() const;
     void resetJobCard();
 
-    // process helpers — all async, merged channels
+    // process helpers — all async, merged channels (Windows bridge)
     QProcess* spawn(const QString& key, const QStringList& args,
                     const QStringList& env = {});
     void boot();
@@ -89,10 +96,10 @@ private:
     void savePrefs();             // schedules the coalesced write
     void flushPrefs();            // the actual write (timer / aboutToQuit)
     void startNextJob();
-    void readJobOutput(QProcess* process, bool final = false);
     // One job-stream line: machine events drive the job state; anything else
     // (human logs on stderr) is kept as failure diagnostics in m_jobOutput.
     void handleJobLine(const QString& line);
+
 #ifdef Q_OS_UNIX
     // Warm-daemon delegation for single-file jobs (docs/SPEC-frontends.md §3
     // stage 1): blocking protocol I/O on a worker thread; events come back
@@ -101,9 +108,27 @@ private:
     ServeJob* m_serveJob = nullptr;
     void startServeJob(const QVariantMap& input, const QVariantMap& settings);
     void onServeDone(int code, const QString& detail);
+
+    // share batch core on a worker thread (stage 2): directories, CPU,
+    // auto-tile, and any single file the daemon could not serve.
+    struct BatchJob;
+    BatchJob* m_batchJob = nullptr;
+    void startBatchJob();
+    void onBatchDone(int code, const QString& detail);
+
+    // Coordinator on a worker thread (stage 2): pairing card, approvals and
+    // task progress arrive as marshalled snapshot edits.
+    struct HostRun;
+    HostRun* m_hostRun = nullptr;
+    void handleHostEvent(const QString& kind, const QVariantMap& data);
+
+    // Daemon supervision (stage 2): verified pid-file status in-process;
+    // start re-execs this binary headlessly (`--serve-daemon`).
+    void daemonSpawnSelf();
 #endif
-    // The CLI-batch spawn (the pre-delegation path; also the fallback when
-    // the daemon probe fails, and the only path for dirs/CPU/auto-tile).
+
+    void readJobOutput(QProcess* process, bool final = false);
+    // The CLI-batch spawn (Windows path; also the smoke tool's driver).
     void spawnCliJob();
     void readHostOutput(QProcess* process, bool final = false);
     void readDownloadOutput(QProcess* process, const QString& name);
