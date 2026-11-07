@@ -34,7 +34,10 @@
               └──────────────────────────────────────────────┘
 ```
 
-桌面端 `desktop/` 不链接 share/。它用 Qt Quick 开窗口，界面调用同一份 `upix-cli`（放大、模型、主机、热引擎）。
+桌面端 `desktop/` 是一等公民前端（docs/SPEC-frontends.md）：单文件放大走 share 的
+serve daemon 协议（进程内直调，仅链接薄客户端 TU，不链引擎）；模型家族分组直接消费
+`share/core/model_families.hpp`；目录/CPU/auto-tile/Windows 及 daemon 不在线时回退
+调用同一份 `upix-cli`（阶段 2 将移除该依赖）。
 
 | 目录 | 角色 | 构建 | 标准 |
 |------|------|------|------|
@@ -365,8 +368,11 @@ daemon 协议不携带 tile batch size，因此有效 `batch_size != 1` 或开�
 可处理的提交失败会回滚，回滚失败保留并报告恢复目录；平铺两个文件的替换不保证断电原子性。
 
 **输出标记（SR XMP）**：所有输出图嵌入 XMP 标记 `urn:upix:sr:1`（`share/utils/sr_marker`，
-PNG iTXt / JPEG APP1 / WebP XMP chunk / AVIF mdat 四格式同一份探测代码）。CLI/Android
-回喂带标记的图默认跳过（防止反复放大），`-f`/`--force` 强制重处理。
+PNG iTXt / JPEG APP1 / WebP XMP chunk / AVIF mdat 四格式同一份探测代码）。回喂带标记的图
+默认跳过（防止反复放大），`-f`/`--force` 强制重处理。跳过语义是核心不变式、由两处执行：
+CLI 调用方在读图后（省一次启动），serve daemon 在 `ServeRequest.force` 未置位时
+（协议层所有调用方一致，docs/SPEC-frontends.md §1 S4；`ServeResponse.skipped=1` 表示
+跳过）。
 
 **PC 端解码 autorotate**：单图/目录/daemon/远程四条 PC 解码路径统一在解码后按 JPEG EXIF
 orientation（`share/utils/exif`）烘焙旋转再送推理；输出从像素重编码，天然不带 EXIF（拍摄
@@ -439,6 +445,17 @@ UI → ProcessingViewModel → NativeImageProcessingRepository
 ```
 
 ---
+
+### 5.3 PC 桌面（`desktop/`）
+
+Qt Quick 壳（组件层、token、动效见 [desktop/DESIGN.md](../desktop/DESIGN.md)）。
+`Desk` 持一份 QVariantMap 快照，QML 把渲染当纯函数；所有命令是 Q_INVOKABLE，
+绝不阻塞 GUI 线程。与 share 的关系由 [docs/SPEC-frontends.md](SPEC-frontends.md)
+约束（前端一律平等），现状：单文件放大经 serve daemon 协议进程内直调
+（`ServeJob` 工作线程 + 机器事件 JSON 回灌 `handleJobLine`），分组表来自
+`share/core/model_families.hpp`；目录/模型管理/daemon 监管/host 仍调 CLI
+（阶段 2 触点清单见 SPEC §2）。测试：`tst_desk_jobs`（含假 daemon 三线型与
+分组 golden）与 `tst_compare_drag`（真手势）。
 
 ## 6. 构建系统
 
@@ -585,6 +602,7 @@ DeviceViewModel → CoordinatorClient → NativeWorker.nativeRequestConnection
 
 | 文档 | 内容 |
 |------|------|
+| [SPEC-frontends.md](SPEC-frontends.md) | 前端一律平等规格：不变式、QProcess 触点审计、阶段计划与验收 |
 | `README.md` | 用户向使用说明（构建、CLI 用法、分布式模式） |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | 开发规范：构建/测试/发布流程与已知坑 |
 | [DESIGN_LANGUAGE.md](DESIGN_LANGUAGE.md) | Android 端 UI 设计语言（规范性） |

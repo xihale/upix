@@ -19,6 +19,20 @@
 #include <QStandardPaths>
 #include <QUrl>
 
+#include "core/config.hpp"                // kDefaultTileOverlap
+#include "core/distributed/protocol.hpp"  // Serve frames + Protocol framing
+#include "core/model_families.hpp"        // S3: the one family/grouping table
+#include "core/serve/daemon.hpp"          // default_serve_socket_path (inline)
+#include "utils/encoder_options.hpp"
+#include "utils/unix_socket.hpp"
+
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <cstring>
+#include <filesystem>
+#include <thread>
+
 namespace {
 
 constexpr int CoalesceMs = 70;
@@ -73,6 +87,36 @@ QVariantMap inputEntry(const QString& path, bool dir) {
     };
 }
 
+// Grouped catalog for ModelsPage (share/core/model_families.hpp is the single
+// source of the table — Grouping.js used to carry a private copy). Shape is
+// what G.groups() used to return: [{label, items: [{m, short}]}].
+QVariantList groupedCatalog(const QVariantList& models) {
+    std::vector<std::string> names;
+    QHash<QString, QVariantMap> byName;
+    names.reserve(models.size());
+    for (const QVariant& v : models) {
+        const QVariantMap m = v.toMap();
+        const QString name = m.value(QStringLiteral("name")).toString();
+        byName[name] = m;
+        names.push_back(name.toStdString());
+    }
+    QVariantList out;
+    for (const auto& g : upix::groups(names)) {
+        QVariantList items;
+        for (const auto& it : g.items) {
+            items.append(QVariantMap{
+                {"m", byName.value(QString::fromStdString(it.name))},
+                {"short", QString::fromStdString(it.short_name)},
+            });
+        }
+        out.append(QVariantMap{
+            {"label", QString::fromStdString(g.label)},
+            {"items", items},
+        });
+    }
+    return out;
+}
+
 QVariantMap defaultSnap() {
     return QVariantMap{
         {"cliFound", false},
@@ -90,6 +134,7 @@ QVariantMap defaultSnap() {
         {"force", false},
         {"jobs", 4},
         {"installed", QVariantList{}},
+        {"installedGroups", QVariantList{}},
         {"remote", QVariantList{}},
         {"remoteError", QString()},
         {"modelsDir", QString()},
@@ -129,12 +174,14 @@ QVariantMap fakeSnap(const QString& state) {
     s["cliVersion"] = QStringLiteral("v0.2.0 avif:system-dlopen");
     s["model"] = QStringLiteral("AnimeSharp-x4");
     s["modelsDir"] = QStringLiteral("/home/xihale/.local/share/upix/models");
-    s["installed"] = QVariantList{
+    const QVariantList installedModels = QVariantList{
         QVariantMap{{"name", QStringLiteral("Real-ESRGANv3-anime-x2")}, {"scale", 2}, {"size", QStringLiteral("1 MB")}, {"scene", QStringLiteral("动漫")}, {"recommended", true}},
         QVariantMap{{"name", QStringLiteral("AnimeSharp-x4")}, {"scale", 4}, {"size", QStringLiteral("31 MB")}, {"scene", QStringLiteral("动漫")}, {"recommended", true}},
         QVariantMap{{"name", QStringLiteral("Real-CUGAN-denoise-x2")}, {"scale", 2}, {"size", QStringLiteral("2 MB")}, {"scene", QStringLiteral("动漫")}, {"recommended", false}},
         QVariantMap{{"name", QStringLiteral("Remacri-x4")}, {"scale", 4}, {"size", QStringLiteral("31 MB")}, {"scene", QStringLiteral("综合")}, {"recommended", true}},
     };
+    s["installed"] = installedModels;
+    s["installedGroups"] = groupedCatalog(installedModels);
     s["remote"] = QVariantList{
         QVariantMap{{"name", QStringLiteral("BSRGAN-x4")}, {"scale", 4}, {"size", QStringLiteral("29.5 MB")}, {"scene", QStringLiteral("照片")}, {"recommended", false}},
         QVariantMap{{"name", QStringLiteral("UltraSharp-x4")}, {"scale", 4}, {"size", QStringLiteral("31 MB")}, {"scene", QStringLiteral("综合")}, {"recommended", true}},
@@ -243,6 +290,47 @@ QVariantMap fakeSnap(const QString& state) {
 }
 
 } // namespace
+
+// One in-process delegation to the warm engine daemon. The worker thread owns
+// the blocking socket I/O; events are marshalled onto the GUI thread as the
+// same machine-protocol JSON lines the CLI job stream speaks, so handleJobLine
+// and finishJob stay the only consumers. Desk deletes the job (joining the
+// thread) on completion, cancellation, or shutdown.
+struct Desk::ServeJob {
+    explicit ServeJob(Desk* d) : desk(d) {}
+    ~ServeJob() {
+        cancelled.store(true, std::memory_order_relaxed);
+        socket.shutdown_wake();
+        if (thread.joinable()) thread.join();
+    }
+    void requestCancel() {
+        cancelled.store(true, std::memory_order_relaxed);
+        // close() from a foreign thread does not reliably wake a blocked
+        // recv; shutdown() does.
+        socket.shutdown_wake();
+    }
+    QPointer<Desk> desk;
+    upix::UnixSocket socket;
+    std::thread thread;
+    std::atomic<bool> cancelled{false};
+    std::atomic<bool> done{false};
+    QString inPath;
+    QString model;
+    QString format;
+    int quality = 90;
+    int tileSize = 256;
+    bool force = false;
+};
+
+Desk::~Desk() {
+#ifdef Q_OS_UNIX
+    // Joins the delegation worker (its queued callbacks target this object,
+    // so nothing may outlive the member state it touches).
+    delete m_serveJob;
+    m_serveJob = nullptr;
+#endif
+    if (g_desk == this) g_desk = nullptr;
+}
 
 Desk::Desk(QObject* parent) : QObject(parent) {
     g_desk = this;
@@ -592,6 +680,38 @@ void Desk::startNextJob() {
 
     const QVariantMap input = inputs.at(m_runIndex).toMap();
     const QVariantMap settings = m_runSnap;
+    const bool isDir = input.value("dir").toBool();
+    const bool autoTile = settings.value("autoTile").toBool();
+
+    QVariantMap job = s()["job"].toMap();
+    job["index"] = m_runIndex + 1;
+    job["percent"] = 0;
+    job["tilesDone"] = 0;
+    job["tilesTotal"] = 0;
+    job["etaSec"] = 0;
+    job["current"] = QFileInfo(input.value("path").toString()).fileName();
+    s()["job"] = job;
+    m_jobPending.clear();
+    m_jobOutput.clear();
+
+#ifdef Q_OS_UNIX
+    // Warm-daemon delegation (docs/SPEC-frontends.md §3 stage 1): a single
+    // file with a pinned tile size on the GPU rides the serve protocol
+    // in-process. Everything else — dirs, auto-tile (the optimizer is not in
+    // ServeRequest), CPU, Windows — stays on the CLI batch path below, which
+    // is also the fallback when no daemon answers.
+    if (!isDir && settings.value("gpu").toBool() && !autoTile) {
+        startServeJob(input, settings);
+        return;
+    }
+#endif
+    spawnCliJob();
+}
+
+void Desk::spawnCliJob() {
+    const QVariantList inputs = m_runSnap.value("inputs").toList();
+    const QVariantMap input = inputs.at(m_runIndex).toMap();
+    const QVariantMap settings = m_runSnap;
     QStringList args{QStringLiteral("-i"), input.value("path").toString(),
                      QStringLiteral("-m"), settings.value("model").toString(),
                      QStringLiteral("--output-quality"), QString::number(settings.value("quality").toInt())};
@@ -607,17 +727,6 @@ void Desk::startNextJob() {
         else args << QStringLiteral("-j") << QString::number(settings.value("jobs").toInt());
     }
 
-    QVariantMap job = s()["job"].toMap();
-    job["index"] = m_runIndex + 1;
-    job["percent"] = 0;
-    job["tilesDone"] = 0;
-    job["tilesTotal"] = 0;
-    job["etaSec"] = 0;
-    job["current"] = QFileInfo(input.value("path").toString()).fileName();
-    s()["job"] = job;
-    m_jobPending.clear();
-    m_jobOutput.clear();
-
     QProcess* process = spawn(QStringLiteral("job"), args, {QStringLiteral("UPIX_PROGRESS=json")});
     if (!process) {
         finishJob(-1);
@@ -630,6 +739,172 @@ void Desk::startNextJob() {
                 finishJob(code == 0 && status == QProcess::NormalExit ? 0 : 1);
             });
 }
+
+#ifdef Q_OS_UNIX
+
+
+void Desk::startServeJob(const QVariantMap& input, const QVariantMap& settings) {
+    m_serveJob = new ServeJob(this);
+    ServeJob* job = m_serveJob;
+    job->inPath = input.value(QStringLiteral("path")).toString();
+    job->model = settings.value(QStringLiteral("model")).toString();
+    job->format = settings.value(QStringLiteral("format")).toString();
+    job->quality = settings.value(QStringLiteral("quality")).toInt();
+    job->tileSize = settings.value(QStringLiteral("tileSize")).toInt();
+    job->force = settings.value(QStringLiteral("force")).toBool();
+
+    job->thread = std::thread([this, job] {
+        // Marshalled into the GUI thread; `guard` makes a stalled delivery
+        // harmless if Desk is already gone.
+        auto emitLine = [this, job](const QString& line) {
+            if (!job->desk) return;
+            QMetaObject::invokeMethod(job->desk, [this, line] { handleJobLine(line); },
+                                      Qt::QueuedConnection);
+        };
+        // 0 = ok, 1 = error (detail lands in m_jobOutput), 2 = daemon
+        // unavailable → TRANSITIONAL fallback to the CLI path.
+        auto finish = [this, job](int code, const QString& detail) {
+            if (job->done.exchange(true)) return;
+            if (!job->desk) return;
+            QMetaObject::invokeMethod(job->desk, [this, code, detail] { onServeDone(code, detail); },
+                                      Qt::QueuedConnection);
+        };
+
+        namespace fs = std::filesystem;
+        // Test override (tst_desk_jobs spins a fake daemon on a tmp socket);
+        // production resolves the same path the CLI daemon listens on.
+        const QString override_ = qEnvironmentVariable("UPIX_SERVE_SOCKET");
+        const std::string sock_path = !override_.isEmpty()
+            ? override_.toStdString()
+            : upix::default_serve_socket_path();
+        if (sock_path.empty()) { finish(2, {}); return; }
+        std::error_code ec;
+        if (!fs::exists(sock_path, ec) || !job->socket.connect(sock_path).has_value()) {
+            finish(2, {});
+            return;
+        }
+
+        upix::ServeRequest req{};
+        const std::string model = job->model.toStdString();
+        std::memcpy(req.model_name, model.data(),
+                    std::min(model.size(), sizeof(req.model_name) - 1));
+        const std::string fmt = job->format.toStdString();
+        std::memcpy(req.output_format, fmt.data(),
+                    std::min(fmt.size(), sizeof(req.output_format) - 1));
+        req.tile_size = job->tileSize;
+        req.tile_overlap = upix::kDefaultTileOverlap;
+        req.output_quality = job->quality;
+        req.encoder = upix::to_wire(upix::EncoderOptions{});
+        req.force = job->force ? 1 : 0;
+        const std::string in_abs = fs::absolute(fs::path(job->inPath.toStdString()))
+                                       .lexically_normal().string();
+        req.input_path_length = static_cast<uint32_t>(in_abs.size());
+        req.output_path_length = 0;  // daemon derives — same grammar as the CLI default
+        std::vector<uint8_t> payload(sizeof(req) + req.input_path_length);
+        std::memcpy(payload.data(), &req, sizeof(req));
+        std::memcpy(payload.data() + sizeof(req), in_abs.data(), req.input_path_length);
+
+        upix::MessageHeader h{};
+        h.magic = upix::Protocol::MAGIC;
+        h.type = upix::MessageType::MSG_SERVE_REQUEST;
+        h.payload_length = static_cast<uint32_t>(payload.size());
+        const auto frame = upix::Protocol::serialize(h, payload.data());
+        if (!job->socket.send_all(frame.data(), frame.size()).has_value()) {
+            finish(1, {});
+            return;
+        }
+
+        const auto started = std::chrono::steady_clock::now();
+        std::vector<uint8_t> rhdr(upix::Protocol::HEADER_SIZE);
+        while (true) {
+            if (!job->socket.receive_all(rhdr.data(), rhdr.size()).has_value()) {
+                finish(1, {});
+                return;
+            }
+            const auto parsed = upix::Protocol::parse_header(rhdr);
+            if (!parsed) { finish(1, {}); return; }
+            if (parsed->type == upix::MessageType::MSG_SERVE_PROGRESS &&
+                parsed->payload_length == sizeof(upix::ServeProgress)) {
+                std::vector<uint8_t> pb(parsed->payload_length);
+                if (!job->socket.receive_all(pb.data(), pb.size()).has_value() ||
+                    !upix::Protocol::verify_frame(rhdr.data(), pb.data(), pb.size())) {
+                    finish(1, {});
+                    return;
+                }
+                upix::ServeProgress sp{};
+                std::memcpy(&sp, pb.data(), sizeof(sp));
+                if (sp.stage == 0 && sp.total_tiles > 0) {
+                    const int done = static_cast<int>(sp.completed_tiles);
+                    const int total = static_cast<int>(sp.total_tiles);
+                    const int pct = std::min(100, done * 100 / total);
+                    const auto secs = std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::steady_clock::now() - started).count();
+                    const int eta = done > 0
+                        ? static_cast<int>(secs * (total - done) / done) : 0;
+                    emitLine(QStringLiteral(
+                                 R"({"t":"progress","pct":%1,"done":%2,"total":%3,"eta":%4})")
+                                 .arg(pct).arg(done).arg(total).arg(eta));
+                }
+                continue;
+            }
+            if (parsed->type != upix::MessageType::MSG_SERVE_RESPONSE ||
+                parsed->payload_length < sizeof(upix::ServeResponse) - 8) {
+                finish(1, {});
+                return;
+            }
+            std::vector<uint8_t> rb(parsed->payload_length);
+            if (!job->socket.receive_all(rb.data(), rb.size()).has_value() ||
+                !upix::Protocol::verify_frame(rhdr.data(), rb.data(), rb.size())) {
+                finish(1, {});
+                return;
+            }
+            upix::ServeResponse resp{};
+            const size_t struct_bytes = std::min<size_t>(rb.size(), sizeof(resp));
+            std::memcpy(&resp, rb.data(), struct_bytes);
+            // §4 tolerance: a same-repo older daemon omits the skipped tail —
+            // its frame is 8 bytes shorter than the path payload suggests.
+            if (rb.size() < sizeof(resp) + static_cast<size_t>(resp.out_path_length)) {
+                resp.skipped = 0;
+                resp.reserved0 = 0;
+            }
+            if (!resp.ok) {
+                finish(1, QString::fromLatin1(resp.error));
+                return;
+            }
+            if (resp.skipped) {
+                emitLine(QStringLiteral(R"({"t":"note","message":"已是超分结果,已跳过"})"));
+                finish(0, {});
+                return;
+            }
+            const size_t path_len = std::min<size_t>(
+                resp.out_path_length, rb.size() - struct_bytes);
+            const QString saved = QString::fromUtf8(
+                reinterpret_cast<const char*>(rb.data()) + struct_bytes,
+                static_cast<qsizetype>(path_len));
+            emitLine(QStringLiteral(R"({"t":"note","message":"%1x%2"})")
+                         .arg(resp.width).arg(resp.height));
+            emitLine(QStringLiteral(R"({"t":"saved","path":"%1"})").arg(saved));
+            finish(0, {});
+            return;
+        }
+    });
+}
+
+void Desk::onServeDone(int code, const QString& detail) {
+    ServeJob* job = m_serveJob;
+    m_serveJob = nullptr;
+    delete job;
+    if (code == 2) {
+        // No daemon answered: the TRANSITIONAL CLI path (same settings, same
+        // card state — the card was reset before the gate).
+        spawnCliJob();
+        return;
+    }
+    m_jobOutput = detail.toUtf8();
+    finishJob(code);
+}
+
+#endif  // Q_OS_UNIX
 
 void Desk::readJobOutput(QProcess* process, bool final) {
     const QByteArray bytes = process->readAll();
@@ -717,6 +992,14 @@ void Desk::finishJob(int code) {
 void Desk::cancel() {
     if (s()["job"].toMap().value("phase").toString() != QLatin1String("running")) return;
     m_cancelRequested = true;
+#ifdef Q_OS_UNIX
+    // Wake the worker; it reports back through onServeDone and the
+    // m_cancelRequested branch of finishJob closes the card out.
+    if (m_serveJob) {
+        m_serveJob->requestCancel();
+        return;
+    }
+#endif
     QProcess* process = m_procs.value(QStringLiteral("job"));
     if (!process || process->state() != QProcess::Running) {
         QVariantMap job = s()["job"].toMap();
@@ -759,7 +1042,9 @@ void Desk::refreshModels() {
         }
         const QVariantMap m = oneShotDoc(p);
         s()["modelsDir"] = m.value(QStringLiteral("modelsDir"));
-        s()["installed"] = m.value(QStringLiteral("installed"));
+        const QVariantList installed = m.value(QStringLiteral("installed")).toList();
+        s()["installed"] = installed;
+        s()["installedGroups"] = groupedCatalog(installed);
         touch();
 
         QProcess* r = spawn(QStringLiteral("remote"),

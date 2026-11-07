@@ -1,12 +1,115 @@
 #include "desk.h"
 #include "machine.h"
 
+#include "core/distributed/protocol.hpp"
+#include "core/model_families.hpp"
+#include "utils/unix_socket.hpp"
+
 #include <QFile>
 #include <QDir>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QTemporaryDir>
 #include <QTest>
+
+#include <atomic>
+#include <cstring>
+#include <memory>
+#include <string>
+#include <thread>
+#include <vector>
+
+namespace {
+
+// A real AF_UNIX server speaking the serve protocol well enough for the
+// desktop delegation: reads one request frame per connection, then replies
+// according to `mode`. Frames are built with the production Protocol code —
+// the assertions pin the real wire, not a mock echo.
+class FakeServeDaemon {
+public:
+    enum Mode { Saved, Skipped, LegacyFrame };
+
+    explicit FakeServeDaemon(const QString& path) {
+        server_ = std::make_unique<upix::UnixServer>();
+        if (!server_->listen(path.toStdString()).has_value())
+            qFatal("fake daemon listen failed");
+        thread_ = std::thread([this] {
+            while (true) {
+                auto conn = server_->accept();
+                if (!conn) return;  // stop() woke the poll
+                serve(**conn);
+            }
+        });
+    }
+    ~FakeServeDaemon() {
+        server_->stop();
+        if (thread_.joinable()) thread_.join();
+    }
+
+    Mode mode = Saved;
+    QString savedPath;
+    QString lastModel;
+
+private:
+    void serve(upix::UnixSocket& sock) {
+        std::vector<uint8_t> hdr(upix::Protocol::HEADER_SIZE);
+        if (!sock.receive_all(hdr.data(), hdr.size()).has_value()) return;
+        const auto h = upix::Protocol::parse_header(hdr);
+        if (!h || h->type != upix::MessageType::MSG_SERVE_REQUEST) return;
+        std::vector<uint8_t> body(h->payload_length);
+        if (!sock.receive_all(body.data(), body.size()).has_value()) return;
+        upix::ServeRequest req{};
+        std::memcpy(&req, body.data(), std::min(body.size(), sizeof(req)));
+        lastModel = QByteArray(req.model_name).trimmed();
+
+        const auto send = [&](const void* payload, size_t len) {
+            upix::MessageHeader out{};
+            out.magic = upix::Protocol::MAGIC;
+            out.type = upix::MessageType::MSG_SERVE_RESPONSE;
+            out.payload_length = static_cast<uint32_t>(len);
+            const auto frame = upix::Protocol::serialize(out, payload);
+            (void)sock.send_all(frame.data(), frame.size());
+        };
+
+        if (mode == Skipped) {
+            upix::ServeResponse r{};
+            r.ok = 1;
+            r.skipped = 1;
+            send(&r, sizeof(r));
+            return;
+        }
+        // One progress frame first: pins that live tile events flow.
+        upix::ServeProgress p{2, 4, 0};
+        upix::MessageHeader ph{};
+        ph.magic = upix::Protocol::MAGIC;
+        ph.type = upix::MessageType::MSG_SERVE_PROGRESS;
+        ph.payload_length = sizeof(p);
+        const auto pframe = upix::Protocol::serialize(ph, &p);
+        (void)sock.send_all(pframe.data(), pframe.size());
+
+        upix::ServeResponse r{};
+        r.ok = 1;
+        r.width = 320;
+        r.height = 240;
+        const std::string out = savedPath.toStdString();
+        r.out_path_length = static_cast<uint32_t>(out.size());
+        if (mode == LegacyFrame) {
+            // A same-repo older daemon: the response struct without the
+            // 8-byte skipped tail, path bytes right after (SPEC §4).
+            send(&r, sizeof(r) - 8);
+            (void)sock.send_all(out.data(), out.size());
+            return;
+        }
+        std::string payload(reinterpret_cast<const char*>(&r), sizeof(r));
+        payload += out;
+        send(payload.data(), payload.size());
+    }
+
+    std::unique_ptr<upix::UnixServer> server_;
+    std::thread thread_;
+};
+
+} // namespace
 
 namespace {
 
@@ -19,6 +122,8 @@ private slots:
     void cleanup();
     void machineParsesEventLines();
     void daemonLabelCoversAllStatusShapes();
+    void modelFamiliesGoldenPinsShareSemantics();
+    void servesFileInputsThroughWarmDaemon();
     void processesEveryInputOnceWithSnapshottedSettings();
     void cancellationStopsQueuedInputs();
     void failureKeepsDiagnosticOutput();
@@ -107,6 +212,7 @@ void TstDesktopJobs::cleanup() {
     qputenv("UPIX_TEST_MODE", "success");
     qputenv("UPIX_FAKE", "1");
     qunsetenv("UPIX_TEST_CLI_VERSION");
+    qunsetenv("UPIX_SERVE_SOCKET");
 }
 
 QString TstDesktopJobs::addImage(const QString& name) {
@@ -166,6 +272,95 @@ void TstDesktopJobs::daemonLabelCoversAllStatusShapes() {
              QStringLiteral("not running (stale pid file)"));
     QCOMPARE(machine::daemonLabel(QVariantMap{{"running", false}, {"stale", false}}),
              QStringLiteral("not running"));
+}
+
+void TstDesktopJobs::modelFamiliesGoldenPinsShareSemantics() {
+    // share/core/model_families.hpp is the single source (SPEC §1 S3); pin
+    // the semantics the renderer relies on: known families, unknown stems
+    // split on -xN, lone members and single-member stems stay ungrouped.
+    const auto g = upix::groups({
+        std::string("Real-ESRGANv3"),
+        std::string("Real-ESRGANv3-AnimeVideo-v3-x2"),
+        std::string("NomosUni-SPAN-x2"),
+        std::string("NomosUni-SPAN-x4"),
+        std::string("BSRGAN-x4"),
+    });
+    QCOMPARE(g.size(), 3UL);
+    const auto find = [&g](const std::string& label) -> const upix::FamilyGroup* {
+        for (const auto& grp : g)
+            if (grp.label == label) return &grp;
+        return nullptr;
+    };
+    const upix::FamilyGroup* family = find("Real-ESRGAN v3");
+    QVERIFY(family);
+    QCOMPARE(family->items.size(), 2UL);
+    QCOMPARE(QString::fromStdString(family->items[1].short_name),
+             QStringLiteral("AnimeVideo-v3-x2"));
+    const upix::FamilyGroup* stem = find("NomosUni-SPAN");
+    QVERIFY(stem);
+    QCOMPARE(stem->items.size(), 2UL);
+    QCOMPARE(QString::fromStdString(stem->items[1].short_name),
+             QStringLiteral("x4"));
+    const upix::FamilyGroup* lone = nullptr;
+    for (const auto& grp : g)
+        if (grp.label.empty()) lone = &grp;
+    QVERIFY(lone);
+    QCOMPARE(lone->items.size(), 1UL);
+    QCOMPARE(QString::fromStdString(lone->items[0].name),
+             QStringLiteral("BSRGAN-x4"));
+
+    // A lone KNOWN member gains nothing from a family header.
+    const auto single = upix::groups({std::string("Real-ESRGANv3")});
+    QCOMPARE(single.size(), 1UL);
+    QVERIFY(single[0].label.empty());
+    QCOMPARE(QString::fromStdString(single[0].items[0].name),
+             QStringLiteral("Real-ESRGANv3"));
+}
+
+void TstDesktopJobs::servesFileInputsThroughWarmDaemon() {
+    // Stage 1 (SPEC §3): a single file with a pinned tile size on GPU rides
+    // the serve protocol in-process — no CLI spawn. Three wire shapes: a
+    // normal save, an SR-marker skip, and a same-repo older daemon's legacy
+    // frame (SPEC §4 tail tolerance).
+    for (const FakeServeDaemon::Mode mode :
+         {FakeServeDaemon::Saved, FakeServeDaemon::Skipped,
+          FakeServeDaemon::LegacyFrame}) {
+        const QString sock = m_dir.filePath(QStringLiteral("serve-%1.sock").arg(int(mode)));
+        FakeServeDaemon daemon(sock);
+        daemon.mode = mode;
+        const QString image = addImage(QStringLiteral("srv-%1.png").arg(int(mode)));
+        daemon.savedPath = image + QStringLiteral(".out");
+        qputenv("UPIX_SERVE_SOCKET", sock.toUtf8());
+
+        Desk desk;
+        QVariantMap snap = Desk::fakeSnapshot(QStringLiteral("picked"));
+        snap["inputs"] = QVariantList{};
+        snap["folderCount"] = 0;
+        snap["cover"] = QString();
+        snap["cliFound"] = true;
+        snap["model"] = QStringLiteral("test-model");
+        snap["autoTile"] = false;
+        snap["tileSize"] = 128;
+        snap["gpu"] = true;
+        snap["force"] = false;
+        desk.applyFakeSnapshot(snap);
+        desk.addPaths({image});
+        desk.start();
+
+        QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("job").toMap().value("phase").toString(),
+                                  QStringLiteral("done"), 5000);
+        const QVariantMap job = desk.snap().value("job").toMap();
+        QCOMPARE(job.value("percent").toInt(), 100);
+        QCOMPARE(job.value("outputs").toList().size(),
+                 mode == FakeServeDaemon::Skipped ? 0 : 1);
+        if (mode == FakeServeDaemon::Saved)
+            QCOMPARE(job.value("outputs").toList().at(0).toString(),
+                     QUrl::fromLocalFile(image + QStringLiteral(".out")).toString());
+        if (mode == FakeServeDaemon::Skipped)
+            QVERIFY(job.value("message").toString().contains(QStringLiteral("已跳过")));
+        QCOMPARE(daemon.lastModel, QByteArrayLiteral("test-model"));
+        qunsetenv("UPIX_SERVE_SOCKET");
+    }
 }
 
 void TstDesktopJobs::processesEveryInputOnceWithSnapshottedSettings() {

@@ -95,4 +95,13 @@ void StreamSocket::close_fd() {
     }
 }
 
+void StreamSocket::shutdown_wake() {
+    // Only the rx side matters (the blocked reader); taking both locks like
+    // close_fd() would convoy with the very recv we are waking.
+    std::lock_guard<std::recursive_mutex> rx_lock(rx_mutex_);
+    if (socket_ >= 0) {
+        ::shutdown(socket_, SHUT_RDWR);
+    }
+}
+
 } // namespace upix

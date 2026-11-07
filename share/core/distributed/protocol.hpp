@@ -294,8 +294,16 @@ struct ServeRequest {
     uint32_t input_path_length;   // bytes of input path following this struct
     uint32_t output_path_length;  // bytes of output path following this struct; 0 = daemon derives
     EncoderOptionsWire encoder;   // per-format advanced knobs (same fields as ClientTaskSubmit)
+    // SR-marker enforcement (docs/SPEC-frontends.md §1 S4): the skip is a core
+    // invariant executed by the daemon, not a CLI courtesy. Tail fields per the
+    // §4 evolution rule: append-only, daemon zero-fills a missing tail from a
+    // same-repo older client (frame is sizeof - 8).
+    uint8_t force;           // 1 = re-process SR-marked inputs (CLI --force)
+    uint8_t reserved[7];     // keep zero on send
     // payload: [input_path bytes][output_path bytes] — no NUL terminators.
 };
+static_assert(sizeof(ServeRequest) - offsetof(ServeRequest, force) == 8,
+              "legacy-tail tolerance in daemon.cpp assumes an 8-byte tail");
 
 struct ServeResponse {
     int32_t ok;              // 1 = success, 0 = error
@@ -306,8 +314,15 @@ struct ServeResponse {
     char error[128];
     char model_name[64];     // model actually used (daemon's choice when request
                              // named none) — reflected in the derived output name
+    // §4 tail: a same-repo older daemon omits these 8 bytes (its frame is
+    // sizeof - 8 + path bytes); clients zero-fill. skipped=1 means the input
+    // carried an SR marker and force was not set — success, no output written.
+    int32_t skipped;
+    int32_t reserved0;
     // payload on success: [output path bytes]
 };
+static_assert(sizeof(ServeResponse) - offsetof(ServeResponse, skipped) == 8,
+              "legacy-tail tolerance in clients assumes an 8-byte tail");
 
 // MSG_SERVE_PROGRESS payload. stage 0: tile progress (the counters mirror
 // ProcessingProgress so the client can rebuild its usual "42% (7/169, ETA)"

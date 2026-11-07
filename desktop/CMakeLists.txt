@@ -1,11 +1,12 @@
 cmake_minimum_required(VERSION 3.21)
 project(upix-desktop LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 
 find_package(Qt6 REQUIRED COMPONENTS Quick QuickControls2 Widgets Svg)
+find_package(ZLIB REQUIRED)  # share network_utils::crc32
 
 qt_standard_project_setup(REQUIRES 6.5)
 if(Qt6_VERSION VERSION_GREATER_EQUAL "6.8")
@@ -24,9 +25,20 @@ qt_add_executable(upix WIN32
 
 target_include_directories(upix PRIVATE src)
 
+# share/ is the single source of domain tables and the serve-protocol client
+# (docs/SPEC-frontends.md): model_families.hpp is header-only; the three TUs
+# below are the thin AF_UNIX serve client (no engine, no ncnn linkage).
+target_include_directories(upix PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../share)
+target_sources(upix PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../share/core/distributed/protocol.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../share/utils/stream_socket.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../share/utils/unix_socket.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../share/utils/network.cpp
+)
+
 set(FIXTURE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/assets")
 target_compile_definitions(upix PRIVATE FIXTURE_DIR="${FIXTURE_DIR}")
-target_link_libraries(upix PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Svg)
+target_link_libraries(upix PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Svg ZLIB::ZLIB)
 qt_add_qml_module(upix
 URI UpixDesk
 VERSION 1.0
@@ -48,7 +60,6 @@ qml/Inspector.qml
 qml/ModelsPage.qml
 qml/HostPage.qml
 qml/PairingSheet.qml
-qml/Grouping.js
 )
 
 # ---- Windows zip: upix.exe + upix-cli.exe side by side ----------------------
@@ -113,10 +124,14 @@ if(UPIX_BUILD_TESTS)
         tests/tst_desk_jobs.cpp
         src/desk.cpp
         src/machine.cpp
+        ../share/core/distributed/protocol.cpp
+        ../share/utils/stream_socket.cpp
+        ../share/utils/unix_socket.cpp
+        ../share/utils/network.cpp
     )
-    target_include_directories(tst_desk_jobs PRIVATE src)
+    target_include_directories(tst_desk_jobs PRIVATE src ${CMAKE_CURRENT_SOURCE_DIR}/../share)
     target_compile_definitions(tst_desk_jobs PRIVATE FIXTURE_DIR="${FIXTURE_DIR}")
-    target_link_libraries(tst_desk_jobs PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Test)
+    target_link_libraries(tst_desk_jobs PRIVATE Qt6::Quick Qt6::QuickControls2 Qt6::Widgets Qt6::Test ZLIB::ZLIB)
     add_test(NAME desk_jobs COMMAND tst_desk_jobs -platform offscreen)
     set_tests_properties(desk_jobs PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 endif()

@@ -73,6 +73,16 @@ auto send_serve_error(UnixSocket& sock, const char* message) -> void {
     send_via(sock, MessageType::MSG_SERVE_RESPONSE, &r, sizeof(r));
 }
 
+// SR-marked input and force not set (docs/SPEC-frontends.md §1 S4): success
+// with no output — the caller treats it like the CLI's marker skip (exit 0,
+// no file written).
+auto send_serve_skipped(UnixSocket& sock) -> void {
+    ServeResponse r{};
+    r.ok = 1;
+    r.skipped = 1;
+    send_via(sock, MessageType::MSG_SERVE_RESPONSE, &r, sizeof(r));
+}
+
 // Steady-clock ms — shared clock for the idle-timeout bookkeeping.
 auto steady_now_ms() -> int64_t {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -103,19 +113,6 @@ public:
 };
 
 } // namespace
-
-auto default_serve_socket_path() -> std::string {
-    const char* cache = std::getenv("XDG_CACHE_HOME");
-    std::string base;
-    if (cache && *cache) {
-        base = cache;
-    } else {
-        const char* home = upix::user_home();
-        if (!home || !*home) return {};
-        base = std::string(home) + "/.cache";
-    }
-    return base + "/upix/serve.sock";
-}
 
 ServeDaemon::ServeDaemon() = default;
 ServeDaemon::~ServeDaemon() {
@@ -219,7 +216,9 @@ auto ServeDaemon::handle_client_inner(std::unique_ptr<UnixSocket>& sock,
     }
     auto parsed = Protocol::parse_header(hdr_buf);
     if (!parsed || parsed->type != MessageType::MSG_SERVE_REQUEST ||
-        parsed->payload_length < sizeof(ServeRequest) ||
+        // §4 of docs/SPEC-frontends.md: a same-repo older client sends the
+        // struct without the 8-byte force tail — accept it and zero-fill.
+        parsed->payload_length < sizeof(ServeRequest) - 8 ||
         parsed->payload_length > MAX_SERVE_PAYLOAD_BYTES) {
         // Malformed: send a minimal error response and bail.
         LOG_DEBUG("Daemon", "conn: header rejected (type/plen)");
@@ -235,7 +234,12 @@ auto ServeDaemon::handle_client_inner(std::unique_ptr<UnixSocket>& sock,
         return;
     }
     ServeRequest req{};
-    std::memcpy(&req, req_buf.data(), sizeof(req));
+    const size_t req_bytes = std::min(req_buf.size(), sizeof(req));
+    std::memcpy(&req, req_buf.data(), req_bytes);
+    if (req_bytes < sizeof(req)) {
+        req.force = 0;
+        std::memset(req.reserved, 0, sizeof(req.reserved));
+    }
 
     // Plaintext frames enforce the header checksum (encrypted frames carry 0
     // and rely on Poly1305 instead — they never appear on this socket).
@@ -249,14 +253,14 @@ auto ServeDaemon::handle_client_inner(std::unique_ptr<UnixSocket>& sock,
 
     const size_t paths_bytes = static_cast<size_t>(req.input_path_length) +
                                req.output_path_length;
-    if (paths_bytes != req_buf.size() - sizeof(ServeRequest) ||
+    if (paths_bytes != req_buf.size() - req_bytes ||
         req.input_path_length == 0 ||
         req.input_path_length > MAX_SERVE_PATH_BYTES ||
         req.output_path_length > MAX_SERVE_PATH_BYTES) {
         send_serve_error(*sock, "malformed request paths");
         return;
     }
-    const char* base = reinterpret_cast<const char*>(req_buf.data() + sizeof(ServeRequest));
+    const char* base = reinterpret_cast<const char*>(req_buf.data() + req_bytes);
     const std::string input_path(base, req.input_path_length);
     const std::string output_path(base + req.input_path_length, req.output_path_length);
     req_buf.clear();
@@ -300,6 +304,20 @@ auto ServeDaemon::handle_client_inner(std::unique_ptr<UnixSocket>& sock,
     if (!raw) {
         send_serve_error(*sock, ("load failed: " + raw.error().message).c_str());
         return;
+    }
+    // ── Already-super-resolved guard (docs/SPEC-frontends.md §1 S4) ─────────
+    // The skip is a core invariant executed here, not a CLI courtesy: every
+    // protocol client (desktop now, whatever next) gets the CLI's idempotent
+    // re-run semantics. raw is already in hand — the check costs nothing.
+    if (!req.force) {
+        if (auto marker = sr_marker::probe(raw->data(), raw->size())) {
+            LOG_INFO("Daemon",
+                     "Skipped (already super-resolved by this tool): {} "
+                     "[model={} scale={}x ts={}]",
+                     input_path, marker->model, marker->scale, marker->ts);
+            send_serve_skipped(*sock);
+            return;
+        }
     }
     const int exif_orientation =
         exif::parse_jpeg_exif_orientation(raw->data(), raw->size());

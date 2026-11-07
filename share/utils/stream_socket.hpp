@@ -29,6 +29,12 @@ public:
     auto receive_all(void* buffer, size_t size)
         -> expected<void, NetworkError>;
 
+    // Best-effort wake for a peer thread blocked in receive_all (e.g. a GUI
+    // thread cancelling a worker): ::shutdown() reliably interrupts a blocked
+    // recv with ECONNRESET, while close() on another thread is not guaranteed
+    // to wake it. Harmless on an already-closed socket.
+    void shutdown_wake();
+
 protected:
     StreamSocket() = default;
     ~StreamSocket() { close_fd(); }

@@ -51,6 +51,8 @@ public:
     Q_INVOKABLE void openPath(const QString& path);
     Q_INVOKABLE void pasteClipboard();
 
+    ~Desk() override;
+
     // ---- C++ side ----
     // CLI discovery: UPIX_CLI -> exe dir sibling named exactly `upix-cli`
     // -> PATH (`upix-cli`, then `upix`). NEVER resolves to our own binary —
@@ -91,6 +93,18 @@ private:
     // One job-stream line: machine events drive the job state; anything else
     // (human logs on stderr) is kept as failure diagnostics in m_jobOutput.
     void handleJobLine(const QString& line);
+#ifdef Q_OS_UNIX
+    // Warm-daemon delegation for single-file jobs (docs/SPEC-frontends.md §3
+    // stage 1): blocking protocol I/O on a worker thread; events come back
+    // marshalled as the same machine JSON lines the CLI stream speaks.
+    struct ServeJob;
+    ServeJob* m_serveJob = nullptr;
+    void startServeJob(const QVariantMap& input, const QVariantMap& settings);
+    void onServeDone(int code, const QString& detail);
+#endif
+    // The CLI-batch spawn (the pre-delegation path; also the fallback when
+    // the daemon probe fails, and the only path for dirs/CPU/auto-tile).
+    void spawnCliJob();
     void readHostOutput(QProcess* process, bool final = false);
     void readDownloadOutput(QProcess* process, const QString& name);
     void finishJob(int code);

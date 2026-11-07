@@ -1,9 +1,10 @@
 import QtQuick
 import QtQuick.Controls.Basic
 import QtQuick.Dialogs
-import "Grouping.js" as G
 
 // 模型 page: installed catalog grouped by family + downloadable list.
+// Grouping data comes precomputed in snap.installedGroups (desk.cpp applies
+// share/core/model_families.hpp — the single source, SPEC §1 S3).
 Flickable {
     id: page
     contentWidth: width
@@ -89,7 +90,7 @@ Flickable {
                 width: parent.width
                 spacing: 2
                 Repeater {
-                    model: G.groups(snap.installed)
+                    model: snap.installedGroups
                     delegate: Column {
                         required property var modelData
                         width: parent.width

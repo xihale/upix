@@ -17,12 +17,15 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <memory>
 #include <mutex>
 #include <stop_token>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include "utils/platform.hpp"
 
 namespace upix {
 
@@ -128,8 +131,20 @@ private:
     ServeDevice device_ = ServeDevice::GPU;
 };
 
-// Default socket path: $XDG_CACHE_HOME/upix/serve.sock or
-// $HOME/.cache/upix/serve.sock. Empty if neither env nor HOME is set.
-auto default_serve_socket_path() -> std::string;
+// Warm-daemon socket path — `$XDG_CACHE_HOME/upix/serve.sock`. Inline here
+// (was daemon.cpp) so protocol clients (desktop, docs/SPEC-frontends.md §3
+// stage 1) share the exact path without linking the daemon TU.
+inline auto default_serve_socket_path() -> std::string {
+    const char* cache = std::getenv("XDG_CACHE_HOME");
+    std::string base;
+    if (cache && *cache) {
+        base = cache;
+    } else {
+        const char* home = user_home();
+        if (!home || !*home) return {};
+        base = std::string(home) + "/.cache";
+    }
+    return base + "/upix/serve.sock";
+}
 
 } // namespace upix
