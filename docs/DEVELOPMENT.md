@@ -364,7 +364,8 @@ keystore 文件在 `~/.config/upix/android-release.jks`，**不进 git**。
    可疑先 `xmake f --menu` 或重配检查。
 2. **xmake 单全局配置**：host/android 配置互相覆盖。host 侧工具要在 android 配置
    激活时构建，用隔离 `XMAKE_CONFIGDIR`（参考 `share/xmake.lua` before_build 对
-   dump-spirv 的处理）。`build_cli.sh` / `build_native.sh` 每次全量重配，交替使用安全。
+   dump-spirv 的处理）。嵌套调用须将 `config` / `build` 放在 `-P` 前面，否则 xmake
+   会把子命令当作构建目标。`build_cli.sh` / `build_native.sh` 每次全量重配，交替使用安全。
 3. **`spirv_pack.bin` 的 `.incbin` 依赖不被追踪**：重新生成 pack 后必须 touch
    `spirv_pack.S` 否则静默发旧 shader。`share/xmake.lua` 的 before_build 钩子已自动
    处理（pack 较新即 touch）；手动绕过构建系统操作 pack 文件时要记得这点。

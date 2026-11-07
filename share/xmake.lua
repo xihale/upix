@@ -66,11 +66,11 @@ target("upix-core")
             os.mkdir(cfgdir)
             local envs = {XMAKE_CONFIGDIR = cfgdir}
             os.execv(os.programfile(), {
-                "-P", os.projectdir(), "config", "-p", os.host(), "-a", os.arch(),
+                "config", "-P", os.projectdir(), "-p", os.host(), "-a", os.arch(),
                 "-m", "release", "--yes"
             }, {envs = envs})
             os.execv(os.programfile(), {
-                "-P", os.projectdir(), "build", "dump-spirv"
+                "build", "-P", os.projectdir(), "dump-spirv"
             }, {envs = envs})
             local bin = path.join(os.projectdir(), "build", os.host(), os.arch(), "release", "dump-spirv")
             assert(os.isfile(bin), "dump-spirv missing: " .. bin)
