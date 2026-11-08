@@ -69,5 +69,5 @@ upix-cli daemon status
 
 - [架构概览](docs/ARCHITECTURE.md)
 - [构建与开发指南](docs/DEVELOPMENT.md)
-- [Desktop 设计规范](desktop/DESIGN.md)
+- [全局设计语言规范](docs/DESIGN_LANGUAGE.md)
 - [模型目录与转换说明](models/README.md)

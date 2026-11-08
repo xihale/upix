@@ -1,5 +1,6 @@
 package io.upix.ui.theme
 
+import android.animation.ValueAnimator
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.CubicBezierEasing
@@ -29,7 +30,8 @@ import androidx.compose.ui.unit.dp
  * - 无循环/装饰性动效（无 shimmer/脉冲点/渐变动画），加载 = 安静占位 + 确定性进度。
  * - 本文件是自定义动效 token 的规范来源（docs/DESIGN_LANGUAGE.md §7）；组件级
  *   spring 动效继承 Expressive MotionScheme，不得逐组件对抗默认值。
- * - 已知限制：Compose 无 prefers-reduced-motion 等价系统 API，全局降级暂不可做。
+ * - 无障碍减动效：通过 Android 系统 `ValueAnimator.areAnimatorsEnabled()` 检测系统级
+ *   动画缩放开关（移除动画），开启减动效时跳过按压弹性缩放。
  */
 
 /** MD3 emphasized decelerate（进入屏幕）。 */
@@ -52,6 +54,9 @@ val PressMotionSpec = tween<Float>(PressTween, easing = EmphasizedDecelerateEasi
 /** 进入/退出 alpha（140ms）。 */
 val EnterMotionSpec = tween<Float>(EnterTween, easing = EmphasizedDecelerateEasing)
 
+/** 折叠区旋转/浮点动画（180ms，与 ExpandSizeSpec 同步）。 */
+val ExpandFloatSpec = tween<Float>(ExpandTween, easing = EmphasizedDecelerateEasing)
+
 /** 折叠区/出现消失的高度展开（180ms）。 */
 val ExpandSizeSpec = tween<IntSize>(ExpandTween, easing = EmphasizedDecelerateEasing)
 
@@ -73,12 +78,14 @@ val NavPopExitTransition: ExitTransition = NavExitTransition
 /**
  * 给定 interactionSource，按下时缩到 0.97（graphicsLayer，仅 transform）。
  * 用于已有自带交互的 M3 组件（Button 等），把同一个 source 传给组件即可。
+ * 系统关闭动画（Remove animations）时自动保持 1f 不缩放。
  */
 @Composable
 fun Modifier.pressScale(interactionSource: MutableInteractionSource): Modifier {
     val pressed by interactionSource.collectIsPressedAsState()
+    val animatorsEnabled = ValueAnimator.areAnimatorsEnabled()
     val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.97f else 1f,
+        targetValue = if (pressed && animatorsEnabled) 0.97f else 1f,
         animationSpec = PressMotionSpec,
         label = "pressScale"
     )

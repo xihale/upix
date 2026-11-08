@@ -8,7 +8,7 @@ use nsh_core::element::ImageSrc;
 use nsh_core::prelude::*;
 use nsh_core::{LayoutCurve, LayoutTransition};
 
-use crate::host_bridge::{ApprovalReply, ApprovalRequest};
+use crate::host_bridge::ApprovalReply;
 use crate::nav::NavTab;
 use crate::pages::host::{host_page, split_fp_groups};
 use crate::pages::models::models_page;
@@ -140,7 +140,7 @@ fn nav_rail(store: Store) -> View {
                 .hover(move |s| {
                     s.bg(AdaptiveColor::new(rgba(0x0000000A), rgba(0xFFFFFF08)))
                 })
-                .active(|s| s.scale(0.95))
+                .active(|s| if reduce_motion() { s } else { s.scale(0.95) })
                 .on_press(move || store.nav.set(tab))
                 .child(
                     svg(ImageSrc::svg_markup(tab.icon_svg()))
@@ -194,13 +194,9 @@ fn nav_rail(store: Store) -> View {
 }
 
 fn pairing_modal_overlay(store: Store) -> View {
-    let info = store
-        .host_pending_approval
-        .get()
-        .unwrap_or(ApprovalRequest {
-            device: "Pixel 9 Pro".to_string(),
-            fingerprint: "EC61F2B66D4C25C4".to_string(),
-        });
+    let Some(info) = store.host_pending_approval.get() else {
+        return view();
+    };
     let groups = split_fp_groups(&info.fingerprint);
 
     let mut pills_row = view()
@@ -233,7 +229,7 @@ fn pairing_modal_overlay(store: Store) -> View {
     view()
         .absolute()
         .inset(px(0.0))
-        .bg(AdaptiveColor::rgb(0x08080B, 0x08080B).opacity(0.72))
+        .bg(palette::overlay_scrim().opacity(0.72))
         .items_center()
         .justify_center()
         .child(
@@ -334,7 +330,11 @@ fn pairing_modal_overlay(store: Store) -> View {
                                 .bg(palette::container())
                                 .border_1()
                                 .border_color(palette::outline_strong())
+                                .transition()
+                                .duration(140.0)
+                                .ease_out()
                                 .hover(|s| s.bg(palette::high()))
+                                .active(|s| if reduce_motion() { s } else { s.scale(0.97) })
                                 .flex_row()
                                 .items_center()
                                 .justify_center()
@@ -360,7 +360,14 @@ fn pairing_modal_overlay(store: Store) -> View {
                                 .h(px(38.0))
                                 .rounded(px(8.0))
                                 .bg(palette::primary())
+                                .transition()
+                                .duration(140.0)
+                                .ease_out()
                                 .hover(|s| s.bg(palette::primary_hover()))
+                                .active(|s| {
+                                    let s = s.bg(palette::accent_active());
+                                    if reduce_motion() { s } else { s.scale(0.97) }
+                                })
                                 .items_center()
                                 .justify_center()
                                 .cursor_pointer()

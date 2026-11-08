@@ -37,7 +37,7 @@ fn qr_reg_marks(running: bool) -> View {
     let c = if running {
         palette::primary_dim_border()
     } else {
-        AdaptiveColor::rgb(0xBEBDB4, 0x383844)
+        palette::reg_mark()
     };
     view()
         .absolute()
@@ -158,7 +158,7 @@ fn qr_well(store: Store) -> View {
             .rounded(px(10.0))
             .bg(palette::recessed())
             .border_1()
-            .border_color(AdaptiveColor::rgb(0xD6D5CD, 0x26262E))
+            .border_color(palette::outline())
             .relative()
             .items_center()
             .justify_center()
@@ -186,7 +186,7 @@ fn qr_well(store: Store) -> View {
             .rounded(px(10.0))
             .bg(palette::recessed())
             .border_1()
-            .border_color(AdaptiveColor::rgb(0xD6D5CD, 0x26262E))
+            .border_color(palette::outline())
             .relative()
             .items_center()
             .justify_center()
@@ -224,15 +224,15 @@ fn qr_well(store: Store) -> View {
             view()
                 .size(px(48.0))
                 .rounded(px(12.0))
-                .bg(AdaptiveColor::rgb(0xF0EFEB, 0x1C1C22))
+                .bg(palette::chip_bg())
                 .border_1()
-                .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2E2E38))
+                .border_color(palette::chip_border())
                 .items_center()
                 .justify_center()
                 .child(svg_icon(
                     crate::ui::icons::QR_CODE,
                     20.0,
-                    AdaptiveColor::rgb(0x706F68, 0x8E8E9A),
+                    palette::subtext(),
                 )),
         )
     }
@@ -278,7 +278,7 @@ fn pairing_card(store: Store) -> View {
                                     text("指纹")
                                         .text_size(px(12.0))
                                         .font_weight(FontWeight::MEDIUM)
-                                        .text_color(AdaptiveColor::rgb(0x706F68, 0x7E7E8A)),
+                                        .text_color(palette::subtext()),
                                 )
                                 .child(fingerprint_pills_row(store)),
                         )
@@ -286,7 +286,7 @@ fn pairing_card(store: Store) -> View {
                             view()
                                 .w_full()
                                 .h(px(1.0))
-                                .bg(AdaptiveColor::rgb(0xD6D5CD, 0x26262E)),
+                                .bg(palette::outline()),
                         )
                         // Row 2: 地址 (44px high, gap 24px)
                         .child(
@@ -300,7 +300,7 @@ fn pairing_card(store: Store) -> View {
                                     text("地址")
                                         .text_size(px(12.0))
                                         .font_weight(FontWeight::MEDIUM)
-                                        .text_color(AdaptiveColor::rgb(0x706F68, 0x7E7E8A)),
+                                        .text_color(palette::subtext()),
                                 )
                                 .child(ip_selector_box(store)),
                         )
@@ -308,7 +308,7 @@ fn pairing_card(store: Store) -> View {
                             view()
                                 .w_full()
                                 .h(px(1.0))
-                                .bg(AdaptiveColor::rgb(0xD6D5CD, 0x26262E)),
+                                .bg(palette::outline()),
                         )
                         // Row 3: 端口 (44px high, gap 24px)
                         .child(
@@ -322,7 +322,7 @@ fn pairing_card(store: Store) -> View {
                                     text("端口")
                                         .text_size(px(12.0))
                                         .font_weight(FontWeight::MEDIUM)
-                                        .text_color(AdaptiveColor::rgb(0x706F68, 0x7E7E8A)),
+                                        .text_color(palette::subtext()),
                                 )
                                 .child(port_input_box(store)),
                         ),
@@ -348,9 +348,9 @@ fn fingerprint_pills_row(store: Store) -> AnyElement {
                     .w(px(44.0))
                     .h(px(24.0))
                     .rounded(px(4.0))
-                    .bg(AdaptiveColor::rgb(0xEAE9E4, 0x16161B))
+                    .bg(palette::well_bg())
                     .border_1()
-                    .border_color(AdaptiveColor::rgb(0xD6D5CD, 0x26262E))
+                    .border_color(palette::outline())
                     .items_center()
                     .justify_center()
                     .child(
@@ -359,7 +359,7 @@ fn fingerprint_pills_row(store: Store) -> AnyElement {
                             .font_weight(FontWeight::MEDIUM)
                             .font_family(FONT_MONO)
                             .tabular_nums()
-                            .text_color(AdaptiveColor::rgb(0x27272A, 0xD8D8E0)),
+                            .text_color(palette::text_secondary()),
                     ),
             );
         }
@@ -367,7 +367,11 @@ fn fingerprint_pills_row(store: Store) -> AnyElement {
             view()
                 .size(px(24.0))
                 .rounded(px(4.0))
+                .transition()
+                .duration(140.0)
+                .ease_out()
                 .hover(|s| s.bg(palette::high()))
+                .active(|s| if reduce_motion() { s } else { s.scale(0.94) })
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
@@ -377,7 +381,7 @@ fn fingerprint_pills_row(store: Store) -> AnyElement {
                 .child(svg_icon(
                     crate::ui::icons::COPY,
                     13.0,
-                    AdaptiveColor::rgb(0x706F68, 0x9A9AA6),
+                    palette::subtext(),
                 )),
         );
         row
@@ -409,17 +413,17 @@ fn ip_selector_box(store: Store) -> View {
         .w(px(216.0))
         .h(px(30.0))
         .rounded(px(6.0))
-        .bg(AdaptiveColor::rgb(0xEAE9E4, 0x16161B))
+        .bg(palette::well_bg())
         .border_1()
         .border_color(move || {
             if store.show_ip_picker.get() {
                 palette::primary()
             } else {
-                AdaptiveColor::rgb(0xD6D5CD, 0x2A2A32)
+                palette::well_border()
             }
         })
-        .hover(|s| s.bg(AdaptiveColor::rgb(0xE3E2DC, 0x22222A)))
-        .active(|s| s.scale(0.99))
+        .hover(|s| s.bg(palette::high()))
+        .active(|s| if reduce_motion() { s } else { s.scale(0.99) })
         .transition()
         .duration(150.0)
         .ease_out()
@@ -455,7 +459,7 @@ fn ip_selector_box(store: Store) -> View {
                         .w(px(28.0))
                         .h(px(16.0))
                         .rounded(px(4.0))
-                        .bg(AdaptiveColor::rgb(0xDDDCDA, 0x23232B))
+                        .bg(palette::tag_bg())
                         .items_center()
                         .justify_center()
                         .child(
@@ -463,14 +467,14 @@ fn ip_selector_box(store: Store) -> View {
                                 .text_size(px(9.5))
                                 .font_weight(FontWeight::MEDIUM)
                                 .font_family(FONT_MONO)
-                                .text_color(AdaptiveColor::rgb(0x706F68, 0x8E8E9A)),
+                                .text_color(palette::subtext()),
                         ),
                 )
                 .child(
                     svg_icon(
                         crate::ui::icons::CHEVRON_DOWN,
                         10.0,
-                        AdaptiveColor::rgb(0x706F68, 0x7E7E8A),
+                        palette::subtext(),
                     )
                     .rotate(move || {
                         deg(if store.show_ip_picker.get() {
@@ -493,7 +497,7 @@ fn ip_picker_popup(store: Store) -> View {
         .left(px(48.0))
         .w(px(216.0))
         .rounded(px(8.0))
-        .bg(AdaptiveColor::rgb(0xFFFFFF, 0x1C1C22))
+        .bg(palette::popup_bg())
         .border_1()
         .border_color(palette::outline_strong())
         .shadow_lg()
@@ -568,7 +572,7 @@ fn ip_picker_popup(store: Store) -> View {
                                         .w(px(28.0))
                                         .h(px(16.0))
                                         .rounded(px(4.0))
-                                        .bg(AdaptiveColor::rgb(0xDDDCDA, 0x23232B))
+                                        .bg(palette::tag_bg())
                                         .items_center()
                                         .justify_center()
                                         .child(
@@ -576,7 +580,7 @@ fn ip_picker_popup(store: Store) -> View {
                                                 .text_size(px(9.5))
                                                 .font_weight(FontWeight::MEDIUM)
                                                 .font_family(FONT_MONO)
-                                                .text_color(AdaptiveColor::rgb(0x706F68, 0x8E8E9A)),
+                                                .text_color(palette::subtext()),
                                         ),
                                 )
                                 .child(if is_sel {
@@ -597,9 +601,9 @@ fn port_input_box(store: Store) -> View {
         .w(px(84.0))
         .h(px(30.0))
         .rounded(px(6.0))
-        .bg(AdaptiveColor::rgb(0xEAE9E4, 0x16161B))
+        .bg(palette::well_bg())
         .border_1()
-        .border_color(AdaptiveColor::rgb(0xD6D5CD, 0x2A2A32))
+        .border_color(palette::well_border())
         .px(px(10.0))
         .flex_row()
         .items_center()
@@ -613,7 +617,7 @@ fn port_input_box(store: Store) -> View {
         .child(
             input()
                 .flex_1()
-                .caret_color(rgb(0x7FDAC9))
+                .caret_color(palette::input_caret())
                 .value(move || store.host_port.get().to_string())
                 .on_change(move |v: &str| {
                     if let Ok(p) = v.trim().parse::<u16>() {
@@ -648,15 +652,15 @@ fn host_bottom_row(store: Store) -> AnyElement {
                     .h(px(24.0))
                     .rounded(px(12.0))
                     .bg(if running {
-                        AdaptiveColor::rgb(0xDDF2EE, 0x162624)
+                        palette::primary_dim_bg()
                     } else {
-                        AdaptiveColor::rgb(0xEAE9E4, 0x17171C)
+                        palette::well_bg()
                     })
                     .border_1()
                     .border_color(if running {
-                        AdaptiveColor::rgb(0x9FD5CA, 0x24423E)
+                        palette::primary_dim_border()
                     } else {
-                        AdaptiveColor::rgb(0xD6D5CD, 0x25252D)
+                        palette::outline()
                     })
                     .flex_row()
                     .items_center()
@@ -669,7 +673,7 @@ fn host_bottom_row(store: Store) -> AnyElement {
                             .bg(if running {
                                 palette::primary()
                             } else {
-                                AdaptiveColor::rgb(0x8A8982, 0x5A5A66)
+                                palette::icon_muted()
                             }),
                     )
                     .child(
@@ -690,10 +694,14 @@ fn host_bottom_row(store: Store) -> AnyElement {
                     .w(px(98.0))
                     .h(px(36.0))
                     .rounded(px(6.0))
-                    .bg(AdaptiveColor::rgb(0xE3E2DC, 0x26262E))
+                    .bg(palette::high())
                     .border_1()
-                    .border_color(AdaptiveColor::rgb(0xC5C4BC, 0x383844))
+                    .border_color(palette::outline_strong())
+                    .transition()
+                    .duration(140.0)
+                    .ease_out()
                     .hover(|s| s.bg(palette::highest()))
+                    .active(|s| if reduce_motion() { s } else { s.scale(0.97) })
                     .flex_row()
                     .items_center()
                     .justify_center()
@@ -718,7 +726,14 @@ fn host_bottom_row(store: Store) -> AnyElement {
                     .h(px(36.0))
                     .rounded(px(6.0))
                     .bg(palette::primary())
+                    .transition()
+                    .duration(140.0)
+                    .ease_out()
                     .hover(|s| s.bg(palette::primary_hover()))
+                    .active(|s| {
+                        let s = s.bg(palette::accent_active());
+                        if reduce_motion() { s } else { s.scale(0.97) }
+                    })
                     .flex_row()
                     .items_center()
                     .justify_center()
@@ -773,14 +788,14 @@ fn trusted_devices_card(store: Store) -> View {
                     text("已信任设备")
                         .text_size(px(12.5))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(AdaptiveColor::rgb(0x18181B, 0xE2E2E8)),
+                        .text_color(palette::on_surface()),
                 )
                 .child(
                     text(peers.len().to_string())
                         .text_size(px(11.0))
                         .font_family(FONT_MONO)
                         .tabular_nums()
-                        .text_color(AdaptiveColor::rgb(0x706F68, 0x7E7E8A)),
+                        .text_color(palette::subtext()),
                 ),
         );
 
@@ -794,7 +809,7 @@ fn trusted_devices_card(store: Store) -> View {
                 view()
                     .w_full()
                     .h(px(1.0))
-                    .bg(AdaptiveColor::rgb(0xDDDCDA, 0x22222A)),
+                    .bg(palette::row_divider()),
             )
             .child(
                 view()
@@ -817,7 +832,7 @@ fn trusted_devices_card(store: Store) -> View {
                                     .bg(if online {
                                         palette::primary()
                                     } else {
-                                        AdaptiveColor::rgb(0x8A8982, 0x4A4A56)
+                                        palette::icon_muted()
                                     }),
                             )
                             .child(
@@ -828,7 +843,7 @@ fn trusted_devices_card(store: Store) -> View {
                                     .text_color(if online {
                                         palette::on_surface()
                                     } else {
-                                        AdaptiveColor::rgb(0x706F68, 0x9E9EA8)
+                                        palette::muted()
                                     }),
                             )
                             .child(
@@ -843,9 +858,9 @@ fn trusted_devices_card(store: Store) -> View {
                                     })
                                     .border_1()
                                     .border_color(if online {
-                                        AdaptiveColor::rgb(0x9FD5CA, 0x264A43)
+                                        palette::primary_dim_border()
                                     } else {
-                                        AdaptiveColor::rgb(0xCECDC5, 0x2C2C35)
+                                        palette::chip_border()
                                     })
                                     .items_center()
                                     .justify_center()
@@ -856,7 +871,7 @@ fn trusted_devices_card(store: Store) -> View {
                                             .text_color(if online {
                                                 palette::primary()
                                             } else {
-                                                AdaptiveColor::rgb(0x706F68, 0x7E7E8A)
+                                                palette::subtext()
                                             }),
                                     ),
                             ),
@@ -877,7 +892,11 @@ fn trusted_devices_card(store: Store) -> View {
                                 view()
                                     .size(px(26.0))
                                     .rounded(px(6.0))
+                                    .transition()
+                                    .duration(140.0)
+                                    .ease_out()
                                     .hover(|s| s.bg(palette::error_dim_bg()))
+                                    .active(|s| if reduce_motion() { s } else { s.scale(0.94) })
                                     .items_center()
                                     .justify_center()
                                     .cursor_pointer()
@@ -885,7 +904,7 @@ fn trusted_devices_card(store: Store) -> View {
                                     .child(svg_icon(
                                         crate::ui::icons::TRASH,
                                         13.5,
-                                        AdaptiveColor::rgb(0x8A8982, 0x5E5E6A),
+                                        palette::icon_muted(),
                                     )),
                             ),
                     ),
@@ -936,7 +955,7 @@ fn telemetry_console_card(store: Store) -> View {
             view()
                 .w_full()
                 .h(px(38.0))
-                .bg(AdaptiveColor::rgb(0xECEBE6, 0x1D1D23))
+                .bg(palette::container_low())
                 .px(px(16.0))
                 .flex_row()
                 .items_center()
@@ -959,16 +978,16 @@ fn telemetry_console_card(store: Store) -> View {
                                 .h(px(18.0))
                                 .px(px(6.0))
                                 .rounded(px(4.0))
-                                .bg(AdaptiveColor::rgb(0xEAE9E4, 0x16161B))
+                                .bg(palette::well_bg())
                                 .border_1()
-                                .border_color(AdaptiveColor::rgb(0xD6D5CD, 0x2A2A34))
+                                .border_color(palette::well_border())
                                 .items_center()
                                 .justify_center()
                                 .child(
                                     text(model_badge_text)
                                         .text_size(px(10.0))
                                         .font_family(FONT_MONO)
-                                        .text_color(AdaptiveColor::rgb(0x706F68, 0x8E8E9A)),
+                                        .text_color(palette::subtext()),
                                 ),
                         ),
                 )
@@ -982,7 +1001,7 @@ fn telemetry_console_card(store: Store) -> View {
                                 .w(px(136.0))
                                 .h(px(4.0))
                                 .rounded(px(2.0))
-                                .bg(AdaptiveColor::rgb(0xD6D5CD, 0x121216))
+                                .bg(palette::track_dark())
                                 .overflow_hidden()
                                 .child(
                                     view()
@@ -1025,13 +1044,13 @@ fn log_row(tag: &str, msg: &str, right_note: &str) -> View {
                         .bg(if is_task {
                             palette::primary_dim_bg()
                         } else {
-                            AdaptiveColor::rgb(0xE8E7E1, 0x1D1E24)
+                            palette::chip_bg()
                         })
                         .border_1()
                         .border_color(if is_task {
                             palette::primary_dim_border()
                         } else {
-                            AdaptiveColor::rgb(0xCECDC5, 0x2D2E38)
+                            palette::chip_border()
                         })
                         .items_center()
                         .justify_center()
@@ -1043,7 +1062,7 @@ fn log_row(tag: &str, msg: &str, right_note: &str) -> View {
                                 .text_color(if is_task {
                                     palette::primary()
                                 } else {
-                                    AdaptiveColor::rgb(0x706F68, 0x8E8E9A)
+                                    palette::subtext()
                                 }),
                         ),
                 )
@@ -1051,9 +1070,9 @@ fn log_row(tag: &str, msg: &str, right_note: &str) -> View {
                     text(msg.to_string())
                         .text_size(px(11.0))
                         .text_color(if is_task {
-                            AdaptiveColor::rgb(0x27272A, 0xC8C8D2)
+                            palette::text_secondary()
                         } else {
-                            AdaptiveColor::rgb(0x706F68, 0x8E8E9A)
+                            palette::subtext()
                         }),
                 ),
         )
@@ -1064,7 +1083,7 @@ fn log_row(tag: &str, msg: &str, right_note: &str) -> View {
                 .text_color(if is_task {
                     palette::primary()
                 } else {
-                    AdaptiveColor::rgb(0x8A8982, 0x565662)
+                    palette::icon_muted()
                 })
                 .into_element()
         } else {

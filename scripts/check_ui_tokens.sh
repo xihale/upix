@@ -41,4 +41,40 @@ else
     echo "ok: elevation APIs"
 fi
 
+hits="$( { grep -rnE --include='*.kt' '\.sp\b' "$UI" || true; } | filter)"
+if [[ -n "$hits" ]]; then
+    echo "FAIL: raw .sp outside ui/theme"
+    printf '%s\n' "$hits"
+    fail=1
+else
+    echo "ok: .sp"
+fi
+
+hits="$( { grep -rnE --include='*.kt' 'FontWeight\.' "$UI" || true; } | filter)"
+if [[ -n "$hits" ]]; then
+    echo "FAIL: FontWeight.* outside ui/theme"
+    printf '%s\n' "$hits"
+    fail=1
+else
+    echo "ok: FontWeight.*"
+fi
+
+hits="$( { grep -rnE --include='*.kt' 'Icons\.(Rounded|Sharp|TwoTone)\.' "$UI" || true; } | filter)"
+if [[ -n "$hits" ]]; then
+    echo "FAIL: forbidden icon families (Rounded/Sharp/TwoTone)"
+    printf '%s\n' "$hits"
+    fail=1
+else
+    echo "ok: icon families"
+fi
+
+hits="$( { grep -rnE --include='*.kt' 'typography\.(display|headline)' "$UI" || true; } | filter)"
+if [[ -n "$hits" ]]; then
+    echo "FAIL: banned typography slots (display/headline)"
+    printf '%s\n' "$hits"
+    fail=1
+else
+    echo "ok: typography slots"
+fi
+
 exit "$fail"

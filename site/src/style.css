@@ -173,5 +173,7 @@ h2 { font-size: clamp(32px, 3.2vw, 48px); font-weight: 400; letter-spacing: -.06
 }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  *, *::before, *::after { transition: none !important; animation: none !important; }
+  .primary-link:hover, .primary-link:active, .text-button:active { transform: none; }
+  .image-plane img { transition: none; }
+  .divider-grip { transition: background 150ms; }
 }

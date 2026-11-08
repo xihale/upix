@@ -1,6 +1,5 @@
 package io.upix.ui.components
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
@@ -12,14 +11,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.unit.dp
 import io.upix.R
 import io.upix.data.model.ModelScene
 import io.upix.ui.theme.Spacing
 
 /**
- * 模型场景徽标：适用场景标签（描边弱色）+ 可选「推荐」星标（主色描边，
- * 与桌面端 QML 的 accent 推荐徽标同语义）。目录外模型传 null 不占位。
+ * 模型场景徽标：适用场景标签（中性容器底）+ 可选「推荐」徽标（primaryContainer 柔和主色底，
+ * 遵循 DESIGN_LANGUAGE.md §1.3 & §6，不引入 0.5dp 非标描边或名单外 primary 文本）。
+ * 目录外模型传 null 不占位。
  */
 @Composable
 fun ModelSceneBadge(scene: ModelScene?) {
@@ -30,31 +29,30 @@ fun ModelSceneBadge(scene: ModelScene?) {
     ) {
         SceneTag(
             text = scene.label,
-            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            outlineColor = MaterialTheme.colorScheme.outlineVariant
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
         )
         if (scene.recommended) {
             SceneTag(
                 text = stringResource(R.string.model_scene_recommended),
-                contentColor = MaterialTheme.colorScheme.primary,
-                outlineColor = MaterialTheme.colorScheme.primary
+                containerColor = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer
             )
         }
     }
 }
 
 @Composable
-private fun SceneTag(text: String, contentColor: Color, outlineColor: Color) {
+private fun SceneTag(text: String, containerColor: Color, contentColor: Color) {
     Surface(
         shape = MaterialTheme.shapes.extraSmall,
-        color = Color.Transparent,
-        border = BorderStroke(0.5.dp, outlineColor)
+        color = containerColor
     ) {
         Text(
             text = text,
             style = MaterialTheme.typography.labelSmall,
             color = contentColor,
-            modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+            modifier = Modifier.padding(horizontal = Spacing.xs)
         )
     }
 }

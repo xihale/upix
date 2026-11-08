@@ -53,6 +53,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.upix.R
 import io.upix.data.model.ModelInfo
+import io.upix.ui.theme.ExpandFloatSpec
 import io.upix.ui.theme.ExpandSizeSpec
 import io.upix.ui.theme.Spacing
 import io.upix.ui.theme.ValueMono
@@ -95,6 +96,7 @@ internal fun ParameterCard(
     )
     val expandIconRotation by animateFloatAsState(
         targetValue = if (advancedExpanded) 180f else 0f,
+        animationSpec = ExpandFloatSpec,
         label = "advancedExpandRotation"
     )
     val transparent = ListItemDefaults.colors(containerColor = Color.Transparent)
@@ -261,11 +263,7 @@ internal fun ParameterCard(
                                 }
                                 Text(
                                     text = displayLabel,
-                                    style = if (displayLabel.any { it.code > 127 }) {
-                                        MaterialTheme.typography.titleSmall
-                                    } else {
-                                        ValueMono
-                                    },
+                                    style = valueStyleFor(displayLabel),
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                             }

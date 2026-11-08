@@ -15,7 +15,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.outlined.Stop
 import androidx.compose.material.icons.automirrored.outlined.List
 import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material3.Badge
@@ -111,7 +111,7 @@ internal fun BottomActionDock(
                     ) { processing ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
-                                imageVector = if (processing) Icons.Filled.Stop else Icons.Filled.PlayArrow,
+                                imageVector = if (processing) Icons.Outlined.Stop else Icons.Filled.PlayArrow,
                                 contentDescription = null,
                                 modifier = Modifier.size(22.dp)
                             )

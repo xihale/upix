@@ -2,9 +2,9 @@
 
 ## 1. 环境依赖
 
-- **构建工具**：`xmake >= 3.0`（CLI / Android Native）、`CMake + Ninja`（Desktop）
+- **构建工具**：`cargo / rustc 1.85+`（Rust Workspace）、`xmake >= 3.0`（CLI / C++ Desktop / Android Native）
 - **C++ 编译器**：GCC 14+ / Clang 18+ / MSVC 2022+（支持 C++20/23）
-- **Desktop 依赖**：Qt 6.5+（`Quick`、`QuickControls2`、`Svg`、`Widgets`）
+- **Desktop 依赖**：Rust `nsh`（`crates/upix-gui/`）或 Dear ImGui + SDL3 + Vulkan（`desktop/`）
 - **Android 依赖**：JDK 17+、Android SDK & NDK（版本见 `apps/app/build.gradle.kts`）
 
 ## 2. 构建命令

@@ -104,7 +104,7 @@ fun StageProgressOverlay(
                     Text(
                         text = text,
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }

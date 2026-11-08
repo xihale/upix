@@ -87,8 +87,8 @@ pub fn models_page(store: Store) -> View {
                                                     input()
                                                         .flex_1()
                                                         .placeholder("搜索…")
-                                                        .placeholder_color(rgb(0xA2A2AC))
-                                                        .caret_color(rgb(0x7FDAC9))
+                                                        .placeholder_color(palette::input_placeholder())
+                                                        .caret_color(palette::input_caret())
                                                         .value(move || search_q.get())
                                                         .on_change(move |v: &str| {
                                                             search_q.set(v.to_owned())
@@ -283,7 +283,7 @@ fn section_divider(title: &'static str, count: usize) -> View {
             view()
                 .flex_1()
                 .h(px(1.0))
-                .bg(AdaptiveColor::rgb(0xD6D5CD, 0x25252C)),
+                .bg(palette::outline()),
         )
 }
 
@@ -310,7 +310,7 @@ fn family_card(store: Store, group: ModelGroup, is_installed_section: bool) -> V
                     text(group.title)
                         .text_size(px(12.0))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(AdaptiveColor::rgb(0x3F3E3A, 0xC7C7D1)),
+                        .text_color(palette::text_secondary()),
                 )
                 .child(
                     text(group.summary)
@@ -325,7 +325,7 @@ fn family_card(store: Store, group: ModelGroup, is_installed_section: bool) -> V
                 view()
                     .w_full()
                     .h(px(1.0))
-                    .bg(AdaptiveColor::rgb(0xDDDCDA, 0x23232A)),
+                    .bg(palette::row_divider()),
             )
             .child(model_row(store, m, is_installed_section));
     }
@@ -337,11 +337,11 @@ fn scene_dot_color(scene: &str) -> AdaptiveColor {
     if scene.contains("动漫") {
         palette::primary()
     } else if scene.contains("照片") && !scene.contains("修复") {
-        AdaptiveColor::rgb(0xD97706, 0xE5A952)
+        palette::scene_photo()
     } else if scene.contains("修复") {
-        AdaptiveColor::rgb(0xDB2777, 0xE07A9A)
+        palette::scene_restore()
     } else {
-        AdaptiveColor::rgb(0x6366F1, 0x9BA3E8)
+        palette::scene_anime()
     }
 }
 
@@ -406,21 +406,22 @@ fn model_row(store: Store, m: ModelVariant, is_installed_section: bool) -> View 
                                 .text_color(palette::on_surface()),
                         )
                         .child(if m.recommended {
-                            text("★")
-                                .text_size(px(11.0))
-                                .text_color(palette::muted())
+                            svg_icon(crate::ui::icons::STAR, 11.0, palette::star_gold())
                                 .into_element()
                         } else {
                             view().into_element()
                         })
                         .child(if is_selected && daemon_loading {
-                            svg_icon(
+                            let icon = svg_icon(
                                 crate::ui::icons::LOADER_FRAMES[0],
                                 12.0,
                                 palette::primary(),
-                            )
-                            .animate_spin()
-                            .into_element()
+                            );
+                            if reduce_motion() {
+                                icon.into_element()
+                            } else {
+                                icon.animate_spin().into_element()
+                            }
                         } else if is_selected && daemon_up {
                             svg_icon(crate::ui::icons::ZAP, 11.5, palette::primary()).into_element()
                         } else {
@@ -438,7 +439,7 @@ fn model_row(store: Store, m: ModelVariant, is_installed_section: bool) -> View 
                                 .h(px(20.0))
                                 .px(px(7.0))
                                 .rounded(px(4.0))
-                                .bg(AdaptiveColor::rgb(0xE8E7E1, 0x23232A))
+                                .bg(palette::tag_bg())
                                 .border_1()
                                 .border_color(palette::outline_strong())
                                 .flex_row()
@@ -449,7 +450,7 @@ fn model_row(store: Store, m: ModelVariant, is_installed_section: bool) -> View 
                                     text(scene_label)
                                         .text_size(px(11.0))
                                         .font_weight(FontWeight::MEDIUM)
-                                        .text_color(AdaptiveColor::rgb(0x3F3E3A, 0xC7C7D1)),
+                                        .text_color(palette::text_secondary()),
                                 ),
                         )
                         // Scale badge (height 20px, #1c1c22, border #2e2e37, radius 4px, 11px mono #a2a2ac)
@@ -458,9 +459,9 @@ fn model_row(store: Store, m: ModelVariant, is_installed_section: bool) -> View 
                                 .h(px(20.0))
                                 .px(px(6.0))
                                 .rounded(px(4.0))
-                                .bg(AdaptiveColor::rgb(0xEFECE6, 0x1C1C22))
+                                .bg(palette::chip_bg())
                                 .border_1()
-                                .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2E2E37))
+                                .border_color(palette::chip_border())
                                 .items_center()
                                 .justify_center()
                                 .child(
@@ -485,13 +486,17 @@ fn model_row(store: Store, m: ModelVariant, is_installed_section: bool) -> View 
                         .text_size(px(12.0))
                         .font_family(FONT_MONO)
                         .tabular_nums()
-                        .text_color(AdaptiveColor::rgb(0x706F68, 0x8F8F9E)),
+                        .text_color(palette::subtext()),
                 )
                 .child(
                     view()
                         .size(px(26.0))
                         .rounded(px(6.0))
+                        .transition()
+                        .duration(140.0)
+                        .ease_out()
                         .hover(|s| s.bg(palette::error_dim_bg()))
+                        .active(|s| if reduce_motion() { s } else { s.scale(0.94) })
                         .items_center()
                         .justify_center()
                         .cursor_pointer()
@@ -499,41 +504,36 @@ fn model_row(store: Store, m: ModelVariant, is_installed_section: bool) -> View 
                         .child(svg_icon(
                             crate::ui::icons::TRASH,
                             13.5,
-                            AdaptiveColor::rgb(0x8A8982, 0x5E5E6A),
+                            palette::icon_muted(),
                         )),
                 )
         } else if is_downloading {
+            let spinner = svg_icon(
+                crate::ui::icons::LOADER_FRAMES[0],
+                13.0,
+                palette::primary(),
+            );
+            let spinner_el = if reduce_motion() {
+                spinner.into_element()
+            } else {
+                spinner.animate_spin().into_element()
+            };
             view()
                 .flex_row()
                 .items_center()
-                .gap(px(10.0))
+                .gap(px(8.0))
                 .child(
                     text(size_str)
                         .text_size(px(12.0))
                         .font_family(FONT_MONO)
                         .tabular_nums()
-                        .text_color(AdaptiveColor::rgb(0x706F68, 0x8F8F9E)),
+                        .text_color(palette::subtext()),
                 )
+                .child(spinner_el)
                 .child(
-                    view()
-                        .w(px(72.0))
-                        .h(px(3.0))
-                        .rounded(px(1.5))
-                        .bg(AdaptiveColor::rgb(0xD6D5CD, 0x2A2A33))
-                        .overflow_hidden()
-                        .child(
-                            view()
-                                .h_full()
-                                .w(percentage(0.6))
-                                .rounded(px(1.5))
-                                .bg(palette::primary()),
-                        ),
-                )
-                .child(
-                    text("60%")
+                    text("下载中…")
                         .text_size(px(11.0))
-                        .font_family(FONT_MONO)
-                        .tabular_nums()
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(palette::primary()),
                 )
         } else {
@@ -546,7 +546,7 @@ fn model_row(store: Store, m: ModelVariant, is_installed_section: bool) -> View 
                         .text_size(px(12.0))
                         .font_family(FONT_MONO)
                         .tabular_nums()
-                        .text_color(AdaptiveColor::rgb(0x706F68, 0x8F8F9E)),
+                        .text_color(palette::subtext()),
                 )
                 .child(icon_button(
                     crate::ui::icons::DOWNLOAD,

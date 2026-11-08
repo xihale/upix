@@ -60,7 +60,12 @@ logs/
 
 # Test / debug outputs
 test_output/
+cli/tests/output/
 desktop/Testing/
+desktop/shots-*/
+desktop/.cache/
+desktop/.vite/
+upix-test-wake-*
 *.png
 *.jpg
 *.jpeg
@@ -105,9 +110,39 @@ __pycache__/
 /target
 .csearch/
 
-# nsh scaffolding (regenerate with `npx skills add longbridge/nsh`)
+# nsh & AI agent skills scaffolding (regenerate with `npx skills add longbridge/nsh`)
+.agent/
 .agents/
 .claude/
+.adal/
+.augment/
+.cline/
+.codebuddy/
+.commandcode/
+.continue/
+.cortex/
+.crush/
+.factory/
+.goose/
+.iflow/
+.junie/
+.kilocode/
+.kiro/
+.kode/
+.mcpjam/
+.mux/
+.neovate/
+.openhands/
+.pi/
+.pochi/
+.qoder/
+.qwen/
+.roo/
+.trae/
+.vibe/
+.windsurf/
+.zencoder/
+skills/
 skills-lock.json
 crates/upix-gui/.nsh/
 target/

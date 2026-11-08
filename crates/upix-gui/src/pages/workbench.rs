@@ -269,7 +269,11 @@ fn empty_stage_well(store: Store) -> View {
                         .bg(palette::container_low())
                         .border_1()
                         .border_color(palette::outline_input())
+                        .transition()
+                        .duration(140.0)
+                        .ease_out()
                         .hover(|s| s.bg(palette::high()))
+                        .active(|s| if reduce_motion() { s } else { s.scale(0.97) })
                         .flex_row()
                         .items_center()
                         .justify_center()
@@ -408,9 +412,9 @@ fn compare_viewport(store: Store, item: InputItem, output_path: PathBuf) -> View
                 .absolute()
                 .size(px(28.0))
                 .rounded(px(7.0))
-                .bg(AdaptiveColor::rgb(0xF4F3EF, 0x141418))
+                .bg(palette::hud_bg())
                 .border_1()
-                .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2C2C35))
+                .border_color(palette::hud_border())
                 .items_center()
                 .justify_center()
                 .left(move || {
@@ -436,9 +440,9 @@ fn compare_viewport(store: Store, item: InputItem, output_path: PathBuf) -> View
                 .w(px(77.0))
                 .h(px(26.0))
                 .rounded(px(6.0))
-                .bg(AdaptiveColor::rgb(0xF4F3EF, 0x141418))
+                .bg(palette::hud_bg())
                 .border_1()
-                .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2C2C35))
+                .border_color(palette::hud_border())
                 .items_center()
                 .justify_center()
                 .pointer_events(PointerEvents::None)
@@ -458,9 +462,9 @@ fn compare_viewport(store: Store, item: InputItem, output_path: PathBuf) -> View
                 .w(px(77.0))
                 .h(px(26.0))
                 .rounded(px(6.0))
-                .bg(AdaptiveColor::rgb(0xF4F3EF, 0x141418))
+                .bg(palette::hud_bg())
                 .border_1()
-                .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2C2C35))
+                .border_color(palette::hud_border())
                 .items_center()
                 .justify_center()
                 .pointer_events(PointerEvents::None)
@@ -480,10 +484,14 @@ fn compare_viewport(store: Store, item: InputItem, output_path: PathBuf) -> View
                 .right(px(14.0))
                 .size(px(26.0))
                 .rounded(px(6.0))
-                .bg(AdaptiveColor::rgb(0xF4F3EF, 0x141418))
+                .bg(palette::hud_bg())
                 .border_1()
-                .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2C2C35))
+                .border_color(palette::hud_border())
+                .transition()
+                .duration(140.0)
+                .ease_out()
                 .hover(|s| s.bg(palette::high()))
+                .active(|s| if reduce_motion() { s } else { s.scale(0.94) })
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
@@ -529,10 +537,14 @@ fn preview_viewport(store: Store, item: InputItem) -> View {
                 .right(px(14.0))
                 .size(px(28.0))
                 .rounded(px(6.0))
-                .bg(AdaptiveColor::rgb(0xF4F3EF, 0x141418))
+                .bg(palette::hud_bg())
                 .border_1()
-                .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2C2C35))
+                .border_color(palette::hud_border())
+                .transition()
+                .duration(140.0)
+                .ease_out()
                 .hover(|s| s.bg(palette::high()))
+                .active(|s| if reduce_motion() { s } else { s.scale(0.94) })
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
@@ -547,7 +559,7 @@ fn telemetry_bar(store: Store) -> View {
         .h(px(40.0))
         .bg(palette::surface())
         .border_t_1()
-        .border_color(AdaptiveColor::rgb(0xD6D5CD, 0x26262E))
+        .border_color(palette::outline())
         .px(px(16.0))
         .flex_row()
         .items_center()
@@ -607,7 +619,7 @@ fn telemetry_bar(store: Store) -> View {
                                         .w(px(148.0))
                                         .h(px(4.0))
                                         .rounded(px(2.0))
-                                        .bg(AdaptiveColor::rgb(0xD6D5CD, 0x121216))
+                                        .bg(palette::track_dark())
                                         .overflow_hidden()
                                         .child(
                                             view()
@@ -719,7 +731,17 @@ fn telemetry_bar(store: Store) -> View {
                                 .gap(px(12.0))
                                 .child(
                                     view()
+                                        .h(px(24.0))
+                                        .px(px(8.0))
+                                        .rounded(px(4.0))
+                                        .items_center()
+                                        .justify_center()
                                         .cursor_pointer()
+                                        .transition()
+                                        .duration(140.0)
+                                        .ease_out()
+                                        .hover(|s| s.bg(palette::container()))
+                                        .active(|s| if reduce_motion() { s } else { s.scale(0.96) })
                                         .on_press(move || {
                                             let p_rev = p.clone();
                                             spawn(async move {
@@ -729,7 +751,7 @@ fn telemetry_bar(store: Store) -> View {
                                         .child(
                                             text("定位文件")
                                                 .text_size(px(11.0))
-                                                .text_color(AdaptiveColor::rgb(0x706F68, 0x8E8E9A)),
+                                                .text_color(palette::subtext()),
                                         ),
                                 )
                                 .child(
@@ -737,10 +759,14 @@ fn telemetry_bar(store: Store) -> View {
                                         .w(px(64.0))
                                         .h(px(24.0))
                                         .rounded(px(4.0))
-                                        .bg(AdaptiveColor::rgb(0xE3E2DC, 0x24242C))
+                                        .bg(palette::high())
                                         .border_1()
-                                        .border_color(AdaptiveColor::rgb(0xC5C4BC, 0x343440))
+                                        .border_color(palette::outline_strong())
+                                        .transition()
+                                        .duration(140.0)
+                                        .ease_out()
                                         .hover(|s| s.bg(palette::highest()))
+                                        .active(|s| if reduce_motion() { s } else { s.scale(0.96) })
                                         .items_center()
                                         .justify_center()
                                         .cursor_pointer()
@@ -802,7 +828,11 @@ fn telemetry_bar(store: Store) -> View {
                             .bg(palette::container_low())
                             .border_1()
                             .border_color(palette::outline_input())
+                            .transition()
+                            .duration(140.0)
+                            .ease_out()
                             .hover(|s| s.bg(palette::high()))
+                            .active(|s| if reduce_motion() { s } else { s.scale(0.96) })
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
@@ -848,7 +878,7 @@ fn filmstrip_dock(store: Store, items: Vec<InputItem>) -> View {
             match item.status {
                 ItemStatus::Done { .. } | ItemStatus::Running(_) => palette::primary_dim_border(),
                 ItemStatus::Failed(_) => palette::error(),
-                _ => AdaptiveColor::rgb(0xD6D5CD, 0x25252D),
+                _ => palette::outline(),
             }
         };
         let src = item.path.to_string_lossy().into_owned();
@@ -876,7 +906,7 @@ fn filmstrip_dock(store: Store, items: Vec<InputItem>) -> View {
         .rounded(px(10.0))
         .bg(palette::surface())
         .border_1()
-        .border_color(AdaptiveColor::rgb(0xD6D5CD, 0x26262E))
+        .border_color(palette::outline())
         .px(px(8.0))
         .flex_row()
         .items_center()
@@ -898,16 +928,20 @@ fn filmstrip_dock(store: Store, items: Vec<InputItem>) -> View {
                     view()
                         .w(px(1.0))
                         .h(px(18.0))
-                        .bg(AdaptiveColor::rgb(0xD6D5CD, 0x26262E)),
+                        .bg(palette::outline()),
                 )
                 .child(
                     view()
                         .size(px(28.0))
                         .rounded(px(6.0))
-                        .bg(AdaptiveColor::rgb(0xECEBE6, 0x202027))
+                        .bg(palette::container())
                         .border_1()
-                        .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2E2E38))
+                        .border_color(palette::chip_border())
+                        .transition()
+                        .duration(140.0)
+                        .ease_out()
                         .hover(|s| s.bg(palette::high()))
+                        .active(|s| if reduce_motion() { s } else { s.scale(0.95) })
                         .items_center()
                         .justify_center()
                         .cursor_pointer()
@@ -1203,18 +1237,21 @@ fn inspector_column(store: Store) -> View {
                                         .child(when(
                                             move || store.daemon_loading.get(),
                                             move || {
+                                                let spinner = svg_icon(
+                                                    crate::ui::icons::LOADER_FRAMES[0],
+                                                    13.0,
+                                                    palette::primary(),
+                                                );
+                                                let spinner_el = if reduce_motion() {
+                                                    spinner.into_element()
+                                                } else {
+                                                    spinner.animate_spin().into_element()
+                                                };
                                                 view()
                                                     .flex_row()
                                                     .items_center()
                                                     .gap(px(5.0))
-                                                    .child(
-                                                        svg_icon(
-                                                            crate::ui::icons::LOADER_FRAMES[0],
-                                                            13.0,
-                                                            palette::primary(),
-                                                        )
-                                                        .animate_spin(),
-                                                    )
+                                                    .child(spinner_el)
                                                     .child(
                                                         text("预热中")
                                                             .text_size(px(11.0))
@@ -1280,17 +1317,17 @@ fn model_picker_trigger(store: Store) -> View {
         .items_center()
         .justify_between()
         .cursor_pointer()
-        .bg(AdaptiveColor::rgb(0xFFFFFF, 0x18181D))
+        .bg(palette::surface())
         .border_1()
         .border_color(move || {
             if store.show_model_picker.get() {
                 palette::primary()
             } else {
-                AdaptiveColor::rgb(0xCECDC5, 0x2D2D36)
+                palette::outline_input()
             }
         })
         .hover(|s| s.bg(palette::container()))
-        .active(|s| s.scale(0.99))
+        .active(|s| if reduce_motion() { s } else { s.scale(0.99) })
         .transition()
         .duration(150.0)
         .ease_out()
@@ -1307,17 +1344,10 @@ fn model_picker_trigger(store: Store) -> View {
                         .font_family(FONT_MONO)
                         .text_color(palette::on_surface()),
                 )
-                .child(
-                    text(move || {
-                        if store.current_model_variant().recommended {
-                            "★"
-                        } else {
-                            ""
-                        }
-                    })
-                    .text_size(px(11.0))
-                    .text_color(palette::on_surface()),
-                ),
+                .child(when(
+                    move || store.current_model_variant().recommended,
+                    move || svg_icon(crate::ui::icons::STAR, 11.0, palette::star_gold()),
+                )),
         )
         .child(
             view()
@@ -1329,9 +1359,9 @@ fn model_picker_trigger(store: Store) -> View {
                         .h(px(20.0))
                         .px(px(6.0))
                         .rounded(px(4.0))
-                        .bg(AdaptiveColor::rgb(0xEFECE6, 0x1C1C22))
+                        .bg(palette::chip_bg())
                         .border_1()
-                        .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2E2E37))
+                        .border_color(palette::chip_border())
                         .items_center()
                         .justify_center()
                         .child(
@@ -1371,7 +1401,7 @@ fn model_picker_popup(store: Store) -> View {
         .right(px(16.0))
         .h(px(268.0))
         .rounded(px(8.0))
-        .bg(AdaptiveColor::rgb(0xFFFFFF, 0x1C1C22))
+        .bg(palette::popup_bg())
         .border_1()
         .border_color(palette::outline_strong())
         .shadow_lg()
@@ -1384,7 +1414,7 @@ fn model_picker_popup(store: Store) -> View {
                 .w_full()
                 .h(px(34.0))
                 .rounded(px(6.0))
-                .bg(AdaptiveColor::rgb(0xEAE9E4, 0x1A1A1F))
+                .bg(palette::recessed())
                 .border_b_1()
                 .border_color(palette::primary())
                 .px(px(10.0))
@@ -1396,8 +1426,8 @@ fn model_picker_popup(store: Store) -> View {
                     input()
                         .flex_1()
                         .placeholder("搜索模型…")
-                        .placeholder_color(rgb(0xA2A2AC))
-                        .caret_color(rgb(0x7FDAC9))
+                        .placeholder_color(palette::input_placeholder())
+                        .caret_color(palette::input_caret())
                         .value(move || store.picker_search.get())
                         .on_change(move |v: &str| store.picker_search.set(v.to_owned()))
                         .text_size(px(12.0))
@@ -1451,13 +1481,13 @@ fn model_picker_popup(store: Store) -> View {
                                     .justify_between()
                                     .cursor_pointer()
                                     .bg(if is_sel {
-                                        AdaptiveColor::rgb(0xE3E2DC, 0x26262F)
+                                        palette::high()
                                     } else {
                                         AdaptiveColor::TRANSPARENT
                                     })
                                     .border_1()
                                     .border_color(if is_sel {
-                                        AdaptiveColor::rgb(0xC5C4BC, 0x343440)
+                                        palette::outline_strong()
                                     } else {
                                         AdaptiveColor::TRANSPARENT
                                     })
@@ -1481,7 +1511,7 @@ fn model_picker_popup(store: Store) -> View {
                                                 text(sub_meta)
                                                     .text_size(px(11.0))
                                                     .font_family(FONT_MONO)
-                                                    .text_color(AdaptiveColor::rgb(0x706F68, 0x8E8E9A)),
+                                                    .text_color(palette::subtext()),
                                             ),
                                     )
                                     .child(if is_sel {
@@ -1505,7 +1535,7 @@ fn output_dir_box(store: Store) -> View {
         .w_full()
         .h(px(34.0))
         .rounded(px(8.0))
-        .bg(AdaptiveColor::rgb(0xEAE9E4, 0x16161A))
+        .bg(palette::well_bg())
         .border_1()
         .border_color(palette::outline())
         .pl(px(10.0))
@@ -1522,7 +1552,7 @@ fn output_dir_box(store: Store) -> View {
                 .child(svg_icon(
                     crate::ui::icons::FOLDER,
                     13.0,
-                    AdaptiveColor::rgb(0x706F68, 0x7E7E8A),
+                    palette::subtext(),
                 ))
                 .child(
                     text(move || match store.custom_out_dir.get() {
@@ -1534,7 +1564,7 @@ fn output_dir_box(store: Store) -> View {
                         None => "跟随原图目录".to_string(),
                     })
                     .text_size(px(12.0))
-                    .text_color(AdaptiveColor::rgb(0x27272A, 0xD0D0D8)),
+                    .text_color(palette::text_secondary()),
                 ),
         )
         .child(
@@ -1544,9 +1574,9 @@ fn output_dir_box(store: Store) -> View {
                 .rounded(px(6.0))
                 .bg(palette::container())
                 .border_1()
-                .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2E2E38))
+                .border_color(palette::chip_border())
                 .hover(|s| s.bg(palette::high()))
-                .active(|s| s.scale(0.96))
+                .active(|s| if reduce_motion() { s } else { s.scale(0.96) })
                 .transition()
                 .duration(140.0)
                 .ease_out()
@@ -1582,7 +1612,11 @@ fn inspector_cta_button(store: Store) -> AnyElement {
                 .bg(palette::error_dim_bg())
                 .border_1()
                 .border_color(palette::error_dim_border())
+                .transition()
+                .duration(140.0)
+                .ease_out()
                 .hover(|s| s.bg(palette::high()))
+                .active(|s| if reduce_motion() { s } else { s.scale(0.985) })
                 .flex_row()
                 .items_center()
                 .justify_center()
@@ -1606,16 +1640,16 @@ fn inspector_cta_button(store: Store) -> AnyElement {
                         .w(px(44.0))
                         .h(px(18.0))
                         .rounded(px(4.0))
-                        .bg(AdaptiveColor::rgb(0xFCE9E7, 0x2A181A))
+                        .bg(palette::error_badge_bg())
                         .border_1()
-                        .border_color(AdaptiveColor::rgb(0xE8B4AE, 0x4A2528))
+                        .border_color(palette::error_badge_border())
                         .items_center()
                         .justify_center()
                         .child(
                             text("Ctrl+.")
                                 .text_size(px(10.0))
                                 .font_family(FONT_MONO)
-                                .text_color(AdaptiveColor::rgb(0xC23A2B, 0xFF897A)),
+                                .text_color(palette::error_badge_fg()),
                         ),
                 ),
             JobPhase::Done { .. } => primary_button("重新超分", true, move || store.start_job()),

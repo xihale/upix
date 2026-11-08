@@ -449,16 +449,16 @@ private fun StageThumbnail(
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(4.dp)
+                    .padding(Spacing.xs)
                     .clip(CircleShape)
                     .background(MaterialTheme.colorScheme.surfaceContainerHighest)
-                    .padding(3.dp)
+                    .padding(Spacing.xs)
             ) {
                 Icon(
                     imageVector = Icons.Outlined.FolderOpen,
                     contentDescription = stringResource(R.string.hero_thumbnail_folder_cd),
                     tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(11.dp)
+                    modifier = Modifier.size(13.dp)
                 )
             }
         }

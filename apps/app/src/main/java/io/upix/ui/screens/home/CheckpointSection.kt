@@ -1,6 +1,7 @@
 package io.upix.ui.screens.home
 
 import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,13 +30,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.upix.R
+import io.upix.ui.theme.ExpandFloatSpec
 import io.upix.ui.theme.ExpandSizeSpec
 import io.upix.ui.theme.Spacing
-import io.upix.ui.theme.ValueMono
 import io.upix.ui.theme.valueStyleFor
 import io.upix.viewmodel.ProcessingCheckpointSummary
 import io.upix.viewmodel.ProcessingUiState
@@ -56,6 +58,11 @@ internal fun CheckpointSection(
 ) {
     val checkpointSummary = processingUiState.checkpointSummary ?: return
     var detailsExpanded by remember { mutableStateOf(false) }
+    val expandIconRotation by animateFloatAsState(
+        targetValue = if (detailsExpanded) 180f else 0f,
+        animationSpec = ExpandFloatSpec,
+        label = "checkpointExpandRotation"
+    )
     // 丢弃断点不可恢复：先弹确认框再执行。
     var showDiscardConfirm by remember { mutableStateOf(false) }
 
@@ -139,7 +146,9 @@ internal fun CheckpointSection(
                                 if (detailsExpanded) R.string.common_collapse else R.string.common_details
                             ),
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(20.dp)
+                            modifier = Modifier
+                                .size(20.dp)
+                                .rotate(expandIconRotation)
                         )
                     }
                 }

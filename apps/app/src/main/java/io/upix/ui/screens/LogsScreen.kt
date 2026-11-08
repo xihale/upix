@@ -45,7 +45,7 @@ import io.upix.data.model.LogLevel
 import io.upix.ui.components.LogViewer
 import io.upix.ui.theme.LocalScreenMargin
 import io.upix.ui.theme.Spacing
-import io.upix.ui.theme.ValueMono
+import io.upix.ui.theme.valueStyleFor
 
 /**
  * 日志屏：单列三段式——搜索框、筛选/工具行、日志面板。
@@ -140,13 +140,14 @@ fun LogsScreen(
                     )
                 }
                 items(LogLevel.entries) { level ->
+                    val labelText = stringResource(levelDisplayName(level))
                     FilterChip(
                         selected = selectedLevel == level,
                         onClick = { selectedLevelOrdinal = level.ordinal },
                         label = {
                             Text(
-                                text = stringResource(levelDisplayName(level)),
-                                style = ValueMono
+                                text = labelText,
+                                style = valueStyleFor(labelText, fallback = MaterialTheme.typography.labelLarge)
                             )
                         }
                     )

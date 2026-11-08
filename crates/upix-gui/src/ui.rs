@@ -191,7 +191,7 @@ pub fn segmented_with_font<T: Copy + PartialEq + 'static>(
             .duration(140.0)
             .ease_out()
             .hover(|s| s.bg(AdaptiveColor::new(rgba(0x0000000A), rgba(0xFFFFFF07))))
-            .active(|s| s.scale(0.97))
+            .active(|s| if reduce_motion() { s } else { s.scale(0.97) })
             .on_press(move || cb(val))
             .child(lbl_text);
         row = row.child(btn);
@@ -354,7 +354,7 @@ pub fn icon_button(
         .duration(140.0)
         .ease_out()
         .hover(|s| s.bg(palette::high()).border_color(palette::outline_strong()))
-        .active(|s| s.scale(0.94))
+        .active(|s| if reduce_motion() { s } else { s.scale(0.94) })
         .items_center()
         .justify_center()
         .cursor_pointer()
@@ -397,7 +397,7 @@ pub fn toggle_switch(
         .items_center()
         .justify_start()
         .cursor_pointer()
-        .active(|s| s.scale(0.96))
+        .active(|s| if reduce_motion() { s } else { s.scale(0.96) })
         .on_press(move || {
             let cur = untracked(is_checked);
             on_toggle(!cur);
@@ -483,7 +483,10 @@ pub fn primary_button(
         v = v
             .cursor_pointer()
             .hover(|s| s.bg(palette::primary_hover()))
-            .active(|s| s.bg(palette::accent_active()).scale(0.985))
+            .active(|s| {
+                let s = s.bg(palette::accent_active());
+                if reduce_motion() { s } else { s.scale(0.985) }
+            })
             .on_press(move || on_click());
     }
 
@@ -520,7 +523,10 @@ pub fn secondary_button(
         .duration(140.0)
         .ease_out()
         .hover(|s| s.bg(palette::highest()))
-        .active(|s| s.bg(palette::surface()).scale(0.97))
+        .active(|s| {
+            let s = s.bg(palette::surface());
+            if reduce_motion() { s } else { s.scale(0.97) }
+        })
         .on_press(move || on_click())
         .child(
             text(label.into())
@@ -611,6 +617,9 @@ pub mod icons {
 
     /// Check icon.
     pub const CHECK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>"#;
+
+    /// Filled 5-point Star icon (matching `desktop/src/ui_widgets.hpp` `"star"`).
+    pub const STAR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><polygon points="12 2.5 14.9 8.6 21.6 9.5 16.7 14.2 17.9 20.9 12 17.7 6.1 20.9 7.3 14.2 2.4 9.5 9.1 8.6 12 2.5"/></svg>"#;
 
     /// 4-frame rotating loader arc for warm daemon startup animation.
     pub const LOADER_FRAMES: [&str; 4] = [

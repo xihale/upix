@@ -53,6 +53,7 @@ import io.upix.ui.theme.LocalScreenMargin
 import io.upix.ui.theme.MaxContentWidth
 import io.upix.ui.theme.Spacing
 import io.upix.ui.theme.ValueMono
+import io.upix.ui.theme.valueStyleFor
 import io.upix.viewmodel.DeviceUiState
 
 /**
@@ -176,7 +177,7 @@ private fun ConnectionErrorBanner(
             Icon(
                 imageVector = Icons.Outlined.ErrorOutline,
                 contentDescription = null,
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(20.dp)
             )
             Text(
                 text = message,
@@ -245,10 +246,11 @@ private fun EndpointDetails(endpoint: RemoteEndpoint) {
         textAlign = TextAlign.Center
     )
     endpoint.fingerprint?.takeIf { fp -> fp.isNotBlank() }?.let { fp ->
+        val fingerprintText = stringResource(R.string.connection_fingerprint, fp)
         SelectionContainer {
             Text(
-                text = stringResource(R.string.connection_fingerprint, fp),
-                style = MaterialTheme.typography.bodySmall.copy(fontFamily = ValueMono.fontFamily),
+                text = fingerprintText,
+                style = valueStyleFor(fingerprintText, fallback = MaterialTheme.typography.bodySmall),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
@@ -326,7 +328,7 @@ private fun DisconnectedActions(
             Icon(
                 imageVector = Icons.Outlined.QrCodeScanner,
                 contentDescription = null,
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(20.dp)
             )
             Spacer(modifier = Modifier.width(Spacing.xs))
             Text(stringResource(R.string.connection_scan_qr))
@@ -335,7 +337,7 @@ private fun DisconnectedActions(
             Icon(
                 imageVector = Icons.Outlined.Edit,
                 contentDescription = null,
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier.size(20.dp)
             )
             Spacer(modifier = Modifier.width(Spacing.xs))
             Text(stringResource(R.string.connection_manual_input))

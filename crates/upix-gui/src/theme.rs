@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use nsh_core::prelude::AdaptiveColor;
+use nsh_core::prelude::{rgb, AdaptiveColor, Rgba};
 
 pub const FONT_SANS: &str = "Noto Sans CJK SC, Source Han Sans SC, PingFang SC, Microsoft YaHei, Inter, sans-serif";
 pub const FONT_MONO: &str = "JetBrains Mono, JetBrainsMonoNL Nerd Font Mono, JetBrainsMono Nerd Font Mono, DejaVu Sans Mono, Noto Sans CJK SC, monospace";
@@ -15,7 +15,7 @@ pub mod radius {
 /// 暗房仪器 (Darkroom Instrument) design system tokens.
 /// Matches `desktop/src/ui_theme.hpp` in both Dark and Light modes.
 pub mod palette {
-    use super::AdaptiveColor;
+    use super::{rgb, AdaptiveColor, Rgba};
 
     #[inline]
     pub const fn bg() -> AdaptiveColor {
@@ -250,5 +250,100 @@ pub mod palette {
     #[inline]
     pub const fn qr_ink() -> AdaptiveColor {
         AdaptiveColor::rgb(0x131316, 0x131316)
+    }
+
+    #[inline]
+    pub const fn overlay_scrim() -> AdaptiveColor {
+        AdaptiveColor::rgb(0x08080B, 0x08080B)
+    }
+
+    #[inline]
+    pub const fn popup_bg() -> AdaptiveColor {
+        AdaptiveColor::rgb(0xFFFFFF, 0x1C1C22)
+    }
+
+    #[inline]
+    pub const fn hud_bg() -> AdaptiveColor {
+        AdaptiveColor::rgb(0xF4F3EF, 0x141418)
+    }
+
+    #[inline]
+    pub const fn hud_border() -> AdaptiveColor {
+        AdaptiveColor::rgb(0xCECDC5, 0x2C2C35)
+    }
+
+    #[inline]
+    pub const fn well_bg() -> AdaptiveColor {
+        AdaptiveColor::rgb(0xEAE9E4, 0x16161B)
+    }
+
+    #[inline]
+    pub const fn well_border() -> AdaptiveColor {
+        AdaptiveColor::rgb(0xD6D5CD, 0x2A2A32)
+    }
+
+    #[inline]
+    pub const fn chip_bg() -> AdaptiveColor {
+        AdaptiveColor::rgb(0xEFECE6, 0x1C1C22)
+    }
+
+    #[inline]
+    pub const fn chip_border() -> AdaptiveColor {
+        AdaptiveColor::rgb(0xCECDC5, 0x2E2E37)
+    }
+
+    #[inline]
+    pub const fn tag_bg() -> AdaptiveColor {
+        AdaptiveColor::rgb(0xDDDCDA, 0x23232B)
+    }
+
+    #[inline]
+    pub const fn row_divider() -> AdaptiveColor {
+        AdaptiveColor::rgb(0xDDDCDA, 0x23232A)
+    }
+
+    #[inline]
+    pub const fn subtext() -> AdaptiveColor {
+        AdaptiveColor::rgb(0x706F68, 0x8E8E9A)
+    }
+
+    #[inline]
+    pub const fn text_secondary() -> AdaptiveColor {
+        AdaptiveColor::rgb(0x3F3E3A, 0xC7C7D1)
+    }
+
+    #[inline]
+    pub const fn icon_muted() -> AdaptiveColor {
+        AdaptiveColor::rgb(0x8A8982, 0x5E5E6A)
+    }
+
+    #[inline]
+    pub const fn track_dark() -> AdaptiveColor {
+        AdaptiveColor::rgb(0xD6D5CD, 0x121216)
+    }
+
+    #[inline]
+    pub const fn error_badge_bg() -> AdaptiveColor {
+        AdaptiveColor::rgb(0xFCE9E7, 0x2A181A)
+    }
+
+    #[inline]
+    pub const fn error_badge_border() -> AdaptiveColor {
+        AdaptiveColor::rgb(0xE8B4AE, 0x4A2528)
+    }
+
+    #[inline]
+    pub const fn error_badge_fg() -> AdaptiveColor {
+        AdaptiveColor::rgb(0xC23A2B, 0xFF897A)
+    }
+
+    #[inline]
+    pub const fn input_placeholder() -> Rgba {
+        rgb(0xA2A2AC)
+    }
+
+    #[inline]
+    pub const fn input_caret() -> Rgba {
+        rgb(0x7FDAC9)
     }
 }

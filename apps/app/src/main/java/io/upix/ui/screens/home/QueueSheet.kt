@@ -355,7 +355,7 @@ private fun QueueItemCard(
             // 点卡片本体 = 应用内预览输出图；外部分享/打开走行尾 FolderOpen 图标。
             .pressable(enabled = canOpenOutput) { onPreviewQueuedBatchOutput(queueItem.id) },
         shape = MaterialTheme.shapes.medium,
-        color = MaterialTheme.colorScheme.surfaceContainerLowest
+        color = MaterialTheme.colorScheme.surfaceContainer
     ) {
         Column {
             ListItem(
@@ -486,7 +486,7 @@ private fun QueueItemAction(
             imageVector = iconVector,
             contentDescription = stringResource(contentDescriptionRes),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(18.dp)
+            modifier = Modifier.size(20.dp)
         )
     }
 }
