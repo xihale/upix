@@ -136,9 +136,14 @@ pub fn run(a: &ProcessArgs) -> i32 {
             || (config.min_tile_size == DEFAULT_MIN_TILE_SIZE
                 && config.max_tile_size == DEFAULT_MAX_TILE_SIZE));
     if !is_dir && !a.no_daemon && !force_cpu && daemon_supports_config {
-        if let Some(code) =
-            delegate_to_daemon(&effective, input_path, output_path, model_name, models_dir)
-        {
+        if let Some(code) = delegate_to_daemon(
+            &effective,
+            input_path,
+            output_path,
+            model_name,
+            models_dir,
+            a.force,
+        ) {
             return code;
         }
         // else: no daemon / spawn failed → fall through to inline path
@@ -447,6 +452,7 @@ fn delegate_to_daemon(
     output_path: &str,
     model_name: &str,
     models_dir: &str,
+    force: bool,
 ) -> Option<i32> {
     let config = &effective.config;
 
@@ -505,6 +511,7 @@ fn delegate_to_daemon(
         tile_overlap: config.tile_overlap,
         output_quality: config.output_quality,
         encoder: encoder_options_from_wire(&config.encoder),
+        force,
     };
 
     let uds = upix_host::transport_std::StdUdsFactory;
@@ -541,6 +548,11 @@ fn delegate_to_daemon(
                 return Some(1);
             }
         };
+
+    if outcome.skipped {
+        log::info!(target: "Engine", "Skipped (already super-resolved by this tool): {input_path}");
+        return Some(0);
+    }
 
     let saved_path = outcome.out_path.to_string_lossy().into_owned();
     if crate::logging::machine_output_enabled() {

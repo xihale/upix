@@ -99,62 +99,8 @@ void daemon_signal_handler(int) {
 // (~/.local/share/upix/models by default). A fixed user-level location,
 // so the CLI finds its models from any cwd and never scatters a ./models
 // directory into whatever folder it was launched from.
-auto default_models_dir() -> std::string {
-    if (const char* env = std::getenv("UPIX_MODELS_DIR");
-        env && *env) {
-        return env;
-    }
-    if (const char* xdg = std::getenv("XDG_DATA_HOME"); xdg && *xdg) {
-        return std::format("{}/upix/models", xdg);
-    }
-    if (const char* home = upix::user_home(); home && *home) {
-        return std::format("{}/.local/share/upix/models", home);
-    }
-    return "./models";  // no HOME/XDG at all (degenerate): keep something usable
-}
 
-auto pid_is_upix_daemon(pid_t pid) -> bool {
-    if (pid <= 0 || ::kill(pid, 0) != 0) {
-        return false;
-    }
-#if defined(__linux__)
-    // A zombie (parent not reaping) and any process that recycled this pid
-    // both pass kill(0). The exe symlink is the reliable check: it fails for
-    // zombies and names the real binary otherwise.
-    std::error_code ec;
-    const auto exe = std::filesystem::read_symlink(
-        std::format("/proc/{}/exe", pid), ec);
-    if (ec || exe.string().find("upix") == std::string::npos) {
-        return false;
-    }
-    // And it must be the daemon subcommand, not an unrelated upix process.
-    std::ifstream cmd(std::format("/proc/{}/cmdline", pid), std::ios::binary);
-    const std::string argv((std::istreambuf_iterator<char>(cmd)),
-                           std::istreambuf_iterator<char>());
-    return argv.find("daemon") != std::string::npos;
-#elif defined(__APPLE__)
-    char path[PROC_PIDPATHINFO_MAXSIZE];
-    if (::proc_pidpath(pid, path, sizeof(path)) <= 0) {
-        return false;  // zombies fail here too
-    }
-    return std::string_view(path).find("upix") != std::string_view::npos;
-#else
-    return true;  // no executable probe on this platform: keep kill(0) semantics
-#endif
-}
 
-// ── Image / format helpers ──────────────────────────────────────────────────
-auto infer_format_from_extension(const std::string& path) -> std::string {
-    auto dot = path.rfind('.');
-    if (dot == std::string::npos) return "";
-    std::string ext = path.substr(dot + 1);
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    if (ext == "png") return "png";
-    if (ext == "jpg" || ext == "jpeg") return "jpg";
-    if (ext == "webp") return "webp";
-    if (ext == "avif") return "avif";
-    return "";
-}
 
 // ── Machine-readable output ─────────────────────────────────────────────────
 namespace {
@@ -304,25 +250,6 @@ void print_progress_stderr(const upix::ProcessingProgress& prog,
 // different models coexist — `img.png` → `img_<model>.png` (input extension
 // kept when it maps to a known output format, else .png), and a directory
 // input `shots/` → `shots_<model>/` next to it.
-auto derive_default_output(const std::string& input_path,
-                           const std::string& model_name,
-                           bool input_is_dir) -> std::string {
-    namespace fs = std::filesystem;
-    fs::path in(input_path);
-    const std::string tag = "_" + upix::sanitize_model_for_filename(model_name);
-
-    if (input_is_dir) {
-        // filename() of "shots/" is "shots"; of "/" is "" (rejected upstream).
-        return (in.parent_path() / (in.filename().string() + tag)).string() + "/";
-    }
-
-    std::string ext = in.extension().string();
-    if (ext.empty() || infer_format_from_extension(in.filename().string()).empty()) {
-        ext = ".png";
-    }
-    fs::path out = in.parent_path() / (in.stem().string() + tag + ext);
-    return out.string();
-}
 
 // convert_image_channels / normalize_channels_for_model now live in
 // share/utils/image (upix::) so the coordinator's remote task path applies the
@@ -361,27 +288,6 @@ auto generate_qr_ascii(const std::string& text) -> std::string {
     return result;
 }
 
-auto build_connection_card(uint16_t port,
-                           const std::array<uint8_t, 32>& identity_pubkey)
-    -> ConnectionCard {
-    ConnectionCard card;
-    card.addresses = upix::network_utils::get_local_addresses();
-    if (card.addresses.empty()) {
-        card.addresses.push_back("127.0.0.1");
-    }
-    card.port = port;
-    card.fingerprint = upix::fingerprint(identity_pubkey);
-    card.pubkey_b64 = upix::base64_encode(identity_pubkey.data(), 32);
-
-    // v2 JSON: carries fingerprint + identity pubkey. Android rejects v1.
-    // ("name" removed: Android's JoinInviteParser never reads it — 13 bytes
-    // of payload cost QR modules for nothing.)
-    card.qr_payload = std::format(
-        "{{\"v\":2,\"ip\":\"{}\",\"port\":{},\"fp\":\"{}\""
-        ",\"pk\":\"{}\"}}",
-        card.addresses[0], port, card.fingerprint, card.pubkey_b64);
-    return card;
-}
 
 void print_connection_card(uint16_t port, const std::array<uint8_t, 32>& identity_pubkey) {
     const ConnectionCard card = build_connection_card(port, identity_pubkey);

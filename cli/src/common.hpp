@@ -20,6 +20,9 @@
 #include "utils/network.hpp"  // MAX_NETWORK_PAYLOAD
 
 #include "core/config.hpp"
+#include "core/distributed/connection_card.hpp"
+#include "core/model_manager.hpp"
+#include "core/serve/daemon_control.hpp"
 
 namespace upix {
 class ServeDaemon;
@@ -48,28 +51,32 @@ void signal_handler(int);
 void daemon_signal_handler(int);
 
 // ── Defaults ────────────────────────────────────────────────────────────────
-// $UPIX_MODELS_DIR > $XDG_DATA_HOME/upix/models (per-user store,
-// never cwd-relative; the --models-dir flag wins by being bound directly to
-// each subcommand's models_dir field).
-auto default_models_dir() -> std::string;
+// The one models-dir policy lives in share (core/model_manager.hpp) — the
+// desktop and the daemon resolve the same path without asking the CLI.
+inline auto default_models_dir() -> std::string {
+    return upix::default_models_dir();
+}
 
-// Is `pid` a live process that is actually our serve daemon? kill(pid, 0)
-// alone also succeeds for zombies and for an unrelated process that recycled
-// the pid, and both make every `upix process` pay the full daemon-spawn wait
-// before falling back inline. Verifies the executable (and on Linux the
-// command line) so pid files can be trusted.
-auto pid_is_upix_daemon(pid_t pid) -> bool;
+// Is `pid` a live process that is actually our serve daemon? Verifies the
+// executable (and on Linux the command line) so pid files can be trusted.
+// Lives in share now (core/serve/daemon_control.hpp) — the desktop's status
+// page and the CLI trust the same check.
+inline auto pid_is_upix_daemon(pid_t pid) -> bool {
+    return upix::pid_is_upix_daemon(pid);
+}
 
 // ── Image / format helpers ──────────────────────────────────────────────────
-// Infer output format ("png"/"jpg"/"webp"/"avif") from a file extension; "" if unknown.
-auto infer_format_from_extension(const std::string& path) -> std::string;
+// Both moved into share/core/config.hpp (the batch core + desktop single-file
+// runs share them); kept here under the historical names.
+inline auto infer_format_from_extension(const std::string& path) -> std::string {
+    return upix::infer_format_from_extension(path);
+}
 
-// Default output location when none was given: `img.png` → `img_<model>.png`
-// (sibling, input extension kept when it is a known output format, else .png);
-// directory input `shots/` → `shots_<model>/` next to it.
-auto derive_default_output(const std::string& input_path,
-                           const std::string& model_name,
-                           bool input_is_dir) -> std::string;
+inline auto derive_default_output(const std::string& input_path,
+                                  const std::string& model_name,
+                                  bool input_is_dir) -> std::string {
+    return upix::derive_default_output(input_path, model_name, input_is_dir);
+}
 
 // Render a progress line to stderr:  45.2% [12/27 tiles, ETA 3.2s]
 void print_progress_stderr(const upix::ProcessingProgress& prog,
@@ -131,20 +138,14 @@ auto resolve_processing_config(const args::Process& a) -> EffectiveProcessingCon
 // Render text as a 2-row-per-line block of Unicode half-blocks.
 auto generate_qr_ascii(const std::string& text) -> std::string;
 
-// Connection card data shared by the human printer and the `--json` emitters.
-struct ConnectionCard {
-    std::vector<std::string> addresses;  // first non-loopback is the QR default
-    uint16_t port = 0;
-    std::string fingerprint;
-    std::string pubkey_b64;
-    std::string qr_payload;  // v2 JSON the Android JoinInviteParser understands
-};
-
-// Resolve local addresses + identity into a card. Pure data — no I/O beyond
-// the interface enumeration, safe to call before any output mode is chosen.
-auto build_connection_card(uint16_t port,
-                           const std::array<uint8_t, 32>& identity_pubkey)
-    -> ConnectionCard;
+// Card data + builder moved to share (core/distributed/connection_card.hpp) —
+// the desktop builds the identical card in-process now (SPEC-frontends S1).
+using ConnectionCard = upix::ConnectionCard;
+inline auto build_connection_card(uint16_t port,
+                                  const std::array<uint8_t, 32>& identity_pubkey)
+    -> ConnectionCard {
+    return upix::build_connection_card(port, identity_pubkey);
+}
 
 // Print the connection card shown to the user: all local IPv4 addresses
 // (first non-loopback one is used as the QR default), the identity fingerprint,

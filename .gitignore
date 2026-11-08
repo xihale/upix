@@ -103,6 +103,7 @@ gpu_*.log
 # python
 __pycache__/
 /target
+.csearch/
 
 # nsh scaffolding (regenerate with `npx skills add longbridge/nsh`)
 .agents/
@@ -110,3 +111,4 @@ __pycache__/
 skills-lock.json
 crates/upix-gui/.nsh/
 target/
+

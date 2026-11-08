@@ -1,53 +1,49 @@
-//! Installed-model scanning and the downloadable catalog, until the core
-//! integration exports `ModelManager` / `model_metadata` (the `integration`
-//! feature swaps the scene table for `upix_core::model_metadata`).
-//!
-//! The scene table below is a verbatim mirror of `share/core/model_metadata.cpp`
-//! (patterns in test order, zh labels, 推荐 flag); the key normalization is
-//! the same: lowercase, `'_'` and `' '` → `'-'`, first matching rule wins.
+//! Installed-model scanning, family grouping (`upix_core::model_families`), and
+//! downloadable catalog (`upix_host::modelctl` when `integration` is enabled).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// One installed model row.
+/// One model variant item inside a family card.
 #[derive(Clone, Debug, PartialEq)]
-pub struct ModelRow {
-    /// File stem, as the CLI prints it (e.g. `NomosUni-SPAN-x2`).
+pub struct ModelVariant {
+    /// Model stem (e.g. `NomosUni-SPAN-x2`).
     pub name: String,
+    /// Short badge label (e.g. `x2`, `x4plus`, `medium x1`).
+    pub short_name: String,
     pub scale: i32,
-    /// zh scene label, empty when no rule matches (imported models carry no
-    /// chip — ModelsPage.qml grammar).
     pub scene: String,
-    /// The table's recommended flag (the "推荐" chip).
     pub recommended: bool,
+    pub installed: bool,
     pub param_path: PathBuf,
-    pub has_bin: bool,
+    pub bin_path: PathBuf,
+    pub size_bytes: u64,
 }
 
-/// One catalog (remote) row.
+/// A grouped model family (`share/core/model_families.hpp` / `upix_core::model_families`).
 #[derive(Clone, Debug, PartialEq)]
-pub struct CatalogRow {
-    pub name: &'static str,
-    pub scene: &'static str,
-    pub scale: i32,
-    /// Whether the desktop's models/README.md calls it a first pick.
+pub struct ModelGroup {
+    pub title: String,
+    pub summary: String,
+    pub scene: String,
     pub recommended: bool,
+    pub items: Vec<ModelVariant>,
 }
 
-/// The release catalog (mirrors desktop ModelsPage's remote list); downloads
-/// run through `upix_host::modelctl` once the integration lands.
-pub const CATALOG: &[CatalogRow] = &[
-    CatalogRow { name: "NomosUni-SPAN-x2", scene: "照片", scale: 2, recommended: false },
-    CatalogRow { name: "NomosUni-SPAN-x4", scene: "照片", scale: 4, recommended: false },
-    CatalogRow { name: "Real-ESRGANv3-anime-x2", scene: "动漫", scale: 2, recommended: true },
-    CatalogRow { name: "Real-ESRGANv3-anime-x4", scene: "动漫", scale: 4, recommended: false },
-    CatalogRow { name: "Real-ESRGANv3-general-x2", scene: "照片", scale: 2, recommended: true },
-    CatalogRow { name: "Real-ESRGAN-x4plus", scene: "照片", scale: 4, recommended: true },
-    CatalogRow { name: "Real-CUGAN-4x", scene: "动漫", scale: 4, recommended: false },
-    CatalogRow { name: "DeJPG-x1", scene: "照片·修复", scale: 1, recommended: false },
-    CatalogRow { name: "Archivist-Medium-x1", scene: "动漫·修复", scale: 1, recommended: true },
-    CatalogRow { name: "UltraSharp-x4", scene: "综合", scale: 4, recommended: true },
-    CatalogRow { name: "Remacri-x4", scene: "综合", scale: 4, recommended: true },
-    CatalogRow { name: "Animesharp-x4", scene: "动漫", scale: 4, recommended: true },
+/// Fallback catalog when offline or when `integration` is disabled.
+pub const FALLBACK_CATALOG: &[&str] = &[
+    "NomosUni-SPAN-x2",
+    "NomosUni-SPAN-x4",
+    "Real-ESRGANv3-anime-x2",
+    "Real-ESRGANv3-anime-x4",
+    "Real-ESRGANv3-general-x2",
+    "Real-ESRGAN-x4plus",
+    "Real-CUGAN-4x",
+    "DeJPG-x1",
+    "Archivist-Medium-x1",
+    "UltraSharp-x4",
+    "Remacri-x4",
+    "Animesharp-x4",
 ];
 
 /// `UPIX_MODELS_DIR`, else `$HOME/.local/share/upix/models` (flat cache).
@@ -55,48 +51,182 @@ pub fn models_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("UPIX_MODELS_DIR") {
         return PathBuf::from(dir);
     }
-    let mut dir = crate::host_bridge::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."));
+    let mut dir = crate::host_bridge::home_dir().unwrap_or_else(|| PathBuf::from("."));
     dir.push(".local/share/upix/models");
     dir
 }
 
-/// Scans `dir` for `<name>.param` (+ `.bin`) pairs, sorted by name. Missing
-/// dir answers an empty list (first run).
-pub fn scan_installed(dir: &Path) -> Vec<ModelRow> {
-    let mut rows = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return rows;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("param") {
-            continue;
+/// Scans `dir` for `<name>.param` (+ `.bin`) pairs and groups them by model family.
+pub fn scan_installed_groups(dir: &Path) -> (Vec<ModelGroup>, HashSet<String>) {
+    let mut stems = Vec::new();
+    let mut installed_set = HashSet::new();
+
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("param") {
+                continue;
+            }
+            let Some(stem) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
+                continue;
+            };
+            if dir.join(format!("{stem}.bin")).exists() {
+                installed_set.insert(stem.clone());
+                stems.push(stem);
+            }
         }
-        let Some(name) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else {
-            continue;
-        };
-        let scale = scale_from_filename(&name).unwrap_or(2);
-        let (scene, recommended) = classify_scene(&name)
-            .map(|(s, r)| (s.to_owned(), r))
-            .unwrap_or((String::new(), false));
-        rows.push(ModelRow {
-            has_bin: dir.join(format!("{name}.bin")).exists(),
-            name,
-            scale,
-            scene,
-            recommended,
-            param_path: path,
-        });
     }
-    rows.sort_by(|a, b| a.name.cmp(&b.name));
-    rows
+    stems.sort();
+
+    let groups = build_groups_from_stems(&stems, dir, &installed_set);
+    (groups, installed_set)
 }
 
-/// Filename scale: model_graph.cpp's `scale_from_filename` verbatim — every
-/// 'x'/'X' followed by digits, accumulate while digits and n ≤ 8 (the cap
-/// stops "x99999999999" from wrapping into the accepted 1..8 range), the
-/// last accepted value wins. Returns None for 0.
+/// Builds remote catalog groups from `remote_stems`, marking which variants are already in `installed_set`.
+pub fn build_remote_groups(
+    remote_stems: &[String],
+    dir: &Path,
+    installed_set: &HashSet<String>,
+) -> Vec<ModelGroup> {
+    let mut sorted = remote_stems.to_vec();
+    sorted.sort();
+    sorted.dedup();
+    build_groups_from_stems(&sorted, dir, installed_set)
+}
+
+#[cfg(feature = "integration")]
+fn build_groups_from_stems(
+    stems: &[String],
+    dir: &Path,
+    installed_set: &HashSet<String>,
+) -> Vec<ModelGroup> {
+    let raw_groups = upix_core::model_families::groups(stems);
+    raw_groups
+        .into_iter()
+        .map(|g| {
+            let variants: Vec<ModelVariant> = g
+                .items
+                .into_iter()
+                .map(|it| {
+                    let param_path = dir.join(format!("{}.param", it.name));
+                    let bin_path = dir.join(format!("{}.bin", it.name));
+                    let size_bytes = std::fs::metadata(&param_path)
+                        .map(|m| m.len())
+                        .unwrap_or(0)
+                        + std::fs::metadata(&bin_path)
+                            .map(|m| m.len())
+                            .unwrap_or(0);
+                    let scale = scale_from_filename(&it.name).unwrap_or(2);
+                    let meta = upix_core::model_metadata::classify_model_scene(&it.name);
+                    let installed = installed_set.contains(&it.name);
+                    ModelVariant {
+                        name: it.name,
+                        short_name: it.short_name,
+                        scale,
+                        scene: meta.scene,
+                        recommended: meta.recommended,
+                        installed,
+                        param_path,
+                        bin_path,
+                        size_bytes,
+                    }
+                })
+                .collect();
+
+            let first_scene = variants
+                .first()
+                .map(|v| v.scene.clone())
+                .unwrap_or_default();
+            let any_recommended = variants.iter().any(|v| v.recommended);
+            let title = if g.label.is_empty() {
+                variants
+                    .first()
+                    .map(|v| v.name.clone())
+                    .unwrap_or_default()
+            } else {
+                g.label
+            };
+            let summary = format!("{} 个倍率变体", variants.len());
+
+            ModelGroup {
+                title,
+                summary,
+                scene: first_scene,
+                recommended: any_recommended,
+                items: variants,
+            }
+        })
+        .collect()
+}
+
+#[cfg(not(feature = "integration"))]
+fn build_groups_from_stems(
+    stems: &[String],
+    dir: &Path,
+    installed_set: &HashSet<String>,
+) -> Vec<ModelGroup> {
+    stems
+        .iter()
+        .map(|name| {
+            let scale = scale_from_filename(name).unwrap_or(2);
+            let param_path = dir.join(format!("{name}.param"));
+            let bin_path = dir.join(format!("{name}.bin"));
+            let size_bytes = std::fs::metadata(&param_path)
+                .map(|m| m.len())
+                .unwrap_or(0)
+                + std::fs::metadata(&bin_path).map(|m| m.len()).unwrap_or(0);
+            ModelGroup {
+                title: name.clone(),
+                summary: String::new(),
+                scene: "通用".into(),
+                recommended: false,
+                items: vec![ModelVariant {
+                    name: name.clone(),
+                    short_name: format!("x{scale}"),
+                    scale,
+                    scene: "通用".into(),
+                    recommended: false,
+                    installed: installed_set.contains(name),
+                    param_path,
+                    bin_path,
+                    size_bytes,
+                }],
+            }
+        })
+        .collect()
+}
+
+/// Classifies a model filename into `(scene, recommended)` if matched by a known rule.
+pub fn classify_scene(name: &str) -> Option<(String, bool)> {
+    #[cfg(feature = "integration")]
+    {
+        let meta = upix_core::model_metadata::classify_model_scene(name);
+        if meta.scene.is_empty() || meta.scene == "通用" {
+            None
+        } else {
+            Some((meta.scene, meta.recommended))
+        }
+    }
+    #[cfg(not(feature = "integration"))]
+    {
+        let _ = name;
+        None
+    }
+}
+
+/// Short model badge label (e.g. `x2`, `x4plus`).
+pub fn short_name(name: &str) -> String {
+    #[cfg(feature = "integration")]
+    {
+        upix_core::model_families::short_model_name(name)
+    }
+    #[cfg(not(feature = "integration"))]
+    {
+        format!("x{}", scale_from_filename(name).unwrap_or(2))
+    }
+}
+
+/// Filename scale (`x2`, `x4`, etc.).
 pub fn scale_from_filename(name: &str) -> Option<i32> {
     let bytes = name.as_bytes();
     let mut from_name = 0i32;
@@ -120,63 +250,37 @@ pub fn scale_from_filename(name: &str) -> Option<i32> {
     (from_name > 0).then_some(from_name)
 }
 
-struct SceneRule {
-    pattern: &'static str,
-    scene: &'static str,
-    recommended: bool,
-}
-
-/// model_metadata.cpp `kSceneRules`, same order (order matters: the anime
-/// variant of a family must be tested before the photo base).
-const SCENE_RULES: &[SceneRule] = &[
-    SceneRule { pattern: "real-esrganv3-anime", scene: "动漫", recommended: true },
-    SceneRule { pattern: "real-esrganv3-general", scene: "照片", recommended: true },
-    SceneRule { pattern: "real-esrgan-x4plus-anime", scene: "动漫", recommended: false },
-    SceneRule { pattern: "real-esrgan-x4plus", scene: "照片", recommended: true },
-    SceneRule { pattern: "real-esrgan-x2plus", scene: "照片", recommended: false },
-    SceneRule { pattern: "real-cugan", scene: "动漫", recommended: false },
-    SceneRule { pattern: "nomosuni-compact", scene: "照片", recommended: false },
-    SceneRule { pattern: "parimg-compact", scene: "照片", recommended: false },
-    SceneRule { pattern: "nomosuni-span", scene: "照片", recommended: false },
-    SceneRule { pattern: "lsdir-compact", scene: "照片", recommended: false },
-    SceneRule { pattern: "nomos2-otf", scene: "照片", recommended: false },
-    SceneRule { pattern: "nomos8ksc", scene: "照片", recommended: false },
-    SceneRule { pattern: "nomoswebphoto", scene: "照片", recommended: false },
-    SceneRule { pattern: "dejpg", scene: "照片·修复", recommended: false },
-    SceneRule { pattern: "denoise", scene: "照片·修复", recommended: false },
-    SceneRule { pattern: "deh264", scene: "视频·修复", recommended: false },
-    SceneRule { pattern: "archivist-medium", scene: "动漫·修复", recommended: true },
-    SceneRule { pattern: "archivist-rough", scene: "动漫·修复", recommended: false },
-    SceneRule { pattern: "nes-composite", scene: "游戏·修复", recommended: false },
-    SceneRule { pattern: "genesis-cleanup", scene: "游戏·修复", recommended: false },
-    SceneRule { pattern: "hfa2k", scene: "动漫", recommended: false },
-    SceneRule { pattern: "modernspanimation", scene: "动漫", recommended: false },
-    SceneRule { pattern: "ultrasharp", scene: "综合", recommended: true },
-    SceneRule { pattern: "remacri", scene: "综合", recommended: true },
-    SceneRule { pattern: "animesharp", scene: "动漫", recommended: true },
-    SceneRule { pattern: "animejanai", scene: "动漫", recommended: false },
-    SceneRule { pattern: "nmkd-siax", scene: "综合", recommended: false },
-    SceneRule { pattern: "bsrgan", scene: "照片", recommended: false },
-];
-
-/// `classify_model_scene` verbatim: normalize the key, first matching rule.
-/// `None` = no chip (imported models).
-pub fn classify_scene(name: &str) -> Option<(&'static str, bool)> {
-    let mut key = String::with_capacity(name.len());
-    for c in name.chars() {
-        match c {
-            '_' | ' ' => key.push('-'),
-            _ => key.extend(c.to_lowercase()),
-        }
+/// Formats bytes into human-readable string (`4.2 MB`, `512 KB`).
+pub fn human_bytes(bytes: u64) -> String {
+    if bytes == 0 {
+        return "0 B".into();
     }
-    SCENE_RULES
-        .iter()
-        .find(|r| key.contains(r.pattern))
-        .map(|r| (r.scene, r.recommended))
+    const KB: f64 = 1024.0;
+    const MB: f64 = KB * 1024.0;
+    let b = bytes as f64;
+    if b >= MB {
+        format!("{:.1} MB", b / MB)
+    } else if b >= KB {
+        format!("{:.0} KB", b / KB)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
-/// Copies picked `.param`/`.bin` files into the models dir. Returns per-file
-/// result lines for the log strip.
+/// Deletes `<name>.param` and `<name>.bin` from `dir`.
+pub fn delete_local_model(dir: &Path, name: &str) -> Result<(), String> {
+    let p1 = dir.join(format!("{name}.param"));
+    let p2 = dir.join(format!("{name}.bin"));
+    if p1.exists() {
+        std::fs::remove_file(&p1).map_err(|e| format!("删除 {}: {e}", p1.display()))?;
+    }
+    if p2.exists() {
+        std::fs::remove_file(&p2).map_err(|e| format!("删除 {}: {e}", p2.display()))?;
+    }
+    Ok(())
+}
+
+/// Copies picked `.param`/`.bin` files into the models dir.
 pub fn import_files(files: &[PathBuf], dir: &Path) -> Vec<String> {
     let mut lines = Vec::new();
     if let Err(e) = std::fs::create_dir_all(dir) {

@@ -227,17 +227,13 @@ cancel 用 `const std::atomic<bool>*`；progress 用 `fn ptr + ctx`。保持 C++
 GPU 路径测试 `#[ignore]`（`UPIX_GPU_TESTS=1` 时跑）。测试模型缺失时优雅跳过。
 
 ## 8. §gui
-> **方向变更（2026-11-06）：** 桌面 GUI 将从 nsh 迁至直接使用 GPUI，目标平台为
-> Linux、macOS 和 Windows；Android 保留 `main` 分支的 Kotlin/Compose 原生应用。
-> 下列 nsh 内容描述的是当前实现与原验收目标，并非新的技术选型。迁移尚未完成：
-> Rust 网络层和 host 存在 Unix 专用代码，ncnn FFI 构建目前也只针对 Linux；
-> 不能仅凭 GPUI 跨平台就宣称完整应用支持三平台。
 
-
-> **状态：进行中（2026-11-06 恢复）。** `crates/upix-gui` 已回到 workspace
-> members。工具链是仓库根 `rust-toolchain.toml` 的 1.98.1（nsh-core 0.4.0
+> **状态：进行中（2026-11-08 同步新设计）。** `crates/upix-gui` 使用 `nsh` v0.4.0，
+> 界面与 `desktop/` 最新「暗房仪器（Darkroom Instrument）」设计对齐（三栏工作台：76px 左侧导航栏 +
+> 中央舞台/底部遥测栏/胶片条 + 308px 右侧检查器，以及模型家族管理页与局域网远程协同页）。
+> 工具链是仓库根 `rust-toolchain.toml` 的 1.98.1（nsh-core 0.4.0
 > 需要 rustc ≥ 1.95）。默认 feature `integration` 直连 core/img/host/engine-ffi：
-> 本地放大、Coordinator、`modelctl` 下载。`--no-default-features` 仍走
+> 本地放大、常驻热引擎、Coordinator、`modelctl` 下载。`--no-default-features` 仍走
 > MockBackend，供无模型时的选图→进度→对比。
 
 **框架**：nsh v0.4.0（锁 `=0.4.0`），纯 Rust 模式（无 TSX/QuickJS，参照 `examples/gallery-rs`）。

@@ -1,17 +1,8 @@
 # Upix 文档
 
-| 文档 | 内容 |
-|------|------|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | 架构单一权威来源：模块布局、职责、构建系统、协议与调用链 |
-| [DEVELOPMENT.md](DEVELOPMENT.md) | 开发规范：环境、构建/测试/发布流程、代码规范、已知坑 |
-| [DESIGN_LANGUAGE.md](DESIGN_LANGUAGE.md) | Android 端 UI 设计语言（规范性：主题、间距、动效、组件模式） |
-| [serve-tests-design.md](serve-tests-design.md) | serve E2E 测试套件的取舍记录与非确定性断言定标依据 |
-| [model-oracle-design.md](model-oracle-design.md) | 模型效果回归门（golden oracle）的取舍、阈值依据与升级 ncnn 流程 |
-| [../desktop/DESIGN.md](../desktop/DESIGN.md) | 桌面端 Qt Quick 设计语言与架构（组件层、token、动效、无头验证） |
-
-用户向使用说明在根 [README.md](../README.md)；模型目录、分发与发版流程在
-[models/README.md](../models/README.md)，新增模型的转换与验收规程在其
-[CONVERTING.md](../models/CONVERTING.md)。
-
-历史文档（性能报告、架构决策记录 ADR、serve daemon 设计）已随仓库精简移除，
-需要时从 git 历史找回；不要往本目录堆一次性报告。
+| 文档 | 说明 |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 顶层架构、模块边界与三端共享核心关系 |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | 构建环境、编译命令与测试入口 |
+| [../desktop/DESIGN.md](../desktop/DESIGN.md) | 桌面端「暗房仪器」设计语言、功能面、状态与动效规范 |
+| [../models/README.md](../models/README.md) | 模型分类、下载源与转换说明 |

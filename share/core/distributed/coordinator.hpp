@@ -18,6 +18,8 @@
 #include <functional>
 #include <atomic>
 #include <condition_variable>
+#include <stop_token>
+#include <thread>
 #include <mutex>
 #include <queue>
 #include <future>

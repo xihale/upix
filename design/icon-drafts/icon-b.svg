@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
-  <!-- B · 对角双箭：一条对角线，两端反向箭头，纯放大/缩放符号 -->
-  <g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M4 20 L20 4"/>
-    <path d="M16 4 H20 V8"/>
-    <path d="M8 20 H4 V16"/>
-  </g>
-</svg>

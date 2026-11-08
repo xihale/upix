@@ -230,7 +230,7 @@ use ffi::{
 pub fn init_spirv_pack() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        const PACK: &[u8] = include_bytes!("../csrc/spirv_pack.bin");
+        const PACK: &[u8] = include_bytes!("../../../share/core/spirv_pack.bin");
         unsafe { ffi::upix_engine_set_spirv_pack(PACK.as_ptr(), PACK.len()) };
     });
 }

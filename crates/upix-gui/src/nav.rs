@@ -1,31 +1,28 @@
-//! Page identity and titles, shared by the desktop rail and the phone tab bar.
+//! Navigation tabs for the 76px left rail (`desktop/src/main.cpp` `NavTab`).
 
-/// The five pages (CONTRACT §8), in rail order.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Page {
-    Home,
-    Progress,
-    Compare,
-    Host,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavTab {
+    Workbench,
     Models,
+    Host,
 }
 
-impl Page {
-    pub fn title(self) -> &'static str {
+impl NavTab {
+    pub const ALL: [NavTab; 3] = [NavTab::Workbench, NavTab::Models, NavTab::Host];
+
+    pub fn label(self) -> &'static str {
         match self {
-            Page::Home => "首页",
-            Page::Progress => "进度",
-            Page::Compare => "对比",
-            Page::Host => "主机",
-            Page::Models => "模型",
+            NavTab::Workbench => "工作台",
+            NavTab::Models => "模型库",
+            NavTab::Host => "远程主机",
         }
     }
 
-    pub const ALL: [Page; 5] = [
-        Page::Home,
-        Page::Progress,
-        Page::Compare,
-        Page::Host,
-        Page::Models,
-    ];
+    pub fn icon_svg(self) -> &'static str {
+        match self {
+            NavTab::Workbench => crate::ui::icons::WORKBENCH,
+            NavTab::Models => crate::ui::icons::MODELS,
+            NavTab::Host => crate::ui::icons::HOST,
+        }
+    }
 }

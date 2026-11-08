@@ -1,15 +1,7 @@
-//! The seam between the Host page and the coordinator.
+//! The seam between the Host page and the coordinator (`upix-host` + `upix-net`).
 //!
-//! `HostService::start` runs on a `std::thread` and reports through an
-//! `mpsc::Sender`, approvals flow back through the returned reply channel —
-//! the C++ coordinator's stdin [y/n] prompt becomes a UI dialog (CONTRACT
-//! §6: GUI 模式审批回调经 channel 交 UI). The UI drains events on its tick.
-//!
-//! - `MockHostService` (default): a real-shaped v2 pairing card (same JSON
-//!   the CLI's `build_connection_card` emits) from an ephemeral local key,
-//!   simulated logs and one pairing request. No socket is opened.
-//! - `RealHostService` (`integration` feature): the pinned
-//!   `upix_host::Coordinator` / `pairing_qr_payload` / `modelctl` calls.
+//! `HostService::start` runs on a background thread and reports events through an
+//! `mpsc::Sender`; approvals flow back through the returned reply channel.
 
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
@@ -20,7 +12,7 @@ use std::time::Duration;
 use base64::Engine as _;
 use sha2::{Digest, Sha256};
 
-/// Coordinator settings the Host page collects.
+/// Coordinator settings collected from the Host page.
 #[derive(Clone, Debug)]
 pub struct HostConfig {
     pub port: u16,
@@ -28,7 +20,7 @@ pub struct HostConfig {
     pub models_dir: PathBuf,
 }
 
-/// One pairing request awaiting a decision.
+/// One pairing request awaiting user approval.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ApprovalRequest {
     pub device: String,
@@ -47,8 +39,9 @@ pub enum ApprovalReply {
 pub enum HostEvent {
     Started {
         port: u16,
-        ip: String,
+        ips: Vec<String>,
         fingerprint: String,
+        pubkey_b64: String,
         /// The v2 pairing payload (exactly what the QR encodes).
         qr_payload: String,
         /// PNG QR of `qr_payload` as a `data:` URI.
@@ -66,20 +59,31 @@ pub struct HostHandle {
     pub stop: Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// Handles a start() hands the UI: where to send approvals, the stop flag,
-/// and the event stream to drain.
+/// Handles returned by `HostService::start`.
 pub struct HostStarted {
     pub handle: HostHandle,
     pub events: std::sync::mpsc::Receiver<HostEvent>,
 }
 
-pub trait HostService: 'static {
+pub trait HostService: Send + Sync + 'static {
     fn start(&self, cfg: HostConfig) -> HostStarted;
 }
 
-/// Reads `~/.upix/trusted_clients` (one standard base64 pubkey per line —
-/// identity.cpp's format). Real content; the file is the contract, so this
-/// works the same before and after the host integration.
+/// Builds a v2 pairing payload (`{"v":2,"ip":...}`) and its PNG QR `data:` URI.
+pub fn build_qr_for_ip(
+    ip: &str,
+    port: u16,
+    fingerprint: &str,
+    pubkey_b64: &str,
+) -> (String, String) {
+    let payload = format!(
+        r#"{{"v":2,"ip":"{ip}","port":{port},"fp":"{fingerprint}","pk":"{pubkey_b64}"}}"#
+    );
+    let uri = crate::qr::qr_png_data_uri(&payload).unwrap_or_default();
+    (payload, uri)
+}
+
+/// Reads `~/.upix/trusted_clients` (one standard base64 pubkey per line).
 pub fn trust_list() -> Vec<String> {
     let Some(dir) = home_dir() else {
         return Vec::new();
@@ -96,26 +100,64 @@ pub fn trust_list() -> Vec<String> {
     }
 }
 
+/// Clears `~/.upix/trusted_clients`.
+pub fn clear_trust_list() -> Result<(), String> {
+    let Some(dir) = home_dir() else {
+        return Ok(());
+    };
+    let path = dir.join(".upix").join("trusted_clients");
+    if path.exists() {
+        std::fs::write(&path, "").map_err(|e| format!("清空信任列表失败: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Removes one entry at `idx` from `~/.upix/trusted_clients`.
+pub fn remove_trusted_client(idx: usize) -> Result<(), String> {
+    let Some(dir) = home_dir() else {
+        return Ok(());
+    };
+    let path = dir.join(".upix").join("trusted_clients");
+    let mut list = trust_list();
+    if idx < list.len() {
+        list.remove(idx);
+        let body = if list.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", list.join("\n"))
+        };
+        std::fs::write(&path, body).map_err(|e| format!("更新信任列表失败: {e}"))?;
+    }
+    Ok(())
+}
+
 pub fn home_dir() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
         .map(PathBuf::from)
 }
 
-/// The device fingerprint: sha256(pubkey) hex, first 16 chars uppercased —
-/// `upix::fingerprint` verbatim (identity.cpp:157).
+/// Device fingerprint: sha256(pubkey) hex, first 16 chars uppercased.
 pub fn fingerprint_of(pubkey: &[u8; 32]) -> String {
     let full = Sha256::digest(pubkey);
     let hex: String = full.iter().map(|b| format!("{b:02x}")).collect();
     hex[..16].to_uppercase()
 }
 
+/// Computes short display fingerprint for a base64-encoded public key line in `trusted_clients`.
+pub fn fingerprint_of_b64(b64_line: &str) -> String {
+    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64_line.trim()) {
+        if bytes.len() == 32 {
+            let mut arr = [0u8; 32];
+            arr.copy_from_slice(&bytes);
+            return fingerprint_of(&arr);
+        }
+    }
+    b64_line.chars().take(16).collect()
+}
+
 // ── Mock host ────────────────────────────────────────────────────────────
 
-/// A stand-in coordinator: emits a real-shaped v2 pairing card from an
-/// ephemeral key, streams a few log lines, and after a few seconds asks for
-/// one pairing decision (unless auto_approve). Opens no socket — until the
-/// host crate lands, phones cannot actually connect.
 pub struct MockHostService;
 
 impl HostService for MockHostService {
@@ -142,8 +184,6 @@ fn run_mock_host(
     reply_rx: &std::sync::mpsc::Receiver<ApprovalReply>,
     stop: &Arc<std::sync::atomic::AtomicBool>,
 ) {
-    // Ephemeral identity for the demo card. Real identity:
-    // upix_net::Identity::load_or_create() once the net crate exports it.
     let mut pubkey = [0u8; 32];
     let seed = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -157,25 +197,12 @@ fn run_mock_host(
     let pk_b64 = base64::engine::general_purpose::STANDARD.encode(pubkey);
 
     let ip = local_ip_hint();
-    // v2 pairing payload — byte-for-byte the CLI's build_connection_card
-    // format (cli/src/common.cpp:379). Swapped for
-    // upix_host::pairing_qr_payload when the host crate lands.
-    let payload = format!(
-        r#"{{"v":2,"ip":"{ip}","port":{},"fp":"{fingerprint}","pk":"{pk_b64}"}}"#,
-        cfg.port
-    );
-    let qr = match crate::qr::qr_png_data_uri(&payload) {
-        Ok(uri) => uri,
-        Err(e) => {
-            let _ = events.send(HostEvent::Log(format!("QR 生成失败: {e}")));
-            let _ = events.send(HostEvent::Stopped);
-            return;
-        }
-    };
+    let (payload, qr) = build_qr_for_ip(&ip, cfg.port, &fingerprint, &pk_b64);
     let _ = events.send(HostEvent::Started {
         port: cfg.port,
-        ip: ip.clone(),
+        ips: vec![ip.clone()],
         fingerprint: fingerprint.clone(),
+        pubkey_b64: pk_b64,
         qr_payload: payload,
         qr_data_uri: qr,
     });
@@ -185,8 +212,6 @@ fn run_mock_host(
         cfg.models_dir.display()
     )));
 
-    // Idle ticks keep the log alive until stopped; one pairing request is
-    // raised so the approval dialog is reachable.
     for tick in 0.. {
         if stop.load(std::sync::atomic::Ordering::Relaxed) {
             let _ = events.send(HostEvent::Stopped);
@@ -204,21 +229,16 @@ fn run_mock_host(
         if tick % 20 == 19 {
             let _ = events.send(HostEvent::Log("心跳: 等待客户端连接…".into()));
         }
-        // Drain a stale reply if nobody answered (dialog dismissed).
         while let Ok(_stale) = reply_rx.try_recv() {
-            let _ = events.send(HostEvent::Log("审批请求已过期".into()));
+            let _ = events.send(HostEvent::Log("审批请求已处理".into()));
         }
     }
 }
 
-/// First non-loopback IPv4 from the interfaces, else 127.0.0.1 — the QR's
-/// "ip" field. (The real path uses upix_net::tcp::local_ips().)
 fn local_ip_hint() -> String {
     #[cfg(target_os = "linux")]
     {
-        if let Ok(out) = std::process::Command::new("hostname")
-            .arg("-I")
-            .output()
+        if let Ok(out) = std::process::Command::new("hostname").arg("-I").output()
             && out.status.success()
         {
             let first = String::from_utf8_lossy(&out.stdout)
@@ -236,24 +256,16 @@ fn local_ip_hint() -> String {
 
 // ── Real host (integration feature) ─────────────────────────────────────
 
-/// The pinned `upix_host::Coordinator` wired to UI dialogs: approval
-/// requests travel through `set_approval_sink` + `spawn_approval_forwarder`,
-/// the UI resolves them with `resolve_approval`; stop() drains undecided
-/// approvals first (coordinator.cpp semantics). The net-crate-backed
-/// crypto/signer adapters are byte-faithful by construction (they call the
-/// same pinned functions the golden vectors cover).
 #[cfg(feature = "integration")]
 pub struct RealHostService;
 
 #[cfg(feature = "integration")]
-mod real_host {
+pub mod real_host {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::AtomicBool;
     use std::sync::Mutex;
 
-    use upix_host::seams::{
-        Backend, CryptoProvider, SessionCodec, Signer, TrustApi,
-    };
+    use upix_host::seams::{Backend, CryptoProvider, SessionCodec, Signer, TrustApi};
     use upix_net::frame::{parse_header, serialize_frame, verify_frame};
     use upix_net::protocol::{MessageHeader, MessageType, HEADER_SIZE};
     use upix_net::{crypto, EncryptedSession, TrustStore};
@@ -355,9 +367,6 @@ mod real_host {
         }
     }
 
-    /// Same bundle the CLI uses: ncnn factory, core pipeline, ModelManager,
-    /// upix-img encode/decode. Pixel buffers are copied into `Image` — an
-    /// empty `Image::new` would encode black.
     pub struct FfiBackendShim {
         pub models_dir: PathBuf,
     }
@@ -394,8 +403,6 @@ mod real_host {
                 batch_size: tc.batch_size,
                 ..upix_core::ProcessingConfig::default()
             };
-            // Core wants `Fn + Send + Sync`. The host hands `FnMut` and tile
-            // workers may call it; the mutex keeps those calls exclusive.
             struct Cb<'a>(*mut (dyn FnMut(&upix_core::engine::ProcessingProgress) + 'a));
             unsafe impl Send for Cb<'_> {}
             unsafe impl Sync for Cb<'_> {}
@@ -409,13 +416,18 @@ mod real_host {
             let wrapped = |p: &upix_core::engine::ProcessingProgress| {
                 if let Some(cb) = &cb {
                     let _hold = gate.lock().unwrap();
-                    // SAFETY: `cb.0` is the caller's FnMut, alive for this
-                    // call; the mutex serializes tile-worker invocations.
                     unsafe { (*cb.0)(p) };
                 }
             };
             upix_core::process_image_u8(
-                engine, &cfg, input, width, height, channels, Some(&wrapped), cancel,
+                engine,
+                &cfg,
+                input,
+                width,
+                height,
+                channels,
+                Some(&wrapped),
+                cancel,
             )
             .map(|scaled| scaled.data)
         }
@@ -490,11 +502,7 @@ mod real_host {
                 })
                 .map_err(|e| e.message)
         }
-        fn normalize_channels(
-            &self,
-            img: &mut upix_host::seams::Img,
-            expected: i32,
-        ) -> bool {
+        fn normalize_channels(&self, img: &mut upix_host::seams::Img, expected: i32) -> bool {
             let mut owned = upix_img::Image {
                 width: img.width,
                 height: img.height,
@@ -555,10 +563,7 @@ mod real_host {
             xmp: Option<&str>,
             opts: &upix_img::EncoderOptions,
         ) -> Result<(), String> {
-            let ext = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("png");
+            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("png");
             let bytes = self.encode_image(img, ext, quality, xmp, opts)?;
             std::fs::write(path, bytes).map_err(|e| e.to_string())
         }
@@ -630,11 +635,16 @@ impl HostService for RealHostService {
             }
         };
         let fingerprint = identity.fingerprint();
-        let ip = upix_net::local_ips()
+        let pubkey_b64 = base64::engine::general_purpose::STANDARD.encode(identity.public_key());
+        let mut ips: Vec<String> = upix_net::local_ips()
             .into_iter()
-            .find(|addr| !addr.is_loopback())
+            .filter(|addr| !addr.is_loopback())
             .map(|addr| addr.to_string())
-            .unwrap_or_else(|| "127.0.0.1".to_owned());
+            .collect();
+        if ips.is_empty() {
+            ips.push("127.0.0.1".to_owned());
+        }
+        let ip = ips[0].clone();
         let payload = upix_host::pairing_qr_payload(
             &ip,
             cfg.port,
@@ -651,8 +661,9 @@ impl HostService for RealHostService {
         };
         let _ = events_tx.send(HostEvent::Started {
             port: cfg.port,
-            ip: ip.clone(),
+            ips: ips.clone(),
             fingerprint: fingerprint.clone(),
+            pubkey_b64,
             qr_payload: payload,
             qr_data_uri: qr,
         });
@@ -691,8 +702,6 @@ impl HostService for RealHostService {
         let coord = Arc::new(Mutex::new(coordinator));
         let events_loop = events_tx;
         std::thread::spawn(move || {
-            // One approval at a time. recv_timeout so 停止主机 is not stuck
-            // behind a dialog nobody has answered yet.
             let mut inflight: Option<u64> = None;
             loop {
                 if stop.load(Ordering::Relaxed) {

@@ -29,8 +29,10 @@ pub const MODEL_UPLOAD_REQUEST_SIZE: usize = 88;
 pub const MODEL_OP_RESPONSE_SIZE: usize = 129; // 1 + 128
 pub const MODEL_DOWNLOAD_REQUEST_SIZE: usize = 64;
 pub const MODEL_DOWNLOAD_RESPONSE_SIZE: usize = 160; // 1 + 3 pad + 4 + 8*3 + 128
-pub const SERVE_REQUEST_SIZE: usize = 128; // 64 + 16 + 5*4 + 28
-pub const SERVE_RESPONSE_SIZE: usize = 212; // 4*4 + 4 + 128 + 64
+pub const SERVE_REQUEST_SIZE: usize = 136; // 64 + 16 + 5*4 + 28 + 8 (force + reserved[7])
+pub const SERVE_REQUEST_LEGACY_SIZE: usize = 128;
+pub const SERVE_RESPONSE_SIZE: usize = 220; // 4*4 + 4 + 128 + 64 + 8 (skipped + reserved0)
+pub const SERVE_RESPONSE_LEGACY_SIZE: usize = 212;
 pub const SERVE_PROGRESS_SIZE: usize = 12;
 
 // ── primitive readers/writers ───────────────────────────────────────────────
@@ -392,11 +394,7 @@ pub fn dec_download_response(b: &[u8]) -> Option<ModelDownloadResponse> {
 }
 
 pub fn enc_serve_request(m: &ServeRequest) -> Vec<u8> {
-    // C++ layout: char[64] + char[16] + 5×i32 + (4 pad) + EncoderOptionsWire
-    // (align 4 → no pad needed after five i32s; total 64+16+20+28 = 128? No:
-    // EncoderOptionsWire is align 4, so no padding — sizeof(ServeRequest) is
-    // 64+16+20+28 = 128? 64+16=80, +20=100, +28=128. Yes: 128.)
-    let mut v = Vec::with_capacity(128);
+    let mut v = Vec::with_capacity(SERVE_REQUEST_SIZE);
     v.extend_from_slice(&m.model_name);
     v.extend_from_slice(&m.output_format);
     put_i32(m.tile_size, &mut v);
@@ -405,14 +403,21 @@ pub fn enc_serve_request(m: &ServeRequest) -> Vec<u8> {
     put_u32(m.input_path_length, &mut v);
     put_u32(m.output_path_length, &mut v);
     v.extend_from_slice(&enc_encoder_wire(&m.encoder));
-    debug_assert_eq!(v.len(), 128);
+    put_u8(m.force, &mut v);
+    v.extend_from_slice(&m.reserved);
+    debug_assert_eq!(v.len(), SERVE_REQUEST_SIZE);
     v
 }
 
 pub fn dec_serve_request(b: &[u8]) -> Option<ServeRequest> {
-    if b.len() < 128 {
+    if b.len() < SERVE_REQUEST_LEGACY_SIZE {
         return None;
     }
+    let (force, reserved) = if b.len() >= SERVE_REQUEST_SIZE {
+        (rd_u8(b, 128)?, b[129..136].try_into().ok()?)
+    } else {
+        (0, [0u8; 7])
+    };
     Some(ServeRequest {
         model_name: b[0..64].try_into().ok()?,
         output_format: b[64..80].try_into().ok()?,
@@ -422,12 +427,12 @@ pub fn dec_serve_request(b: &[u8]) -> Option<ServeRequest> {
         input_path_length: rd_u32(b, 92)?,
         output_path_length: rd_u32(b, 96)?,
         encoder: dec_encoder_wire(b, 100)?,
+        force,
+        reserved,
     })
 }
 
 pub fn enc_serve_response(m: &ServeResponse) -> Vec<u8> {
-    // C++ layout: 5×i32 (20) + u32 out_path_length (4) + char[128] + char[64].
-    // All-align-4 → no padding: sizeof(ServeResponse) = 24+128+64 = 216.
     let mut v = Vec::with_capacity(SERVE_RESPONSE_SIZE);
     put_i32(m.ok, &mut v);
     put_i32(m.width, &mut v);
@@ -436,14 +441,21 @@ pub fn enc_serve_response(m: &ServeResponse) -> Vec<u8> {
     put_u32(m.out_path_length, &mut v);
     v.extend_from_slice(&m.error);
     v.extend_from_slice(&m.model_name);
+    put_i32(m.skipped, &mut v);
+    put_i32(m.reserved0, &mut v);
     debug_assert_eq!(v.len(), SERVE_RESPONSE_SIZE);
     v
 }
 
 pub fn dec_serve_response(b: &[u8]) -> Option<ServeResponse> {
-    if b.len() < SERVE_RESPONSE_SIZE {
+    if b.len() < SERVE_RESPONSE_LEGACY_SIZE {
         return None;
     }
+    let (skipped, reserved0) = if b.len() >= SERVE_RESPONSE_SIZE {
+        (rd_i32(b, 212)?, rd_i32(b, 216)?)
+    } else {
+        (0, 0)
+    };
     Some(ServeResponse {
         ok: rd_i32(b, 0)?,
         width: rd_i32(b, 4)?,
@@ -452,6 +464,8 @@ pub fn dec_serve_response(b: &[u8]) -> Option<ServeResponse> {
         out_path_length: rd_u32(b, 16)?,
         error: b.get(20..148)?.try_into().ok()?,
         model_name: b.get(148..212)?.try_into().ok()?,
+        skipped,
+        reserved0,
     })
 }
 
@@ -487,8 +501,8 @@ mod tests {
         assert_eq!(CLIENT_TASK_RESPONSE_SIZE, 133);
         assert_eq!(MODEL_UPLOAD_REQUEST_SIZE, 88);
         assert_eq!(MODEL_DOWNLOAD_RESPONSE_SIZE, 160);
-        assert_eq!(SERVE_REQUEST_SIZE, 128);
-        assert_eq!(SERVE_RESPONSE_SIZE, 212);
+        assert_eq!(SERVE_REQUEST_SIZE, 136);
+        assert_eq!(SERVE_RESPONSE_SIZE, 220);
     }
 
     #[test]

@@ -11,14 +11,26 @@ use nsh_platform_windows as platform;
 
 #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn main() -> impl std::process::Termination {
-    env_logger::init();
+    // Internal warm-engine daemon entry (spawned by upix_host::serve::ensure_running).
+    #[cfg(feature = "integration")]
+    {
+        let argv: Vec<String> = std::env::args().collect();
+        if argv.get(1).map(|s| s.as_str()) == Some("--upix-internal-daemon") {
+            let _ = env_logger::try_init();
+            std::process::exit(
+                upix_gui::engine_bridge::run_internal_daemon_from_argv(&argv) as i32,
+            );
+        }
+    }
+
+    let _ = env_logger::try_init();
     platform::run_app(
         platform::AppSource::Rust(platform::Root::of::<upix_gui::App>()),
         platform::AppOptions {
             title: "Upix".to_owned(),
             #[cfg(any(target_os = "linux", target_os = "windows"))]
             app_id: "ink.xeed.upix".to_owned(),
-            size: (960, 640),
+            size: (1280, 840),
             ..Default::default()
         },
     )

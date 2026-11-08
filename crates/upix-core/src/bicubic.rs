@@ -114,6 +114,6 @@ mod tests {
         let src = vec![200u8];
         let mut dst = vec![255u8; 64];
         bicubic_scale_u8(&src, 1, 1, &mut dst, 8, 8);
-        assert!(dst.iter().all(|&v| v <= 255));
+        assert_eq!(dst.len(), 64);
     }
 }

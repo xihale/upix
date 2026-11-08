@@ -296,6 +296,8 @@ pub struct ServeRequest {
     pub input_path_length: u32,  // bytes of input path following this struct
     pub output_path_length: u32, // bytes of output path; 0 = daemon derives
     pub encoder: EncoderOptionsWire,
+    pub force: u8,         // 1 = bypass SR-marker check; 0 = skip if marked
+    pub reserved: [u8; 7], // must be zero (keeps natural 4-byte alignment)
     // payload: [input_path bytes][output_path bytes] — no NUL terminators.
 }
 
@@ -309,6 +311,8 @@ pub struct ServeResponse {
     pub out_path_length: u32, // bytes of output path following this struct
     pub error: [u8; 128],
     pub model_name: [u8; 64], // model actually used (reflected in derived output name)
+    pub skipped: i32,         // 1 = SR-marked input skipped (ok=1, no output written)
+    pub reserved0: i32,       // must be zero
     // payload on success: [output path bytes]
 }
 

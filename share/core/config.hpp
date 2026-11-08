@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <string>
 #include <array>
 #include <cstdint>
@@ -80,6 +81,45 @@ auto resolve_output_path(
     const std::filesystem::path& requested_path,
     const ProcessingConfig& config
 ) -> std::filesystem::path;
+
+// Infer output format ("png"/"jpg"/"webp"/"avif") from a file extension;
+// "" if unknown. (Formerly CLI-only; the batch core needs it for the
+// format-inference rule.)
+inline auto infer_format_from_extension(const std::string& path) -> std::string {
+    const auto dot = path.rfind('.');
+    if (dot == std::string::npos) return {};
+    std::string ext = path.substr(dot + 1);
+    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    if (ext == "png") return "png";
+    if (ext == "jpg" || ext == "jpeg") return "jpg";
+    if (ext == "webp") return "webp";
+    if (ext == "avif") return "avif";
+    return {};
+}
+
+// Default output location when none was given: `img.png` → `img_<model>.png`
+// (sibling, input extension kept when it is a known output format, else
+// .png); directory input `shots/` → `shots_<model>/` next to it. Single
+// source for the CLI and for desktop single-file runs.
+inline auto derive_default_output(const std::string& input_path,
+                                  const std::string& model_name,
+                                  bool input_is_dir) -> std::string {
+    namespace fs = std::filesystem;
+    fs::path in(input_path);
+    const std::string tag = "_" + sanitize_model_for_filename(model_name);
+
+    if (input_is_dir) {
+        // filename() of "shots/" is "shots"; of "/" is "" (rejected upstream).
+        return (in.parent_path() / (in.filename().string() + tag)).string() + "/";
+    }
+
+    std::string ext = in.extension().string();
+    if (ext.empty() || infer_format_from_extension(in.filename().string()).empty()) {
+        ext = ".png";
+    }
+    fs::path out = in.parent_path() / (in.stem().string() + tag + ext);
+    return out.string();
+}
 
 // 设备性能档案（auto-tile 探测用，仅保留实际消费的字段）
 struct DevicePerformanceProfile {

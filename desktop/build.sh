@@ -1,7 +1,7 @@
 #!/usr/bin/env sh
-# Configure and build the Qt Quick desktop app. Extra args go to cmake configure.
+# Build the SDL3 + Vulkan + Dear ImGui desktop app via root xmake.
 set -e
-cd "$(dirname "$0")"
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -G Ninja "$@"
-cmake --build build
-echo "binary: build/upix"
+cd "$(dirname "$0")/.."
+xmake f -m release -y "$@"
+xmake build upix
+echo "binary: desktop/build/upix"

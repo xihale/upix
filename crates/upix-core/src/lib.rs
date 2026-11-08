@@ -9,6 +9,7 @@ pub mod config;
 pub mod engine;
 pub mod engine_pool;
 pub mod engine_setup;
+pub mod model_families;
 pub mod model_graph;
 pub mod model_manager;
 pub mod model_metadata;
@@ -21,6 +22,7 @@ pub(crate) mod mock;
 // CONTRACT §3 API pins re-exported at the crate root.
 pub use config::{ProcessingConfig, resolve_output_path, sanitize_model_for_filename};
 pub use engine_setup::{EngineStrategy, initialize_engine, switch_model};
+pub use model_families::{FamilyGroup, FamilyItem, groups as model_family_groups, model_stem, short_model_name};
 pub use model_graph::{detect_from_param, scale_from_filename};
 pub use model_manager::ModelManager;
 pub use tile_optimizer::TileSizeOptimizer;

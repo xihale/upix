@@ -15,7 +15,6 @@ pub mod store;
 mod theme;
 pub mod ui;
 
-use nsh_base::theme;
 use nsh_core::prelude::*;
 
 use crate::store::Store;
@@ -41,16 +40,17 @@ pub fn App() -> impl IntoElement {
             Ok("light") => set_color_scheme(Appearance::Light),
             Ok("dark") => set_color_scheme(Appearance::Dark),
             Ok(other) => {
-                log::debug!("UPIX_THEME={other:?} unrecognized: following the system");
+                log::debug!("UPIX_THEME={other:?} unrecognized: defaulting to dark");
+                set_color_scheme(Appearance::Dark);
             }
-            Err(_) => log::debug!("UPIX_THEME unset: following the system"),
+            Err(_) => set_color_scheme(Appearance::Dark),
         }
         log::info!("upix-gui started");
     });
 
     view()
         .flex_1()
-        .bg(move || theme().background)
-        .text_color(move || theme().foreground)
+        .bg(crate::theme::palette::bg())
+        .text_color(crate::theme::palette::text())
         .child(shell::shell(store))
 }

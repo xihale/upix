@@ -27,6 +27,9 @@ if is_mode("release") then
 end
 
 if is_plat("android") then
+    -- NDK r28+ ships libc++ with incomplete features (stop_token/jthread)
+    -- disabled by default; opt in explicitly (see __config:450).
+    add_defines("_LIBCPP_ENABLE_EXPERIMENTAL")
     add_cxflags("-fPIC", "-fvisibility=hidden", "-ffunction-sections", "-fdata-sections")
     add_ldflags("-Wl,--gc-sections", "-Wl,--exclude-libs,ALL", "-Wl,--as-needed")
 end
@@ -172,7 +175,7 @@ add_requires("ncnn~runtime 20260526", {configs = {vulkan = true, online_spirv = 
 add_requires("libwebp >=1.6.0", {configs = {libwebpmux = true}})
 add_requires("libpng", "libjpeg", "libsodium")
 add_requires("glaze v7.9.0")
-add_requires("libdeflate", {system = not is_plat("android")})
+add_requires("libdeflate", {system = not is_plat("android") and not is_cross()})
 -- One libavif require with the merged codec set (aom/dav1d) so both options
 -- share a single package install. Must stay in table-config form: variadic
 -- configs get swallowed (see libwebp note above / memory of the SR work).
@@ -201,6 +204,8 @@ if not is_plat("android") then
     -- must not add new OpenSSL includes.
     add_requires("openssl")
     add_requires("libzip")
+    add_requires("libsdl3")
+    add_requires("imgui v1.92.9+b-docking", {configs = {sdl3 = true, vulkan = true, freetype = true, wchar32 = true}})
 end
 
 -- share/ declares upix-core (and its android-side SPIR-V pack hook); tools/
@@ -211,5 +216,5 @@ includes("share")
 if is_plat("android") then
     includes("apps")
 else
-    includes("share/perf", "cli", "tools")
+    includes("share/perf", "cli", "desktop", "tools")
 end

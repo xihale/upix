@@ -129,11 +129,28 @@ fn send_serve_error(sock: &dyn Transport, framer: &dyn Framer, message: &str) {
         out_path_length: 0,
         error: [0u8; 128],
         model_name: [0u8; 64],
+        skipped: 0,
+        reserved0: 0,
     });
     r.ok = 0;
     let msg = message.as_bytes();
     let n = msg.len().min(127);
     r.error[..n].copy_from_slice(&msg[..n]);
+    let _ = send_via(sock, framer, MessageType::ServeResponse, &wireio::enc_serve_response(&r));
+}
+
+fn send_serve_skipped(sock: &dyn Transport, framer: &dyn Framer) {
+    let r = upix_net::protocol::ServeResponse {
+        ok: 1,
+        width: 0,
+        height: 0,
+        channels: 0,
+        out_path_length: 0,
+        error: [0u8; 128],
+        model_name: [0u8; 64],
+        skipped: 1,
+        reserved0: 0,
+    };
     let _ = send_via(sock, framer, MessageType::ServeResponse, &wireio::enc_serve_response(&r));
 }
 
@@ -394,7 +411,7 @@ fn handle_connection_inner(
         return Ok(());
     };
     if parsed.msg_type != MessageType::ServeRequest
-        || (parsed.payload_length as usize) < wireio::SERVE_REQUEST_SIZE
+        || (parsed.payload_length as usize) < wireio::SERVE_REQUEST_LEGACY_SIZE
         || parsed.payload_length as usize > MAX_SERVE_PAYLOAD_BYTES
     {
         send_serve_error(sock, framer, "expected MSG_SERVE_REQUEST");
@@ -423,7 +440,20 @@ fn handle_connection_inner(
         return Ok(());
     };
     let paths_bytes = req.input_path_length as usize + req.output_path_length as usize;
-    if paths_bytes != req_buf.len() - wireio::SERVE_REQUEST_SIZE
+    let req_bytes = if req_buf.len() == wireio::SERVE_REQUEST_LEGACY_SIZE + paths_bytes {
+        wireio::SERVE_REQUEST_LEGACY_SIZE
+    } else {
+        req_buf.len().min(wireio::SERVE_REQUEST_SIZE)
+    };
+    let req = if req_bytes < wireio::SERVE_REQUEST_SIZE {
+        let mut r = req;
+        r.force = 0;
+        r.reserved = [0u8; 7];
+        r
+    } else {
+        req
+    };
+    if paths_bytes != req_buf.len() - req_bytes
         || req.input_path_length == 0
         || req.input_path_length as usize > MAX_SERVE_PATH_BYTES
         || req.output_path_length as usize > MAX_SERVE_PATH_BYTES
@@ -432,10 +462,10 @@ fn handle_connection_inner(
         return Ok(());
     }
     let input_path = String::from_utf8_lossy(
-        &req_buf[wireio::SERVE_REQUEST_SIZE..wireio::SERVE_REQUEST_SIZE + req.input_path_length as usize],
+        &req_buf[req_bytes..req_bytes + req.input_path_length as usize],
     )
     .into_owned();
-    let output_path = String::from_utf8_lossy(&req_buf[wireio::SERVE_REQUEST_SIZE + req.input_path_length as usize..])
+    let output_path = String::from_utf8_lossy(&req_buf[req_bytes + req.input_path_length as usize..])
         .into_owned();
     drop(req_buf);
 
@@ -478,6 +508,19 @@ fn handle_connection_inner(
             return Ok(());
         }
     };
+    if req.force == 0
+        && let Some(marker) = upix_img::sr_marker::probe(&raw)
+    {
+        log::info!(
+            "Skipped (already super-resolved by this tool): {} [model={} scale={}x ts={}]",
+            input_path,
+            marker.model,
+            marker.scale,
+            marker.ts
+        );
+        send_serve_skipped(sock, framer);
+        return Ok(());
+    }
     let exif_orientation = backend.exif_orientation(&raw);
     let ext = Path::new(&input_path)
         .extension()
@@ -714,6 +757,8 @@ fn handle_connection_inner(
         out_path_length: out_str.len() as u32,
         error: [0u8; 128],
         model_name: [0u8; 64],
+        skipped: 0,
+        reserved0: 0,
     };
     let mb = used_model.as_bytes();
     let n = mb.len().min(63);
@@ -736,6 +781,7 @@ pub struct ServeRequestArgs {
     pub tile_overlap: i32,
     pub output_quality: i32,
     pub encoder: EncoderOptions,
+    pub force: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -745,6 +791,7 @@ pub struct ServeOutcome {
     pub channels: i32,
     pub out_path: PathBuf,
     pub model_name: String,
+    pub skipped: bool,
 }
 
 /// One request/response exchange over the daemon socket. Progress frames
@@ -777,6 +824,8 @@ pub fn request(
         input_path_length: input.len() as u32,
         output_path_length: output.len() as u32,
         encoder: (&args.encoder).into(),
+        force: u8::from(args.force),
+        reserved: [0u8; 7],
     };
     if let Some(m) = &args.model_name {
         let mb = m.as_bytes();
@@ -833,8 +882,23 @@ pub fn request(
                         msg
                     });
                 }
+                let resp_bytes = if payload.len() == wireio::SERVE_RESPONSE_LEGACY_SIZE + r.out_path_length as usize {
+                    wireio::SERVE_RESPONSE_LEGACY_SIZE
+                } else {
+                    payload.len().min(wireio::SERVE_RESPONSE_SIZE)
+                };
+                if r.skipped != 0 {
+                    return Ok(ServeOutcome {
+                        width: 0,
+                        height: 0,
+                        channels: 0,
+                        out_path: PathBuf::new(),
+                        model_name: String::new(),
+                        skipped: true,
+                    });
+                }
                 let out_path = String::from_utf8_lossy(
-                    &payload[212..212 + r.out_path_length as usize],
+                    &payload[resp_bytes..resp_bytes + r.out_path_length as usize],
                 )
                 .into_owned();
                 return Ok(ServeOutcome {
@@ -843,6 +907,7 @@ pub fn request(
                     channels: r.channels,
                     out_path: PathBuf::from(out_path),
                     model_name: wireio::rd_bounded_str(&payload, 148, 64),
+                    skipped: false,
                 });
             }
             other => return Err(format!("unexpected daemon frame type {}", other as u16)),

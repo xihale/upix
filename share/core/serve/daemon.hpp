@@ -3,33 +3,44 @@
 // + model-load fixed cost (see docs/PERF_REPORT_REAL_IMAGES.md §4).
 //
 // Architecture: the daemon owns one Engine (initialized + model-loaded once).
-// It listens on a Unix domain socket. Each accepted connection: read one
-// ServeRequest + image bytes, run TileProcessor::process_image_u8
-// (identical path to the single-file CLI branch, so output is byte-identical),
-// send ServeResponse + result bytes. Engine access is serialized by a mutex
-// because Vulkan does not support concurrent submits from multiple threads
-// (engine.hpp:96). Model is lazily reloaded when a request names a different
-// model than the one currently loaded.
+// It listens on a local endpoint (AF_UNIX socket on Linux/macOS, named pipe
+// on Windows). Each accepted connection: read one ServeRequest + image
+// bytes, run TileProcessor::process_image_u8 (identical path to the
+// single-file CLI branch, so output is byte-identical), send ServeResponse +
+// result bytes. Engine access is serialized by a mutex because Vulkan does
+// not support concurrent submits from multiple threads (engine.hpp:96).
+// Model is lazily reloaded when a request names a different model than the
+// one currently loaded.
 //
-// Available on Linux/macOS only (AF_UNIX). On other platforms this header
-// still parses but ServeDaemon is not instantiable — the CLI gates on that.
+// The engine requires ncnn + Vulkan on every platform; the endpoint
+// transport is the only per-platform part (utils/local_socket.hpp).
 #pragma once
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
+#include <cstdlib>
 #include <memory>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
+#ifdef _WIN32
+#include <windows.h>
+#endif
 #include <mutex>
 #include <stop_token>
 #include <string>
 #include <thread>
 #include <vector>
 
+#include "utils/platform.hpp"
+
 namespace upix {
 
 class Engine;
 class ModelManager;
-class UnixServer;
-class UnixSocket;
+class LocalServer;
+class LocalSocket;
 class TileProcessor;
 
 enum class ServeDevice { CPU = 0, GPU = 1 };
@@ -76,9 +87,9 @@ private:
     // owning ConnThread's flag: drain_connections() sets it so an in-flight
     // inference aborts at the next tile boundary instead of holding teardown
     // (and the process) hostage until the whole image is done.
-    auto handle_client(std::unique_ptr<UnixSocket> sock,
+    auto handle_client(std::unique_ptr<LocalSocket> sock,
                        const std::atomic<bool>& cancel) -> void;
-    auto handle_client_inner(std::unique_ptr<UnixSocket>& sock,
+    auto handle_client_inner(std::unique_ptr<LocalSocket>& sock,
                              const std::atomic<bool>& cancel) -> void;
 
     // Ensure engine has `model_name` loaded; reload if it differs. Serialized
@@ -96,21 +107,23 @@ private:
     // exit — a daemon serving ~ulimit-n requests would exhaust its fd table.
     auto reap_finished_connections() -> void;
 
-    // One accepted connection: its thread plus a dup() of the connection fd
-    // used only to ::shutdown() it during teardown (waking a recv() that is
-    // blocked on an unresponsive client). The dup is closed after shutdown.
-    // `cancel` is read by the connection's request pipeline (TileProcessor
-    // polls it between tiles) so teardown also interrupts a long inference.
+    // One accepted connection: its thread plus a duplicated handle (watch
+    // handle — dup() on POSIX, DuplicateHandle on Windows) used only to
+    // interrupt it during teardown (waking a recv()/ReadFile() that is
+    // blocked on an unresponsive client). The copy is released after the
+    // wake. `cancel` is read by the connection's request pipeline
+    // (TileProcessor polls it between tiles) so teardown also interrupts a
+    // long inference.
     struct ConnThread {
         std::jthread thread;
-        int watch_fd = -1;
+        intptr_t watch_fd = -1;
         std::atomic<bool> done{false};
         std::atomic<bool> cancel{false};
     };
 
     std::unique_ptr<Engine> engine_;
     std::unique_ptr<ModelManager> models_;
-    std::unique_ptr<UnixServer> server_;
+    std::unique_ptr<LocalServer> server_;
     std::unique_ptr<TileProcessor> processor_;
     std::mutex engine_mutex_;     // serializes engine access (Vulkan constraint)
     // Single shutdown source of truth: stop() requests it, run()'s accept loop
@@ -128,8 +141,65 @@ private:
     ServeDevice device_ = ServeDevice::GPU;
 };
 
-// Default socket path: $XDG_CACHE_HOME/upix/serve.sock or
-// $HOME/.cache/upix/serve.sock. Empty if neither env nor HOME is set.
-auto default_serve_socket_path() -> std::string;
+// Warm-daemon endpoint. POSIX: `$XDG_CACHE_HOME/upix/serve.sock` (a
+// filesystem socket, owner-chmod 0600). Windows: the named pipe
+// `upix-serve-<username>` — pipe names live in a machine-global namespace,
+// so the per-user suffix scopes the endpoint the way the 0600 file does on
+// POSIX. Inline here (was daemon.cpp) so protocol clients (desktop,
+// docs/SPEC-frontends.md §3 stage 1) share the exact path without linking
+// the daemon TU.
+inline auto default_serve_socket_path() -> std::string {
+#ifdef _WIN32
+    std::string user;
+    if (const char* name = std::getenv("USERNAME")) user = name;
+    // Pipe names are NT path components: keep [A-Za-z0-9._-] only.
+    std::string safe;
+    for (char c : user) {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-') {
+            safe += c;
+        }
+    }
+    return "upix-serve-" + (safe.empty() ? "user" : safe);
+#else
+    const char* cache = std::getenv("XDG_CACHE_HOME");
+    std::string base;
+    if (cache && *cache) {
+        base = cache;
+    } else {
+        const char* home = user_home();
+        if (!home || !*home) return {};
+        base = std::string(home) + "/.cache";
+    }
+    return base + "/upix/serve.sock";
+#endif
+}
+
+// Where the daemon's pid file lives, derived from the endpoint. POSIX: next
+// to the socket. Windows: pipe names are not filesystem paths, so the pid
+// file goes to %LOCALAPPDATA% (fallback %USERPROFILE%)/upix/.
+inline auto serve_pid_file_path(const std::string& socket_path) -> std::string {
+#ifdef _WIN32
+    std::string base;
+    if (const char* lad = std::getenv("LOCALAPPDATA"); lad && *lad) {
+        base = lad;
+    } else if (const char* profile = user_home(); profile && *profile) {
+        base = profile;
+    }
+    if (base.empty()) return {};
+    return base + "\\upix\\" + socket_path + ".pid";
+#else
+    return socket_path + ".pid";
+#endif
+}
+
+// Current process id (daemon logging + pid file).
+inline auto current_pid() -> uint32_t {
+#ifdef _WIN32
+    return ::GetCurrentProcessId();
+#else
+    return static_cast<uint32_t>(::getpid());
+#endif
+}
 
 } // namespace upix

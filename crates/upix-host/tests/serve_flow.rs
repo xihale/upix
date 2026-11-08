@@ -169,6 +169,8 @@ fn daemon_uds_request_progress_response() {
         input_path_length: input_path.to_string_lossy().len() as u32,
         output_path_length: 0,
         encoder: encoder_wire(),
+        force: 0,
+        reserved: [0u8; 7],
     };
     let _ = &mut req;
     let mut payload = wireio::enc_serve_request(&req);
@@ -210,7 +212,7 @@ fn daemon_uds_request_progress_response() {
     assert_eq!(resp.height, 8);
     assert_eq!(resp.channels, 3);
     let out_path = String::from_utf8_lossy(
-        &response[212..212 + resp.out_path_length as usize],
+        &response[wireio::SERVE_RESPONSE_SIZE..wireio::SERVE_RESPONSE_SIZE + resp.out_path_length as usize],
     )
     .into_owned();
     assert!(
@@ -281,6 +283,8 @@ fn daemon_lazy_model_switch() {
         input_path_length: input_path.to_string_lossy().len() as u32,
         output_path_length: out_path.to_string_lossy().len() as u32,
         encoder: encoder_wire(),
+        force: 0,
+        reserved: [0u8; 7],
     };
     let mut payload = wireio::enc_serve_request(&req);
     payload.extend_from_slice(input_path.to_string_lossy().as_bytes());
@@ -332,6 +336,8 @@ fn daemon_error_isolation() {
         input_path_length: missing.to_string_lossy().len() as u32,
         output_path_length: 0,
         encoder: encoder_wire(),
+        force: 0,
+        reserved: [0u8; 7],
     };
     let mut payload = wireio::enc_serve_request(&req);
     payload.extend_from_slice(missing.to_string_lossy().as_bytes());
@@ -363,6 +369,8 @@ fn daemon_error_isolation() {
         input_path_length: input_path.to_string_lossy().len() as u32,
         output_path_length: 0,
         encoder: encoder_wire(),
+        force: 0,
+        reserved: [0u8; 7],
     };
     let mut payload = wireio::enc_serve_request(&req);
     payload.extend_from_slice(input_path.to_string_lossy().as_bytes());

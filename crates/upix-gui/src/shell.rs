@@ -1,152 +1,338 @@
-//! The shell: a left rail on wide windows (desktop gallery layout) and a tab
-//! bar on narrow ones, the 100 ms worker-drain tick, and the approval
-//! dialog that overlays everything.
+//! Top-level application shell: 76px left navigation rail (`desktop/src/main.cpp`),
+//! active page viewport, and global pairing approval modal.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
-use nsh_base::{alert_dialog, theme};
 use nsh_core::prelude::*;
 
-use crate::host_bridge::ApprovalReply;
-use crate::nav::Page;
-use crate::pages;
+use crate::host_bridge::{ApprovalReply, ApprovalRequest};
+use crate::nav::NavTab;
+use crate::pages::host::{host_page, split_fp_groups};
+use crate::pages::models::models_page;
+use crate::pages::workbench::workbench_page;
 use crate::store::Store;
+use crate::theme::{palette, FONT_MONO};
+use crate::ui::svg_icon;
 
-pub fn shell(store: Store) -> impl IntoElement {
-    // The worker drain: events move to signals here, on the engine thread.
-    set_interval(Duration::from_millis(100), move || store.drain());
+pub fn shell(store: Store) -> View {
+    // 50ms interval to drain background job, catalog, and host channels
+    set_interval(Duration::from_millis(50), move || {
+        store.drain();
+    });
 
-    // The pairing approval: one native dialog per request; the answer goes
-    // back through the host handle. [y/n] stdin of the C++ coordinator.
-    effect(move || {
-        let Some(request) = store.host_pending.get() else {
-            return;
-        };
-        spawn(async move {
-            let answer = alert_dialog()
-                .title("配对请求")
-                .description(format!(
-                    "设备 {}\n指纹 {}\n与手机上显示的指纹核对一致后，再点允许。",
-                    request.device, request.fingerprint
-                ))
-                .cancel("deny", "拒绝 (Esc)")
-                .action("allow", "允许")
-                .show()
-                .await;
-            let reply = match answer {
-                Ok(result) if result.action.as_deref() == Some("allow") => ApprovalReply::Allow,
-                _ => ApprovalReply::Deny,
-            };
-            store.answer_approval(reply);
-        });
+    // Global keyboard shortcuts matching `desktop/src/main.cpp`
+    on_key("mod+1", move |_| store.nav.set(NavTab::Workbench));
+    on_key("mod+2", move |_| store.nav.set(NavTab::Models));
+    on_key("mod+3", move |_| store.nav.set(NavTab::Host));
+    on_key("mod+v", move |_| {
+        if store.nav.get() == NavTab::Workbench {
+            spawn(async move {
+                let text = clipboard_string().await;
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    let p = PathBuf::from(trimmed);
+                    if p.is_file() {
+                        store.add_paths(&[p]);
+                    }
+                }
+            });
+        }
+    });
+    on_key("mod+.", move |_| store.cancel_job());
+    on_key("escape", move |_| {
+        if store.host_pending_approval.get().is_some() {
+            store.answer_approval(ApprovalReply::Deny);
+        } else if store.show_model_picker.get() {
+            store.show_model_picker.set(false);
+        }
     });
 
     view()
-        .flex_1()
-        .bg(move || theme().background)
-        // Remade when the window crosses the threshold (as the gallery's
-        // shell does): the store carries everything across.
-        .child(
-            when(
-                move || window().width.0 >= 700.0,
-                move || rail_layout(store).into_element(),
-            )
-            .otherwise(move || tab_layout(store).into_element()),
-        )
-}
-
-fn rail_layout(store: Store) -> impl IntoElement {
-    view()
-        .flex_1()
+        .size_full()
         .flex_row()
+        .bg(palette::bg())
+        .relative()
+        .child(nav_rail(store))
         .child(
             view()
-                .w(px(160.0))
-                .p_3()
-                .gap_1()
-                .border_r_1()
-                .border_color(move || theme().border)
-                .bg(move || theme().sidebar)
-                .child(
-                    text("Upix")
-                        .text_base()
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .p_2()
-                        .text_color(move || theme().sidebar_foreground),
-                )
-                .children(Page::ALL.map(|page| rail_item(store, page))),
+                .flex_1()
+                .h_full()
+                .overflow_hidden()
+                .child(dynamic(move || match store.nav.get() {
+                    NavTab::Workbench => workbench_page(store).into_element(),
+                    NavTab::Models => models_page(store).into_element(),
+                    NavTab::Host => host_page(store).into_element(),
+                })),
         )
-        .child(view().flex_1().child(current_page(store)))
+        .child(when(
+            move || store.host_pending_approval.get().is_some(),
+            move || pairing_modal_overlay(store),
+        ))
 }
 
-fn tab_layout(store: Store) -> impl IntoElement {
-    view()
-        .flex_1()
-        .p_safe_area()
-        .gap_0()
-        .child(
+fn nav_rail(store: Store) -> View {
+    let mut items_col = view().w_full().flex_col().items_center().gap(px(6.0));
+
+    for tab in NavTab::ALL {
+        items_col = items_col.child(dynamic(move || {
+            let selected = store.nav.get() == tab;
             view()
-                .flex_row()
-                .px_2()
-                .h(px(44.0))
+                .size(px(60.0))
+                .rounded(px(10.0))
+                .flex_col()
                 .items_center()
-                .gap_1()
-                .border_b_1()
-                .border_color(move || theme().border)
-                .children(Page::ALL.map(|page| tab_item(store, page))),
-        )
-        .child(view().flex_1().child(current_page(store)))
-}
+                .justify_center()
+                .gap(px(5.0))
+                .cursor_pointer()
+                .bg(if selected {
+                    palette::high()
+                } else {
+                    AdaptiveColor::TRANSPARENT
+                })
+                .border_1()
+                .border_color(if selected {
+                    palette::outline_strong()
+                } else {
+                    AdaptiveColor::TRANSPARENT
+                })
+                .hover(move |s| {
+                    s.bg(if selected {
+                        palette::high()
+                    } else {
+                        palette::container_low()
+                    })
+                })
+                .on_press(move || store.nav.set(tab))
+                .child(svg_icon(
+                    tab.icon_svg(),
+                    18.0,
+                    if selected {
+                        palette::primary()
+                    } else {
+                        palette::muted()
+                    },
+                ))
+                .child(
+                    text(tab.label())
+                        .text_size(px(11.0))
+                        .font_weight(if selected {
+                            FontWeight::SEMIBOLD
+                        } else {
+                            FontWeight::MEDIUM
+                        })
+                        .text_color(if selected {
+                            palette::on_surface()
+                        } else {
+                            palette::muted()
+                        }),
+                )
+        }));
+    }
 
-fn rail_item(store: Store, page: Page) -> impl IntoElement {
-    let selected = move || store.page.get() == page;
     view()
-        .px_3()
-        .py_2()
-        .rounded(move || theme().radius)
-        .hover(|s| s.bg(move || theme().accent))
-        .style_when(selected, |s| s.bg(move || theme().primary))
-        .cursor_pointer()
-        .on_press(move || store.page.set(page))
-        .role(AccessibilityRole::Button)
-        .label(page.title())
-        .child(text(page.title()).text_sm().text_color(move || {
-            if selected() {
-                theme().primary_foreground
-            } else {
-                theme().sidebar_foreground
-            }
-        }))
-}
-
-fn tab_item(store: Store, page: Page) -> impl IntoElement {
-    let selected = move || store.page.get() == page;
-    view()
-        .flex_1()
+        .w(px(76.0))
         .h_full()
+        .py(px(12.0))
+        .flex_col()
+        .items_center()
+        .justify_between()
+        .bg(palette::bg())
+        .border_r_1()
+        .border_color(palette::outline())
+        .child(items_col)
+        .child(
+            text("0.3.0")
+                .text_size(px(10.0))
+                .font_family(FONT_MONO)
+                .tabular_nums()
+                .text_color(palette::dim()),
+        )
+}
+
+fn pairing_modal_overlay(store: Store) -> View {
+    let info = store
+        .host_pending_approval
+        .get()
+        .unwrap_or(ApprovalRequest {
+            device: "Android 设备".to_string(),
+            fingerprint: "0000000000000000".to_string(),
+        });
+    let groups = split_fp_groups(&info.fingerprint);
+
+    let mut pills_row = view()
+        .flex_row()
         .items_center()
         .justify_center()
-        .cursor_pointer()
-        .on_press(move || store.page.set(page))
-        .role(AccessibilityRole::Button)
-        .label(page.title())
-        .child(text(page.title()).text_sm().text_color(move || {
-            if selected() {
-                theme().primary
-            } else {
-                theme().muted_foreground
-            }
-        }))
-        // The selected tab's underline.
-        .style_when(selected, |s| s.border_b_1().border_color(move || theme().primary))
-}
+        .gap(px(8.0));
+    for g in groups {
+        pills_row = pills_row.child(
+            view()
+                .w(px(60.0))
+                .h(px(32.0))
+                .rounded(px(6.0))
+                .bg(palette::surface())
+                .border_1()
+                .border_color(palette::primary_dim_border())
+                .items_center()
+                .justify_center()
+                .child(
+                    text(g)
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::BOLD)
+                        .font_family(FONT_MONO)
+                        .tabular_nums()
+                        .text_color(palette::primary()),
+                ),
+        );
+    }
 
-fn current_page(store: Store) -> impl IntoElement {
-    dynamic(move || match store.page.get() {
-        Page::Home => pages::home::page(store).into_element(),
-        Page::Progress => pages::progress::page(store).into_element(),
-        Page::Compare => pages::compare::page(store).into_element(),
-        Page::Host => pages::host::page(store).into_element(),
-        Page::Models => pages::models::page(store).into_element(),
-    })
+    view()
+        .absolute()
+        .inset(px(0.0))
+        .bg(AdaptiveColor::rgb(0x000000, 0x000000).opacity(0.65))
+        .items_center()
+        .justify_center()
+        .child(
+            view()
+                .w(px(380.0))
+                .h(px(240.0))
+                .rounded(px(14.0))
+                .bg(palette::surface())
+                .border_1()
+                .border_color(palette::outline_strong())
+                .shadow_xl()
+                .p(px(20.0))
+                .flex_col()
+                .justify_between()
+                // Header row
+                .child(
+                    view()
+                        .w_full()
+                        .flex_row()
+                        .items_center()
+                        .justify_between()
+                        .child(
+                            view()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(10.0))
+                                .child(
+                                    view()
+                                        .size(px(34.0))
+                                        .rounded(px(8.0))
+                                        .bg(palette::primary_dim_bg())
+                                        .border_1()
+                                        .border_color(palette::primary_dim_border())
+                                        .items_center()
+                                        .justify_center()
+                                        .child(svg_icon(
+                                            crate::ui::icons::HOST,
+                                            16.0,
+                                            palette::primary(),
+                                        )),
+                                )
+                                .child(
+                                    view()
+                                        .flex_col()
+                                        .gap(px(2.0))
+                                        .child(
+                                            text(info.device)
+                                                .text_size(px(13.0))
+                                                .font_weight(FontWeight::SEMIBOLD)
+                                                .text_color(palette::on_surface()),
+                                        )
+                                        .child(
+                                            text("请求配对连接 · TLS 1.3")
+                                                .text_size(px(11.0))
+                                                .text_color(palette::muted()),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            view()
+                                .h(px(20.0))
+                                .px(px(6.0))
+                                .rounded(px(4.0))
+                                .bg(palette::primary_dim_bg())
+                                .border_1()
+                                .border_color(palette::primary_dim_border())
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    text("PAIR")
+                                        .text_size(px(10.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .font_family(FONT_MONO)
+                                        .text_color(palette::primary()),
+                                ),
+                        ),
+                )
+                // Fingerprint verification well
+                .child(
+                    view()
+                        .w_full()
+                        .h(px(82.0))
+                        .rounded(px(10.0))
+                        .bg(palette::recessed())
+                        .border_1()
+                        .border_color(palette::outline())
+                        .flex_col()
+                        .items_center()
+                        .justify_center()
+                        .gap(px(8.0))
+                        .child(
+                            text("核对设备指纹一致")
+                                .text_size(px(10.0))
+                                .text_color(palette::dim()),
+                        )
+                        .child(pills_row),
+                )
+                // Action buttons row
+                .child(
+                    view()
+                        .w_full()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(
+                            view()
+                                .flex_1()
+                                .h(px(36.0))
+                                .rounded(px(8.0))
+                                .bg(palette::container_low())
+                                .border_1()
+                                .border_color(palette::outline_input())
+                                .hover(|s| s.bg(palette::high()))
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .on_press(move || store.answer_approval(ApprovalReply::Deny))
+                                .child(
+                                    text("拒绝  Esc")
+                                        .text_size(px(12.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(palette::on_surface()),
+                                ),
+                        )
+                        .child(
+                            view()
+                                .flex_1()
+                                .h(px(36.0))
+                                .rounded(px(8.0))
+                                .bg(palette::primary())
+                                .hover(|s| s.bg(palette::primary_hover()))
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .on_press(move || store.answer_approval(ApprovalReply::Allow))
+                                .child(
+                                    text("信任并允许")
+                                        .text_size(px(12.0))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(palette::on_primary()),
+                                ),
+                        ),
+                ),
+        )
 }
