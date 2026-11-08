@@ -1,7 +1,8 @@
-//! Workbench page (`desktop/src/main.cpp` `render_workbench_tab`):
+//! Workbench page (`desktop/src/main.cpp` `renderWorkbench`, Figma Frames `4:2`, `71:1129`, `73:1931`):
 //! Left Stage Well (corner registration marks, before/after split curtain, 40px telemetry bar,
-//! 54px filmstrip dock) + Right 308px Inspector (floating model picker, format/quality/chroma/speed,
-//! output directory, GPU/CPU, tile size, warm daemon, force overwrite, sticky CTA).
+//! 54px filmstrip dock) + Right 308px Inspector (floating model picker, 5-way format segmented,
+//! quality slider with tick marks, inline chroma & speed rows, output directory, GPU/CPU, tile size,
+//! warm daemon, force overwrite, sticky 276x44 CTA).
 
 use std::path::PathBuf;
 
@@ -10,12 +11,11 @@ use nsh_core::file_dialog::{FileFilter, OpenDialog};
 use nsh_core::prelude::*;
 
 use crate::engine_bridge::{ChromaSubsampling, OutputFormat};
-use crate::models_local::{human_bytes, scale_from_filename, short_name};
-use crate::nav::NavTab;
+use crate::models_local::{human_bytes, scale_from_filename};
 use crate::store::{file_uri_path, InputItem, ItemStatus, JobPhase, Store};
 use crate::theme::{palette, FONT_MONO};
 use crate::ui::{
-    hairline, primary_button, section_header, segmented, svg_icon, toggle_row, SegmentItem,
+    primary_button, section_header, segmented, segmented_sized, svg_icon, toggle_row, SegmentItem,
 };
 
 pub const POS_MIN: f32 = 0.02;
@@ -99,14 +99,15 @@ fn stage_column(store: Store) -> View {
     view()
         .flex_1()
         .h_full()
-        .p(px(12.0))
-        .gap(px(8.0))
+        .px(px(8.0))
+        .py(px(16.0))
+        .gap(px(10.0))
         .flex_col()
         .on_file_drop(move |e: &FileDropEvent| {
             let paths: Vec<PathBuf> = e.uris.iter().filter_map(|u| file_uri_path(u)).collect();
             store.add_paths(&paths);
         })
-        // Main Stage Well
+        // Main Stage Well (Figma 4:18 & 71:1133: #18181c, border 1px solid #282830, radius 12px)
         .child(
             view()
                 .flex_1()
@@ -143,7 +144,7 @@ fn registration_marks() -> View {
     let c = palette::reg_mark();
     view()
         .absolute()
-        .inset(px(16.0))
+        .inset(px(28.0))
         .pointer_events(PointerEvents::None)
         // Top-left
         .child(
@@ -151,8 +152,8 @@ fn registration_marks() -> View {
                 .absolute()
                 .top(px(0.0))
                 .left(px(0.0))
-                .w(px(12.0))
-                .h(px(1.0))
+                .w(px(16.0))
+                .h(px(2.0))
                 .bg(c),
         )
         .child(
@@ -160,8 +161,8 @@ fn registration_marks() -> View {
                 .absolute()
                 .top(px(0.0))
                 .left(px(0.0))
-                .w(px(1.0))
-                .h(px(12.0))
+                .w(px(2.0))
+                .h(px(16.0))
                 .bg(c),
         )
         // Top-right
@@ -170,8 +171,8 @@ fn registration_marks() -> View {
                 .absolute()
                 .top(px(0.0))
                 .right(px(0.0))
-                .w(px(12.0))
-                .h(px(1.0))
+                .w(px(16.0))
+                .h(px(2.0))
                 .bg(c),
         )
         .child(
@@ -179,8 +180,8 @@ fn registration_marks() -> View {
                 .absolute()
                 .top(px(0.0))
                 .right(px(0.0))
-                .w(px(1.0))
-                .h(px(12.0))
+                .w(px(2.0))
+                .h(px(16.0))
                 .bg(c),
         )
         // Bottom-left
@@ -189,8 +190,8 @@ fn registration_marks() -> View {
                 .absolute()
                 .bottom(px(0.0))
                 .left(px(0.0))
-                .w(px(12.0))
-                .h(px(1.0))
+                .w(px(16.0))
+                .h(px(2.0))
                 .bg(c),
         )
         .child(
@@ -198,8 +199,8 @@ fn registration_marks() -> View {
                 .absolute()
                 .bottom(px(0.0))
                 .left(px(0.0))
-                .w(px(1.0))
-                .h(px(12.0))
+                .w(px(2.0))
+                .h(px(16.0))
                 .bg(c),
         )
         // Bottom-right
@@ -208,8 +209,8 @@ fn registration_marks() -> View {
                 .absolute()
                 .bottom(px(0.0))
                 .right(px(0.0))
-                .w(px(12.0))
-                .h(px(1.0))
+                .w(px(16.0))
+                .h(px(2.0))
                 .bg(c),
         )
         .child(
@@ -217,8 +218,8 @@ fn registration_marks() -> View {
                 .absolute()
                 .bottom(px(0.0))
                 .right(px(0.0))
-                .w(px(1.0))
-                .h(px(12.0))
+                .w(px(2.0))
+                .h(px(16.0))
                 .bg(c),
         )
 }
@@ -232,62 +233,54 @@ fn empty_stage_well(store: Store) -> View {
         .cursor_pointer()
         .on_press(move || pick_image_files(store))
         .child(registration_marks())
-        // Centered icon + title
+        // Centered 32x32 zoom-in icon + 15px title (Figma 7:6)
         .child(
             view()
                 .flex_col()
                 .items_center()
                 .gap(px(14.0))
-                .child(
-                    view()
-                        .size(px(40.0))
-                        .rounded(px(10.0))
-                        .bg(palette::container_low())
-                        .border_1()
-                        .border_color(palette::outline())
-                        .items_center()
-                        .justify_center()
-                        .child(svg_icon(
-                            crate::ui::icons::WORKBENCH,
-                            18.0,
-                            palette::muted(),
-                        )),
-                )
+                .child(svg_icon(
+                    crate::ui::icons::ZOOM_IN,
+                    32.0,
+                    palette::muted(),
+                ))
                 .child(
                     text("拖入图片，或按 Ctrl+V 粘贴")
-                        .text_size(px(13.0))
+                        .text_size(px(15.0))
                         .font_weight(FontWeight::MEDIUM)
                         .text_color(palette::muted()),
                 ),
         )
-        // Bottom batch folder pill button
+        // Bottom 162x32 batch folder button at 44px from bottom (Figma 12:366)
         .child(
             view()
                 .absolute()
-                .bottom(px(20.0))
+                .bottom(px(44.0))
                 .left(px(0.0))
                 .right(px(0.0))
                 .items_center()
                 .justify_center()
                 .child(
                     view()
-                        .h(px(28.0))
-                        .px(px(14.0))
-                        .rounded(px(7.0))
+                        .w(px(162.0))
+                        .h(px(32.0))
+                        .rounded(px(8.0))
                         .bg(palette::container_low())
                         .border_1()
-                        .border_color(palette::outline())
+                        .border_color(palette::outline_input())
                         .hover(|s| s.bg(palette::high()))
                         .flex_row()
                         .items_center()
-                        .gap(px(6.0))
+                        .justify_center()
+                        .gap(px(8.0))
                         .cursor_pointer()
                         .on_press(move || pick_batch_folder(store))
-                        .child(svg_icon(crate::ui::icons::FOLDER, 12.0, palette::dim()))
+                        .child(svg_icon(crate::ui::icons::FOLDER, 14.0, palette::muted()))
                         .child(
                             text("选择文件夹批量处理")
-                                .text_size(px(11.0))
-                                .text_color(palette::dim()),
+                                .text_size(px(12.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .text_color(palette::muted()),
                         ),
                 ),
         )
@@ -330,7 +323,7 @@ fn compare_viewport(store: Store, item: InputItem, output_path: PathBuf) -> View
 
     let before_src = item.path.to_string_lossy().into_owned();
     let after_src = output_path.to_string_lossy().into_owned();
-    let scale = scale_from_filename(&store.selected_model.get()).unwrap_or(2);
+    let scale = scale_from_filename(&store.selected_model.get()).unwrap_or(4);
 
     view()
         .size_full()
@@ -358,7 +351,6 @@ fn compare_viewport(store: Store, item: InputItem, output_path: PathBuf) -> View
             view()
                 .absolute()
                 .inset(px(0.0))
-                .p(px(20.0))
                 .items_center()
                 .justify_center()
                 .child(
@@ -380,7 +372,6 @@ fn compare_viewport(store: Store, item: InputItem, output_path: PathBuf) -> View
                     view()
                         .w(move || px(stage_w.get()))
                         .h(move || px(stage_h.get()))
-                        .p(px(20.0))
                         .items_center()
                         .justify_center()
                         .bg(palette::surface())
@@ -391,26 +382,26 @@ fn compare_viewport(store: Store, item: InputItem, output_path: PathBuf) -> View
                         ),
                 ),
         )
-        // Split divider vertical line (1.5px)
+        // Split divider vertical line (1px)
         .child(
             view()
                 .absolute()
                 .top(px(0.0))
                 .bottom(px(0.0))
-                .w(px(1.5))
+                .w(px(1.0))
                 .left(move || px((stage_w.get() * split.get()).round()))
                 .bg(palette::on_surface())
                 .pointer_events(PointerEvents::None),
         )
-        // 28x28 circular drag handle with `‹ ›`
+        // 28x28 rounded square drag handle (Figma Frame 71:1129: #141418d9, border #2c2c35, radius 7px)
         .child(
             view()
                 .absolute()
                 .size(px(28.0))
-                .rounded_full()
-                .bg(palette::bg())
+                .rounded(px(7.0))
+                .bg(AdaptiveColor::rgb(0xF4F3EF, 0x141418))
                 .border_1()
-                .border_color(palette::on_surface())
+                .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2C2C35))
                 .items_center()
                 .justify_center()
                 .left(move || px((stage_w.get() * split.get() - 14.0).round()))
@@ -420,63 +411,65 @@ fn compare_viewport(store: Store, item: InputItem, output_path: PathBuf) -> View
                     text("‹ ›")
                         .text_size(px(10.0))
                         .font_weight(FontWeight::BOLD)
-                        .text_color(palette::on_surface()),
+                        .text_color(palette::muted()),
                 ),
         )
-        // Top-left HUD chip: `原图 · 1×`
+        // Top-left HUD chip (Figma 75:2993: 77x26px, #141418c7, border #2c2c35, radius 6px, "原图 · 1×")
         .child(
             view()
                 .absolute()
                 .top(px(14.0))
                 .left(px(14.0))
-                .h(px(24.0))
-                .px(px(10.0))
+                .w(px(77.0))
+                .h(px(26.0))
                 .rounded(px(6.0))
-                .bg(palette::bg())
+                .bg(AdaptiveColor::rgb(0xF4F3EF, 0x141418))
                 .border_1()
-                .border_color(palette::outline())
+                .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2C2C35))
                 .items_center()
                 .justify_center()
                 .pointer_events(PointerEvents::None)
                 .child(
                     text("原图 · 1×")
                         .text_size(px(11.0))
+                        .font_family(FONT_MONO)
                         .text_color(palette::muted()),
                 ),
         )
-        // Top-right HUD chip: `超分 · N×`
+        // Top-right HUD chip (Figma 75:2995: 77x26px, #141418c7, border #2c2c35, radius 6px, "超分 · 4×")
         .child(
             view()
                 .absolute()
                 .top(px(14.0))
-                .right(px(46.0))
-                .h(px(24.0))
-                .px(px(10.0))
+                .right(px(50.0))
+                .w(px(77.0))
+                .h(px(26.0))
                 .rounded(px(6.0))
-                .bg(palette::bg())
+                .bg(AdaptiveColor::rgb(0xF4F3EF, 0x141418))
                 .border_1()
-                .border_color(palette::primary_dim_border())
+                .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2C2C35))
                 .items_center()
                 .justify_center()
                 .pointer_events(PointerEvents::None)
                 .child(
                     text(format!("超分 · {scale}×"))
                         .text_size(px(11.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(palette::primary()),
+                        .font_weight(FontWeight::MEDIUM)
+                        .font_family(FONT_MONO)
+                        .text_color(palette::on_surface()),
                 ),
         )
         // Top-right 26x26 close `x` button
         .child(
             view()
                 .absolute()
-                .top(px(13.0))
+                .top(px(14.0))
                 .right(px(14.0))
                 .size(px(26.0))
                 .rounded(px(6.0))
-                .bg(palette::bg())
+                .bg(AdaptiveColor::rgb(0xF4F3EF, 0x141418))
                 .border_1()
-                .border_color(palette::outline())
+                .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2C2C35))
                 .hover(|s| s.bg(palette::high()))
                 .items_center()
                 .justify_center()
@@ -500,7 +493,6 @@ fn preview_viewport(store: Store, item: InputItem) -> View {
         .relative()
         .items_center()
         .justify_center()
-        .p(px(20.0))
         .child(image(src).size_full().object_fit(ResizeMode::Contain))
         // Horizontal laser scanline during Running
         .child(when(
@@ -508,45 +500,42 @@ fn preview_viewport(store: Store, item: InputItem) -> View {
             move || {
                 view()
                     .absolute()
-                    .left(px(20.0))
-                    .right(px(20.0))
+                    .left(px(0.0))
+                    .right(px(0.0))
                     .top(percentage(frac))
-                    .h(px(2.0))
+                    .h(px(1.5))
                     .bg(palette::primary())
                     .pointer_events(PointerEvents::None)
             },
         ))
-        // Top-right 26x26 close `x` button (when not running)
-        .child(when(
-            move || !is_running,
-            move || {
-                view()
-                    .absolute()
-                    .top(px(13.0))
-                    .right(px(14.0))
-                    .size(px(26.0))
-                    .rounded(px(6.0))
-                    .bg(palette::bg())
-                    .border_1()
-                    .border_color(palette::outline())
-                    .hover(|s| s.bg(palette::high()))
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .on_press(move || store.clear_inputs())
-                    .child(svg_icon(crate::ui::icons::CLOSE, 12.0, palette::muted()))
-            },
-        ))
+        // Top-right 28x28 close `x` button
+        .child(
+            view()
+                .absolute()
+                .top(px(14.0))
+                .right(px(14.0))
+                .size(px(28.0))
+                .rounded(px(6.0))
+                .bg(AdaptiveColor::rgb(0xF4F3EF, 0x141418))
+                .border_1()
+                .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2C2C35))
+                .hover(|s| s.bg(palette::high()))
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .on_press(move || store.clear_inputs())
+                .child(svg_icon(crate::ui::icons::CLOSE, 13.0, palette::muted())),
+        )
 }
 
 fn telemetry_bar(store: Store) -> View {
     view()
         .w_full()
         .h(px(40.0))
-        .bg(palette::recessed())
+        .bg(palette::surface())
         .border_t_1()
-        .border_color(palette::outline())
-        .px(px(14.0))
+        .border_color(AdaptiveColor::rgb(0xD6D5CD, 0x26262E))
+        .px(px(16.0))
         .flex_row()
         .items_center()
         .justify_between()
@@ -577,29 +566,22 @@ fn telemetry_bar(store: Store) -> View {
                                 .gap(px(10.0))
                                 .child(
                                     view()
-                                        .size(px(7.0))
+                                        .size(px(6.0))
                                         .rounded_full()
                                         .bg(palette::primary()),
                                 )
                                 .child(
-                                    text("正在超分")
-                                        .text_size(px(11.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
+                                    text(fname)
+                                        .text_size(px(12.0))
+                                        .font_family(FONT_MONO)
                                         .text_color(palette::on_surface()),
                                 )
-                                .child(text("·").text_size(px(11.0)).text_color(palette::dim()))
-                                .child(
-                                    text(fname)
-                                        .text_size(px(11.0))
-                                        .text_color(palette::muted()),
-                                )
-                                .child(text("·").text_size(px(11.0)).text_color(palette::dim()))
                                 .child(
                                     text(stage)
                                         .text_size(px(11.0))
                                         .font_family(FONT_MONO)
                                         .tabular_nums()
-                                        .text_color(palette::primary()),
+                                        .text_color(palette::dim()),
                                 ),
                         )
                         .child(
@@ -609,10 +591,10 @@ fn telemetry_bar(store: Store) -> View {
                                 .gap(px(10.0))
                                 .child(
                                     view()
-                                        .w(px(140.0))
+                                        .w(px(148.0))
                                         .h(px(4.0))
                                         .rounded(px(2.0))
-                                        .bg(palette::outline())
+                                        .bg(AdaptiveColor::rgb(0xD6D5CD, 0x121216))
                                         .overflow_hidden()
                                         .child(
                                             view()
@@ -624,7 +606,7 @@ fn telemetry_bar(store: Store) -> View {
                                 .child(
                                     text(format!("{pct_v}%"))
                                         .text_size(px(11.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
+                                        .font_weight(FontWeight::MEDIUM)
                                         .font_family(FONT_MONO)
                                         .tabular_nums()
                                         .text_color(palette::primary()),
@@ -633,22 +615,39 @@ fn telemetry_bar(store: Store) -> View {
                 }
                 JobPhase::Done { elapsed_ms, .. } => {
                     let elapsed_s = elapsed_ms as f64 / 1000.0;
-                    let (dim_str, out_p) = if let Some(ref a) = active {
+                    let model_name = store.selected_model.get();
+                    let scale = scale_from_filename(&model_name).unwrap_or(4);
+                    let fmt_label = match store.format.get() {
+                        OutputFormat::Follow => "PNG",
+                        other => other.label(),
+                    };
+                    let badge_txt = format!("{scale}× · {fmt_label}");
+
+                    let (dim_str, out_p, size_str) = if let Some(ref a) = active {
                         if let ItemStatus::Done {
                             ref output_path,
                             out_w,
                             out_h,
                         } = a.status
                         {
+                            let sz = std::fs::metadata(output_path)
+                                .map(|m| human_bytes(m.len()))
+                                .unwrap_or_else(|_| "—".into());
                             (
-                                format!("{} × {}  →  {out_w} × {out_h}", a.width, a.height),
+                                format!("{}×{} → {out_w}×{out_h}", a.width, a.height),
                                 Some(output_path.clone()),
+                                sz,
                             )
                         } else {
-                            (format!("{} × {}", a.width, a.height), None)
+                            (format!("{}×{}", a.width, a.height), None, String::new())
                         }
                     } else {
-                        (String::new(), None)
+                        (String::new(), None, String::new())
+                    };
+                    let meta_str = if size_str.is_empty() {
+                        format!("{elapsed_s:.2}s · {model_name}")
+                    } else {
+                        format!("{elapsed_s:.2}s · {size_str} · {model_name}")
                     };
 
                     view()
@@ -663,171 +662,155 @@ fn telemetry_bar(store: Store) -> View {
                                 .gap(px(10.0))
                                 .child(
                                     view()
-                                        .size(px(7.0))
+                                        .size(px(6.0))
                                         .rounded_full()
                                         .bg(palette::primary()),
                                 )
                                 .child(
-                                    text("已完成")
-                                        .text_size(px(11.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(palette::primary()),
+                                    view()
+                                        .h(px(20.0))
+                                        .px(px(6.0))
+                                        .rounded(px(4.0))
+                                        .bg(palette::primary_dim_bg())
+                                        .border_1()
+                                        .border_color(palette::primary_dim_border())
+                                        .items_center()
+                                        .justify_center()
+                                        .child(
+                                            text(badge_txt)
+                                                .text_size(px(10.0))
+                                                .font_family(FONT_MONO)
+                                                .text_color(palette::primary()),
+                                        ),
                                 )
-                                .child(text("·").text_size(px(11.0)).text_color(palette::dim()))
                                 .child(
                                     text(dim_str)
-                                        .text_size(px(11.0))
+                                        .text_size(px(12.0))
                                         .font_family(FONT_MONO)
                                         .tabular_nums()
                                         .text_color(palette::on_surface()),
                                 )
-                                .child(text("·").text_size(px(11.0)).text_color(palette::dim()))
                                 .child(
-                                    text(format!("{elapsed_s:.2}s"))
+                                    text(meta_str)
                                         .text_size(px(11.0))
                                         .font_family(FONT_MONO)
                                         .tabular_nums()
-                                        .text_color(palette::muted()),
+                                        .text_color(palette::dim()),
                                 ),
                         )
                         .child(if let Some(p) = out_p {
+                            let p_open = p.clone();
                             view()
-                                .h(px(26.0))
-                                .px(px(10.0))
-                                .rounded(px(6.0))
-                                .bg(palette::container_low())
-                                .border_1()
-                                .border_color(palette::outline())
-                                .hover(|s| s.bg(palette::high()))
                                 .flex_row()
                                 .items_center()
-                                .gap(px(6.0))
-                                .cursor_pointer()
-                                .on_press(move || {
-                                    let p_reveal = p.clone();
-                                    spawn(async move {
-                                        let _ = reveal_path(p_reveal).await;
-                                    });
-                                })
-                                .child(svg_icon(
-                                    crate::ui::icons::FOLDER,
-                                    12.0,
-                                    palette::on_surface(),
-                                ))
+                                .gap(px(12.0))
                                 .child(
-                                    text("在文件夹中显示")
-                                        .text_size(px(11.0))
-                                        .text_color(palette::on_surface()),
+                                    view()
+                                        .cursor_pointer()
+                                        .on_press(move || {
+                                            let p_rev = p.clone();
+                                            spawn(async move {
+                                                let _ = reveal_path(p_rev).await;
+                                            });
+                                        })
+                                        .child(
+                                            text("定位文件")
+                                                .text_size(px(11.0))
+                                                .text_color(AdaptiveColor::rgb(0x706F68, 0x8E8E9A)),
+                                        ),
+                                )
+                                .child(
+                                    view()
+                                        .w(px(64.0))
+                                        .h(px(24.0))
+                                        .rounded(px(4.0))
+                                        .bg(AdaptiveColor::rgb(0xE3E2DC, 0x24242C))
+                                        .border_1()
+                                        .border_color(AdaptiveColor::rgb(0xC5C4BC, 0x343440))
+                                        .hover(|s| s.bg(palette::highest()))
+                                        .items_center()
+                                        .justify_center()
+                                        .cursor_pointer()
+                                        .on_press(move || {
+                                            let p_op = p_open.clone();
+                                            spawn(async move {
+                                                let _ = open_path(p_op).await;
+                                            });
+                                        })
+                                        .child(
+                                            text("打开图像")
+                                                .text_size(px(11.0))
+                                                .text_color(palette::on_surface()),
+                                        ),
                                 )
                         } else {
                             view()
                         })
                 }
-                JobPhase::Failed(err_msg) => {
-                    let msg_copy = err_msg.clone();
-                    view()
-                        .w_full()
-                        .flex_row()
-                        .items_center()
-                        .justify_between()
-                        .child(
-                            view()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(8.0))
-                                .child(
-                                    view()
-                                        .size(px(7.0))
-                                        .rounded_full()
-                                        .bg(palette::error()),
-                                )
-                                .child(
-                                    text("处理中断")
-                                        .text_size(px(11.0))
-                                        .font_weight(FontWeight::SEMIBOLD)
-                                        .text_color(palette::error()),
-                                )
-                                .child(text("·").text_size(px(11.0)).text_color(palette::dim()))
-                                .child(
-                                    text(err_msg)
-                                        .text_size(px(11.0))
-                                        .text_color(palette::muted()),
-                                ),
-                        )
-                        .child(
-                            view()
-                                .h(px(26.0))
-                                .px(px(10.0))
-                                .rounded(px(6.0))
-                                .bg(palette::container_low())
-                                .border_1()
-                                .border_color(palette::outline())
-                                .hover(|s| s.bg(palette::high()))
-                                .flex_row()
-                                .items_center()
-                                .gap(px(6.0))
-                                .cursor_pointer()
-                                .on_press(move || set_clipboard(msg_copy.clone()))
-                                .child(
-                                    text("复制诊断")
-                                        .text_size(px(11.0))
-                                        .text_color(palette::muted()),
-                                ),
-                        )
-                }
-                JobPhase::Idle | JobPhase::Cancelled => {
-                    let scale =
-                        scale_from_filename(&store.selected_model.get()).unwrap_or(2) as u32;
-                    let (fname, dim_info) = if let Some(ref a) = active {
-                        let d = if a.width > 0 && a.height > 0 {
-                            format!(
-                                "{} × {}  →  {} × {}",
-                                a.width,
-                                a.height,
-                                a.width * scale,
-                                a.height * scale
+                JobPhase::Failed(err_msg) => view()
+                    .w_full()
+                    .flex_row()
+                    .items_center()
+                    .justify_between()
+                    .child(
+                        view()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(10.0))
+                            .child(view().size(px(6.0)).rounded_full().bg(palette::error()))
+                            .child(
+                                view()
+                                    .h(px(20.0))
+                                    .px(px(6.0))
+                                    .rounded(px(4.0))
+                                    .bg(palette::error_dim_bg())
+                                    .border_1()
+                                    .border_color(palette::error_dim_border())
+                                    .items_center()
+                                    .justify_center()
+                                    .child(
+                                        text("ERR")
+                                            .text_size(px(10.0))
+                                            .font_family(FONT_MONO)
+                                            .text_color(palette::error()),
+                                    ),
                             )
-                        } else {
-                            format!("预计放大 {scale}×")
-                        };
-                        (a.filename.clone(), d)
-                    } else {
-                        (String::new(), format!("预计放大 {scale}×"))
-                    };
-
+                            .child(
+                                text(err_msg)
+                                    .text_size(px(12.0))
+                                    .text_color(palette::on_surface()),
+                            ),
+                    )
+                    .child(
+                        view()
+                            .w(px(44.0))
+                            .h(px(24.0))
+                            .rounded(px(4.0))
+                            .bg(palette::container_low())
+                            .border_1()
+                            .border_color(palette::outline_input())
+                            .hover(|s| s.bg(palette::high()))
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .on_press(move || store.start_job())
+                            .child(
+                                text("重试")
+                                    .text_size(px(11.0))
+                                    .text_color(palette::on_surface()),
+                            ),
+                    ),
+                JobPhase::Idle | JobPhase::Cancelled => {
+                    let ready_str = format!("已就绪 · {} 项输入待处理", inputs.len());
                     view()
                         .w_full()
                         .flex_row()
                         .items_center()
                         .justify_between()
                         .child(
-                            view()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(8.0))
-                                .child(
-                                    text(fname)
-                                        .text_size(px(11.0))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(palette::on_surface()),
-                                )
-                                .child(text("·").text_size(px(11.0)).text_color(palette::dim()))
-                                .child(
-                                    text(dim_info)
-                                        .text_size(px(11.0))
-                                        .font_family(FONT_MONO)
-                                        .tabular_nums()
-                                        .text_color(palette::muted()),
-                                ),
-                        )
-                        .child(
-                            text(if matches!(phase, JobPhase::Cancelled) {
-                                "已取消"
-                            } else {
-                                "就绪"
-                            })
-                            .text_size(px(11.0))
-                            .text_color(palette::dim()),
+                            text(ready_str)
+                                .text_size(px(12.0))
+                                .text_color(palette::muted()),
                         )
                 }
             }
@@ -842,9 +825,9 @@ fn filmstrip_dock(store: Store, items: Vec<InputItem>) -> View {
         .count();
     let active_idx = store.active_input.get();
 
-    let mut row = view().flex_row().items_center().gap(px(8.0));
+    let mut row = view().flex_row().items_center().gap(px(6.0));
 
-    for (idx, item) in items.into_iter().enumerate().take(12) {
+    for (idx, item) in items.into_iter().enumerate().take(14) {
         let is_active = idx == active_idx;
         let border_col = if is_active {
             palette::primary()
@@ -852,7 +835,7 @@ fn filmstrip_dock(store: Store, items: Vec<InputItem>) -> View {
             match item.status {
                 ItemStatus::Done { .. } | ItemStatus::Running(_) => palette::primary_dim_border(),
                 ItemStatus::Failed(_) => palette::error(),
-                _ => palette::outline(),
+                _ => AdaptiveColor::rgb(0xD6D5CD, 0x25252D),
             }
         };
         let src = item.path.to_string_lossy().into_owned();
@@ -874,39 +857,50 @@ fn filmstrip_dock(store: Store, items: Vec<InputItem>) -> View {
         row = row.child(thumb);
     }
 
-    row = row.child(
-        view()
-            .size(px(40.0))
-            .rounded(px(6.0))
-            .bg(palette::container_low())
-            .border_1()
-            .border_color(palette::outline())
-            .hover(|s| s.bg(palette::high()))
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
-            .on_press(move || pick_image_files(store))
-            .child(svg_icon(crate::ui::icons::PLUS, 14.0, palette::muted())),
-    );
-
     view()
         .w_full()
         .h(px(54.0))
         .rounded(px(10.0))
         .bg(palette::surface())
         .border_1()
-        .border_color(palette::outline())
-        .px(px(10.0))
+        .border_color(AdaptiveColor::rgb(0xD6D5CD, 0x26262E))
+        .px(px(8.0))
         .flex_row()
         .items_center()
         .justify_between()
         .child(row)
         .child(
-            text(format!("{done} / {total}"))
-                .text_size(px(11.0))
-                .font_family(FONT_MONO)
-                .tabular_nums()
-                .text_color(palette::muted()),
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(10.0))
+                .child(
+                    text(format!("{done} / {total}"))
+                        .text_size(px(11.0))
+                        .font_family(FONT_MONO)
+                        .tabular_nums()
+                        .text_color(palette::dim()),
+                )
+                .child(
+                    view()
+                        .w(px(1.0))
+                        .h(px(18.0))
+                        .bg(AdaptiveColor::rgb(0xD6D5CD, 0x26262E)),
+                )
+                .child(
+                    view()
+                        .size(px(28.0))
+                        .rounded(px(6.0))
+                        .bg(AdaptiveColor::rgb(0xECEBE6, 0x202027))
+                        .border_1()
+                        .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2E2E38))
+                        .hover(|s| s.bg(palette::high()))
+                        .items_center()
+                        .justify_center()
+                        .cursor_pointer()
+                        .on_press(move || pick_image_files(store))
+                        .child(svg_icon(crate::ui::icons::PLUS, 12.0, palette::muted())),
+                ),
         )
 }
 
@@ -915,51 +909,40 @@ fn inspector_column(store: Store) -> View {
         .w(px(308.0))
         .h_full()
         .bg(palette::bg())
-        .border_l_1()
-        .border_color(palette::outline())
         .relative()
         .flex_col()
         .justify_between()
-        // Scrollable controls column
+        // Scrollable controls column (inner width 276px with 16px padding)
         .child(
             scroll()
                 .flex_1()
                 .w_full()
                 .p(px(16.0))
                 .flex_col()
-                .gap(px(14.0))
+                .gap(px(18.0))
                 // ── Section 1: 模型 ──
                 .child(
                     view()
                         .w_full()
                         .flex_col()
-                        .gap(px(8.0))
+                        .gap(px(10.0))
                         .child(section_header("模型"))
                         .child(model_picker_trigger(store)),
                 )
-                .child(hairline())
                 // ── Section 2: 输出 ──
                 .child(
                     view()
                         .w_full()
                         .flex_col()
-                        .gap(px(10.0))
+                        .gap(px(12.0))
                         .child(section_header("输出"))
-                        .child(
-                            view()
-                                .w_full()
-                                .flex_row()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    text("格式")
-                                        .text_size(px(12.0))
-                                        .text_color(palette::muted()),
-                                ),
-                        )
                         .child(dynamic(move || {
                             segmented(
                                 &[
+                                    SegmentItem {
+                                        value: OutputFormat::Follow,
+                                        label: "跟随",
+                                    },
                                     SegmentItem {
                                         value: OutputFormat::Png,
                                         label: "PNG",
@@ -988,7 +971,7 @@ fn inspector_column(store: Store) -> View {
                                 view()
                                     .w_full()
                                     .flex_col()
-                                    .gap(px(6.0))
+                                    .gap(px(8.0))
                                     .child(
                                         view()
                                             .w_full()
@@ -996,247 +979,297 @@ fn inspector_column(store: Store) -> View {
                                             .items_center()
                                             .justify_between()
                                             .child(
-                                                text("编码质量")
-                                                    .text_size(px(12.0))
-                                                    .text_color(palette::muted()),
+                                                text("质量")
+                                                    .text_size(px(14.0))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .text_color(palette::on_surface()),
                                             )
                                             .child(
-                                                text(move || format!("{}%", store.quality.get()))
-                                                    .text_size(px(12.0))
-                                                    .font_weight(FontWeight::SEMIBOLD)
+                                                text(move || store.quality.get().to_string())
+                                                    .text_size(px(13.0))
+                                                    .font_weight(FontWeight::MEDIUM)
                                                     .font_family(FONT_MONO)
                                                     .tabular_nums()
-                                                    .text_color(palette::primary()),
+                                                    .text_color(palette::on_surface()),
                                             ),
                                     )
                                     .child(
-                                        nsh_base::slider()
-                                            .min(1.0)
-                                            .max(100.0)
-                                            .step(1.0)
-                                            .value(move || {
-                                                Some(nsh_base::SliderValue::Single(
-                                                    store.quality.get() as f64,
-                                                ))
-                                            })
-                                            .on_change(move |v: &nsh_base::SliderValue| {
-                                                store.quality.set(v.start().round() as i32)
-                                            })
-                                            .track_style(|s| s.h(px(6.0)).bg(palette::recessed()))
-                                            .indicator_style(|s| s.bg(palette::primary()))
-                                            .thumb_style(|s| {
-                                                s.size(px(14.0))
-                                                    .bg(palette::primary())
-                                                    .border_1()
-                                                    .border_color(palette::surface())
-                                            }),
+                                        view()
+                                            .w_full()
+                                            .flex_col()
+                                            .gap(px(3.0))
+                                            .child(
+                                                nsh_base::slider()
+                                                    .min(1.0)
+                                                    .max(100.0)
+                                                    .step(1.0)
+                                                    .value(move || {
+                                                        Some(nsh_base::SliderValue::Single(
+                                                            store.quality.get() as f64,
+                                                        ))
+                                                    })
+                                                    .on_change(move |v: &nsh_base::SliderValue| {
+                                                        store.quality.set(v.start().round() as i32)
+                                                    })
+                                                    .track_style(|s| {
+                                                        s.h(px(2.0)).bg(palette::outline_input())
+                                                    })
+                                                    .indicator_style(|s| s.bg(palette::primary()))
+                                                    .thumb_style(|s| {
+                                                        s.size(px(12.0))
+                                                            .bg(palette::bg())
+                                                            .border(px(2.5))
+                                                            .border_color(palette::primary())
+                                                    }),
+                                            )
+                                            // 5 Tick marks underneath (Figma: 1x3px #3A3A44)
+                                            .child(
+                                                view()
+                                                    .w_full()
+                                                    .px(px(1.0))
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .justify_between()
+                                                    .child(
+                                                        view()
+                                                            .w(px(1.0))
+                                                            .h(px(3.0))
+                                                            .bg(AdaptiveColor::rgb(0xBEBDB4, 0x3A3A44)),
+                                                    )
+                                                    .child(
+                                                        view()
+                                                            .w(px(1.0))
+                                                            .h(px(3.0))
+                                                            .bg(AdaptiveColor::rgb(0xBEBDB4, 0x3A3A44)),
+                                                    )
+                                                    .child(
+                                                        view()
+                                                            .w(px(1.0))
+                                                            .h(px(3.0))
+                                                            .bg(AdaptiveColor::rgb(0xBEBDB4, 0x3A3A44)),
+                                                    )
+                                                    .child(
+                                                        view()
+                                                            .w(px(1.0))
+                                                            .h(px(3.0))
+                                                            .bg(AdaptiveColor::rgb(0xBEBDB4, 0x3A3A44)),
+                                                    )
+                                                    .child(
+                                                        view()
+                                                            .w(px(1.0))
+                                                            .h(px(3.0))
+                                                            .bg(AdaptiveColor::rgb(0xBEBDB4, 0x3A3A44)),
+                                                    ),
+                                            ),
                                     )
                             },
                         ))
-                        // Chroma subsampling (when AVIF or JPG)
+                        // Chroma subsampling (when AVIF or JPG — Figma 73:1931: inline row, 14px label + 164x28 2-way segmented)
                         .child(when(
                             move || store.format.get().supports_chroma(),
                             move || {
                                 view()
                                     .w_full()
-                                    .flex_col()
-                                    .gap(px(6.0))
+                                    .h(px(28.0))
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
                                     .child(
                                         text("色度抽样")
-                                            .text_size(px(12.0))
-                                            .text_color(palette::muted()),
+                                            .text_size(px(14.0))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(palette::on_surface()),
                                     )
-                                    .child(dynamic(move || {
-                                        segmented(
-                                            &[
-                                                SegmentItem {
-                                                    value: ChromaSubsampling::Yuv420,
-                                                    label: "4:2:0",
-                                                },
-                                                SegmentItem {
-                                                    value: ChromaSubsampling::Yuv422,
-                                                    label: "4:2:2",
-                                                },
-                                                SegmentItem {
-                                                    value: ChromaSubsampling::Yuv444,
-                                                    label: "4:4:4",
-                                                },
-                                            ],
-                                            store.chroma.get(),
-                                            move |v| store.chroma.set(v),
-                                        )
-                                    }))
+                                    .child(
+                                        view().w(px(164.0)).child(dynamic(move || {
+                                            segmented_sized(
+                                                &[
+                                                    SegmentItem {
+                                                        value: ChromaSubsampling::Yuv420,
+                                                        label: "4:2:0",
+                                                    },
+                                                    SegmentItem {
+                                                        value: ChromaSubsampling::Yuv444,
+                                                        label: "4:4:4",
+                                                    },
+                                                ],
+                                                store.chroma.get(),
+                                                28.0,
+                                                12.0,
+                                                move |v| store.chroma.set(v),
+                                            )
+                                        })),
+                                    )
                             },
                         ))
-                        // AVIF speed (when AVIF)
+                        // AVIF speed (when AVIF — Figma 73:1931: inline row, 14px label + 164x28 3-way segmented)
                         .child(when(
                             move || store.format.get() == OutputFormat::Avif,
                             move || {
                                 view()
                                     .w_full()
-                                    .flex_col()
-                                    .gap(px(6.0))
+                                    .h(px(28.0))
+                                    .flex_row()
+                                    .items_center()
+                                    .justify_between()
                                     .child(
                                         text("编码速度")
-                                            .text_size(px(12.0))
-                                            .text_color(palette::muted()),
+                                            .text_size(px(14.0))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(palette::on_surface()),
                                     )
-                                    .child(dynamic(move || {
-                                        segmented(
-                                            &[
-                                                SegmentItem {
-                                                    value: 4,
-                                                    label: "精细",
-                                                },
-                                                SegmentItem {
-                                                    value: 6,
-                                                    label: "均衡",
-                                                },
-                                                SegmentItem {
-                                                    value: 8,
-                                                    label: "快速",
-                                                },
-                                            ],
-                                            store.avif_speed.get(),
-                                            move |v| store.avif_speed.set(v),
-                                        )
-                                    }))
+                                    .child(
+                                        view().w(px(164.0)).child(dynamic(move || {
+                                            segmented_sized(
+                                                &[
+                                                    SegmentItem {
+                                                        value: 4,
+                                                        label: "精细",
+                                                    },
+                                                    SegmentItem {
+                                                        value: 6,
+                                                        label: "均衡",
+                                                    },
+                                                    SegmentItem {
+                                                        value: 8,
+                                                        label: "快速",
+                                                    },
+                                                ],
+                                                store.avif_speed.get(),
+                                                28.0,
+                                                12.0,
+                                                move |v| store.avif_speed.set(v),
+                                            )
+                                        })),
+                                    )
                             },
                         ))
-                        // Export location
+                        // Export location (Figma: 13px #ececee, gap 8px, box 34px #16161a border #282830 radius 8px)
                         .child(
                             view()
                                 .w_full()
                                 .flex_col()
-                                .gap(px(6.0))
+                                .gap(px(8.0))
                                 .child(
                                     text("导出位置")
-                                        .text_size(px(12.0))
-                                        .text_color(palette::muted()),
+                                        .text_size(px(13.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(palette::on_surface()),
                                 )
                                 .child(output_dir_box(store)),
                         ),
                 )
-                .child(hairline())
                 // ── Section 3: 引擎与处理 ──
                 .child(
                     view()
                         .w_full()
                         .flex_col()
-                        .gap(px(10.0))
+                        .gap(px(12.0))
                         .child(section_header("引擎与处理"))
-                        // Compute device
+                        // Compute device (inline row: 14px #ececee + 164x28 segmented GPU/CPU)
                         .child(
                             view()
                                 .w_full()
-                                .flex_col()
-                                .gap(px(6.0))
+                                .h(px(28.0))
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
                                 .child(
                                     text("计算设备")
-                                        .text_size(px(12.0))
-                                        .text_color(palette::muted()),
+                                        .text_size(px(14.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(palette::on_surface()),
                                 )
-                                .child(dynamic(move || {
-                                    segmented(
-                                        &[
-                                            SegmentItem {
-                                                value: true,
-                                                label: "GPU (Vulkan)",
-                                            },
-                                            SegmentItem {
-                                                value: false,
-                                                label: "CPU",
-                                            },
-                                        ],
-                                        store.use_gpu.get(),
-                                        move |v| store.use_gpu.set(v),
-                                    )
-                                })),
+                                .child(
+                                    view().w(px(164.0)).child(dynamic(move || {
+                                        segmented_sized(
+                                            &[
+                                                SegmentItem {
+                                                    value: true,
+                                                    label: "GPU",
+                                                },
+                                                SegmentItem {
+                                                    value: false,
+                                                    label: "CPU",
+                                                },
+                                            ],
+                                            store.use_gpu.get(),
+                                            28.0,
+                                            12.0,
+                                            move |v| store.use_gpu.set(v),
+                                        )
+                                    })),
+                                ),
                         )
-                        // Tile size
+                        // Tile size (inline row: 14px #ececee + 164x28 segmented 自动/512/256/128)
                         .child(
                             view()
                                 .w_full()
-                                .flex_col()
-                                .gap(px(6.0))
+                                .h(px(28.0))
+                                .flex_row()
+                                .items_center()
+                                .justify_between()
                                 .child(
-                                    view()
-                                        .w_full()
-                                        .flex_row()
-                                        .items_center()
-                                        .justify_between()
-                                        .child(
-                                            text("分块尺寸")
-                                                .text_size(px(12.0))
-                                                .text_color(palette::muted()),
-                                        )
-                                        .child(
-                                            text(move || {
-                                                let t = store.tile_size.get();
-                                                if t == 0 {
-                                                    "自动".to_string()
-                                                } else {
-                                                    format!("{t} px")
-                                                }
-                                            })
-                                            .text_size(px(11.0))
-                                            .font_family(FONT_MONO)
-                                            .text_color(palette::dim()),
-                                        ),
+                                    text("分块尺寸")
+                                        .text_size(px(14.0))
+                                        .font_weight(FontWeight::MEDIUM)
+                                        .text_color(palette::on_surface()),
                                 )
-                                .child(dynamic(move || {
-                                    segmented(
-                                        &[
-                                            SegmentItem {
-                                                value: 0,
-                                                label: "自动",
-                                            },
-                                            SegmentItem {
-                                                value: 512,
-                                                label: "512",
-                                            },
-                                            SegmentItem {
-                                                value: 256,
-                                                label: "256",
-                                            },
-                                            SegmentItem {
-                                                value: 128,
-                                                label: "128",
-                                            },
-                                        ],
-                                        store.tile_size.get(),
-                                        move |v| store.tile_size.set(v),
-                                    )
-                                })),
+                                .child(
+                                    view().w(px(164.0)).child(dynamic(move || {
+                                        segmented_sized(
+                                            &[
+                                                SegmentItem {
+                                                    value: 0,
+                                                    label: "自动",
+                                                },
+                                                SegmentItem {
+                                                    value: 512,
+                                                    label: "512",
+                                                },
+                                                SegmentItem {
+                                                    value: 256,
+                                                    label: "256",
+                                                },
+                                                SegmentItem {
+                                                    value: 128,
+                                                    label: "128",
+                                                },
+                                            ],
+                                            store.tile_size.get(),
+                                            28.0,
+                                            12.0,
+                                            move |v| store.tile_size.set(v),
+                                        )
+                                    })),
+                                ),
                         )
-                        // Warm daemon toggle
+                        // Warm daemon toggle (inline row: 14px #ececee + 44x26 toggle)
                         .child(dynamic(move || {
                             toggle_row(
                                 "常驻热引擎",
-                                "后台保活模型，消除冷启动",
+                                "",
                                 store.daemon_running.get(),
                                 move |v| store.toggle_daemon(v),
                             )
                         }))
-                        // Force overwrite toggle
+                        // Force overwrite toggle (inline row: 14px #ececee + 44x26 toggle)
                         .child(dynamic(move || {
                             toggle_row(
                                 "覆盖已有结果",
-                                "忽略已超分标记，强制重跑",
+                                "",
                                 store.force.get(),
                                 move |v| store.force.set(v),
                             )
                         })),
                 ),
         )
-        // Bottom sticky CTA bar
+        // Bottom sticky CTA bar (16px padding, no top border in Figma)
         .child(
             view()
                 .w_full()
-                .p(px(16.0))
-                .pt(px(10.0))
-                .border_t_1()
-                .border_color(palette::outline())
+                .px(px(16.0))
+                .pb(px(16.0))
                 .child(inspector_cta_button(store)),
         )
         // Floating model picker popup
@@ -1249,8 +1282,7 @@ fn inspector_column(store: Store) -> View {
 fn model_picker_trigger(store: Store) -> AnyElement {
     dynamic(move || {
         let is_open = store.show_model_picker.get();
-        let model_name = store.selected_model.get();
-        let scale = scale_from_filename(&model_name).unwrap_or(2);
+        let cur = store.current_model_variant();
 
         view()
             .w_full()
@@ -1261,20 +1293,35 @@ fn model_picker_trigger(store: Store) -> AnyElement {
             .items_center()
             .justify_between()
             .cursor_pointer()
-            .bg(palette::container_low())
+            .bg(AdaptiveColor::rgb(0xFFFFFF, 0x18181D))
             .border_1()
             .border_color(if is_open {
-                palette::primary_dim_border()
+                palette::primary()
             } else {
-                palette::outline_input()
+                AdaptiveColor::rgb(0xCECDC5, 0x2D2D36)
             })
-            .hover(|s| s.bg(palette::high()))
+            .hover(|s| s.bg(palette::container()))
             .on_press(move || store.show_model_picker.update(|v| *v = !*v))
             .child(
-                text(model_name)
-                    .text_size(px(12.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .text_color(palette::on_surface()),
+                view()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        text(cur.short_name)
+                            .text_size(px(13.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .font_family(FONT_MONO)
+                            .text_color(palette::on_surface()),
+                    )
+                    .child(if cur.recommended {
+                        text("★")
+                            .text_size(px(11.0))
+                            .text_color(palette::on_surface())
+                            .into_element()
+                    } else {
+                        view().into_element()
+                    }),
             )
             .child(
                 view()
@@ -1283,28 +1330,28 @@ fn model_picker_trigger(store: Store) -> AnyElement {
                     .gap(px(6.0))
                     .child(
                         view()
-                            .h(px(18.0))
+                            .h(px(20.0))
                             .px(px(6.0))
                             .rounded(px(4.0))
-                            .bg(palette::primary_dim_bg())
+                            .bg(AdaptiveColor::rgb(0xEFECE6, 0x1C1C22))
                             .border_1()
-                            .border_color(palette::primary_dim_border())
+                            .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2E2E37))
                             .items_center()
                             .justify_center()
                             .child(
-                                text(format!("{scale}×"))
-                                    .text_size(px(10.0))
-                                    .font_weight(FontWeight::SEMIBOLD)
+                                text(format!("{}×", cur.scale))
+                                    .text_size(px(11.0))
+                                    .font_weight(FontWeight::MEDIUM)
                                     .font_family(FONT_MONO)
                                     .tabular_nums()
-                                    .text_color(palette::primary()),
+                                    .text_color(palette::muted()),
                             ),
                     )
-                    .child(
-                        text("▾")
-                            .text_size(px(11.0))
-                            .text_color(palette::muted()),
-                    ),
+                    .child(svg_icon(
+                        crate::ui::icons::CHEVRON_DOWN,
+                        14.0,
+                        palette::muted(),
+                    )),
             )
     })
 }
@@ -1315,41 +1362,42 @@ fn model_picker_popup(store: Store) -> View {
         .top(px(82.0))
         .left(px(16.0))
         .right(px(16.0))
-        .h(px(340.0))
-        .rounded(px(10.0))
-        .bg(palette::container_low())
+        .h(px(268.0))
+        .rounded(px(8.0))
+        .bg(AdaptiveColor::rgb(0xFFFFFF, 0x1C1C22))
         .border_1()
         .border_color(palette::outline_strong())
         .shadow_lg()
-        .p(px(8.0))
+        .p(px(4.0))
         .flex_col()
-        .gap(px(6.0))
-        // Search box
+        .gap(px(2.0))
+        // Search box (34px, #1a1a1f, bottom border #7fdac9)
         .child(
             view()
                 .w_full()
-                .h(px(30.0))
+                .h(px(34.0))
                 .rounded(px(6.0))
-                .bg(palette::recessed())
-                .border_1()
-                .border_color(palette::outline())
-                .px(px(8.0))
+                .bg(AdaptiveColor::rgb(0xEAE9E4, 0x1A1A1F))
+                .border_b_1()
+                .border_color(palette::primary())
+                .px(px(10.0))
                 .flex_row()
                 .items_center()
-                .gap(px(6.0))
+                .gap(px(8.0))
+                .child(svg_icon(crate::ui::icons::SEARCH, 14.0, palette::muted()))
                 .child(
                     input()
                         .flex_1()
-                        .placeholder("搜索已安装模型...")
+                        .placeholder("搜索模型…")
                         .value(move || store.picker_search.get())
                         .on_change(move |v: &str| store.picker_search.set(v.to_owned()))
-                        .text_size(px(11.0))
+                        .text_size(px(12.0))
                         .text_color(palette::on_surface())
                         .bg(AdaptiveColor::TRANSPARENT)
                         .border(px(0.0)),
                 ),
         )
-        // Scrollable model list
+        // Scrollable 42px model rows
         .child(
             scroll()
                 .flex_1()
@@ -1371,20 +1419,35 @@ fn model_picker_popup(store: Store) -> View {
                             }
                             let is_sel = m.name == current;
                             let name_sel = m.name.clone();
-                            let short = short_name(&m.name);
+                            let sub_meta = format!(
+                                "{} · x{}",
+                                if m.size_bytes > 0 {
+                                    human_bytes(m.size_bytes)
+                                } else {
+                                    "—".into()
+                                },
+                                m.scale
+                            );
 
                             col = col.child(
                                 view()
                                     .w_full()
-                                    .h(px(30.0))
+                                    .h(px(42.0))
                                     .rounded(px(6.0))
-                                    .px(px(8.0))
+                                    .px(px(10.0))
+                                    .py(px(6.0))
                                     .flex_row()
                                     .items_center()
                                     .justify_between()
                                     .cursor_pointer()
                                     .bg(if is_sel {
-                                        palette::seg_selected()
+                                        AdaptiveColor::rgb(0xE3E2DC, 0x26262F)
+                                    } else {
+                                        AdaptiveColor::TRANSPARENT
+                                    })
+                                    .border_1()
+                                    .border_color(if is_sel {
+                                        AdaptiveColor::rgb(0xC5C4BC, 0x343440)
                                     } else {
                                         AdaptiveColor::TRANSPARENT
                                     })
@@ -1395,79 +1458,35 @@ fn model_picker_popup(store: Store) -> View {
                                     })
                                     .child(
                                         view()
-                                            .flex_row()
-                                            .items_center()
-                                            .gap(px(6.0))
+                                            .flex_col()
+                                            .gap(px(2.0))
                                             .child(
-                                                text(format!("{} · {short}", g.title))
+                                                text(m.name)
+                                                    .text_size(px(12.0))
+                                                    .font_weight(FontWeight::MEDIUM)
+                                                    .font_family(FONT_MONO)
+                                                    .text_color(palette::on_surface()),
+                                            )
+                                            .child(
+                                                text(sub_meta)
                                                     .text_size(px(11.0))
-                                                    .font_weight(if is_sel {
-                                                        FontWeight::SEMIBOLD
-                                                    } else {
-                                                        FontWeight::MEDIUM
-                                                    })
-                                                    .text_color(if is_sel {
-                                                        palette::primary()
-                                                    } else {
-                                                        palette::on_surface()
-                                                    }),
-                                            )
-                                            .child(if m.recommended {
-                                                text("★")
-                                                    .text_size(px(10.0))
-                                                    .text_color(palette::star_gold())
-                                                    .into_element()
-                                            } else {
-                                                view().into_element()
-                                            }),
-                                    )
-                                    .child(
-                                        view()
-                                            .flex_row()
-                                            .items_center()
-                                            .gap(px(6.0))
-                                            .child(
-                                                text(format!("{}×", m.scale))
-                                                    .text_size(px(10.0))
                                                     .font_family(FONT_MONO)
-                                                    .tabular_nums()
-                                                    .text_color(palette::muted()),
-                                            )
-                                            .child(
-                                                text(human_bytes(m.size_bytes))
-                                                    .text_size(px(10.0))
-                                                    .font_family(FONT_MONO)
-                                                    .tabular_nums()
-                                                    .text_color(palette::dim()),
+                                                    .text_color(AdaptiveColor::rgb(0x706F68, 0x8E8E9A)),
                                             ),
-                                    ),
+                                    )
+                                    .child(if is_sel {
+                                        view()
+                                            .size(px(6.0))
+                                            .rounded_full()
+                                            .bg(palette::primary())
+                                    } else {
+                                        view()
+                                    }),
                             );
                         }
                     }
                     col
                 })),
-        )
-        // Bottom link to Models tab
-        .child(
-            view()
-                .w_full()
-                .h(px(28.0))
-                .rounded(px(6.0))
-                .border_t_1()
-                .border_color(palette::outline())
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .hover(|s| s.bg(palette::high()))
-                .on_press(move || {
-                    store.show_model_picker.set(false);
-                    store.nav.set(NavTab::Models);
-                })
-                .child(
-                    text("管理与下载更多模型 →")
-                        .text_size(px(11.0))
-                        .text_color(palette::primary()),
-                ),
         )
 }
 
@@ -1486,12 +1505,13 @@ fn output_dir_box(store: Store) -> AnyElement {
 
         view()
             .w_full()
-            .h(px(32.0))
-            .rounded(px(7.0))
-            .bg(palette::container_low())
+            .h(px(34.0))
+            .rounded(px(8.0))
+            .bg(AdaptiveColor::rgb(0xEAE9E4, 0x16161A))
             .border_1()
-            .border_color(palette::outline_input())
-            .px(px(10.0))
+            .border_color(palette::outline())
+            .pl(px(10.0))
+            .pr(px(4.0))
             .flex_row()
             .items_center()
             .justify_between()
@@ -1501,44 +1521,35 @@ fn output_dir_box(store: Store) -> AnyElement {
                     .items_center()
                     .gap(px(6.0))
                     .overflow_hidden()
-                    .child(svg_icon(crate::ui::icons::FOLDER, 13.0, palette::muted()))
+                    .child(svg_icon(
+                        crate::ui::icons::FOLDER,
+                        13.0,
+                        AdaptiveColor::rgb(0x706F68, 0x7E7E8A),
+                    ))
                     .child(
                         text(label)
-                            .text_size(px(11.0))
-                            .text_color(palette::on_surface()),
+                            .text_size(px(12.0))
+                            .text_color(AdaptiveColor::rgb(0x27272A, 0xD0D0D8)),
                     ),
             )
             .child(
                 view()
-                    .flex_row()
+                    .h(px(24.0))
+                    .px(px(8.0))
+                    .rounded(px(6.0))
+                    .bg(palette::container())
+                    .border_1()
+                    .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2E2E38))
+                    .hover(|s| s.bg(palette::high()))
                     .items_center()
-                    .gap(px(6.0))
-                    .child(if has_custom {
-                        view()
-                            .size(px(18.0))
-                            .rounded(px(4.0))
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(palette::high()))
-                            .on_press(move || store.custom_out_dir.set(None))
-                            .child(svg_icon(crate::ui::icons::CLOSE, 10.0, palette::dim()))
-                    } else {
-                        view()
-                    })
+                    .justify_center()
+                    .cursor_pointer()
+                    .on_press(move || pick_export_folder(store))
                     .child(
-                        view()
-                            .px(px(6.0))
-                            .py(px(2.0))
-                            .rounded(px(4.0))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(palette::high()))
-                            .on_press(move || pick_export_folder(store))
-                            .child(
-                                text(if has_custom { "更改" } else { "指定…" })
-                                    .text_size(px(11.0))
-                                    .text_color(palette::primary()),
-                            ),
+                        text(if has_custom { "更改" } else { "指定…" })
+                            .text_size(px(11.0))
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(palette::muted()),
                     ),
             )
     })
@@ -1552,29 +1563,56 @@ fn inspector_cta_button(store: Store) -> AnyElement {
         match phase {
             JobPhase::Running { .. } => view()
                 .w_full()
-                .h(px(38.0))
-                .rounded(px(6.0))
-                .bg(palette::container_low())
+                .h(px(44.0))
+                .rounded(px(8.0))
+                .bg(palette::error_dim_bg())
                 .border_1()
-                .border_color(palette::outline_input())
+                .border_color(palette::error_dim_border())
                 .hover(|s| s.bg(palette::high()))
+                .flex_row()
                 .items_center()
                 .justify_center()
+                .gap(px(8.0))
                 .cursor_pointer()
                 .on_press(move || store.cancel_job())
                 .child(
-                    text("取消超分  Ctrl+.")
-                        .text_size(px(13.0))
-                        .font_weight(FontWeight::SEMIBOLD)
-                        .text_color(palette::on_surface()),
+                    view()
+                        .size(px(9.0))
+                        .rounded(px(2.0))
+                        .bg(palette::error()),
+                )
+                .child(
+                    text("取消超分")
+                        .text_size(px(14.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .text_color(palette::error()),
+                )
+                .child(
+                    view()
+                        .w(px(44.0))
+                        .h(px(18.0))
+                        .rounded(px(4.0))
+                        .bg(AdaptiveColor::rgb(0xFCE9E7, 0x2A181A))
+                        .border_1()
+                        .border_color(AdaptiveColor::rgb(0xE8B4AE, 0x4A2528))
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            text("Ctrl+.")
+                                .text_size(px(10.0))
+                                .font_family(FONT_MONO)
+                                .text_color(AdaptiveColor::rgb(0xC23A2B, 0xFF897A)),
+                        ),
                 ),
-            _ => {
+            JobPhase::Done { .. } => primary_button("重新超分", true, move || store.start_job()),
+            JobPhase::Failed(_) => primary_button("继续超分", true, move || store.start_job()),
+            _ => primary_button("开始超分", true, move || {
                 if has_inputs {
-                    primary_button("开始超分", true, move || store.start_job())
+                    store.start_job();
                 } else {
-                    primary_button("选择图片开始", true, move || pick_image_files(store))
+                    pick_image_files(store);
                 }
-            }
+            }),
         }
     })
 }

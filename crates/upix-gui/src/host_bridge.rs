@@ -235,7 +235,7 @@ fn run_mock_host(
     }
 }
 
-fn local_ip_hint() -> String {
+pub fn local_ip_hint() -> String {
     #[cfg(target_os = "linux")]
     {
         if let Ok(out) = std::process::Command::new("hostname").arg("-I").output()
@@ -252,6 +252,29 @@ fn local_ip_hint() -> String {
         }
     }
     "127.0.0.1".to_owned()
+}
+
+/// Returns initial `(fingerprint, pubkey_b64, ips)` before the host service starts.
+pub fn initial_host_identity() -> (String, String, Vec<String>) {
+    #[cfg(feature = "integration")]
+    {
+        if let Ok(identity) =
+            upix_net::Identity::load_or_create(&upix_net::identity::default_identity_path())
+        {
+            let fp = identity.fingerprint();
+            let pk = base64::engine::general_purpose::STANDARD.encode(identity.public_key());
+            let mut ips: Vec<String> = upix_net::local_ips()
+                .into_iter()
+                .filter(|addr| !addr.is_loopback())
+                .map(|addr| addr.to_string())
+                .collect();
+            if ips.is_empty() {
+                ips.push(local_ip_hint());
+            }
+            return (fp, pk, ips);
+        }
+    }
+    ("EC61F2B66D4C25C4".to_string(), String::new(), vec![local_ip_hint()])
 }
 
 // ── Real host (integration feature) ─────────────────────────────────────

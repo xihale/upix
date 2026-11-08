@@ -1,4 +1,4 @@
-//! Navigation tabs for the 76px left rail (`desktop/src/main.cpp` `NavTab`).
+//! Navigation tabs for the 76px left rail (`desktop/src/main.cpp` `renderNavRail`).
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavTab {
@@ -12,17 +12,17 @@ impl NavTab {
 
     pub fn label(self) -> &'static str {
         match self {
-            NavTab::Workbench => "工作台",
-            NavTab::Models => "模型库",
-            NavTab::Host => "远程主机",
+            NavTab::Workbench => "放大",
+            NavTab::Models => "模型",
+            NavTab::Host => "远程",
         }
     }
 
     pub fn icon_svg(self) -> &'static str {
         match self {
-            NavTab::Workbench => crate::ui::icons::WORKBENCH,
-            NavTab::Models => crate::ui::icons::MODELS,
-            NavTab::Host => crate::ui::icons::HOST,
+            NavTab::Workbench => crate::ui::icons::ZOOM_IN,
+            NavTab::Models => crate::ui::icons::LAYERS,
+            NavTab::Host => crate::ui::icons::SMARTPHONE,
         }
     }
 }

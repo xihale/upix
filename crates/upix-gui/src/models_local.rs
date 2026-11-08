@@ -101,62 +101,79 @@ fn build_groups_from_stems(
     installed_set: &HashSet<String>,
 ) -> Vec<ModelGroup> {
     let raw_groups = upix_core::model_families::groups(stems);
-    raw_groups
-        .into_iter()
-        .map(|g| {
-            let variants: Vec<ModelVariant> = g
-                .items
-                .into_iter()
-                .map(|it| {
-                    let param_path = dir.join(format!("{}.param", it.name));
-                    let bin_path = dir.join(format!("{}.bin", it.name));
-                    let size_bytes = std::fs::metadata(&param_path)
-                        .map(|m| m.len())
-                        .unwrap_or(0)
-                        + std::fs::metadata(&bin_path)
-                            .map(|m| m.len())
-                            .unwrap_or(0);
-                    let scale = scale_from_filename(&it.name).unwrap_or(2);
-                    let meta = upix_core::model_metadata::classify_model_scene(&it.name);
-                    let installed = installed_set.contains(&it.name);
-                    ModelVariant {
-                        name: it.name,
-                        short_name: it.short_name,
-                        scale,
-                        scene: meta.scene,
-                        recommended: meta.recommended,
-                        installed,
-                        param_path,
-                        bin_path,
-                        size_bytes,
-                    }
-                })
-                .collect();
+    let mut out = Vec::new();
+    let mut orphans = Vec::new();
 
+    for g in raw_groups {
+        let variants: Vec<ModelVariant> = g
+            .items
+            .into_iter()
+            .map(|it| {
+                let param_path = dir.join(format!("{}.param", it.name));
+                let bin_path = dir.join(format!("{}.bin", it.name));
+                let size_bytes = std::fs::metadata(&param_path)
+                    .map(|m| m.len())
+                    .unwrap_or(0)
+                    + std::fs::metadata(&bin_path)
+                        .map(|m| m.len())
+                        .unwrap_or(0);
+                let scale = scale_from_filename(&it.name).unwrap_or(2);
+                let meta = upix_core::model_metadata::classify_model_scene(&it.name);
+                let installed = installed_set.contains(&it.name);
+                ModelVariant {
+                    name: it.name,
+                    short_name: it.short_name,
+                    scale,
+                    scene: meta.scene,
+                    recommended: meta.recommended,
+                    installed,
+                    param_path,
+                    bin_path,
+                    size_bytes,
+                }
+            })
+            .collect();
+
+        if variants.is_empty() {
+            continue;
+        }
+
+        if g.label.is_empty() {
+            orphans.extend(variants);
+        } else {
             let first_scene = variants
                 .first()
                 .map(|v| v.scene.clone())
                 .unwrap_or_default();
             let any_recommended = variants.iter().any(|v| v.recommended);
-            let title = if g.label.is_empty() {
-                variants
-                    .first()
-                    .map(|v| v.name.clone())
-                    .unwrap_or_default()
-            } else {
-                g.label
-            };
-            let summary = format!("{} 个倍率变体", variants.len());
-
-            ModelGroup {
-                title,
+            let summary = format!("{} 款", variants.len());
+            out.push(ModelGroup {
+                title: g.label,
                 summary,
                 scene: first_scene,
                 recommended: any_recommended,
                 items: variants,
-            }
-        })
-        .collect()
+            });
+        }
+    }
+
+    if !orphans.is_empty() {
+        let first_scene = orphans
+            .first()
+            .map(|v| v.scene.clone())
+            .unwrap_or_default();
+        let any_recommended = orphans.iter().any(|v| v.recommended);
+        let summary = format!("{} 款", orphans.len());
+        out.push(ModelGroup {
+            title: "独立模型".to_string(),
+            summary,
+            scene: first_scene,
+            recommended: any_recommended,
+            items: orphans,
+        });
+    }
+
+    out
 }
 
 #[cfg(not(feature = "integration"))]

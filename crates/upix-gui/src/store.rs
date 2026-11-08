@@ -193,19 +193,21 @@ impl Store {
             }
         };
 
+        let (init_fp, init_pk, init_ips) = crate::host_bridge::initial_host_identity();
+
         Self {
             nav: signal(NavTab::Workbench),
 
             inputs: signal(Vec::new()),
             active_input: signal(0),
-            split_pos: signal(0.5),
+            split_pos: signal(0.545),
 
             selected_model: signal(default_model),
             show_model_picker: signal(false),
             picker_search: signal(String::new()),
 
-            format: signal(OutputFormat::Png),
-            quality: signal(92),
+            format: signal(OutputFormat::Follow),
+            quality: signal(90),
             chroma: signal(ChromaSubsampling::Yuv420),
             avif_speed: signal(6),
             custom_out_dir: signal(None),
@@ -237,10 +239,10 @@ impl Store {
             host_running: signal(false),
             host_port: signal(9527),
             host_auto_approve: signal(false),
-            host_ips: signal(vec!["127.0.0.1".into()]),
+            host_ips: signal(init_ips),
             host_ip_idx: signal(0),
-            host_fingerprint: signal("----------------".into()),
-            host_pubkey_b64: signal(String::new()),
+            host_fingerprint: signal(init_fp),
+            host_pubkey_b64: signal(init_pk),
             host_qr_payload: signal(String::new()),
             host_qr_uri: signal(String::new()),
             host_logs: signal(Vec::new()),

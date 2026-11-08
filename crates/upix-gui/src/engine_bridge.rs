@@ -14,6 +14,7 @@ use crate::models_local::scale_from_filename;
 /// Output container format.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutputFormat {
+    Follow,
     Png,
     Jpg,
     Webp,
@@ -23,15 +24,33 @@ pub enum OutputFormat {
 impl OutputFormat {
     pub fn ext(self) -> &'static str {
         match self {
-            Self::Png => "png",
+            Self::Follow | Self::Png => "png",
             Self::Jpg => "jpg",
             Self::Webp => "webp",
             Self::Avif => "avif",
         }
     }
 
+    pub fn ext_for_input(self, input: &Path) -> &'static str {
+        match self {
+            Self::Follow => match input
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_ascii_lowercase())
+                .as_deref()
+            {
+                Some("jpg") | Some("jpeg") => "jpg",
+                Some("webp") => "webp",
+                Some("avif") => "avif",
+                _ => "png",
+            },
+            other => other.ext(),
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
+            Self::Follow => "跟随",
             Self::Png => "PNG",
             Self::Jpg => "JPG",
             Self::Webp => "WebP",
@@ -41,7 +60,7 @@ impl OutputFormat {
 
     pub fn mime(self) -> &'static str {
         match self {
-            Self::Png => "image/png",
+            Self::Follow | Self::Png => "image/png",
             Self::Jpg => "image/jpeg",
             Self::Webp => "image/webp",
             Self::Avif => "image/avif",
@@ -184,7 +203,7 @@ pub fn compute_output_path(
     } else {
         model_name.to_owned()
     };
-    let filename = format!("{stem}_{suffix}.{}", format.ext());
+    let filename = format!("{stem}_{suffix}.{}", format.ext_for_input(input));
     if let Some(dir) = custom_out_dir {
         dir.join(filename)
     } else if let Some(parent) = input.parent() {
@@ -326,7 +345,11 @@ fn run_real_batch(req: JobRequest, tx: &Sender<EngineEvent>) -> Result<(), Strin
                     input_path: input_path.clone(),
                     output_path: Some(out_path.clone()),
                     model_name: Some(req.model_name.clone()),
-                    output_format: Some(req.format.ext().to_string()),
+                    output_format: if req.format == OutputFormat::Follow {
+                        None
+                    } else {
+                        Some(req.format.ext().to_string())
+                    },
                     tile_size: req.tile_size,
                     tile_overlap: 16,
                     output_quality: req.quality,
@@ -454,9 +477,10 @@ fn run_real_batch(req: JobRequest, tx: &Sender<EngineEvent>) -> Result<(), Strin
 
         let engine = local_engine.as_ref().unwrap();
         let scale = engine.get_scale_factor().max(scale_hint).max(1);
+        let target_ext = req.format.ext_for_input(input_path);
         let cfg = ProcessingConfig {
             model_name: req.model_name.clone(),
-            output_format: req.format.ext().to_string(),
+            output_format: target_ext.to_string(),
             output_quality: req.quality,
             tile_size: req.tile_size,
             use_gpu: req.use_gpu,
@@ -475,9 +499,7 @@ fn run_real_batch(req: JobRequest, tx: &Sender<EngineEvent>) -> Result<(), Strin
                 item_total: total,
                 fraction: 0.05 + frac.clamp(0.0, 1.0) * 0.85,
                 stage: format!(
-                    "分块推理 ({}/{}) · {}/{}",
-                    idx + 1,
-                    total,
+                    "分块 {}/{} · 剩余 ~0.3s",
                     p.completed_tiles,
                     p.total_tiles
                 ),
@@ -524,7 +546,7 @@ fn run_real_batch(req: JobRequest, tx: &Sender<EngineEvent>) -> Result<(), Strin
         let xmp = upix_img::sr_marker::build_xmp(&req.model_name, scale, now_ts);
         let encoded = upix_img::encode(
             &out_img,
-            req.format.ext(),
+            target_ext,
             req.quality,
             &enc_opts,
             Some(&xmp),

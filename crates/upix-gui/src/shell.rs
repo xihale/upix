@@ -1,5 +1,5 @@
 //! Top-level application shell: 76px left navigation rail (`desktop/src/main.cpp`),
-//! active page viewport, and global pairing approval modal.
+//! active page viewport, and global pairing approval modal (`83:3762`).
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -72,7 +72,7 @@ pub fn shell(store: Store) -> View {
 }
 
 fn nav_rail(store: Store) -> View {
-    let mut items_col = view().w_full().flex_col().items_center().gap(px(6.0));
+    let mut items_col = view().w_full().flex_col().items_center().gap(px(2.0));
 
     for tab in NavTab::ALL {
         items_col = items_col.child(dynamic(move || {
@@ -83,16 +83,10 @@ fn nav_rail(store: Store) -> View {
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .gap(px(5.0))
+                .gap(px(3.0))
                 .cursor_pointer()
                 .bg(if selected {
                     palette::high()
-                } else {
-                    AdaptiveColor::TRANSPARENT
-                })
-                .border_1()
-                .border_color(if selected {
-                    palette::outline_strong()
                 } else {
                     AdaptiveColor::TRANSPARENT
                 })
@@ -106,7 +100,7 @@ fn nav_rail(store: Store) -> View {
                 .on_press(move || store.nav.set(tab))
                 .child(svg_icon(
                     tab.icon_svg(),
-                    18.0,
+                    20.0,
                     if selected {
                         palette::primary()
                     } else {
@@ -116,11 +110,7 @@ fn nav_rail(store: Store) -> View {
                 .child(
                     text(tab.label())
                         .text_size(px(11.0))
-                        .font_weight(if selected {
-                            FontWeight::SEMIBOLD
-                        } else {
-                            FontWeight::MEDIUM
-                        })
+                        .font_weight(FontWeight::MEDIUM)
                         .text_color(if selected {
                             palette::on_surface()
                         } else {
@@ -133,20 +123,19 @@ fn nav_rail(store: Store) -> View {
     view()
         .w(px(76.0))
         .h_full()
-        .py(px(12.0))
+        .pt(px(12.0))
+        .pb(px(16.0))
         .flex_col()
         .items_center()
         .justify_between()
         .bg(palette::bg())
-        .border_r_1()
-        .border_color(palette::outline())
         .child(items_col)
         .child(
-            text("0.3.0")
+            text("0.2.0")
                 .text_size(px(10.0))
-                .font_family(FONT_MONO)
+                .font_weight(FontWeight::MEDIUM)
                 .tabular_nums()
-                .text_color(palette::dim()),
+                .text_color(palette::muted()),
         )
 }
 
@@ -155,8 +144,8 @@ fn pairing_modal_overlay(store: Store) -> View {
         .host_pending_approval
         .get()
         .unwrap_or(ApprovalRequest {
-            device: "Android 设备".to_string(),
-            fingerprint: "0000000000000000".to_string(),
+            device: "Pixel 9 Pro".to_string(),
+            fingerprint: "EC61F2B66D4C25C4".to_string(),
         });
     let groups = split_fp_groups(&info.fingerprint);
 
@@ -173,16 +162,16 @@ fn pairing_modal_overlay(store: Store) -> View {
                 .rounded(px(6.0))
                 .bg(palette::surface())
                 .border_1()
-                .border_color(palette::primary_dim_border())
+                .border_color(palette::outline_strong())
                 .items_center()
                 .justify_center()
                 .child(
                     text(g)
                         .text_size(px(13.0))
-                        .font_weight(FontWeight::BOLD)
+                        .font_weight(FontWeight::MEDIUM)
                         .font_family(FONT_MONO)
                         .tabular_nums()
-                        .text_color(palette::primary()),
+                        .text_color(palette::on_surface()),
                 ),
         );
     }
@@ -190,7 +179,7 @@ fn pairing_modal_overlay(store: Store) -> View {
     view()
         .absolute()
         .inset(px(0.0))
-        .bg(AdaptiveColor::rgb(0x000000, 0x000000).opacity(0.65))
+        .bg(AdaptiveColor::rgb(0x08080B, 0x08080B).opacity(0.72))
         .items_center()
         .justify_center()
         .child(
@@ -202,77 +191,65 @@ fn pairing_modal_overlay(store: Store) -> View {
                 .border_1()
                 .border_color(palette::outline_strong())
                 .shadow_xl()
-                .p(px(20.0))
+                .pt(px(24.0))
+                .pb(px(18.0))
+                .px(px(22.0))
                 .flex_col()
                 .justify_between()
-                // Header row
+                // Header row (centered: 28x28 smartphone badge + device name 15px mono + PAIR pill)
                 .child(
                     view()
                         .w_full()
                         .flex_row()
                         .items_center()
-                        .justify_between()
+                        .justify_center()
+                        .gap(px(10.0))
                         .child(
                             view()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(10.0))
-                                .child(
-                                    view()
-                                        .size(px(34.0))
-                                        .rounded(px(8.0))
-                                        .bg(palette::primary_dim_bg())
-                                        .border_1()
-                                        .border_color(palette::primary_dim_border())
-                                        .items_center()
-                                        .justify_center()
-                                        .child(svg_icon(
-                                            crate::ui::icons::HOST,
-                                            16.0,
-                                            palette::primary(),
-                                        )),
-                                )
-                                .child(
-                                    view()
-                                        .flex_col()
-                                        .gap(px(2.0))
-                                        .child(
-                                            text(info.device)
-                                                .text_size(px(13.0))
-                                                .font_weight(FontWeight::SEMIBOLD)
-                                                .text_color(palette::on_surface()),
-                                        )
-                                        .child(
-                                            text("请求配对连接 · TLS 1.3")
-                                                .text_size(px(11.0))
-                                                .text_color(palette::muted()),
-                                        ),
-                                ),
-                        )
-                        .child(
-                            view()
-                                .h(px(20.0))
-                                .px(px(6.0))
-                                .rounded(px(4.0))
+                                .size(px(28.0))
+                                .rounded(px(7.0))
                                 .bg(palette::primary_dim_bg())
                                 .border_1()
                                 .border_color(palette::primary_dim_border())
                                 .items_center()
                                 .justify_center()
+                                .child(svg_icon(
+                                    crate::ui::icons::SMARTPHONE,
+                                    15.0,
+                                    palette::primary(),
+                                )),
+                        )
+                        .child(
+                            text(info.device)
+                                .text_size(px(15.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .font_family(FONT_MONO)
+                                .text_color(palette::on_surface()),
+                        )
+                        .child(
+                            view()
+                                .w(px(38.0))
+                                .h(px(20.0))
+                                .rounded(px(4.0))
+                                .bg(palette::high())
+                                .border_1()
+                                .border_color(palette::outline_strong())
+                                .items_center()
+                                .justify_center()
                                 .child(
                                     text("PAIR")
-                                        .text_size(px(10.0))
-                                        .font_weight(FontWeight::BOLD)
+                                        .text_size(px(10.5))
+                                        .font_weight(FontWeight::MEDIUM)
                                         .font_family(FONT_MONO)
-                                        .text_color(palette::primary()),
+                                        .text_color(palette::muted()),
                                 ),
                         ),
                 )
-                // Fingerprint verification well
+                // Fingerprint verification well (336x84, #151519, border #282830, radius 10px)
                 .child(
                     view()
                         .w_full()
-                        .h(px(82.0))
+                        .h(px(84.0))
                         .rounded(px(10.0))
                         .bg(palette::recessed())
                         .border_1()
@@ -283,12 +260,12 @@ fn pairing_modal_overlay(store: Store) -> View {
                         .gap(px(8.0))
                         .child(
                             text("核对设备指纹一致")
-                                .text_size(px(10.0))
-                                .text_color(palette::dim()),
+                                .text_size(px(11.5))
+                                .text_color(palette::muted()),
                         )
                         .child(pills_row),
                 )
-                // Action buttons row
+                // Action buttons row (116x38 "拒绝 Esc" + 10px gap + 210x38 "允许连接")
                 .child(
                     view()
                         .w_full()
@@ -297,28 +274,36 @@ fn pairing_modal_overlay(store: Store) -> View {
                         .gap(px(10.0))
                         .child(
                             view()
-                                .flex_1()
-                                .h(px(36.0))
+                                .w(px(116.0))
+                                .h(px(38.0))
                                 .rounded(px(8.0))
-                                .bg(palette::container_low())
+                                .bg(palette::container())
                                 .border_1()
-                                .border_color(palette::outline_input())
+                                .border_color(palette::outline_strong())
                                 .hover(|s| s.bg(palette::high()))
+                                .flex_row()
                                 .items_center()
                                 .justify_center()
+                                .gap(px(6.0))
                                 .cursor_pointer()
                                 .on_press(move || store.answer_approval(ApprovalReply::Deny))
                                 .child(
-                                    text("拒绝  Esc")
-                                        .text_size(px(12.0))
+                                    text("拒绝")
+                                        .text_size(px(13.0))
                                         .font_weight(FontWeight::MEDIUM)
                                         .text_color(palette::on_surface()),
+                                )
+                                .child(
+                                    text("Esc")
+                                        .text_size(px(11.5))
+                                        .font_family(FONT_MONO)
+                                        .text_color(palette::dim()),
                                 ),
                         )
                         .child(
                             view()
-                                .flex_1()
-                                .h(px(36.0))
+                                .w(px(210.0))
+                                .h(px(38.0))
                                 .rounded(px(8.0))
                                 .bg(palette::primary())
                                 .hover(|s| s.bg(palette::primary_hover()))
@@ -327,9 +312,9 @@ fn pairing_modal_overlay(store: Store) -> View {
                                 .cursor_pointer()
                                 .on_press(move || store.answer_approval(ApprovalReply::Allow))
                                 .child(
-                                    text("信任并允许")
-                                        .text_size(px(12.0))
-                                        .font_weight(FontWeight::BOLD)
+                                    text("允许连接")
+                                        .text_size(px(13.0))
+                                        .font_weight(FontWeight::MEDIUM)
                                         .text_color(palette::on_primary()),
                                 ),
                         ),
