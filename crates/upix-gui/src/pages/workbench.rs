@@ -15,7 +15,8 @@ use crate::models_local::{human_bytes, scale_from_filename};
 use crate::store::{file_uri_path, InputItem, ItemStatus, JobPhase, Store};
 use crate::theme::{palette, FONT_MONO};
 use crate::ui::{
-    primary_button, section_header, segmented, segmented_sized, svg_icon, toggle_row, SegmentItem,
+    primary_button, section_header, segmented, segmented_sized, svg_icon, toggle_row,
+    toggle_switch, SegmentItem,
 };
 
 pub const POS_MIN: f32 = 0.02;
@@ -1244,14 +1245,68 @@ fn inspector_column(store: Store) -> View {
                                     })),
                                 ),
                         )
-                        // Warm daemon toggle (inline row: 14px #ececee + 44x26 toggle)
+                        // Warm daemon toggle (inline row: 14px #ececee + loading/active badge + 44x26 toggle)
                         .child(dynamic(move || {
-                            toggle_row(
-                                "常驻热引擎",
-                                "",
-                                store.daemon_running.get(),
-                                move |v| store.toggle_daemon(v),
-                            )
+                            let running = store.daemon_running.get();
+                            let loading = store.daemon_loading.get();
+                            let frame_idx =
+                                ((store.spinner_tick.get() / 2) as usize) % crate::ui::icons::LOADER_FRAMES.len();
+
+                            let status_badge = if loading {
+                                view()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(5.0))
+                                    .child(svg_icon(
+                                        crate::ui::icons::LOADER_FRAMES[frame_idx],
+                                        13.0,
+                                        palette::primary(),
+                                    ))
+                                    .child(
+                                        text("预热中")
+                                            .text_size(px(11.0))
+                                            .font_family(FONT_MONO)
+                                            .text_color(palette::primary()),
+                                    )
+                                    .into_element()
+                            } else if running {
+                                view()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(3.0))
+                                    .child(svg_icon(
+                                        crate::ui::icons::ZAP,
+                                        12.0,
+                                        palette::primary(),
+                                    ))
+                                    .into_element()
+                            } else {
+                                view().into_element()
+                            };
+
+                            view()
+                                .flex_row()
+                                .w_full()
+                                .min_h(px(28.0))
+                                .items_center()
+                                .justify_between()
+                                .gap(px(8.0))
+                                .child(
+                                    view()
+                                        .flex_row()
+                                        .items_center()
+                                        .gap(px(6.0))
+                                        .child(
+                                            text("常驻热引擎")
+                                                .text_size(px(14.0))
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(palette::on_surface()),
+                                        )
+                                        .child(status_badge),
+                                )
+                                .child(toggle_switch(running || loading, move |v| {
+                                    store.toggle_daemon(v)
+                                }))
                         }))
                         // Force overwrite toggle (inline row: 14px #ececee + 44x26 toggle)
                         .child(dynamic(move || {

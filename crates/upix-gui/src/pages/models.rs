@@ -355,6 +355,9 @@ fn model_row(store: Store, m: ModelVariant, is_installed_section: bool) -> View 
     let is_downloading = store.downloading_models.get().contains(&m.name);
     let is_selected = is_installed_section && store.selected_model.get() == m.name;
     let daemon_up = store.daemon_running.get();
+    let daemon_loading = store.daemon_loading.get();
+    let loader_frame =
+        ((store.spinner_tick.get() / 2) as usize) % crate::ui::icons::LOADER_FRAMES.len();
     let m_name = m.name.clone();
     let m_name_select = m.name.clone();
 
@@ -408,7 +411,14 @@ fn model_row(store: Store, m: ModelVariant, is_installed_section: bool) -> View 
                         } else {
                             view().into_element()
                         })
-                        .child(if is_selected && daemon_up {
+                        .child(if is_selected && daemon_loading {
+                            svg_icon(
+                                crate::ui::icons::LOADER_FRAMES[loader_frame],
+                                12.0,
+                                palette::primary(),
+                            )
+                            .into_element()
+                        } else if is_selected && daemon_up {
                             svg_icon(crate::ui::icons::ZAP, 11.5, palette::primary()).into_element()
                         } else {
                             view().into_element()

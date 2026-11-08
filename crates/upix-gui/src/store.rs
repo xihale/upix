@@ -99,6 +99,9 @@ pub struct Store {
     pub use_gpu: Signal<bool>,
     pub tile_size: Signal<i32>,
     pub daemon_running: Signal<bool>,
+    pub daemon_loading: Signal<bool>,
+    pub spinner_tick: Signal<u8>,
+    daemon_rx: Stored<Option<mpsc::Receiver<bool>>>,
     pub force: Signal<bool>,
 
     // Active job state
@@ -215,6 +218,9 @@ impl Store {
             use_gpu: signal(true),
             tile_size: signal(0),
             daemon_running: signal(daemon_initially_up),
+            daemon_loading: signal(false),
+            spinner_tick: signal(0),
+            daemon_rx: stored(None),
             force: signal(false),
 
             job_phase: signal(JobPhase::Idle),
@@ -418,10 +424,14 @@ impl Store {
     }
 
     pub fn toggle_daemon(self, enable: bool) {
+        if self.daemon_loading.get() {
+            return;
+        }
         #[cfg(feature = "integration")]
         {
             let sock = upix_host::serve::default_serve_socket_path();
             if enable {
+                self.daemon_loading.set(true);
                 let dir = self.models_dir.with(|d| d.clone());
                 let model = self.selected_model.get();
                 let dev = if self.use_gpu.get() {
@@ -429,25 +439,41 @@ impl Store {
                 } else {
                     upix_host::serve::ServeDevice::Cpu
                 };
-                let _ = upix_host::serve::ensure_running(
-                    &upix_host::transport_std::StdUdsFactory,
-                    &sock,
-                    &dir,
-                    &model,
-                    dev,
-                    1800,
-                    Duration::from_secs(6),
-                );
-                self.daemon_running
-                    .set(upix_host::serve::status(&sock).running);
+                let (tx, rx) = mpsc::channel();
+                let _ = self.daemon_rx.replace(Some(rx));
+                std::thread::spawn(move || {
+                    let _ = upix_host::serve::ensure_running(
+                        &upix_host::transport_std::StdUdsFactory,
+                        &sock,
+                        &dir,
+                        &model,
+                        dev,
+                        1800,
+                        Duration::from_secs(6),
+                    );
+                    let up = upix_host::serve::status(&sock).running;
+                    let _ = tx.send(up);
+                });
             } else {
                 let _ = upix_host::serve::stop(&sock);
                 self.daemon_running.set(false);
+                self.daemon_loading.set(false);
             }
         }
         #[cfg(not(feature = "integration"))]
         {
-            self.daemon_running.set(enable);
+            if enable {
+                self.daemon_loading.set(true);
+                let (tx, rx) = mpsc::channel();
+                let _ = self.daemon_rx.replace(Some(rx));
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(450));
+                    let _ = tx.send(true);
+                });
+            } else {
+                self.daemon_running.set(false);
+                self.daemon_loading.set(false);
+            }
         }
     }
 
@@ -602,6 +628,26 @@ impl Store {
         self.drain_job();
         self.drain_models();
         self.drain_host();
+        self.drain_daemon();
+    }
+
+    fn drain_daemon(self) {
+        if self.daemon_loading.get() {
+            self.spinner_tick.update(|t| *t = t.wrapping_add(1));
+        }
+        let mut finished = None;
+        self.daemon_rx.with(|slot| {
+            if let Some(rx) = slot {
+                while let Ok(up) = rx.try_recv() {
+                    finished = Some(up);
+                }
+            }
+        });
+        if let Some(up) = finished {
+            self.daemon_loading.set(false);
+            self.daemon_running.set(up);
+            let _ = self.daemon_rx.replace(None);
+        }
     }
 
     fn drain_job(self) {
