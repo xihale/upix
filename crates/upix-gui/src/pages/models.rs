@@ -8,7 +8,7 @@ use nsh_core::prelude::*;
 
 use crate::models_local::{human_bytes, ModelGroup, ModelVariant};
 use crate::store::Store;
-use crate::theme::{palette, FONT_MONO};
+use crate::theme::{palette, FONT_MONO, FONT_SANS};
 use crate::ui::{icon_button, segmented_sized, svg_icon, SegmentItem};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -87,11 +87,14 @@ pub fn models_page(store: Store) -> View {
                                                     input()
                                                         .flex_1()
                                                         .placeholder("搜索…")
+                                                        .placeholder_color(rgb(0xA2A2AC))
+                                                        .caret_color(rgb(0x7FDAC9))
                                                         .value(move || search_q.get())
                                                         .on_change(move |v: &str| {
                                                             search_q.set(v.to_owned())
                                                         })
                                                         .text_size(px(12.0))
+                                                        .font_family(FONT_SANS)
                                                         .text_color(palette::on_surface())
                                                         .bg(AdaptiveColor::TRANSPARENT)
                                                         .border(px(0.0)),
@@ -357,7 +360,7 @@ fn model_row(store: Store, m: ModelVariant, is_installed_section: bool) -> View 
     let daemon_up = store.daemon_running.get();
     let daemon_loading = store.daemon_loading.get();
     let loader_frame =
-        ((store.spinner_tick.get() / 2) as usize) % crate::ui::icons::LOADER_FRAMES.len();
+        (store.spinner_tick.get() as usize) % crate::ui::icons::LOADER_FRAMES.len();
     let m_name = m.name.clone();
     let m_name_select = m.name.clone();
 

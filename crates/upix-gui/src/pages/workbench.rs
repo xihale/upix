@@ -13,10 +13,10 @@ use nsh_core::prelude::*;
 use crate::engine_bridge::{ChromaSubsampling, OutputFormat};
 use crate::models_local::{human_bytes, scale_from_filename};
 use crate::store::{file_uri_path, InputItem, ItemStatus, JobPhase, Store};
-use crate::theme::{palette, FONT_MONO};
+use crate::theme::{palette, FONT_MONO, FONT_SANS};
 use crate::ui::{
-    primary_button, section_header, segmented, segmented_sized, svg_icon, toggle_row,
-    toggle_switch, SegmentItem,
+    primary_button, quality_slider, section_header, segmented, segmented_sized,
+    segmented_with_font, svg_icon, toggle_row, toggle_switch, SegmentItem,
 };
 
 pub const POS_MIN: f32 = 0.02;
@@ -994,75 +994,11 @@ fn inspector_column(store: Store) -> View {
                                                     .text_color(palette::on_surface()),
                                             ),
                                     )
-                                    .child(
-                                        view()
-                                            .w_full()
-                                            .flex_col()
-                                            .gap(px(3.0))
-                                            .child(
-                                                nsh_base::slider()
-                                                    .min(1.0)
-                                                    .max(100.0)
-                                                    .step(1.0)
-                                                    .value(move || {
-                                                        Some(nsh_base::SliderValue::Single(
-                                                            store.quality.get() as f64,
-                                                        ))
-                                                    })
-                                                    .on_change(move |v: &nsh_base::SliderValue| {
-                                                        store.quality.set(v.start().round() as i32)
-                                                    })
-                                                    .track_style(|s| {
-                                                        s.h(px(2.0)).bg(palette::outline_input())
-                                                    })
-                                                    .indicator_style(|s| s.bg(palette::primary()))
-                                                    .thumb_style(|s| {
-                                                        s.size(px(12.0))
-                                                            .bg(palette::bg())
-                                                            .border(px(2.5))
-                                                            .border_color(palette::primary())
-                                                    }),
-                                            )
-                                            // 5 Tick marks underneath (Figma: 1x3px #3A3A44)
-                                            .child(
-                                                view()
-                                                    .w_full()
-                                                    .px(px(1.0))
-                                                    .flex_row()
-                                                    .items_center()
-                                                    .justify_between()
-                                                    .child(
-                                                        view()
-                                                            .w(px(1.0))
-                                                            .h(px(3.0))
-                                                            .bg(AdaptiveColor::rgb(0xBEBDB4, 0x3A3A44)),
-                                                    )
-                                                    .child(
-                                                        view()
-                                                            .w(px(1.0))
-                                                            .h(px(3.0))
-                                                            .bg(AdaptiveColor::rgb(0xBEBDB4, 0x3A3A44)),
-                                                    )
-                                                    .child(
-                                                        view()
-                                                            .w(px(1.0))
-                                                            .h(px(3.0))
-                                                            .bg(AdaptiveColor::rgb(0xBEBDB4, 0x3A3A44)),
-                                                    )
-                                                    .child(
-                                                        view()
-                                                            .w(px(1.0))
-                                                            .h(px(3.0))
-                                                            .bg(AdaptiveColor::rgb(0xBEBDB4, 0x3A3A44)),
-                                                    )
-                                                    .child(
-                                                        view()
-                                                            .w(px(1.0))
-                                                            .h(px(3.0))
-                                                            .bg(AdaptiveColor::rgb(0xBEBDB4, 0x3A3A44)),
-                                                    ),
-                                            ),
-                                    )
+                                    .child(dynamic(move || {
+                                        quality_slider(store.quality.get(), 1, 100, move |v| {
+                                            store.quality.set(v)
+                                        })
+                                    }))
                             },
                         ))
                         // Chroma subsampling (when AVIF or JPG — Figma 73:1931: inline row, 14px label + 164x28 2-way segmented)
@@ -1083,7 +1019,7 @@ fn inspector_column(store: Store) -> View {
                                     )
                                     .child(
                                         view().w(px(164.0)).child(dynamic(move || {
-                                            segmented_sized(
+                                            segmented_with_font(
                                                 &[
                                                     SegmentItem {
                                                         value: ChromaSubsampling::Yuv420,
@@ -1097,6 +1033,7 @@ fn inspector_column(store: Store) -> View {
                                                 store.chroma.get(),
                                                 28.0,
                                                 12.0,
+                                                true,
                                                 move |v| store.chroma.set(v),
                                             )
                                         })),
@@ -1250,7 +1187,7 @@ fn inspector_column(store: Store) -> View {
                             let running = store.daemon_running.get();
                             let loading = store.daemon_loading.get();
                             let frame_idx =
-                                ((store.spinner_tick.get() / 2) as usize) % crate::ui::icons::LOADER_FRAMES.len();
+                                (store.spinner_tick.get() as usize) % crate::ui::icons::LOADER_FRAMES.len();
 
                             let status_badge = if loading {
                                 view()
@@ -1444,9 +1381,12 @@ fn model_picker_popup(store: Store) -> View {
                     input()
                         .flex_1()
                         .placeholder("搜索模型…")
+                        .placeholder_color(rgb(0xA2A2AC))
+                        .caret_color(rgb(0x7FDAC9))
                         .value(move || store.picker_search.get())
                         .on_change(move |v: &str| store.picker_search.set(v.to_owned()))
                         .text_size(px(12.0))
+                        .font_family(FONT_SANS)
                         .text_color(palette::on_surface())
                         .bg(AdaptiveColor::TRANSPARENT)
                         .border(px(0.0)),

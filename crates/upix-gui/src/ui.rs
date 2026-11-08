@@ -74,13 +74,28 @@ pub fn segmented_sized<T: Copy + PartialEq + 'static>(
     font_size_px: f32,
     on_change: impl Fn(T) + Clone + 'static,
 ) -> View {
+    segmented_with_font(items, current, height_px, font_size_px, false, on_change)
+}
+
+/// Segmented control with custom height, font size, and optional monospace font (`FONT_MONO`).
+pub fn segmented_with_font<T: Copy + PartialEq + 'static>(
+    items: &[SegmentItem<'_, T>],
+    current: T,
+    height_px: f32,
+    font_size_px: f32,
+    mono: bool,
+    on_change: impl Fn(T) + Clone + 'static,
+) -> View {
     let active_idx = items.iter().position(|it| it.value == current).unwrap_or(0);
 
+    // Note: in Taffy `border-box`, `border_1()` consumes 1px on each side, so `p(px(1.0))`
+    // yields the exact 2px total inset (e.g. 24px active pill inside a 28px outer track)
+    // specified in Figma "Desktop / Segmented", avoiding a 3px double-ring gap.
     let mut row = view()
         .flex_row()
         .w_full()
         .h(px(height_px))
-        .p(px(2.0))
+        .p(px(1.0))
         .items_center()
         .rounded(px(8.0))
         .bg(palette::recessed())
@@ -99,11 +114,25 @@ pub fn segmented_sized<T: Copy + PartialEq + 'static>(
                 view()
                     .w(px(1.0))
                     .h(px(12.0))
+                    .flex_shrink_0()
                     .bg(AdaptiveColor::rgb(0xD6D5CD, 0x282832)),
             );
         }
 
-        let btn = view()
+        let mut lbl_text = text(lbl)
+            .text_size(px(font_size_px))
+            .font_weight(FontWeight::MEDIUM)
+            .tabular_nums()
+            .text_color(if selected {
+                palette::on_surface()
+            } else {
+                palette::muted()
+            });
+        if mono {
+            lbl_text = lbl_text.font_family(FONT_MONO);
+        }
+
+        let mut btn = view()
             .flex_1()
             .h_full()
             .rounded(px(6.0))
@@ -114,13 +143,13 @@ pub fn segmented_sized<T: Copy + PartialEq + 'static>(
                 palette::seg_selected()
             } else {
                 AdaptiveColor::TRANSPARENT
-            })
-            .border_1()
-            .border_color(if selected {
-                palette::seg_border()
-            } else {
-                AdaptiveColor::TRANSPARENT
-            })
+            });
+
+        if selected {
+            btn = btn.border_1().border_color(palette::seg_border());
+        }
+
+        btn = btn
             .hover(move |s| {
                 s.bg(if selected {
                     palette::seg_selected()
@@ -129,20 +158,117 @@ pub fn segmented_sized<T: Copy + PartialEq + 'static>(
                 })
             })
             .on_press(move || cb(val))
-            .child(
-                text(lbl)
-                    .text_size(px(font_size_px))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(if selected {
-                        palette::on_surface()
-                    } else {
-                        palette::muted()
-                    }),
-            );
+            .child(lbl_text);
         row = row.child(btn);
     }
 
     row
+}
+
+/// Quality slider with 5 tick marks matching Figma "Desktop / Slider / Quality" (`276x18`,
+/// `2px` track `#2D2D34`, `2px` `#7FDAC9` fill, `12x12` `#131316` thumb with `2.5px` `#7FDAC9` ring,
+/// and 5 `1x3px` `#3A3A44` ticks at `top: 13px`).
+pub fn quality_slider(
+    value: i32,
+    min_val: i32,
+    max_val: i32,
+    on_change: impl Fn(i32) + Clone + 'static,
+) -> View {
+    let slider_w = signal(276.0f32);
+    let drag_start_x = signal(0.0f32);
+    let range = (max_val - min_val).max(1) as f32;
+    let t = ((value - min_val) as f32 / range).clamp(0.0, 1.0);
+
+    let cb_grant = on_change.clone();
+    let cb_move = on_change;
+
+    let mut ticks_row = view()
+        .absolute()
+        .left(px(1.0))
+        .right(px(1.0))
+        .top(px(13.0))
+        .h(px(3.0))
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .pointer_events(PointerEvents::None);
+    for _ in 0..5 {
+        ticks_row = ticks_row.child(
+            view()
+                .w(px(1.0))
+                .h(px(3.0))
+                .bg(AdaptiveColor::rgb(0xBEBDB4, 0x3A3A44)),
+        );
+    }
+
+    view()
+        .w_full()
+        .h(px(18.0))
+        .relative()
+        .cursor_pointer()
+        .on_layout(move |b: &Bounds<Points>| {
+            slider_w.set(b.size.width.0.max(12.0));
+        })
+        .claim_touches(TouchClaim::on_start())
+        .keep_touches(true)
+        .on_responder_grant(move |e: &ResponderEvent| {
+            let x = e.location.x.0;
+            drag_start_x.set(x);
+            let w = slider_w.get().max(1.0);
+            let frac = (x / w).clamp(0.0, 1.0);
+            let next = (min_val as f32 + frac * range).round() as i32;
+            cb_grant(next.clamp(min_val, max_val));
+        })
+        .on_responder_move(move |e: &ResponderEvent| {
+            let x = drag_start_x.get() + e.gesture.delta.x.0;
+            let w = slider_w.get().max(1.0);
+            let frac = (x / w).clamp(0.0, 1.0);
+            let next = (min_val as f32 + frac * range).round() as i32;
+            cb_move(next.clamp(min_val, max_val));
+        })
+        // 2px track background at y = 8px
+        .child(
+            view()
+                .absolute()
+                .left(px(0.0))
+                .right(px(0.0))
+                .top(px(8.0))
+                .h(px(2.0))
+                .rounded(px(1.0))
+                .bg(palette::outline_input())
+                .pointer_events(PointerEvents::None),
+        )
+        // 2px active progress fill at y = 8px
+        .child(
+            view()
+                .absolute()
+                .left(px(0.0))
+                .top(px(8.0))
+                .h(px(2.0))
+                .w(move || px((slider_w.get() * t).round()))
+                .rounded(px(1.0))
+                .bg(palette::primary())
+                .pointer_events(PointerEvents::None),
+        )
+        // 5 tick marks at top = 13px
+        .child(ticks_row)
+        // 12x12 thumb centered on (t * width, y = 9px)
+        .child(
+            view()
+                .absolute()
+                .top(px(3.0))
+                .left(move || {
+                    let w = slider_w.get().max(12.0);
+                    let cx = (t * w).clamp(6.0, w - 6.0);
+                    px((cx - 6.0).round())
+                })
+                .size(px(12.0))
+                .rounded_full()
+                .bg(palette::bg())
+                .border(px(2.5))
+                .border_color(palette::primary())
+                .pointer_events(PointerEvents::None),
+        )
 }
 
 /// Square icon button matching `iconButton` in `ui_widgets.hpp`.

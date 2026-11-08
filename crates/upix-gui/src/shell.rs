@@ -16,9 +16,19 @@ use crate::theme::{palette, FONT_MONO};
 use crate::ui::svg_icon;
 
 pub fn shell(store: Store) -> View {
-    // 50ms interval to drain background job, catalog, and host channels
-    set_interval(Duration::from_millis(50), move || {
-        store.drain();
+    // Adaptive background channel loop: only ticks at 80ms when a background job,
+    // daemon warmup, model download, or remote host server is active; sleeps when idle
+    // so the UI process uses 0% CPU and does not churn memory while waiting for user input.
+    spawn(async move {
+        loop {
+            store.drain();
+            let delay = if store.has_background_activity() {
+                Duration::from_millis(80)
+            } else {
+                Duration::from_millis(800)
+            };
+            timer(delay).await;
+        }
     });
 
     // Global keyboard shortcuts matching `desktop/src/main.cpp`
@@ -59,10 +69,18 @@ pub fn shell(store: Store) -> View {
                 .flex_1()
                 .h_full()
                 .overflow_hidden()
-                .child(dynamic(move || match store.nav.get() {
-                    NavTab::Workbench => workbench_page(store).into_element(),
-                    NavTab::Models => models_page(store).into_element(),
-                    NavTab::Host => host_page(store).into_element(),
+                .child(dynamic(move || {
+                    let page = match store.nav.get() {
+                        NavTab::Workbench => workbench_page(store).into_element(),
+                        NavTab::Models => models_page(store).into_element(),
+                        NavTab::Host => host_page(store).into_element(),
+                    };
+                    #[cfg(target_os = "linux")]
+                    std::thread::spawn(|| {
+                        std::thread::sleep(std::time::Duration::from_millis(250));
+                        crate::evict_file_backed_font_pages();
+                    });
+                    page
                 })),
         )
         .child(when(

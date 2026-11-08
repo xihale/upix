@@ -158,14 +158,17 @@ pub trait JobBackend: Send + Sync {
 
 /// Probes image dimensions without keeping decoded pixels in memory.
 pub fn probe_dimensions(path: &Path) -> Option<(u32, u32)> {
+    let bytes = std::fs::read(path).ok()?;
+    if let Some(dims) = probe_header_dims(&bytes) {
+        return Some(dims);
+    }
     #[cfg(feature = "integration")]
     {
         if let Ok((img, _)) = upix_img::decode_path(path) {
             return Some((img.width as u32, img.height as u32));
         }
     }
-    let bytes = std::fs::read(path).ok()?;
-    probe_header_dims(&bytes)
+    None
 }
 
 fn probe_header_dims(bytes: &[u8]) -> Option<(u32, u32)> {
@@ -174,6 +177,62 @@ fn probe_header_dims(bytes: &[u8]) -> Option<(u32, u32)> {
         let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
         let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
         return Some((w, h));
+    }
+    // WebP RIFF
+    if bytes.len() >= 30 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WEBP" {
+        match &bytes[12..16] {
+            b"VP8 " if bytes.len() >= 30 && bytes[23] == 0x9d && bytes[24] == 0x01 && bytes[25] == 0x2a => {
+                let w = (u16::from_le_bytes([bytes[26], bytes[27]]) & 0x3fff) as u32;
+                let h = (u16::from_le_bytes([bytes[28], bytes[29]]) & 0x3fff) as u32;
+                return Some((w, h));
+            }
+            b"VP8L" if bytes.len() >= 25 && bytes[20] == 0x2f => {
+                let bits = u32::from_le_bytes([bytes[21], bytes[22], bytes[23], bytes[24]]);
+                let w = (bits & 0x3fff) + 1;
+                let h = ((bits >> 14) & 0x3fff) + 1;
+                return Some((w, h));
+            }
+            b"VP8X" if bytes.len() >= 30 => {
+                let w = (u32::from_le_bytes([bytes[24], bytes[25], bytes[26], 0]) & 0xffffff) + 1;
+                let h = (u32::from_le_bytes([bytes[27], bytes[28], bytes[29], 0]) & 0xffffff) + 1;
+                return Some((w, h));
+            }
+            _ => {}
+        }
+    }
+    // JPEG SOF0..SOF3
+    if bytes.len() >= 4 && bytes[0] == 0xff && bytes[1] == 0xd8 {
+        let mut i = 2;
+        while i + 8 < bytes.len() {
+            if bytes[i] != 0xff {
+                i += 1;
+                continue;
+            }
+            while i < bytes.len() && bytes[i] == 0xff {
+                i += 1;
+            }
+            if i + 7 >= bytes.len() {
+                break;
+            }
+            let marker = bytes[i];
+            i += 1;
+            if marker == 0xd9 || marker == 0xda {
+                break;
+            }
+            if (0xd0..=0xd7).contains(&marker) || marker == 0x01 {
+                continue;
+            }
+            let seg_len = u16::from_be_bytes([bytes[i], bytes[i + 1]]) as usize;
+            if seg_len < 2 || i + seg_len > bytes.len() {
+                break;
+            }
+            if matches!(marker, 0xc0..=0xc3 | 0xc5..=0xc7 | 0xc9..=0xcb | 0xcd..=0xcf) && seg_len >= 7 {
+                let h = u16::from_be_bytes([bytes[i + 3], bytes[i + 4]]) as u32;
+                let w = u16::from_be_bytes([bytes[i + 5], bytes[i + 6]]) as u32;
+                return Some((w, h));
+            }
+            i += seg_len;
+        }
     }
     None
 }

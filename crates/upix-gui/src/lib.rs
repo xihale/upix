@@ -19,6 +19,47 @@ use nsh_core::prelude::*;
 
 use crate::store::Store;
 
+#[cfg(target_os = "linux")]
+pub fn evict_file_backed_font_pages() {
+    const MADV_DONTNEED: i32 = 4;
+    unsafe extern "C" {
+        fn madvise(addr: *mut std::ffi::c_void, len: usize, advice: i32) -> i32;
+        fn malloc_trim(pad: usize) -> i32;
+    }
+
+    let Ok(maps) = std::fs::read_to_string("/proc/self/maps") else {
+        return;
+    };
+    for line in maps.lines() {
+        if !(line.ends_with(".ttc") || line.ends_with(".ttf") || line.ends_with(".otf")) {
+            continue;
+        }
+        let mut parts = line.split_whitespace();
+        let Some(range) = parts.next() else { continue };
+        let Some(perms) = parts.next() else { continue };
+        if !perms.starts_with("r--") {
+            continue;
+        }
+        let Some((start_hex, end_hex)) = range.split_once('-') else {
+            continue;
+        };
+        let (Ok(start), Ok(end)) = (
+            usize::from_str_radix(start_hex, 16),
+            usize::from_str_radix(end_hex, 16),
+        ) else {
+            continue;
+        };
+        if end > start {
+            unsafe {
+                let _ = madvise(start as *mut std::ffi::c_void, end - start, MADV_DONTNEED);
+            }
+        }
+    }
+    unsafe {
+        let _ = malloc_trim(0);
+    }
+}
+
 /// The app's UI set (`nsh.json` `"rust"`): what a TSX entry may import from
 /// `upix-gui/native`.
 #[native_module("upix-gui/native")]
@@ -52,5 +93,6 @@ pub fn App() -> impl IntoElement {
         .flex_1()
         .bg(crate::theme::palette::bg())
         .text_color(crate::theme::palette::text())
+        .font_family(crate::theme::FONT_SANS)
         .child(shell::shell(store))
 }

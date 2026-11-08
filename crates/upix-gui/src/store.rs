@@ -622,7 +622,20 @@ impl Store {
         self.host_trusted.set(Vec::new());
     }
 
-    // ── Background channel drain (called by 50ms timer in shell) ────────────
+    // ── Background channel drain ────────────────────────────────────────────
+
+    /// Returns true when any background worker (job, daemon warmup, catalog download, or host)
+    /// is actively producing events or animating.
+    pub fn has_background_activity(self) -> bool {
+        self.daemon_loading.get_untracked()
+            || matches!(
+                self.job_phase.get_untracked(),
+                JobPhase::Running { .. }
+            )
+            || self.remote_loading.get_untracked()
+            || !self.downloading_models.with_untracked(|s| s.is_empty())
+            || self.host_running.get_untracked()
+    }
 
     pub fn drain(self) {
         self.drain_job();
@@ -632,7 +645,7 @@ impl Store {
     }
 
     fn drain_daemon(self) {
-        if self.daemon_loading.get() {
+        if self.daemon_loading.get_untracked() {
             self.spinner_tick.update(|t| *t = t.wrapping_add(1));
         }
         let mut finished = None;

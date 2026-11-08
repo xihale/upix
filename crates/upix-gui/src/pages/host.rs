@@ -465,6 +465,7 @@ fn port_input_box(store: Store) -> View {
         .child(
             input()
                 .flex_1()
+                .caret_color(rgb(0x7FDAC9))
                 .value(move || store.host_port.get().to_string())
                 .on_change(move |v: &str| {
                     if let Ok(p) = v.trim().parse::<u16>() {
@@ -475,6 +476,7 @@ fn port_input_box(store: Store) -> View {
                 })
                 .text_size(px(12.0))
                 .font_family(FONT_MONO)
+                .tabular_nums()
                 .text_color(palette::on_surface())
                 .bg(AdaptiveColor::TRANSPARENT)
                 .border(px(0.0)),
