@@ -40,7 +40,7 @@ target("upix-core")
     add_files(
         "core/*.cpp",
         "core/distributed/*.cpp",
-        "utils/*.cpp|unix_socket.cpp|android_utils.cpp"
+        "utils/*.cpp|android_utils.cpp"
     )
     add_asflags("-I" .. os.scriptdir() .. "/core")
 
@@ -49,10 +49,16 @@ target("upix-core")
         add_files("core/spirv_pack.S")
     end
 
-    -- AF_UNIX serve daemon is Linux/macOS only.
-    if is_plat("linux", "macosx") then
+    -- Local serve daemon (AF_UNIX on Linux/macOS, named pipes on Windows —
+    -- utils/local_socket.hpp). The wrong-platform local_socket_*.cpp
+    -- compiles to an empty TU, so no file branching is needed.
+    if is_plat("linux", "macosx", "windows", "mingw") then
         add_files("core/serve/*.cpp")
-        add_files("utils/unix_socket.cpp")
+    end
+
+    if is_plat("windows", "mingw") then
+        -- WinSock (network.cpp WSAStartup) + adapters enumeration.
+        add_syslinks("ws2_32", "iphlpapi")
     end
 
     -- Android NDK cannot run dump-spirv. If the pack is missing, spawn an
@@ -89,3 +95,22 @@ target("upix-core")
             os.touch(asm)
         end
     end)
+
+-- Headless transport tests (utils/local_socket): POSIX CI + WIN32/wine.
+-- Links only the socket slice — no ncnn/curl — so a mingw build can pin the
+-- named-pipe backend without the engine.
+target("test_local_socket")
+    set_kind("binary")
+    set_default(false)
+    add_includedirs(".", {public = true})
+    add_files(
+        "tests/test_local_socket.cpp",
+        "utils/local_socket_posix.cpp",
+        "utils/local_socket_win.cpp",
+        "utils/stream_socket.cpp",
+        "utils/network.cpp"
+    )
+    add_packages("libpng", "libjpeg", "libwebp", "libdeflate")
+    if is_plat("windows", "mingw") then
+        add_syslinks("ws2_32", "iphlpapi")
+    end

@@ -6,6 +6,7 @@
 #include <memory>
 #include <array>
 #include <mutex>
+#include <optional>
 #include "expected.hpp"
 #include "network_error.hpp"  // NetworkError
 #include "stream_socket.hpp"
@@ -16,7 +17,7 @@ namespace upix {
 inline constexpr uint32_t MAX_NETWORK_PAYLOAD = 100 * 1024 * 1024;
 
 // Basic TCP socket wrapper. Framing I/O (send/receive and their _all
-// variants) plus the fd and I/O lock live in StreamSocket.
+// variants) plus the handle and I/O lock live in StreamSocket.
 class TCPSocket : public StreamSocket {
 public:
     TCPSocket();
@@ -76,6 +77,14 @@ public:
     void shutdown();
 
 private:
+    // StreamSocket raw primitives (see stream_socket.hpp).
+    auto raw_send_some(const uint8_t* data, size_t size, size_t& sent)
+        -> std::optional<NetworkError> override;
+    auto raw_receive_some(uint8_t* buffer, size_t max_size, size_t& received)
+        -> std::optional<NetworkError> override;
+    void raw_wake() override;
+    void raw_close() override;
+
     std::string peer_address_;
     uint16_t peer_port_ = 0;
 };
@@ -101,7 +110,8 @@ public:
     void stop();
 
 private:
-    int server_socket_ = -1;
+    // SOCKET on Windows (HANDLE-width), fd on POSIX — -1 = closed.
+    intptr_t server_socket_ = -1;
     uint16_t port_ = 0;
     // Guards server_socket_ across listen()/accept()/stop(). It exists so a
     // stop()/destructor close can never land between accept()'s poll() and its

@@ -67,8 +67,8 @@ inline auto groups(const std::vector<std::string>& names) -> std::vector<FamilyG
         std::vector<size_t> members;
         for (size_t i = 0; i < sorted.size(); ++i) {
             const std::string_view n = sorted[i];
-            if (n == prefix || n.substr(0, prefix.size()) == prefix &&
-                                 n.size() > prefix.size() && n[prefix.size()] == '-') {
+            if (n == prefix || (n.substr(0, prefix.size()) == prefix &&
+                                n.size() > prefix.size() && n[prefix.size()] == '-')) {
                 members.push_back(i);
             }
         }

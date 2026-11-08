@@ -1,7 +1,7 @@
 // `upix daemon {start, stop, status}` — manage the local warm-engine daemon.
 //
 // start:  fork into background (unless --fg) and run share's
-//         run_serve_daemon() (open the Unix socket, load a warm ncnn engine,
+//         run_serve_daemon() (open the local endpoint, load a warm ncnn engine,
 //         serve single-image upscale requests so that `upix process` skips
 //         the ~490ms init+load fixed cost; exits by itself after
 //         --idle-timeout seconds without a request, 0 = never).

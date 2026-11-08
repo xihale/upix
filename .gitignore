@@ -102,3 +102,4 @@ gpu_*.log
 
 # python
 __pycache__/
+.csearch/

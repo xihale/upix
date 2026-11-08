@@ -40,7 +40,7 @@
 #include "utils/exif.hpp"
 #include "utils/logger.hpp"
 #include "utils/sr_marker.hpp"
-#include "utils/unix_socket.hpp"
+#include "utils/local_socket.hpp"
 #include "core/config.hpp"
 #include "core/serve/daemon.hpp"  // default_serve_socket_path, ServeRequest/Response
 #include "core/engine.hpp"
@@ -65,7 +65,7 @@ namespace {
 auto try_connect_daemon(const std::string& sock_path) -> bool {
     std::error_code ec;
     if (!std::filesystem::exists(sock_path, ec)) return false;
-    upix::UnixSocket sock;
+    upix::LocalSocket sock;
     return sock.connect(sock_path).has_value();
 }
 
@@ -259,7 +259,7 @@ int cmd_process(const args::Process& a) {
                 return std::nullopt;
             }
             // (Re)connect: the probe's socket was a throwaway.
-            upix::UnixSocket sock;
+            upix::LocalSocket sock;
             auto conn = sock.connect(sock_path);
             if (!conn) return std::nullopt;  // lost a race with daemon shutdown
             const auto delegate_start_time = std::chrono::steady_clock::now();

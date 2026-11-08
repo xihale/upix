@@ -8,7 +8,11 @@
 #include <mutex>
 #include <chrono>
 #include <iostream>
+#ifdef _WIN32
+#include <io.h>
+#else
 #include <unistd.h>
+#endif
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -52,7 +56,11 @@ inline bool console_color_enabled() {
     if (const char* clicolor_force = std::getenv("CLICOLOR_FORCE")) {
         if (clicolor_force[0] != '\0' && clicolor_force[0] != '0') return true;
     }
+#ifdef _WIN32
+    return ::_isatty(::_fileno(stdout)) == 1;
+#else
     return ::isatty(STDOUT_FILENO) == 1;
+#endif
 #endif
 }
 
@@ -81,7 +89,11 @@ public:
             std::chrono::system_clock::now());
         const auto time = std::chrono::system_clock::to_time_t(now);
         struct tm tm_buf {};
+#ifdef _WIN32
+        localtime_s(&tm_buf, &time);
+#else
         localtime_r(&time, &tm_buf);
+#endif
         const int ms = static_cast<int>(now.time_since_epoch().count() % 1000);
 
         const auto timestamp = std::format(

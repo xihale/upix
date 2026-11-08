@@ -1,441 +1,62 @@
-# Upix - Distributed Image Super-Resolution
+# Upix
 
-Upix is an image super-resolution system with a standalone CLI (and Android app) plus encrypted LAN offloading: the phone pairs with a PC and delegates the GPU work. It uses modern C++ (C++23), ncnn for inference, and supports popular image formats via libpng, libjpeg, libwebp, and (optionally) libavif.
+跨平台图像超分辨率工具，提供 **CLI**、**Desktop（Qt 6 Quick）** 与 **Android** 三端，共享同一套 C++ 核心（`share/`），并支持手机与 PC 局域网端到端加密协同算力卸载。
 
-## Contents
+## 核心特性
 
-**[Features](#features) · [Build](#build) · [Usage](#usage) · [Performance Notes](#performance-notes) · [Configuration File](#configuration-file) · [Troubleshooting](#troubleshooting) · [Development](#development) · [License](#license)**
+- **单图与目录批处理**：支持自动分块（Auto-Tile）、自定义分块尺寸/重叠度及多并发处理。
+- **常驻热引擎（Warm Daemon）**：后台保持 Vulkan 上下文与模型常驻，省去单图冷启动开销。
+- **多格式精细编码**：支持 PNG、JPEG、WebP（含无损）、AVIF（可选）及色度抽样/压缩等级调节。
+- **幂等跳过（SR Marker）**：输出自带 XMP 标记，默认自动跳过已超分图像，支持按需覆盖。
+- **局域网加密卸载**：手机扫码配对 PC（X25519 + Ed25519 + XSalsa20-Poly1305），将超分任务卸载至桌面 GPU。
 
-Build: [CLI](#build-cli) — [Android](#build-android-app) — [Desktop](#desktop) — [Optional AVIF codecs](#optional-avif-codecs-opt-in) — [AVIF over remote](#avif-over-remote-phone-↔-pc)
-Usage: [Single image](#single-image) — [Warm-engine daemon](#warm-engine-daemon) — [Directory processing](#directory-processing) — [Model management](#model-management) — [SR marker](#sr-marker-idempotent-re-runs) — [Distributed mode](#distributed-mode) — [Performance probes](#performance-probes) — [Shell completions](#shell-completions)
+## 快速构建
 
-## Features
-
-- Single-image and batch directory processing
-- Tile-based processing with configurable overlap
-- Auto-tuning of tile size based on model and image dimensions
-- Multi-threaded directory processing via `--jobs` (CPU engines)
-- Offload to a PC over the LAN: QR pairing, end-to-end encrypted (X25519 + Ed25519 + secretbox)
-- Outputs carry an XMP marker; re-feeding an already-upscaled image skips by default
-- Cross-platform: Linux/macOS/Windows CLI + Android app + desktop workbench (`desktop/`, Qt 6 Quick). Binary releases: linux-x86_64 and macos-arm64; Windows builds from source (MSVC 2022+), and the desktop zip (`cpack -DUPIX_CLI_BIN=…`) bundles the GUI + CLI side by side.
-
-## Build
-
-### Prerequisites
-
-- xmake (v3.0+)
-- C++23 compiler (GCC 14+, Clang 18+, or MSVC 2022+; the CLI uses `<print>`)
-- Dependencies (ncnn, image codecs, libsodium, …) are pulled automatically via `xmake require`
-
-### Build CLI
+### 1. PC CLI (`cli/`)
 
 ```bash
-scripts/build_cli.sh release    # from the repo root
+scripts/build_cli.sh release
+# 产物: build/linux/x86_64/release/upix-cli
 ```
 
-The script always reconfigures xmake for linux/x86_64 before building — xmake keeps a
-single global config per project, so a bare `xmake` after an Android build would target
-Android. The binary lands at `build/linux/x86_64/release/upix-cli`. Debug builds:
-`scripts/build_cli.sh debug`.
+### 2. Desktop GUI (`desktop/`)
 
-### Build Android App
-
-```bash
-cd apps
-./gradlew assembleDebug   # or open in Android Studio
-```
-
-The native engine (`libupix-native.so`) is built with xmake by a Gradle task (`xmakeNative` in `apps/app/build.gradle.kts`) that runs before each APK build; see `apps/xmake.lua`.
-
-### Desktop
-
-The desktop app is a Qt 6 Quick window around the same CLI. It needs Qt 6.5+
-(`qt6-base`, `qt6-declarative`, `qt6-svg`), CMake, Ninja, and
-`upix-cli` on `PATH` (or
-`UPIX_CLI`).
+直接链接 `share/` 共享核心，无需外部 CLI 进程：
 
 ```bash
 cd desktop
-./build.sh              # cmake + ninja, binary at desktop/build/upix
+./build.sh
 ./build/upix
 ```
 
-`ctest --test-dir desktop/build` runs the compare-divider regression (real
-mouse events; drag tracking, clamps, single-column seam).
-
-The GUI probes `upix-cli --version` at boot and warns on the host page when
-the CLI predates the machine-readable progress contract (< v0.2.0).
-
-`--shot empty,picked,running,done,error,models,host,pairing --out shots-qt`
-renders those states headless to PNG (add `--anim` for entry-motion frames,
-`--sweep` for the compare sweep, `QT_SCALE_FACTOR=2` for 200%).
-`--smoke` runs a real end-to-end upscale against `upix-cli` and exits non-zero
-on failure. `UPIX_THEME=light|dark` pins the color scheme.
-
-Windows: the GUI builds as a windowed (non-console) app and launches the CLI
-without console flashes (`CREATE_NO_WINDOW`). A distributable zip bundles
-`upix.exe` + `upix-cli.exe` side by side — all `Desk::findCli` needs, no PATH
-edits or installer:
+### 3. Android (`apps/`)
 
 ```bash
-cmake -S . -B build -G Ninja -DUPIX_CLI_BIN=/path/to/upix-cli.exe
-cmake --build build && cpack --config build/CPackConfig.cmake   # upix-<ver>-win64.zip
+cd apps
+./gradlew assembleDebug
 ```
 
-### Optional AVIF codecs (opt-in)
-
-The default build is lean: the CLI dlopens the system libavif at runtime for
-AVIF (encode needs one with an encoder, e.g. `pacman -S libavif`), and the
-Android app has no on-device AVIF encode (AVIF output routes to a paired PC;
-AVIF input decodes via the platform on Android 12+). Two compile-time options
-bundle real codecs instead:
+## 常用 CLI 命令
 
 ```bash
-# CLI / host
-xmake f --avif-encoder=y --avif-decoder=y && xmake     # both optional, independent
+# 单图与目录超分
+upix-cli input.png
+upix-cli input_dir -m AnimeSharp-x4 --gpu
 
-# Android
-./gradlew -Pupix.avifEncoder=true -Pupix.avifDecoder=true assembleRelease
-# or directly: scripts/build_native.sh release arm64-v8a --avif-encoder=y
-# or:          UPIX_AVIF_ENCODER=1 UPIX_AVIF_DECODER=1 scripts/build_native.sh release arm64-v8a
+# 模型管理
+upix-cli model list
+upix-cli model list-remote
+upix-cli model download AnimeSharp-x4
+upix-cli model import ./custom.param ./custom.bin
+
+# 局域网协同服务与常驻守护进程
+upix-cli host start --port 9527
+upix-cli daemon status
 ```
 
-`scripts/build_native.sh` forwards to `apps/scripts/build_native.sh`, the same
-implementation Gradle uses; both read the pinned NDK version from the app build file.
-Each AVIF option resolves independently: explicit flag, then its environment variable,
-then disabled, including when other xmake flags are supplied.
-
-| Option | Effect | arm64 `.so` cost (measured, 2026-08-26) |
-| --- | --- | --- |
-| `avif-encoder` | libavif+aom compiled in: on-device AVIF **output** (the CLI encodes standalone; the Android app unlocks the AVIF format for local processing) | 9.6 → 16.9 MB raw / +3.0 MB gzipped in the APK |
-| `avif-decoder` | libavif+dav1d compiled in: native AVIF **input** decode — covers AVIF inputs below Android 12 and bypasses OEM decoder quirks | 9.6 → 11.0 MB raw / +0.6 MB gzipped in the APK |
-
-Both enabled: 17.6 MB raw / 9.0 MB gzipped. Baseline is the lean default
-`libupix-native.so`; "gzipped" approximates the per-ABI APK delta since APK
-entries are deflate-compressed.
-
-`upix --version` reports the build's codec capabilities (`+avif-encoder`,
-`+avif-decoder`, or `avif:system-dlopen`). On-device AVIF encoding is
-software (no phone SoC ships an AV1 hardware encoder): at quality 90 expect
-roughly 1-2 s per 20 MP at speed 8 on a recent flagship, several seconds at
-speed 6, and ~1 GB peak memory at 50 MP — speed 8 is the recommended default
-for large images.
-
-### AVIF over remote (phone ↔ PC)
-
-AVIF capability is negotiated at pairing time: the PC's CONNECT_RESPONSE
-carries `avif_decode` / `avif_encode` bits (probed from its system libavif),
-and the app gates AVIF input/output on local-or-peer capability instead of
-assuming the PC supports it:
-
-- **Input**: an AVIF file can only be processed remotely if the PC advertises
-  `avif_decode`; otherwise the submit is rejected up front ("PC 端不支持
-  AVIF 解码：安装 libavif …").
-- **Output**: the AVIF format entry is offered when either side can encode;
-  selecting it with neither able to fails fast before any GPU work.
-- A PC-side task rejection (decode/encode failure) is surfaced as a per-task
-  error and no longer drops the connection.
-
-## Usage
-
-### Single Image
-
-```bash
-./upix-cli input.png                                # → input_Real-ESRGANv3-anime-x2.png
-./upix-cli input.png output.png                     # explicit output
-./upix-cli input.png -m Real-CUGAN-conservative-x2  # pick a model
-```
-
-The first form is the common one: no verb, no flags — the output name derives
-from the input and the model that produced it (`<stem>_<model>.<ext>`, next to
-the input). The flag form is equivalent when a script prefers it:
-
-```bash
-./upix-cli -i input.png -o output.png -m Real-ESRGANv3-anime-x2
-```
-
-Use `--output-quality <1-100>` to trade file size for fidelity and `--output-format <png|jpg|jpeg|webp|avif>` to override the saved container.
-
-Per-format encoder knobs (also accepted in the `--config` JSON under `"encoder"`):
-
-- `--png-level <0-9>` – PNG zlib compression level (default: auto, derived from `--output-quality`)
-- `--jpeg-subsampling <420|422|444>` – JPEG chroma subsampling (default: 420)
-- `--webp-method <0-6>` – WebP encode effort, higher = smaller but slower (default: auto, 4)
-- `--webp-lossless` – Force lossless WebP output
-- `--avif-speed <0-10>` – AVIF encoder speed, higher = much faster, larger files (default: 6)
-- `--avif-subsampling <420|444>` – AVIF chroma subsampling (default: 420)
-- `--avif-threads <0-64>` – AVIF encoder tile threads (default: auto, hardware concurrency)
-
-Optional parameters:
-
-- `--tile-size N` – Tile size (default: engine-recommended for your GPU — the daemon and inline paths apply the same rule)
-- `--tile-overlap N` – Overlap between tiles (default: 16)
-- `--batch-size N` – Batch size for tile inference (default: 1). Larger values can improve GPU occupancy by processing multiple tiles in a single GPU dispatch. For CPU, benefits are less pronounced.
-- `--auto-tile` – Enable automatic tile size optimization
-- `--min-tile N` / `--max-tile N` – Bounds for auto-tile
-- `--config FILE` – Load configuration from JSON file
-- `--no-daemon` – Skip the warm-engine daemon (process inline)
-
-#### Warm-engine daemon
-
-Single-image requests are served by a background warm-engine daemon that keeps
-the GPU context and model loaded, skipping the ~490 ms init cost per call. It
-is fully automatic: the first upscale starts one if none is running, and
-it exits by itself after 600 idle seconds (`--idle-timeout` to change, `0` to
-keep it forever). Manual control when wanted:
-
-```bash
-./upix-cli daemon status                 # is it running?
-./upix-cli daemon stop                   # stop it now
-./upix-cli daemon start --cpu --fg       # explicit start (foreground, CPU)
-```
-
-### Directory Processing
-
-Process all images in a directory (recursively), preserving directory structure:
-
-```bash
-./upix-cli input_dir                     # → input_dir_<model>/ next to it
-
-# Flag form, when preferred
-./upix-cli -i input_dir -o output_dir -m Real-ESRGANv3-anime-x2 --jobs 4   # 4 CPU engines
-./upix-cli -i input_dir -o output_dir --gpu                                # GPU: engine count auto-fits VRAM (≤4)
-```
-
-**Directory concurrency** — `--jobs` works for CPU and GPU alike:
-
-- CPU: `--jobs N` runs N engines in parallel (default 1; clamped to the machine's parallelism and task count).
-- GPU: without `--jobs`, the engine count (≤4) is auto-picked so the projected output footprint fits ~90% of the VRAM budget; an explicit `--jobs N` is honored but capped to that same VRAM-safe count, with a warning when the cap applies. `--jobs 1` pins the single-engine pipeline.
-- `--batch-size` is orthogonal: it batches tiles per GPU dispatch inside each engine, independent of how many images run in parallel.
-
-### Model Management
-
-Models are **not bundled** with the CLI or the Android app. They are
-distributed via the [models GitHub release](https://github.com/xihale/upix/releases/tag/models)
-and downloaded on demand (see `models/README.md`):
-
-```bash
-./upix-cli model list-remote                          # list models in the release
-./upix-cli model download Real-ESRGANv3-anime-x2      # download into ./models
-./upix-cli model list                                 # list installed models
-./upix-cli model import ~/foo.param ~/foo.bin         # import local custom models
-```
-
-Rows carry a scene tag and the recommended picks (`[动漫] ★` — 适用场景：
-动漫/照片/综合/修复…; `★` = that scene's first choice), mirrored by the
-scene badges in the desktop and Android apps.
-
-Models are discovered from the per-user store `$XDG_DATA_HOME/upix/models`
-(`~/.local/share/upix/models` by default) — the same set from any working directory.
-Override per invocation with `--models-dir` on any subcommand, or globally by exporting
-`UPIX_MODELS_DIR`. Each model is a `.param` + `.bin` pair; both layouts work:
-
-```
-models/
-  Real-ESRGANv3-anime-x2.param      # flat
-  Real-ESRGANv3-anime-x2.bin
-  Real-CUGAN-conservative/          # nested (name: "Real-CUGAN-conservative-x2")
-    x2.param
-    x2.bin
-```
-
-On Android, the Models page offers the same download list plus local import
-of your own `.param`/`.bin`/`.zip` files; models on a paired PC can be listed,
-pulled, and pushed from there too.
-
-#### Which model to pick
-
-The release carries 44 models in six families — the full catalog with
-per-model descriptions lives in [models/README.md](models/README.md).
-Quick guidance:
-
-| Content | Light (phone-fast) | Heavy (best quality, PC-offload friendly) |
-|---|---|---|
-| Anime / illustration / game art | `Real-ESRGANv3-anime-x{2,3,4}` (1.2 MB), `AnimeJaNai-v2-Compact-x2` (1.2 MB, realtime-grade anime 2x), `HFA2k-LUDVAE-SPAN-x2` (0.8 MB, lightest, built for rough compressed sources), `ModernSpanimation-x2` (1.4 MB, modern-anime quality step-up), or `Real-CUGAN-pro-*-x{2,3}` (2.4 MB, best on compressed sources; `-conservative` keeps detail, `-denoise` cleans compression) | `AnimeSharp-x4` (32 MB, crisp line-art 4x), `HFA2k-x4` (32 MB, restoration-heavy anime 4x for rough sources), or `Real-ESRGAN-x4plus-anime` (8.3 MB, 4x) |
-| Photos, 2x | `NomosUni-Compact-x2` (1.1 MB, trained across JPEG quality levels — best for chat-app/social-media images) or `NomosUni-SPAN-x2` (0.8 MB, same JPEG-degraded corpus in the SPAN arch — the lightest net in the catalog) | `Parimg-Compact-x2` (1.1 MB, trained on Microsoft's image pairs — heavier cleanup in the same fast compact arch), `BSRGAN-x2` (32 MB, Apache-2.0 academic multi-degradation restorer), or `Real-ESRGAN-x2plus` (31 MB, the classic general-purpose restorer at 2x) |
-| Photos, 4x | `Real-ESRGANv3-general-x4` (2.3 MB), `NomosUni-SPAN-x4` (0.8 MB, lightest photo 4x, JPEG-degraded training), `LSDIR-Compact-v2-x4` (1.2 MB, newer and stronger cleanup at the same speed), or `Nomos8kSC-x4` (31 MB, heavier JPEG/blur cleanup and texture) | `NomosWebPhoto-RealPLKSR-x4` (13.7 MB, best cleanup-per-MB on web sources), `Nomos2-OTF-x4` (32 MB, newest Phhofm real-world recipe), `BSRGAN-x4` (32 MB, Apache-2.0 academic multi-degradation restorer), `Remacri-x4` (31 MB, the community's other classic all-rounder), `UltraSharp-x4` (32 MB, sharp classic), `NMKD-Siax-x4` (32 MB, texture-preserving classic for clean sources), or `Real-ESRGAN-x4plus` (31 MB) |
-| Photos, cleanup at original size (1x, no resize) | `DeJPG-RealPLKSR-x1` / `DeNoise-RealPLKSR-x1` / `DeH264-RealPLKSR-x1` (14 MB each — strip JPEG blocking, sensor noise, or H.264/video compression in place) | — |
-| Anime / video frames, cleanup at original size (1x, no resize) | `Archivist-Medium-Compact-x1` (0.6 MB, balanced film-grain/dirt removal — the suite's starting point) or `Archivist-Rough-Compact-x1` (0.6 MB, aggressive reconstruction for severely degraded sources) | — |
-| Retro console / composite-video captures, cleanup at original size (1x, no resize) | `NES-Composite-RGB-Compact-x1` (4 MB, decodes composite/RF color artifacts back to clean RGB) or `Genesis-Cleanup-Compact-x1` (4 MB, composite blur + carrier-noise removal for Genesis/Mega Drive footage) | — |
-
-Most models are ncnn conversions of BSD/MIT/Apache-licensed upstream releases
-(Real-ESRGAN, Real-CUGAN, BSRGAN); the rest are OpenModelDB community models —
-thirteen CC-BY-4.0 picks by Phhofm, eight permissively-licensed
-nets (`ModernSpanimation-x2`, the two Archivist restorers and the two
-pokepress retro-console restorers, MIT; `BSRGAN-x4`/`-x2`, Apache-2.0;
-`NMKD-Siax-x4`, WTFPL), and four CC-BY-NC-SA classics (UltraSharp,
-AnimeSharp, AnimeJaNai, Remacri) whose noncommercial terms apply to the
-weights themselves regardless of the code license. See
-the attribution table in [models/README.md](models/README.md).
-
-### SR Marker (idempotent re-runs)
-
-Every output embeds an XMP marker (`urn:upix:sr:1`) recording that — and with
-which model/scale — the image was upscaled. Feeding a marked image back in
-**skips it by default** (both CLI and Android), so batch pipelines that overlap
-input and output directories don't waste GPU time re-upscaling results. Use
-`-f` / `--force` to process a marked image anyway:
-
-```bash
-./upix-cli input.png -f    # re-upscale even though it carries the marker
-```
-
-### Distributed Mode
-
-Start the coordinator for phones (`host`; bare form defaults to `start`):
-
-```bash
-./upix-cli host                    # listen on 9527, print the QR card
-./upix-cli host -p 9527 --auto-approve   # auto-approve pairing (CI)
-```
-
-Show the connection card without starting anything:
-
-```bash
-./upix-cli host info
-```
-
-Distributed offloading is driven from the Android app, not the CLI. With `host`
-running, open the Android app, scan the QR (or connect manually with the IP and
-port from the card), and submit an image; the PC upscales it and returns the
-result over the encrypted protocol.
-
-Pairing is trust-on-first-use: both endpoints have persistent Ed25519 identities
-(`~/.upix/identity` on the PC). On first connect the phone shows the PC's
-8-hex-digit fingerprint for confirmation and the PC prompts `[y/n]`; afterwards
-the peer is remembered in the trust store (`~/.upix/trusted_clients`) and
-reconnects are automatic. All traffic after the handshake is encrypted
-(X25519 key exchange, XSalsa20-Poly1305 frames) — no pre-shared password.
-
-### Performance Probes
-
-Probes ship as a separate `upix-perf` binary (built from `tools/`, lands next
-to `upix-cli`) so the main CLI stays lean — they are developer/tuning tooling,
-not an end-user feature:
-
-```bash
-./upix-perf list-probes           # list available probes
-./upix-perf gpu-efficiency        # GPU vs CPU tile throughput
-./upix-perf gpu-concurrency       # scaling across N engines
-./upix-perf gpu-reuse             # fresh vs reused VkCompute
-```
-
-### Shell Completions
-
-Completion for bash, zsh, and fish, driven dynamically by the binary itself:
-the installed scripts are thin adapters that replay the command line being
-completed into a hidden `__complete` command, which answers with candidates.
-Everything therefore stays in sync automatically — sub-commands and flags come
-from the CLI11 definitions, model names from the configured models dir, and
-input-file suggestions are filtered to the formats this binary can actually
-decode (png/jpg/jpeg/webp always, avif only where system libavif loads).
-Directories stay navigable, and `upix <TAB>` offers sub-commands and
-images side by side for the implicit upscale.
-
-`--install` writes them into the shell's user completion directory
-automatically:
-
-```bash
-./upix-cli completions bash --install   # ~/.local/share/bash-completion/completions/
-./upix-cli completions zsh --install    # ~/.zfunc/_upix (or oh-my-zsh's dir)
-./upix-cli completions fish --install   # ~/.config/fish/completions/
-```
-
-For zsh the command prints the `fpath=(...)` line to add to `~/.zshrc` when
-`~/.zfunc` is not on fpath yet. bash and fish files are written for both
-invocation names (`upix` and `upix-cli`); the scripts resolve the
-binary from the command line being completed, so either name works. Note that
-all three shells only fire completions for commands resolvable through
-`PATH`, so install the binary somewhere on it (e.g. symlink into
-`~/.local/bin`). Without
-`--install` the script is printed to stdout for custom locations:
-
-```bash
-./upix-cli completions bash > /etc/bash_completion.d/upix
-```
-
-## Performance Notes
-
-- **Tile size**: The optimal tile size depends on GPU memory and image resolution. When `--tile-size` is not given, both the warm-engine daemon and the inline path use the engine's VRAM-aware recommendation (identical output either way). 256 works for most GPUs with ≥4GB VRAM. Larger tiles (384, 512) reduce seam artifacts and overhead for high-resolution images (>4K). Smaller tiles (128) are better for memory-constrained devices.
-- **Overlap**: 10-15% of tile size is recommended (e.g., 16 for 256).
-- **CPU vs GPU**: Single-image and directory modes both support GPU via `--gpu`. In directory mode `--jobs` controls image-level parallelism on both devices; GPU additionally auto-picks an engine count (≤4) from the VRAM budget when `--jobs` is not given.
-- **Batch size**: The `--batch-size` flag controls how many tiles are batched together in a single inference call. Tiles are only batched if they have identical dimensions (same width and height), so edge tiles may be processed separately. Increasing batch size can improve GPU occupancy and throughput per image; the CPU also benefits but to a lesser extent. The default is 1 (no batching).
-- **Parallelism**: Throughput in directory mode scales with image-level engines (`--jobs`) × per-dispatch tile batches (`--batch-size`). For CPU, set `--jobs` to the number of physical cores (or slightly higher if I/O bound).
-
-## Configuration File
-
-You can save frequently used settings in a JSON file:
-
-```json
-{
-  "tile_size": 256,
-  "tile_overlap": 16,
-  "batch_size": 1,
-  "auto_tile_size": false,
-  "min_tile_size": 64,
-  "max_tile_size": 512,
-  "use_gpu": true,
-  "model_name": "Real-ESRGANv3-anime-x2",
-  "output_quality": 90,
-  "output_format": ""
-}
-```
-`output_quality` and `output_format` from the config (or via `--output-quality`/`--output-format`) determine the compression level and file container used for each processed image.
-
-Load with `--config FILE`. Only explicitly supplied CLI options override the loaded
-tile size, overlap, batch size, auto-tile setting, and min/max bounds. Single-image
-and directory runs use the same merged settings. Auto-tile or a tile batch size
-other than 1 runs inline because the warm daemon cannot carry those settings.
-
-## Troubleshooting
-
-- **No models found**: Run `./upix-cli model list-remote && ./upix-cli model download <name>`, or use `--models-dir` to point at an existing directory (or export `UPIX_MODELS_DIR`). On Android, use 模型 → 下载模型.
-- **Out of memory**: Reduce tile size or reduce `--jobs`. For GPU mode, close other applications to free VRAM. If GPU memory is insufficient, try smaller tile sizes (128 or 192).
-- **Slow GPU performance**: Increase `--batch-size` to improve GPU occupancy; directory mode also scales across engines (auto-picked from VRAM, or `--jobs` to pin).
-- **Crashes with GPU in directory mode**: GPU directory engines are admitted by a VRAM budget check, so crashes are usually driver- or VRAM-related; ensure you are using the latest version and, if a crash persists, pin `--jobs 1`.
-
-## Development
-
-See [docs/README.md](docs/README.md) for documentation navigation.
-[ARCHITECTURE.md](docs/ARCHITECTURE.md) is the single source of truth for system
-layout; [DEVELOPMENT.md](docs/DEVELOPMENT.md) covers build/test/release workflows
-and known pitfalls.
-
-## License
-
-Upix is licensed under the [GNU AGPL-3.0](LICENSE).
-
-Copyright (c) 2026 xihale
-
-You may use, modify, and redistribute Upix freely, including for commercial
-purposes — but derivative works (including a modified version offered as a
-network service) must be released under AGPL-3.0 with source. If you want to
-build a closed-source product on Upix, contact the author for a commercial
-license. Version history: releases up to and including `d98c461` (2026-08-29)
-were MIT; `a502cd5` was PolyForm Noncommercial 1.0.0; later versions are
-AGPL-3.0. Recipients keep their rights under the terms those versions were
-distributed under.
-
-### Third-party components
-
-| Component | License | Notes |
-|-----------|---------|-------|
-| [ncnn](https://github.com/Tencent/ncnn) | BSD 3-Clause | Inference engine (Tencent). Copyright © 2017 Tencent |
-| [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN) | BSD 3-Clause | Source of the Real-ESRGAN model weights (converted to ncnn format) |
-| [Real-CUGAN](https://github.com/bilibili/ailab/tree/main/Real-CUGAN) / [realcugan-ncnn-vulkan](https://github.com/nihui/realcugan-ncnn-vulkan) | MIT (ncnn pack) | Source of the Real-CUGAN model weights (bilibili) and their ncnn conversion (nihui) |
-| libpng / libjpeg / libwebp / libdeflate | libpng / IJG / BSD 3-Clause / MIT | Image codecs, SPIR-V pack decompression |
-| glaze | MIT | JSON serialization |
-| libsodium | ISC | Encrypted pairing channel |
-| CLI11 | BSD 3-Clause | CLI parsing |
-| OpenSSL / libcurl / libzip | Apache-2.0 / curl / BSD 3-Clause | Model download transport |
-| AndroidX / Jetpack Compose / CameraX / zxing | Apache 2.0 | Android app UI, camera QR scanning |
-
-Android dependencies are declared in `apps/app/build.gradle.kts`; the full C++ dependency
-list lives in [xmake.lua](xmake.lua).
-
-Third-party code dependencies are permissive-licensed and remain under their own
-terms; their copyright notices must be retained in distributions. The bundled
-models are separate works carrying their own licenses — see
-[models/README.md](models/README.md); the community picks include CC-BY-NC-SA
-models whose noncommercial terms bind whoever uses those weights, independent
-of the code license.
+## 文档索引
+
+- [架构概览](docs/ARCHITECTURE.md)
+- [构建与开发指南](docs/DEVELOPMENT.md)
+- [Desktop 设计规范](desktop/DESIGN.md)
+- [模型目录与转换说明](models/README.md)

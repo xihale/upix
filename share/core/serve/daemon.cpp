@@ -11,7 +11,7 @@
 #include "utils/image.hpp"
 #include "utils/exif.hpp"
 #include "utils/logger.hpp"
-#include "utils/unix_socket.hpp"
+#include "utils/local_socket.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -22,11 +22,13 @@
 #ifdef __linux__
 #include <malloc.h>
 #endif
+#ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <unistd.h>
+#endif
 #include <system_error>
 #include <thread>
-#include <unistd.h>
 #include <vector>
 
 #include "utils/sr_marker.hpp"
@@ -52,10 +54,10 @@ auto bounded_string(const char* src, size_t capacity) -> std::string {
     return {src, ::strnlen(src, capacity)};  // POSIX: not in std:: on glibc
 }
 
-// Write a framed message (header + payload) over a UnixSocket. serialize()
+// Write a framed message (header + payload) over a LocalSocket. serialize()
 // computes the whole-frame checksum itself; anything set on h.checksum here
 // would be overwritten.
-auto send_via(UnixSocket& sock, MessageType type, const void* payload, size_t len)
+auto send_via(LocalSocket& sock, MessageType type, const void* payload, size_t len)
     -> bool {
     MessageHeader h{};
     h.magic = Protocol::MAGIC;
@@ -66,7 +68,7 @@ auto send_via(UnixSocket& sock, MessageType type, const void* payload, size_t le
 }
 
 // Send a simple error response for serve requests
-auto send_serve_error(UnixSocket& sock, const char* message) -> void {
+auto send_serve_error(LocalSocket& sock, const char* message) -> void {
     ServeResponse r{};
     r.ok = 0;
     std::strncpy(r.error, message, sizeof(r.error) - 1);
@@ -76,7 +78,7 @@ auto send_serve_error(UnixSocket& sock, const char* message) -> void {
 // SR-marked input and force not set (docs/SPEC-frontends.md §1 S4): success
 // with no output — the caller treats it like the CLI's marker skip (exit 0,
 // no file written).
-auto send_serve_skipped(UnixSocket& sock) -> void {
+auto send_serve_skipped(LocalSocket& sock) -> void {
     ServeResponse r{};
     r.ok = 1;
     r.skipped = 1;
@@ -101,15 +103,15 @@ struct ConnGuard {
     }
 };
 
-// Accessor subclass: StreamSocket keeps its fd protected with no public getter,
-// but teardown needs the fd number to ::shutdown() a connection whose thread is
-// blocked in recv(). (Calling close() from another thread would deadlock on the
-// rx lock, which receive_all holds across the blocking read.) Legal C++: a
-// derived class may read protected base members through its own objects.
-class ConnSock : public UnixSocket {
+// Accessor subclass: StreamSocket keeps its handle protected with no public
+// getter, but teardown needs it to wake a connection whose thread is blocked
+// in recv()/ReadFile(). (Calling close() from another thread would deadlock on
+// the rx lock, which receive_all holds across the blocking read.) Legal C++:
+// a derived class may read protected base members through its own objects.
+class ConnSock : public LocalSocket {
 public:
-    explicit ConnSock(UnixSocket&& s) : UnixSocket(std::move(s)) {}
-    [[nodiscard]] auto fd() const -> int { return socket_; }
+    explicit ConnSock(LocalSocket&& s) : LocalSocket(std::move(s)) {}
+    [[nodiscard]] auto handle() const -> intptr_t { return sock_; }
 };
 
 } // namespace
@@ -148,7 +150,7 @@ auto ServeDaemon::start(const std::string& socket_path,
     processor_ = std::make_unique<TileProcessor>();
 
     // ── Bind the socket ─────────────────────────────────────────────────────
-    // Create the parent directory first (e.g. ~/.cache/upix/); UnixServer
+    // Create the parent directory first (e.g. ~/.cache/upix/); LocalServer
     // only creates/unlinks the socket file itself.
     {
         std::error_code ec;
@@ -157,7 +159,7 @@ auto ServeDaemon::start(const std::string& socket_path,
             std::filesystem::create_directories(p.parent_path(), ec);
         }
     }
-    server_ = std::make_unique<UnixServer>();
+    server_ = std::make_unique<LocalServer>();
     auto listen_res = server_->listen(socket_path_);
     if (!listen_res) {
         LOG_ERROR("Daemon", "socket listen failed at {}: {}", socket_path_,
@@ -167,7 +169,7 @@ auto ServeDaemon::start(const std::string& socket_path,
 
     LOG_INFO("Daemon", "daemon ready: socket={} model={} scale={} device={} pid={}",
              socket_path_, loaded_model_name_, engine_->get_scale_factor(),
-             device == ServeDevice::GPU ? "GPU" : "CPU", ::getpid());
+             device == ServeDevice::GPU ? "GPU" : "CPU", current_pid());
     LOG_INFO("Daemon", "`upix process` will now reuse this warm engine");
     return 0;
 }
@@ -177,7 +179,7 @@ auto ServeDaemon::ensure_model_loaded(const std::string& model_name) -> int {
     return switch_model(*engine_, *models_, loaded_model_name_, model_name, "Daemon") ? 0 : 1;
 }
 
-auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock,
+auto ServeDaemon::handle_client(std::unique_ptr<LocalSocket> sock,
                                 const std::atomic<bool>& cancel) -> void {
     // sock owns the fd; closed exactly once on return. The guard keeps the
     // idle-timeout accounting truthful for this connection's whole lifetime.
@@ -196,7 +198,7 @@ auto ServeDaemon::handle_client(std::unique_ptr<UnixSocket> sock,
     }
 }
 
-auto ServeDaemon::handle_client_inner(std::unique_ptr<UnixSocket>& sock,
+auto ServeDaemon::handle_client_inner(std::unique_ptr<LocalSocket>& sock,
                                       const std::atomic<bool>& cancel)
     -> void {
     // Bound every read AND write on this connection. Without this, a client
@@ -505,7 +507,7 @@ auto ServeDaemon::reap_finished_connections() -> void {
         }
         if (it->get()->thread.joinable()) it->get()->thread.join();
         if (it->get()->watch_fd >= 0) {
-            ::close(it->get()->watch_fd);
+            watch_close(it->get()->watch_fd);
             it->get()->watch_fd = -1;
         }
         it = conn_threads_.erase(it);
@@ -521,12 +523,11 @@ auto ServeDaemon::drain_connections() -> void {
     // bytes would block recv() forever and hang the joins below. ::shutdown on
     // the dup'd watch fd wakes the blocked recv() with an error; the watch fd
     // itself is closed immediately (the connection's real fd belongs to the
-    // thread's UnixSocket).
+    // thread's LocalSocket).
     for (auto& ct : conn_threads_) ct->thread.request_stop();
     for (auto& ct : conn_threads_) {
         if (ct->watch_fd >= 0) {
-            ::shutdown(ct->watch_fd, SHUT_RDWR);
-            ::close(ct->watch_fd);
+            watch_kill(ct->watch_fd);
             ct->watch_fd = -1;
         }
     }
@@ -570,7 +571,7 @@ auto ServeDaemon::run() -> void {
         // still serialized inside handle_client via engine_mutex_. The watch fd
         // lets drain_connections() unstick a reader blocked on this client.
         auto sock = std::make_unique<ConnSock>(std::move(**client));
-        const int watch_fd = ::dup(sock->fd());
+        const intptr_t watch_fd = watch_dup(sock->handle());
         // Heap-held entry: the connection thread needs a stable pointer to
         // its own record (a growing vector<ConnThread> would invalidate one).
         // The record is handed to the vector BEFORE the thread starts: the

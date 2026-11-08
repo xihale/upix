@@ -1,5 +1,7 @@
-#include "unix_socket.hpp"
+#include "local_socket.hpp"
 #include "network.hpp"  // NetworkError
+
+#ifndef _WIN32
 
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -13,30 +15,30 @@
 
 namespace upix {
 
-UnixSocket::UnixSocket() = default;
+LocalSocket::LocalSocket() = default;
 
-UnixSocket::~UnixSocket() {
+LocalSocket::~LocalSocket() {
     close();
 }
 
-UnixSocket::UnixSocket(UnixSocket&& other) noexcept
+LocalSocket::LocalSocket(LocalSocket&& other) noexcept
     : StreamSocket(std::move(other))
     , path_(std::move(other.path_)) {
     // Direction locks are non-movable; default-constructed. Moved-from socket is left closed.
 }
 
-UnixSocket& UnixSocket::operator=(UnixSocket&& other) noexcept {
+LocalSocket& LocalSocket::operator=(LocalSocket&& other) noexcept {
     if (this != &other) {
         close();
         std::lock_guard<std::recursive_mutex> other_tx(other.tx_mutex_);
         std::lock_guard<std::recursive_mutex> other_rx(other.rx_mutex_);
-        take_fd_from(other);
+        take_handle_from(other);
         path_ = std::move(other.path_);
     }
     return *this;
 }
 
-auto UnixSocket::connect(const std::string& path) -> expected<void, NetworkError> {
+auto LocalSocket::connect(const std::string& path) -> expected<void, NetworkError> {
     close();
 
     if (path.empty()) {
@@ -49,8 +51,8 @@ auto UnixSocket::connect(const std::string& path) -> expected<void, NetworkError
             "Socket path too long (max " + std::to_string(sizeof(sockaddr_un::sun_path) - 1) + ")"});
     }
 
-    socket_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    if (socket_ < 0) {
+    sock_ = ::socket(AF_UNIX, SOCK_STREAM, 0);
+    if (sock_ < 0) {
         return std::unexpected(NetworkError{errno, "Failed to create socket"});
     }
 
@@ -58,7 +60,7 @@ auto UnixSocket::connect(const std::string& path) -> expected<void, NetworkError
     addr.sun_family = AF_UNIX;
     std::strncpy(addr.sun_path, path.c_str(), sizeof(addr.sun_path) - 1);
 
-    if (::connect(socket_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+    if (::connect(sock_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         int e = errno;
         close();
         // ECONNREFUSED on a present-but-unlistened socket means a stale file
@@ -71,29 +73,49 @@ auto UnixSocket::connect(const std::string& path) -> expected<void, NetworkError
     return {};
 }
 
-void UnixSocket::set_timeout(int timeout_ms) {
-    if (socket_ < 0) return;
+void LocalSocket::set_timeout(int timeout_ms) {
+    if (sock_ < 0) return;
     timeval timeout{};
     timeout.tv_sec = timeout_ms / 1000;
     timeout.tv_usec = (timeout_ms % 1000) * 1000;
-    setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-    setsockopt(socket_, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+    setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(sock_, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 }
 
-void UnixSocket::close() {
+void LocalSocket::close() {
     close_fd();
     path_.clear();
 }
 
-// ── UnixServer ──────────────────────────────────────────────────────────────
+auto LocalSocket::raw_send_some(const uint8_t* data, size_t size, size_t& sent)
+    -> std::optional<NetworkError> {
+    return fd_send_some(static_cast<int>(sock_), data, size, sent);
+}
 
-UnixServer::UnixServer() = default;
+auto LocalSocket::raw_receive_some(uint8_t* buffer, size_t max_size,
+                                   size_t& received)
+    -> std::optional<NetworkError> {
+    return fd_receive_some(static_cast<int>(sock_), buffer, max_size, received);
+}
 
-UnixServer::~UnixServer() {
+void LocalSocket::raw_wake() {
+    ::shutdown(static_cast<int>(sock_), SHUT_RDWR);
+}
+
+void LocalSocket::raw_close() {
+    ::close(static_cast<int>(sock_));
+}
+
+// ── LocalServer ─────────────────────────────────────────────────────────────
+
+LocalServer::LocalServer() = default;
+
+LocalServer::~LocalServer() {
     stop();
 }
 
-auto UnixServer::listen(const std::string& path, int backlog) -> expected<void, NetworkError> {
+auto LocalServer::listen(const std::string& path, int backlog)
+    -> expected<void, NetworkError> {
     stop();
 
     if (path.empty()) {
@@ -190,7 +212,7 @@ auto UnixServer::listen(const std::string& path, int backlog) -> expected<void, 
     return {};
 }
 
-auto UnixServer::accept() -> expected<std::unique_ptr<UnixSocket>, NetworkError> {
+auto LocalServer::accept() -> expected<std::unique_ptr<LocalSocket>, NetworkError> {
     if (server_socket_ < 0) {
         return std::unexpected(NetworkError{EBADF, "Server not listening"});
     }
@@ -216,13 +238,13 @@ auto UnixServer::accept() -> expected<std::unique_ptr<UnixSocket>, NetworkError>
         return std::unexpected(NetworkError{errno, "Accept failed"});
     }
 
-    auto sock = std::make_unique<UnixSocket>();
-    sock->socket_ = client;
+    auto sock = std::make_unique<LocalSocket>();
+    sock->sock_ = client;
     sock->path_ = path_;
     return sock;
 }
 
-void UnixServer::stop() {
+void LocalServer::stop() {
     if (server_socket_ >= 0) {
         ::close(server_socket_);
         server_socket_ = -1;
@@ -235,4 +257,28 @@ void UnixServer::stop() {
     path_.clear();
 }
 
+// ── Watch handles ───────────────────────────────────────────────────────────
+
+auto watch_dup(intptr_t handle) -> intptr_t {
+    return ::dup(static_cast<int>(handle));
+}
+
+void watch_kill(intptr_t handle) {
+    // shutdown() wakes a thread blocked in recv() with ECONNRESET; close()
+    // alone (from another thread) is not guaranteed to wake it.
+    ::shutdown(static_cast<int>(handle), SHUT_RDWR);
+    ::close(static_cast<int>(handle));
+}
+
+void watch_close(intptr_t handle) {
+    ::close(static_cast<int>(handle));
+}
+
+auto local_endpoint_exists(const std::string& path) -> bool {
+    struct stat st{};
+    return ::stat(path.c_str(), &st) == 0;
+}
+
 } // namespace upix
+
+#endif  // !_WIN32

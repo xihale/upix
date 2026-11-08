@@ -7,7 +7,7 @@
 #include "utils/encoder_options.hpp"
 #include "utils/image.hpp"
 #include "utils/sr_marker.hpp"
-#include "utils/unix_socket.hpp"
+#include "utils/local_socket.hpp"
 
 #include <QFile>
 #include <QDir>
@@ -35,7 +35,7 @@ public:
     enum Mode { Saved, Skipped, LegacyFrame, Blocking, Error };
 
     explicit FakeServeDaemon(const QString& path) {
-        server_ = std::make_unique<upix::UnixServer>();
+        server_ = std::make_unique<upix::LocalServer>();
         if (!server_->listen(path.toStdString()).has_value())
             qFatal("fake daemon listen failed");
         thread_ = std::thread([this] {
@@ -63,7 +63,7 @@ public:
     std::atomic<bool>* hold = nullptr;
 
 private:
-    void serve(upix::UnixSocket& sock) {
+    void serve(upix::LocalSocket& sock) {
         std::vector<uint8_t> hdr(upix::Protocol::HEADER_SIZE);
         if (!sock.receive_all(hdr.data(), hdr.size()).has_value()) return;
         const auto h = upix::Protocol::parse_header(hdr);
@@ -149,7 +149,7 @@ private:
         send(payload.data(), payload.size());
     }
 
-    std::unique_ptr<upix::UnixServer> server_;
+    std::unique_ptr<upix::LocalServer> server_;
     std::thread thread_;
 };
 
@@ -171,14 +171,12 @@ private slots:
     void processesEveryInputOnceWithSnapshottedSettings();
     void cancellationStopsQueuedInputs();
     void failureKeepsDiagnosticOutput();
-    void liveHostOutputKeepsCardAndPairing();
     void runSurvivesInputEdits();
     void secondStartDuringRunIsIgnored();
     void directoryBatchRunsThroughCore();
-    void failedToStartSurfacesError();
+    void singleFileFallsBackInlineWhenNoDaemon();
     void folderCountAndCoverFollowInputRemoval();
     void unsupportedDropIsReported();
-    void cliVersionGateFlagsOldCliAndPassesNew();
 
 private:
     QString addImage(const QString& name);
@@ -409,7 +407,6 @@ void TstDesktopJobs::servesFileInputsThroughWarmDaemon() {
 }
 
 void TstDesktopJobs::processesEveryInputOnceWithSnapshottedSettings() {
-#ifdef Q_OS_UNIX
     // Stage-2 route: every single file rides the serve protocol with the
     // settings snapshotted at start(); edits to the live snapshot must not
     // leak into the running queue.
@@ -470,13 +467,9 @@ void TstDesktopJobs::processesEveryInputOnceWithSnapshottedSettings() {
     // Directories run the share batch core in-process; without a real model
     // in the default store there is nothing honest to assert here, so the
     // dedicated core test skips (see directoryBatchRunsThroughCore).
-#else
-    QSKIP("serve path is the UNIX stage-2 route");
-#endif
 }
 
 void TstDesktopJobs::cancellationStopsQueuedInputs() {
-#ifdef Q_OS_UNIX
     const QString sock = m_dir.filePath(QStringLiteral("cancel.sock"));
     FakeServeDaemon daemon(sock);
     daemon.mode = FakeServeDaemon::Blocking;
@@ -502,13 +495,9 @@ void TstDesktopJobs::cancellationStopsQueuedInputs() {
     QTest::qWait(300);  // give a broken queue time to start the next input
     QCOMPARE(daemon.requestsServed, 1);  // the queued second file never started
     qunsetenv("UPIX_SERVE_SOCKET");
-#else
-    QSKIP("serve path is the UNIX stage-2 route");
-#endif
 }
 
 void TstDesktopJobs::failureKeepsDiagnosticOutput() {
-#ifdef Q_OS_UNIX
     const QString sock = m_dir.filePath(QStringLiteral("failure.sock"));
     FakeServeDaemon daemon(sock);
     daemon.mode = FakeServeDaemon::Error;
@@ -533,51 +522,12 @@ void TstDesktopJobs::failureKeepsDiagnosticOutput() {
     QVERIFY(detail.contains(QStringLiteral("engine diagnostic detail")));
     QCOMPARE(daemon.requestsServed, 1);  // the queue stops on the first failure
     qunsetenv("UPIX_SERVE_SOCKET");
-#else
-    QSKIP("serve path is the UNIX stage-2 route");
-#endif
-}
-
-void TstDesktopJobs::liveHostOutputKeepsCardAndPairing() {
-#ifdef Q_OS_WIN
-    // Windows bridge: the coordinator still arrives through the CLI's JSON
-    // event stream. The UNIX stage-2 host is in-process (Coordinator on a
-    // worker thread); its pairing gate needs a real crypto handshake, so the
-    // end-to-end pairing proof there is the live phone run, not a fixture.
-    qputenv("UPIX_TEST_MODE", "host");
-    Desk desk;
-    QVariantMap snap = Desk::fakeSnapshot(QStringLiteral("host"));
-    snap["cliFound"] = true;
-    desk.applyFakeSnapshot(snap);
-    desk.hostStart();
-    // The card event carries the v2 invite payload — the QR image source is
-    // now a payload string, not scraped half-block art.
-    const QString qr = QStringLiteral(
-        "{\"v\":2,\"ip\":\"192.0.2.4\",\"port\":43210,\"fp\":\"ABCDEF0123456789\",\"pk\":\"pk-base64\"}");
-    QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("host").toMap().value("qr").toString(), qr, 3000);
-    const QVariantMap host = desk.snap().value("host").toMap();
-    QVERIFY(host.value("running").toBool());
-    QCOMPARE(host.value("ips").toList().size(), 1);
-    QCOMPARE(host.value("port").toInt(), 43210);
-    QCOMPARE(host.value("fingerprint").toString(), QStringLiteral("ABCDEF0123456789"));
-    // Log strip still receives human stderr lines.
-    QTRY_VERIFY_WITH_TIMEOUT(!host.value("log").toList().isEmpty(), 3000);
-    // Pairing arrives as its own event, after a chunked write gap.
-    QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("host").toMap().value("pendingDevice").toString(),
-                              QStringLiteral("Pixel 9 Pro"), 3000);
-    QCOMPARE(desk.snap().value("host").toMap().value("pendingFp").toString(),
-             QStringLiteral("FEDCBA9876543210"));
-    desk.hostStop();
-#else
-    QSKIP("the UNIX host is the in-process coordinator; see SPEC §3 stage 2");
-#endif
 }
 
 // Editing the list while a run is live must not touch the run card: resetting
 // `job` mid-run made finishJob() see a non-running phase and stop advancing,
 // so every input after the current one was silently dropped.
 void TstDesktopJobs::runSurvivesInputEdits() {
-#ifdef Q_OS_UNIX
     const QString sock = m_dir.filePath(QStringLiteral("edits.sock"));
     FakeServeDaemon daemon(sock);
     daemon.mode = FakeServeDaemon::Blocking;
@@ -612,15 +562,11 @@ void TstDesktopJobs::runSurvivesInputEdits() {
     // The list edit itself still landed (third added, first removed).
     QCOMPARE(desk.snap().value("inputs").toList().size(), 2);
     qunsetenv("UPIX_SERVE_SOCKET");
-#else
-    QSKIP("serve path is the UNIX stage-2 route");
-#endif
 }
 
 // A second start (Ctrl+Return, or a double CTA tap) used to kill the running
 // CLI and restart the queue at index 0.
 void TstDesktopJobs::secondStartDuringRunIsIgnored() {
-#ifdef Q_OS_UNIX
     const QString sock = m_dir.filePath(QStringLiteral("restart.sock"));
     FakeServeDaemon daemon(sock);
     daemon.mode = FakeServeDaemon::Blocking;
@@ -648,9 +594,6 @@ void TstDesktopJobs::secondStartDuringRunIsIgnored() {
     QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("job").toMap().value("phase").toString(),
                               QStringLiteral("cancelled"), 3000);
     qunsetenv("UPIX_SERVE_SOCKET");
-#else
-    QSKIP("serve path is the UNIX stage-2 route");
-#endif
 }
 
 // Stage 2: directories run the share batch core in-process. With a real
@@ -719,25 +662,37 @@ void TstDesktopJobs::directoryBatchRunsThroughCore() {
 // The CLI existing but failing to exec (bad shebang, missing loader, noexec
 // mount) reports through waitForStarted(); spawn() used to hold a reference
 // into m_procs across that call, which finishJob() emptied.
-void TstDesktopJobs::failedToStartSurfacesError() {
-    const QString broken = m_dir.filePath(QStringLiteral("broken-upix"));
-    QFile script(broken);
-    QVERIFY(script.open(QIODevice::WriteOnly | QIODevice::Text));
-    script.write("#!/nonexistent/interpreter\n");
-    script.close();
-    QVERIFY(script.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner));
-
-    qputenv("UPIX_CLI", broken.toUtf8());
-    {
-        Desk desk;
-        prepareDesk(desk, {addImage(QStringLiteral("broken-a.png"))});
-        desk.start();
-        QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("job").toMap().value("phase").toString(),
-                                  QStringLiteral("error"), 5000);
-        QVERIFY(!desk.snap().value("job").toMap().value("message").toString().isEmpty());
+// A single GPU file with no daemon listening must fall back to the in-process
+// batch core with its own engine (the ServeJob code=2 fallback). Needs a real
+// model; skips rather than lying when the store is empty.
+void TstDesktopJobs::singleFileFallsBackInlineWhenNoDaemon() {
+    const QString model = [] {
+        upix::ModelManager manager(upix::default_models_dir());
+        auto models = manager.scan_models();
+        if (!models.has_value() || models->empty()) return QString();
+        return QString::fromStdString(models->front().name);
+    }();
+    if (model.isEmpty()) {
+        QSKIP("no model in the default store — install one to run this");
     }
-    // cleanup() restores UPIX_CLI after every test, so a QVERIFY failure above
-    // cannot leak the broken path into the next case.
+    qputenv("UPIX_SERVE_SOCKET", m_dir.filePath(QStringLiteral("nobody.sock")).toUtf8());
+    Desk desk;
+    QVariantMap snap = Desk::fakeSnapshot(QStringLiteral("picked"));
+    snap["inputs"] = QVariantList{};
+    snap["folderCount"] = 0;
+    snap["cover"] = QString();
+    snap["cliFound"] = true;
+    snap["model"] = model;
+    snap["autoTile"] = false;
+    snap["tileSize"] = 64;
+    snap["gpu"] = true;
+    desk.applyFakeSnapshot(snap);
+    desk.addPaths({addImage(QStringLiteral("fallback.png"))});
+    desk.start();
+    QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("job").toMap().value("phase").toString(),
+                              QStringLiteral("done"), 120000);
+    QCOMPARE(desk.snap().value("job").toMap().value("outputs").toList().size(), 1);
+    qunsetenv("UPIX_SERVE_SOCKET");
 }
 
 // folderCount/cover are per-input now: removing a folder (or the covering
@@ -776,27 +731,6 @@ void TstDesktopJobs::unsupportedDropIsReported() {
     QVERIFY(desk.snap().value("inputs").toList().isEmpty());
     QCOMPARE(desk.snap().value("notice").toString(),
              QStringLiteral("已忽略 2 个不支持的文件"));
-}
-
-// The real boot path (not fixture mode) probes `--version`: a CLI older than
-// the desktop's machine-readable contract (UPIX_PROGRESS=json, post cli-v0.1.0)
-// must surface cliCompatible=false for the HostPage warning; same-repo builds
-// and newer CLIs pass.
-void TstDesktopJobs::cliVersionGateFlagsOldCliAndPassesNew() {
-#ifdef Q_OS_WIN
-    qputenv("UPIX_TEST_CLI_VERSION", "0.1.0");
-    qputenv("UPIX_FAKE", "");  // empty = run the real boot path
-    Desk desk;
-    QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("cliFound"), QVariant(true), 3000);
-    QTRY_COMPARE_WITH_TIMEOUT(desk.snap().value("cliCompatible"), QVariant(false), 3000);
-    QVERIFY(desk.snap().value("cliVersion").toString().startsWith(QStringLiteral("v0.1.0")));
-
-    qputenv("UPIX_TEST_CLI_VERSION", "0.2.0");
-    Desk newer;
-    QTRY_COMPARE_WITH_TIMEOUT(newer.snap().value("cliCompatible"), QVariant(true), 3000);
-#else
-    QSKIP("the version gate is a Windows-bridge concept since stage 2");
-#endif
 }
 
 } // namespace
