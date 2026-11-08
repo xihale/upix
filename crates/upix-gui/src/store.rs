@@ -131,6 +131,7 @@ pub struct Store {
     pub host_auto_approve: Signal<bool>,
     pub host_ips: Signal<Vec<String>>,
     pub host_ip_idx: Signal<usize>,
+    pub show_ip_picker: Signal<bool>,
     pub host_fingerprint: Signal<String>,
     pub host_pubkey_b64: Signal<String>,
     pub host_qr_payload: Signal<String>,
@@ -247,6 +248,7 @@ impl Store {
             host_auto_approve: signal(false),
             host_ips: signal(init_ips),
             host_ip_idx: signal(0),
+            show_ip_picker: signal(false),
             host_fingerprint: signal(init_fp),
             host_pubkey_b64: signal(init_pk),
             host_qr_payload: signal(String::new()),
@@ -584,14 +586,14 @@ impl Store {
         });
     }
 
-    pub fn cycle_host_ip(self) {
+    pub fn select_host_ip(self, idx: usize) {
         let ips = self.host_ips.get();
-        if ips.len() <= 1 {
+        if idx >= ips.len() {
             return;
         }
-        let next = (self.host_ip_idx.get() + 1) % ips.len();
-        self.host_ip_idx.set(next);
-        let ip = &ips[next];
+        self.host_ip_idx.set(idx);
+        self.show_ip_picker.set(false);
+        let ip = &ips[idx];
         let (payload, uri) = crate::host_bridge::build_qr_for_ip(
             ip,
             self.host_port.get(),
@@ -600,6 +602,15 @@ impl Store {
         );
         self.host_qr_payload.set(payload);
         self.host_qr_uri.set(uri);
+    }
+
+    pub fn cycle_host_ip(self) {
+        let ips = self.host_ips.get();
+        if ips.len() <= 1 {
+            return;
+        }
+        let next = (self.host_ip_idx.get() + 1) % ips.len();
+        self.select_host_ip(next);
     }
 
     pub fn answer_approval(self, reply: ApprovalReply) {
@@ -801,13 +812,38 @@ impl Store {
                     qr_payload,
                     qr_data_uri,
                 } => {
+                    let prev_ip = self
+                        .host_ips
+                        .get_untracked()
+                        .get(self.host_ip_idx.get_untracked())
+                        .cloned();
+                    let chosen_idx = prev_ip
+                        .as_deref()
+                        .and_then(|target| ips.iter().position(|x| x == target))
+                        .unwrap_or(0);
                     self.host_port.set(port);
-                    self.host_ips.set(ips);
-                    self.host_ip_idx.set(0);
-                    self.host_fingerprint.set(fingerprint);
-                    self.host_pubkey_b64.set(pubkey_b64);
-                    self.host_qr_payload.set(qr_payload);
-                    self.host_qr_uri.set(qr_data_uri);
+                    self.host_ips.set(ips.clone());
+                    self.host_ip_idx.set(chosen_idx);
+                    self.host_fingerprint.set(fingerprint.clone());
+                    self.host_pubkey_b64.set(pubkey_b64.clone());
+                    if chosen_idx > 0 {
+                        if let Some(ip) = ips.get(chosen_idx) {
+                            let (p, u) = crate::host_bridge::build_qr_for_ip(
+                                ip,
+                                port,
+                                &fingerprint,
+                                &pubkey_b64,
+                            );
+                            self.host_qr_payload.set(p);
+                            self.host_qr_uri.set(u);
+                        } else {
+                            self.host_qr_payload.set(qr_payload);
+                            self.host_qr_uri.set(qr_data_uri);
+                        }
+                    } else {
+                        self.host_qr_payload.set(qr_payload);
+                        self.host_qr_uri.set(qr_data_uri);
+                    }
                     self.host_trusted.set(crate::host_bridge::trust_list());
                 }
                 HostEvent::Log(line) => {

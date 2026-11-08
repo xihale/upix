@@ -317,9 +317,8 @@ fn active_stage_well(store: Store) -> View {
 }
 
 fn compare_viewport(store: Store, item: InputItem, output_path: PathBuf) -> View {
-    let stage_w = signal(800.0f32);
-    let stage_h = signal(540.0f32);
-    let grab_x = signal(400.0f32);
+    let stage_bounds = signal(Bounds::<Points>::default());
+    let grab_x = stored(None::<f32>);
     let split = store.split_pos;
 
     let before_src = item.path.to_string_lossy().into_owned();
@@ -332,20 +331,29 @@ fn compare_viewport(store: Store, item: InputItem, output_path: PathBuf) -> View
         .overflow_hidden()
         .cursor_pointer()
         .on_layout(move |b: &Bounds<Points>| {
-            stage_w.set(b.size.width.0.max(1.0));
-            stage_h.set(b.size.height.0.max(1.0));
+            stage_bounds.set(*b);
         })
         .claim_touches(TouchClaim::on_start())
+        .keep_touches(true)
         .on_responder_grant(move |e: &ResponderEvent| {
-            let x = e.location.x.0;
-            grab_x.set(x);
-            let w = stage_w.get().max(1.0);
-            split.set((x / w).clamp(0.02, 0.98));
+            let b = stage_bounds.get_untracked();
+            let local_x = e.location.x.0 - b.origin.x.0;
+            let _ = grab_x.replace(Some(local_x));
+            let w = b.size.width.0.max(1.0);
+            split.set((local_x / w).clamp(0.02, 0.98));
         })
         .on_responder_move(move |e: &ResponderEvent| {
-            let x = grab_x.get() + e.gesture.delta.x.0;
-            let w = stage_w.get().max(1.0);
-            split.set((x / w).clamp(0.02, 0.98));
+            if let Some(start_x) = grab_x.get() {
+                let x = start_x + e.gesture.delta.x.0;
+                let w = stage_bounds.get_untracked().size.width.0.max(1.0);
+                split.set((x / w).clamp(0.02, 0.98));
+            }
+        })
+        .on_responder_release(move |_: &ResponderEvent| {
+            let _ = grab_x.replace(None);
+        })
+        .on_responder_terminate(move |_: &ResponderEvent| {
+            let _ = grab_x.replace(None);
         })
         // Layer 1 (Full base): After (Upscaled) image
         .child(
@@ -367,12 +375,12 @@ fn compare_viewport(store: Store, item: InputItem, output_path: PathBuf) -> View
                 .left(px(0.0))
                 .top(px(0.0))
                 .bottom(px(0.0))
-                .w(move || px(stage_w.get() * split.get()))
+                .w(move || px(stage_bounds.get().size.width.0.max(1.0) * split.get()))
                 .overflow_hidden()
                 .child(
                     view()
-                        .w(move || px(stage_w.get()))
-                        .h(move || px(stage_h.get()))
+                        .w(move || px(stage_bounds.get().size.width.0.max(1.0)))
+                        .h(move || px(stage_bounds.get().size.height.0.max(1.0)))
                         .items_center()
                         .justify_center()
                         .bg(palette::surface())
@@ -390,7 +398,7 @@ fn compare_viewport(store: Store, item: InputItem, output_path: PathBuf) -> View
                 .top(px(0.0))
                 .bottom(px(0.0))
                 .w(px(1.0))
-                .left(move || px((stage_w.get() * split.get()).round()))
+                .left(move || px((stage_bounds.get().size.width.0.max(1.0) * split.get()).round()))
                 .bg(palette::on_surface())
                 .pointer_events(PointerEvents::None),
         )
@@ -405,8 +413,12 @@ fn compare_viewport(store: Store, item: InputItem, output_path: PathBuf) -> View
                 .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2C2C35))
                 .items_center()
                 .justify_center()
-                .left(move || px((stage_w.get() * split.get() - 14.0).round()))
-                .top(move || px((stage_h.get() * 0.5 - 14.0).round()))
+                .left(move || {
+                    px((stage_bounds.get().size.width.0.max(1.0) * split.get() - 14.0).round())
+                })
+                .top(move || {
+                    px((stage_bounds.get().size.height.0.max(1.0) * 0.5 - 14.0).round())
+                })
                 .pointer_events(PointerEvents::None)
                 .child(
                     text("‹ ›")
@@ -994,11 +1006,7 @@ fn inspector_column(store: Store) -> View {
                                                     .text_color(palette::on_surface()),
                                             ),
                                     )
-                                    .child(dynamic(move || {
-                                        quality_slider(store.quality.get(), 1, 100, move |v| {
-                                            store.quality.set(v)
-                                        })
-                                    }))
+                                    .child(quality_slider(store.quality, 1, 100))
                             },
                         ))
                         // Chroma subsampling (when AVIF or JPG — Figma 73:1931: inline row, 14px label + 164x28 2-way segmented)

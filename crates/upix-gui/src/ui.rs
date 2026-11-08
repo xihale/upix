@@ -165,22 +165,43 @@ pub fn segmented_with_font<T: Copy + PartialEq + 'static>(
     row
 }
 
-/// Quality slider with 5 tick marks matching Figma "Desktop / Slider / Quality" (`276x18`,
-/// `2px` track `#2D2D34`, `2px` `#7FDAC9` fill, `12x12` `#131316` thumb with `2.5px` `#7FDAC9` ring,
+/// Quality slider with 5 tick marks and magnetic snapping matching Figma "Desktop / Slider / Quality"
+/// (`276x18`, `2px` track `#2D2D34`, `2px` `#7FDAC9` fill, `12x12` `#131316` thumb with `2.5px` `#7FDAC9` ring,
 /// and 5 `1x3px` `#3A3A44` ticks at `top: 13px`).
 pub fn quality_slider(
-    value: i32,
+    value: Signal<i32>,
     min_val: i32,
     max_val: i32,
-    on_change: impl Fn(i32) + Clone + 'static,
 ) -> View {
-    let slider_w = signal(276.0f32);
-    let drag_start_x = signal(0.0f32);
+    let rail = signal(Bounds::<Points>::default());
+    let drag_origin = stored(None::<f32>);
     let range = (max_val - min_val).max(1) as f32;
-    let t = ((value - min_val) as f32 / range).clamp(0.0, 1.0);
 
-    let cb_grant = on_change.clone();
-    let cb_move = on_change;
+    // 5 quantile snap targets: 0%, 25%, 50%, 75%, 100%
+    const SNAP_FRACS: [f32; 5] = [0.0, 0.25, 0.50, 0.75, 1.0];
+    // Magnetic snap threshold (~2.2% of track width, i.e. ~6px on a 276px track)
+    const SNAP_THRESHOLD: f32 = 0.022;
+
+    let set_at = move |local_x: f32| {
+        let w = rail.get_untracked().size.width.0.max(12.0);
+        let mut frac = (local_x / w).clamp(0.0, 1.0);
+        for &target in &SNAP_FRACS {
+            if (frac - target).abs() <= SNAP_THRESHOLD {
+                frac = target;
+                break;
+            }
+        }
+        let next = if frac <= 0.0 {
+            min_val
+        } else if frac >= 1.0 {
+            max_val
+        } else {
+            ((frac * 100.0).round() as i32).clamp(min_val, max_val)
+        };
+        if value.get_untracked() != next {
+            value.set(next);
+        }
+    };
 
     let mut ticks_row = view()
         .absolute()
@@ -207,24 +228,26 @@ pub fn quality_slider(
         .relative()
         .cursor_pointer()
         .on_layout(move |b: &Bounds<Points>| {
-            slider_w.set(b.size.width.0.max(12.0));
+            rail.set(*b);
         })
         .claim_touches(TouchClaim::on_start())
         .keep_touches(true)
         .on_responder_grant(move |e: &ResponderEvent| {
-            let x = e.location.x.0;
-            drag_start_x.set(x);
-            let w = slider_w.get().max(1.0);
-            let frac = (x / w).clamp(0.0, 1.0);
-            let next = (min_val as f32 + frac * range).round() as i32;
-            cb_grant(next.clamp(min_val, max_val));
+            let r = rail.get_untracked();
+            let local_x = e.location.x.0 - r.origin.x.0;
+            let _ = drag_origin.replace(Some(local_x));
+            set_at(local_x);
         })
         .on_responder_move(move |e: &ResponderEvent| {
-            let x = drag_start_x.get() + e.gesture.delta.x.0;
-            let w = slider_w.get().max(1.0);
-            let frac = (x / w).clamp(0.0, 1.0);
-            let next = (min_val as f32 + frac * range).round() as i32;
-            cb_move(next.clamp(min_val, max_val));
+            if let Some(start_x) = drag_origin.get() {
+                set_at(start_x + e.gesture.delta.x.0);
+            }
+        })
+        .on_responder_release(move |_: &ResponderEvent| {
+            let _ = drag_origin.replace(None);
+        })
+        .on_responder_terminate(move |_: &ResponderEvent| {
+            let _ = drag_origin.replace(None);
         })
         // 2px track background at y = 8px
         .child(
@@ -245,7 +268,12 @@ pub fn quality_slider(
                 .left(px(0.0))
                 .top(px(8.0))
                 .h(px(2.0))
-                .w(move || px((slider_w.get() * t).round()))
+                .w(move || {
+                    let w = rail.get().size.width.0.max(12.0);
+                    let v = value.get();
+                    let t = ((v - min_val) as f32 / range).clamp(0.0, 1.0);
+                    px((w * t).round())
+                })
                 .rounded(px(1.0))
                 .bg(palette::primary())
                 .pointer_events(PointerEvents::None),
@@ -258,7 +286,9 @@ pub fn quality_slider(
                 .absolute()
                 .top(px(3.0))
                 .left(move || {
-                    let w = slider_w.get().max(12.0);
+                    let w = rail.get().size.width.0.max(12.0);
+                    let v = value.get();
+                    let t = ((v - min_val) as f32 / range).clamp(0.0, 1.0);
                     let cx = (t * w).clamp(6.0, w - 6.0);
                     px((cx - 6.0).round())
                 })

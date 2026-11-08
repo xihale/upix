@@ -389,18 +389,42 @@ impl TcpServer {
     }
 }
 
-/// Local IPv4 addresses, excluding loopback and docker interfaces (mirrors
-/// `network_utils::get_local_addresses`, which filters on getifaddrs names).
+/// Local IPv4 addresses, excluding loopback and virtual container/bridge
+/// interfaces, ordered with physical LAN/WLAN interfaces first.
 pub fn local_ips() -> Vec<IpAddr> {
-    let mut out = Vec::new();
+    let mut primary = Vec::new();
+    let mut secondary = Vec::new();
     if let Ok(ifaces) = if_addrs::get_if_addrs() {
         for iface in ifaces {
             if let if_addrs::IfAddr::V4(v4) = iface.addr {
-                if iface.name != "lo" && !iface.name.contains("docker") {
-                    out.push(IpAddr::V4(v4.ip));
+                let n = iface.name.as_str();
+                if n == "lo"
+                    || n.contains("docker")
+                    || n.starts_with("br-")
+                    || n.starts_with("veth")
+                    || n.starts_with("virbr")
+                    || n.starts_with("cni")
+                    || n.starts_with("flannel")
+                    || n.starts_with("podman")
+                {
+                    continue;
+                }
+                let is_physical_lan = (n.starts_with("wl")
+                    || n.starts_with("en")
+                    || n.starts_with("eth")
+                    || v4.ip.octets()[0] == 192)
+                    && !n.starts_with("tun")
+                    && !n.starts_with("tap")
+                    && !n.starts_with("tailscale")
+                    && !n.starts_with("wg");
+                if is_physical_lan {
+                    primary.push(IpAddr::V4(v4.ip));
+                } else {
+                    secondary.push(IpAddr::V4(v4.ip));
                 }
             }
         }
     }
-    out
+    primary.extend(secondary);
+    primary
 }

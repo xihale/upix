@@ -55,6 +55,8 @@ pub fn shell(store: Store) -> View {
             store.answer_approval(ApprovalReply::Deny);
         } else if store.show_model_picker.get() {
             store.show_model_picker.set(false);
+        } else if store.show_ip_picker.get() {
+            store.show_ip_picker.set(false);
         }
     });
 
