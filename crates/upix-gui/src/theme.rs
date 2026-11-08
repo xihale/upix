@@ -2,7 +2,7 @@
 
 use nsh_core::prelude::AdaptiveColor;
 
-pub const FONT_SANS: &str = "Inter, Noto Sans CJK SC, Source Sans 3, PingFang SC, Microsoft YaHei, DejaVu Sans";
+pub const FONT_SANS: &str = "Noto Sans CJK SC, Source Han Sans SC, PingFang SC, Microsoft YaHei, Inter, sans-serif";
 pub const FONT_MONO: &str = "JetBrains Mono, JetBrainsMonoNL Nerd Font Mono, JetBrainsMono Nerd Font Mono, DejaVu Sans Mono, Noto Sans CJK SC, monospace";
 
 pub mod radius {

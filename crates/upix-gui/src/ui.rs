@@ -88,14 +88,18 @@ pub fn segmented_with_font<T: Copy + PartialEq + 'static>(
 ) -> View {
     let active_idx = items.iter().position(|it| it.value == current).unwrap_or(0);
 
-    // Note: in Taffy `border-box`, `border_1()` consumes 1px on each side, so `p(px(1.0))`
-    // yields the exact 2px total inset (e.g. 24px active pill inside a 28px outer track)
-    // specified in Figma "Desktop / Segmented", avoiding a 3px double-ring gap.
+    // Figma "Desktop / Segmented" (`I83:3397;83:3307`):
+    // - Track: height 32px (or 28px), padding 2px, border 1px solid #25252D, radius 8px, bg #151519.
+    //   In Taffy `border-box`, `border_1()` (1px) + `p(px(2.0))` (2px) = 3px total inset, so a
+    //   32px track contains a 26px active pill and a 28px track contains a 22px active pill,
+    //   leaving a clean 2px #151519 cushion between the outer border and the active pill.
+    // - Active segment (`19:396`): bg #2B2B34, radius 6px, border 1px solid #FFFFFF14 (~#383842),
+    //   subtle drop shadow `0 1px 2px #00000052`.
     let mut row = view()
         .flex_row()
         .w_full()
         .h(px(height_px))
-        .p(px(1.0))
+        .p(px(2.0))
         .items_center()
         .rounded(px(8.0))
         .bg(palette::recessed())
@@ -108,20 +112,30 @@ pub fn segmented_with_font<T: Copy + PartialEq + 'static>(
         let lbl = item.label.to_string();
         let cb = on_change.clone();
 
-        // Hairline 1x12px divider between adjacent unselected segments (Figma: #282832)
-        if idx > 0 && idx != active_idx && (idx - 1) != active_idx {
+        // Hairline 1x12px divider between every segment; transparent when adjacent to active item
+        // so segment widths stay 100% uniform without shifting when selection changes.
+        if idx > 0 {
+            let show_div = idx != active_idx && (idx - 1) != active_idx;
             row = row.child(
                 view()
                     .w(px(1.0))
                     .h(px(12.0))
                     .flex_shrink_0()
-                    .bg(AdaptiveColor::rgb(0xD6D5CD, 0x282832)),
+                    .bg(if show_div {
+                        AdaptiveColor::rgb(0xD6D5CD, 0x282832)
+                    } else {
+                        AdaptiveColor::TRANSPARENT
+                    }),
             );
         }
 
         let mut lbl_text = text(lbl)
             .text_size(px(font_size_px))
-            .font_weight(FontWeight::MEDIUM)
+            .font_weight(if selected {
+                FontWeight::MEDIUM
+            } else {
+                FontWeight::NORMAL
+            })
             .tabular_nums()
             .text_color(if selected {
                 palette::on_surface()
@@ -146,7 +160,10 @@ pub fn segmented_with_font<T: Copy + PartialEq + 'static>(
             });
 
         if selected {
-            btn = btn.border_1().border_color(palette::seg_border());
+            btn = btn
+                .border_1()
+                .border_color(AdaptiveColor::new(rgba(0xC5C4BCFF), rgba(0xFFFFFF14)))
+                .shadow_sm();
         }
 
         btn = btn
