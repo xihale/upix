@@ -949,34 +949,32 @@ fn inspector_column(store: Store) -> View {
                         .flex_col()
                         .gap(px(12.0))
                         .child(section_header("输出"))
-                        .child(dynamic(move || {
-                            segmented(
-                                &[
-                                    SegmentItem {
-                                        value: OutputFormat::Follow,
-                                        label: "跟随",
-                                    },
-                                    SegmentItem {
-                                        value: OutputFormat::Png,
-                                        label: "PNG",
-                                    },
-                                    SegmentItem {
-                                        value: OutputFormat::Jpg,
-                                        label: "JPG",
-                                    },
-                                    SegmentItem {
-                                        value: OutputFormat::Webp,
-                                        label: "WebP",
-                                    },
-                                    SegmentItem {
-                                        value: OutputFormat::Avif,
-                                        label: "AVIF",
-                                    },
-                                ],
-                                store.format.get(),
-                                move |v| store.format.set(v),
-                            )
-                        }))
+                        .child(segmented(
+                            &[
+                                SegmentItem {
+                                    value: OutputFormat::Follow,
+                                    label: "跟随",
+                                },
+                                SegmentItem {
+                                    value: OutputFormat::Png,
+                                    label: "PNG",
+                                },
+                                SegmentItem {
+                                    value: OutputFormat::Jpg,
+                                    label: "JPG",
+                                },
+                                SegmentItem {
+                                    value: OutputFormat::Webp,
+                                    label: "WebP",
+                                },
+                                SegmentItem {
+                                    value: OutputFormat::Avif,
+                                    label: "AVIF",
+                                },
+                            ],
+                            store.format,
+                            move |v| store.format.set(v),
+                        ))
                         // Quality slider (when not PNG)
                         .child(when(
                             move || store.format.get().supports_quality(),
@@ -1026,25 +1024,23 @@ fn inspector_column(store: Store) -> View {
                                             .text_color(palette::on_surface()),
                                     )
                                     .child(
-                                        view().w(px(164.0)).child(dynamic(move || {
-                                            segmented_with_font(
-                                                &[
-                                                    SegmentItem {
-                                                        value: ChromaSubsampling::Yuv420,
-                                                        label: "4:2:0",
-                                                    },
-                                                    SegmentItem {
-                                                        value: ChromaSubsampling::Yuv444,
-                                                        label: "4:4:4",
-                                                    },
-                                                ],
-                                                store.chroma.get(),
-                                                28.0,
-                                                12.0,
-                                                true,
-                                                move |v| store.chroma.set(v),
-                                            )
-                                        })),
+                                        view().w(px(164.0)).child(segmented_with_font(
+                                            &[
+                                                SegmentItem {
+                                                    value: ChromaSubsampling::Yuv420,
+                                                    label: "4:2:0",
+                                                },
+                                                SegmentItem {
+                                                    value: ChromaSubsampling::Yuv444,
+                                                    label: "4:4:4",
+                                                },
+                                            ],
+                                            store.chroma,
+                                            28.0,
+                                            12.0,
+                                            true,
+                                            move |v| store.chroma.set(v),
+                                        )),
                                     )
                             },
                         ))
@@ -1065,28 +1061,26 @@ fn inspector_column(store: Store) -> View {
                                             .text_color(palette::on_surface()),
                                     )
                                     .child(
-                                        view().w(px(164.0)).child(dynamic(move || {
-                                            segmented_sized(
-                                                &[
-                                                    SegmentItem {
-                                                        value: 4,
-                                                        label: "精细",
-                                                    },
-                                                    SegmentItem {
-                                                        value: 6,
-                                                        label: "均衡",
-                                                    },
-                                                    SegmentItem {
-                                                        value: 8,
-                                                        label: "快速",
-                                                    },
-                                                ],
-                                                store.avif_speed.get(),
-                                                28.0,
-                                                12.0,
-                                                move |v| store.avif_speed.set(v),
-                                            )
-                                        })),
+                                        view().w(px(164.0)).child(segmented_sized(
+                                            &[
+                                                SegmentItem {
+                                                    value: 4,
+                                                    label: "精细",
+                                                },
+                                                SegmentItem {
+                                                    value: 6,
+                                                    label: "均衡",
+                                                },
+                                                SegmentItem {
+                                                    value: 8,
+                                                    label: "快速",
+                                                },
+                                            ],
+                                            store.avif_speed,
+                                            28.0,
+                                            12.0,
+                                            move |v| store.avif_speed.set(v),
+                                        )),
                                     )
                             },
                         ))
@@ -1127,24 +1121,22 @@ fn inspector_column(store: Store) -> View {
                                         .text_color(palette::on_surface()),
                                 )
                                 .child(
-                                    view().w(px(164.0)).child(dynamic(move || {
-                                        segmented_sized(
-                                            &[
-                                                SegmentItem {
-                                                    value: true,
-                                                    label: "GPU",
-                                                },
-                                                SegmentItem {
-                                                    value: false,
-                                                    label: "CPU",
-                                                },
-                                            ],
-                                            store.use_gpu.get(),
-                                            28.0,
-                                            12.0,
-                                            move |v| store.use_gpu.set(v),
-                                        )
-                                    })),
+                                    view().w(px(164.0)).child(segmented_sized(
+                                        &[
+                                            SegmentItem {
+                                                value: true,
+                                                label: "GPU",
+                                            },
+                                            SegmentItem {
+                                                value: false,
+                                                label: "CPU",
+                                            },
+                                        ],
+                                        store.use_gpu,
+                                        28.0,
+                                        12.0,
+                                        move |v| store.use_gpu.set(v),
+                                    )),
                                 ),
                         )
                         // Tile size (inline row: 14px #ececee + 164x28 segmented 自动/512/256/128)
@@ -1162,73 +1154,34 @@ fn inspector_column(store: Store) -> View {
                                         .text_color(palette::on_surface()),
                                 )
                                 .child(
-                                    view().w(px(164.0)).child(dynamic(move || {
-                                        segmented_sized(
-                                            &[
-                                                SegmentItem {
-                                                    value: 0,
-                                                    label: "自动",
-                                                },
-                                                SegmentItem {
-                                                    value: 512,
-                                                    label: "512",
-                                                },
-                                                SegmentItem {
-                                                    value: 256,
-                                                    label: "256",
-                                                },
-                                                SegmentItem {
-                                                    value: 128,
-                                                    label: "128",
-                                                },
-                                            ],
-                                            store.tile_size.get(),
-                                            28.0,
-                                            12.0,
-                                            move |v| store.tile_size.set(v),
-                                        )
-                                    })),
+                                    view().w(px(164.0)).child(segmented_sized(
+                                        &[
+                                            SegmentItem {
+                                                value: 0,
+                                                label: "自动",
+                                            },
+                                            SegmentItem {
+                                                value: 512,
+                                                label: "512",
+                                            },
+                                            SegmentItem {
+                                                value: 256,
+                                                label: "256",
+                                            },
+                                            SegmentItem {
+                                                value: 128,
+                                                label: "128",
+                                            },
+                                        ],
+                                        store.tile_size,
+                                        28.0,
+                                        12.0,
+                                        move |v| store.tile_size.set(v),
+                                    )),
                                 ),
                         )
-                        // Warm daemon toggle (inline row: 14px #ececee + loading/active badge + 44x26 toggle)
-                        .child(dynamic(move || {
-                            let running = store.daemon_running.get();
-                            let loading = store.daemon_loading.get();
-                            let frame_idx =
-                                (store.spinner_tick.get() as usize) % crate::ui::icons::LOADER_FRAMES.len();
-
-                            let status_badge = if loading {
-                                view()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap(px(5.0))
-                                    .child(svg_icon(
-                                        crate::ui::icons::LOADER_FRAMES[frame_idx],
-                                        13.0,
-                                        palette::primary(),
-                                    ))
-                                    .child(
-                                        text("预热中")
-                                            .text_size(px(11.0))
-                                            .font_family(FONT_MONO)
-                                            .text_color(palette::primary()),
-                                    )
-                                    .into_element()
-                            } else if running {
-                                view()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap(px(3.0))
-                                    .child(svg_icon(
-                                        crate::ui::icons::ZAP,
-                                        12.0,
-                                        palette::primary(),
-                                    ))
-                                    .into_element()
-                            } else {
-                                view().into_element()
-                            };
-
+                        // Warm daemon toggle (inline row: 14px #ececee + 60fps spinning/active badge + 44x26 animated toggle)
+                        .child(
                             view()
                                 .flex_row()
                                 .w_full()
@@ -1247,21 +1200,59 @@ fn inspector_column(store: Store) -> View {
                                                 .font_weight(FontWeight::MEDIUM)
                                                 .text_color(palette::on_surface()),
                                         )
-                                        .child(status_badge),
+                                        .child(when(
+                                            move || store.daemon_loading.get(),
+                                            move || {
+                                                view()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .gap(px(5.0))
+                                                    .child(
+                                                        svg_icon(
+                                                            crate::ui::icons::LOADER_FRAMES[0],
+                                                            13.0,
+                                                            palette::primary(),
+                                                        )
+                                                        .animate_spin(),
+                                                    )
+                                                    .child(
+                                                        text("预热中")
+                                                            .text_size(px(11.0))
+                                                            .font_family(FONT_MONO)
+                                                            .text_color(palette::primary()),
+                                                    )
+                                            },
+                                        ))
+                                        .child(when(
+                                            move || {
+                                                store.daemon_running.get()
+                                                    && !store.daemon_loading.get()
+                                            },
+                                            move || {
+                                                view()
+                                                    .flex_row()
+                                                    .items_center()
+                                                    .gap(px(3.0))
+                                                    .child(svg_icon(
+                                                        crate::ui::icons::ZAP,
+                                                        12.0,
+                                                        palette::primary(),
+                                                    ))
+                                            },
+                                        )),
                                 )
-                                .child(toggle_switch(running || loading, move |v| {
-                                    store.toggle_daemon(v)
-                                }))
-                        }))
-                        // Force overwrite toggle (inline row: 14px #ececee + 44x26 toggle)
-                        .child(dynamic(move || {
-                            toggle_row(
-                                "覆盖已有结果",
-                                "",
-                                store.force.get(),
-                                move |v| store.force.set(v),
-                            )
-                        })),
+                                .child(toggle_switch(
+                                    move || store.daemon_running.get() || store.daemon_loading.get(),
+                                    move |v| store.toggle_daemon(v),
+                                )),
+                        )
+                        // Force overwrite toggle (inline row: 14px #ececee + 44x26 animated toggle)
+                        .child(toggle_row(
+                            "覆盖已有结果",
+                            "",
+                            move || store.force.get(),
+                            move |v| store.force.set(v),
+                        )),
                 ),
         )
         // Bottom sticky CTA bar (16px padding, no top border in Figma)
@@ -1279,81 +1270,97 @@ fn inspector_column(store: Store) -> View {
         ))
 }
 
-fn model_picker_trigger(store: Store) -> AnyElement {
-    dynamic(move || {
-        let is_open = store.show_model_picker.get();
-        let cur = store.current_model_variant();
-
-        view()
-            .w_full()
-            .h(px(36.0))
-            .rounded(px(8.0))
-            .px(px(12.0))
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .cursor_pointer()
-            .bg(AdaptiveColor::rgb(0xFFFFFF, 0x18181D))
-            .border_1()
-            .border_color(if is_open {
+fn model_picker_trigger(store: Store) -> View {
+    view()
+        .w_full()
+        .h(px(36.0))
+        .rounded(px(8.0))
+        .px(px(12.0))
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .cursor_pointer()
+        .bg(AdaptiveColor::rgb(0xFFFFFF, 0x18181D))
+        .border_1()
+        .border_color(move || {
+            if store.show_model_picker.get() {
                 palette::primary()
             } else {
                 AdaptiveColor::rgb(0xCECDC5, 0x2D2D36)
-            })
-            .hover(|s| s.bg(palette::container()))
-            .on_press(move || store.show_model_picker.update(|v| *v = !*v))
-            .child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(
-                        text(cur.short_name)
-                            .text_size(px(13.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .font_family(FONT_MONO)
-                            .text_color(palette::on_surface()),
-                    )
-                    .child(if cur.recommended {
-                        text("★")
-                            .text_size(px(11.0))
-                            .text_color(palette::on_surface())
-                            .into_element()
-                    } else {
-                        view().into_element()
-                    }),
-            )
-            .child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(
-                        view()
-                            .h(px(20.0))
-                            .px(px(6.0))
-                            .rounded(px(4.0))
-                            .bg(AdaptiveColor::rgb(0xEFECE6, 0x1C1C22))
-                            .border_1()
-                            .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2E2E37))
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                text(format!("{}×", cur.scale))
-                                    .text_size(px(11.0))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .font_family(FONT_MONO)
-                                    .tabular_nums()
-                                    .text_color(palette::muted()),
-                            ),
-                    )
-                    .child(svg_icon(
+            }
+        })
+        .hover(|s| s.bg(palette::container()))
+        .active(|s| s.scale(0.99))
+        .transition()
+        .duration(150.0)
+        .ease_out()
+        .on_press(move || store.show_model_picker.update(|v| *v = !*v))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    text(move || store.current_model_variant().short_name)
+                        .text_size(px(13.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .font_family(FONT_MONO)
+                        .text_color(palette::on_surface()),
+                )
+                .child(
+                    text(move || {
+                        if store.current_model_variant().recommended {
+                            "★"
+                        } else {
+                            ""
+                        }
+                    })
+                    .text_size(px(11.0))
+                    .text_color(palette::on_surface()),
+                ),
+        )
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    view()
+                        .h(px(20.0))
+                        .px(px(6.0))
+                        .rounded(px(4.0))
+                        .bg(AdaptiveColor::rgb(0xEFECE6, 0x1C1C22))
+                        .border_1()
+                        .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2E2E37))
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            text(move || format!("{}×", store.current_model_variant().scale))
+                                .text_size(px(11.0))
+                                .font_weight(FontWeight::MEDIUM)
+                                .font_family(FONT_MONO)
+                                .tabular_nums()
+                                .text_color(palette::muted()),
+                        ),
+                )
+                .child(
+                    svg_icon(
                         crate::ui::icons::CHEVRON_DOWN,
                         14.0,
                         palette::muted(),
-                    )),
-            )
-    })
+                    )
+                    .rotate(move || {
+                        deg(if store.show_model_picker.get() {
+                            180.0
+                        } else {
+                            0.0
+                        })
+                    })
+                    .transition_transform()
+                    .duration(180.0)
+                    .ease_out(),
+                ),
+        )
 }
 
 fn model_picker_popup(store: Store) -> View {
@@ -1493,69 +1500,73 @@ fn model_picker_popup(store: Store) -> View {
         )
 }
 
-fn output_dir_box(store: Store) -> AnyElement {
-    dynamic(move || {
-        let custom = store.custom_out_dir.get();
-        let label = match custom {
-            Some(ref p) => p
-                .file_name()
-                .and_then(|s| s.to_str())
-                .map(str::to_owned)
-                .unwrap_or_else(|| p.display().to_string()),
-            None => "跟随原图目录".to_string(),
-        };
-        let has_custom = custom.is_some();
-
-        view()
-            .w_full()
-            .h(px(34.0))
-            .rounded(px(8.0))
-            .bg(AdaptiveColor::rgb(0xEAE9E4, 0x16161A))
-            .border_1()
-            .border_color(palette::outline())
-            .pl(px(10.0))
-            .pr(px(4.0))
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .overflow_hidden()
-                    .child(svg_icon(
-                        crate::ui::icons::FOLDER,
-                        13.0,
-                        AdaptiveColor::rgb(0x706F68, 0x7E7E8A),
-                    ))
-                    .child(
-                        text(label)
-                            .text_size(px(12.0))
-                            .text_color(AdaptiveColor::rgb(0x27272A, 0xD0D0D8)),
-                    ),
-            )
-            .child(
-                view()
-                    .h(px(24.0))
-                    .px(px(8.0))
-                    .rounded(px(6.0))
-                    .bg(palette::container())
-                    .border_1()
-                    .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2E2E38))
-                    .hover(|s| s.bg(palette::high()))
-                    .items_center()
-                    .justify_center()
-                    .cursor_pointer()
-                    .on_press(move || pick_export_folder(store))
-                    .child(
-                        text(if has_custom { "更改" } else { "指定…" })
-                            .text_size(px(11.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .text_color(palette::muted()),
-                    ),
-            )
-    })
+fn output_dir_box(store: Store) -> View {
+    view()
+        .w_full()
+        .h(px(34.0))
+        .rounded(px(8.0))
+        .bg(AdaptiveColor::rgb(0xEAE9E4, 0x16161A))
+        .border_1()
+        .border_color(palette::outline())
+        .pl(px(10.0))
+        .pr(px(4.0))
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .overflow_hidden()
+                .child(svg_icon(
+                    crate::ui::icons::FOLDER,
+                    13.0,
+                    AdaptiveColor::rgb(0x706F68, 0x7E7E8A),
+                ))
+                .child(
+                    text(move || match store.custom_out_dir.get() {
+                        Some(ref p) => p
+                            .file_name()
+                            .and_then(|s| s.to_str())
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| p.display().to_string()),
+                        None => "跟随原图目录".to_string(),
+                    })
+                    .text_size(px(12.0))
+                    .text_color(AdaptiveColor::rgb(0x27272A, 0xD0D0D8)),
+                ),
+        )
+        .child(
+            view()
+                .h(px(24.0))
+                .px(px(8.0))
+                .rounded(px(6.0))
+                .bg(palette::container())
+                .border_1()
+                .border_color(AdaptiveColor::rgb(0xCECDC5, 0x2E2E38))
+                .hover(|s| s.bg(palette::high()))
+                .active(|s| s.scale(0.96))
+                .transition()
+                .duration(140.0)
+                .ease_out()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .on_press(move || pick_export_folder(store))
+                .child(
+                    text(move || {
+                        if store.custom_out_dir.get().is_some() {
+                            "更改"
+                        } else {
+                            "指定…"
+                        }
+                    })
+                    .text_size(px(11.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(palette::muted()),
+                ),
+        )
 }
 
 fn inspector_cta_button(store: Store) -> AnyElement {

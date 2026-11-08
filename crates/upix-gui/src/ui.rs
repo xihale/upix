@@ -2,6 +2,7 @@
 
 use nsh_core::element::ImageSrc;
 use nsh_core::prelude::*;
+use nsh_core::{LayoutCurve, LayoutTransition};
 
 use crate::theme::{palette, radius, FONT_MONO};
 
@@ -57,10 +58,11 @@ pub struct SegmentItem<'a, T: Copy + PartialEq + 'static> {
 
 /// Segmented control matching Figma "Desktop / Segmented" (`#151519` track, `#25252D` border,
 /// `8px` radius, `2px` padding, `#2B2B34` active with `#383842` border, `6px` radius,
-/// and `1x12px` `#282832` divider between unselected items).
+/// and `1x12px` `#282832` divider between unselected items), with a native spring-animated
+/// sliding indicator (`View::follow` + `LayoutCurve::Spring`).
 pub fn segmented<T: Copy + PartialEq + 'static>(
     items: &[SegmentItem<'_, T>],
-    current: T,
+    current: Signal<T>,
     on_change: impl Fn(T) + Clone + 'static,
 ) -> View {
     segmented_sized(items, current, 32.0, 12.0, on_change)
@@ -69,7 +71,7 @@ pub fn segmented<T: Copy + PartialEq + 'static>(
 /// Segmented control with custom height and font size.
 pub fn segmented_sized<T: Copy + PartialEq + 'static>(
     items: &[SegmentItem<'_, T>],
-    current: T,
+    current: Signal<T>,
     height_px: f32,
     font_size_px: f32,
     on_change: impl Fn(T) + Clone + 'static,
@@ -78,102 +80,118 @@ pub fn segmented_sized<T: Copy + PartialEq + 'static>(
 }
 
 /// Segmented control with custom height, font size, and optional monospace font (`FONT_MONO`).
+///
+/// The segment nodes remain mounted across clicks (never torn down via `dynamic`), so the
+/// active indicator pill glides smoothly between segments using `nsh`'s native layout spring.
 pub fn segmented_with_font<T: Copy + PartialEq + 'static>(
     items: &[SegmentItem<'_, T>],
-    current: T,
+    current: Signal<T>,
     height_px: f32,
     font_size_px: f32,
     mono: bool,
     on_change: impl Fn(T) + Clone + 'static,
 ) -> View {
-    let active_idx = items.iter().position(|it| it.value == current).unwrap_or(0);
+    const SEG_SPRING: LayoutTransition =
+        LayoutTransition::new(LayoutCurve::Spring { damping: 0.86 }, 250.0);
 
-    // Figma "Desktop / Segmented" (`I83:3397;83:3307`):
-    // - Track: height 32px (or 28px), padding 2px, border 1px solid #25252D, radius 8px, bg #151519.
-    //   In Taffy `border-box`, `border_1()` (1px) + `p(px(2.0))` (2px) = 3px total inset, so a
-    //   32px track contains a 26px active pill and a 28px track contains a 22px active pill,
-    //   leaving a clean 2px #151519 cushion between the outer border and the active pill.
-    // - Active segment (`19:396`): bg #2B2B34, radius 6px, border 1px solid #FFFFFF14 (~#383842),
-    //   subtle drop shadow `0 1px 2px #00000052`.
+    let refs: Vec<(T, ElementRef)> = items.iter().map(|it| (it.value, element_ref())).collect();
+    let values: Vec<T> = items.iter().map(|it| it.value).collect();
+    let refs_for_follow = refs.clone();
+
+    // Sliding active background pill (`#2B2B34`, 1px border `#FFFFFF14`, 6px radius, shadow_sm)
+    let pill = view()
+        .absolute()
+        .top(px(2.0))
+        .bottom(px(2.0))
+        .rounded(px(6.0))
+        .bg(palette::seg_selected())
+        .border_1()
+        .border_color(AdaptiveColor::new(rgba(0xC5C4BCFF), rgba(0xFFFFFF14)))
+        .shadow_sm()
+        .pointer_events(PointerEvents::None)
+        .follow(move || {
+            let cur = current.get();
+            refs_for_follow
+                .iter()
+                .find(|(v, _)| *v == cur)
+                .or_else(|| refs_for_follow.first())
+                .map(|(_, r)| *r)
+        })
+        .follow_transition(move || (!reduce_motion()).then_some(SEG_SPRING));
+
     let mut row = view()
         .flex_row()
         .w_full()
         .h(px(height_px))
         .p(px(2.0))
+        .relative()
         .items_center()
         .rounded(px(8.0))
         .bg(palette::recessed())
         .border_1()
-        .border_color(AdaptiveColor::rgb(0xD6D5CD, 0x25252D));
+        .border_color(AdaptiveColor::rgb(0xD6D5CD, 0x25252D))
+        .child(pill);
 
     for (idx, item) in items.iter().enumerate() {
         let val = item.value;
-        let selected = idx == active_idx;
+        let el_ref = refs[idx].1;
         let lbl = item.label.to_string();
         let cb = on_change.clone();
 
-        // Hairline 1x12px divider between every segment; transparent when adjacent to active item
-        // so segment widths stay 100% uniform without shifting when selection changes.
+        // Hairline 1x12px divider between every segment; smoothly fades out when adjacent to active item
+        // while keeping fixed 1px width so segment layout never shifts.
         if idx > 0 {
-            let show_div = idx != active_idx && (idx - 1) != active_idx;
+            let prev_val = values[idx - 1];
             row = row.child(
                 view()
                     .w(px(1.0))
                     .h(px(12.0))
                     .flex_shrink_0()
-                    .bg(if show_div {
-                        AdaptiveColor::rgb(0xD6D5CD, 0x282832)
-                    } else {
-                        AdaptiveColor::TRANSPARENT
+                    .transition_colors()
+                    .duration(150.0)
+                    .ease_out()
+                    .bg(move || {
+                        let cur = current.get();
+                        if cur == val || cur == prev_val {
+                            AdaptiveColor::TRANSPARENT
+                        } else {
+                            AdaptiveColor::rgb(0xD6D5CD, 0x282832)
+                        }
                     }),
             );
         }
 
         let mut lbl_text = text(lbl)
             .text_size(px(font_size_px))
-            .font_weight(if selected {
-                FontWeight::MEDIUM
-            } else {
-                FontWeight::NORMAL
-            })
+            .font_weight(FontWeight::MEDIUM)
             .tabular_nums()
-            .text_color(if selected {
-                palette::on_surface()
-            } else {
-                palette::muted()
+            .transition_colors()
+            .duration(150.0)
+            .ease_out()
+            .text_color(move || {
+                if current.get() == val {
+                    palette::on_surface()
+                } else {
+                    palette::muted()
+                }
             });
         if mono {
             lbl_text = lbl_text.font_family(FONT_MONO);
         }
 
-        let mut btn = view()
+        let btn = view()
+            .element_ref(&el_ref)
             .flex_1()
             .h_full()
             .rounded(px(6.0))
             .items_center()
             .justify_center()
             .cursor_pointer()
-            .bg(if selected {
-                palette::seg_selected()
-            } else {
-                AdaptiveColor::TRANSPARENT
-            });
-
-        if selected {
-            btn = btn
-                .border_1()
-                .border_color(AdaptiveColor::new(rgba(0xC5C4BCFF), rgba(0xFFFFFF14)))
-                .shadow_sm();
-        }
-
-        btn = btn
-            .hover(move |s| {
-                s.bg(if selected {
-                    palette::seg_selected()
-                } else {
-                    palette::container_low()
-                })
-            })
+            .transition()
+            .duration(140.0)
+            .ease_out()
+            .hover(|s| s.bg(AdaptiveColor::new(rgba(0x0000000A), rgba(0xFFFFFF07))))
+            .active(|s| s.scale(0.97))
             .on_press(move || cb(val))
             .child(lbl_text);
         row = row.child(btn);
@@ -332,7 +350,11 @@ pub fn icon_button(
         .bg(palette::container_low())
         .border_1()
         .border_color(palette::outline())
+        .transition()
+        .duration(140.0)
+        .ease_out()
         .hover(|s| s.bg(palette::high()).border_color(palette::outline_strong()))
+        .active(|s| s.scale(0.94))
         .items_center()
         .justify_center()
         .cursor_pointer()
@@ -341,37 +363,59 @@ pub fn icon_button(
 }
 
 /// Toggle switch matching Figma "Desktop / Toggle" (`44x26`, `20x20` thumb, `3px` padding).
-pub fn toggle_switch(checked: bool, on_toggle: impl Fn(bool) + 'static) -> View {
+///
+/// Keeps the track and thumb nodes alive across toggles so the thumb glides smoothly
+/// via `translate_x` (`ease-bezier(0.22, 1.0, 0.36, 1.0)`) and colors cross-fade.
+pub fn toggle_switch(
+    is_checked: impl Fn() -> bool + Copy + 'static,
+    on_toggle: impl Fn(bool) + 'static,
+) -> View {
     view()
         .w(px(44.0))
         .h(px(26.0))
         .p(px(2.0))
         .rounded(px(13.0))
-        .bg(if checked {
-            palette::toggle_on_bg()
-        } else {
-            palette::high()
+        .transition_colors()
+        .duration(180.0)
+        .ease_out()
+        .bg(move || {
+            if is_checked() {
+                palette::toggle_on_bg()
+            } else {
+                palette::high()
+            }
         })
         .border_1()
-        .border_color(if checked {
-            palette::toggle_on_border()
-        } else {
-            palette::outline_input()
+        .border_color(move || {
+            if is_checked() {
+                palette::toggle_on_border()
+            } else {
+                palette::outline_input()
+            }
         })
         .flex_row()
         .items_center()
         .justify_start()
         .cursor_pointer()
-        .on_press(move || on_toggle(!checked))
+        .active(|s| s.scale(0.96))
+        .on_press(move || {
+            let cur = untracked(is_checked);
+            on_toggle(!cur);
+        })
         .child(
             view()
-                .ml(px(if checked { 18.0 } else { 0.0 }))
+                .translate_x(move || px(if is_checked() { 18.0 } else { 0.0 }))
+                .transition()
+                .duration(185.0)
+                .ease_bezier(0.22, 1.0, 0.36, 1.0)
                 .size(px(20.0))
                 .rounded(px(10.0))
-                .bg(if checked {
-                    palette::primary()
-                } else {
-                    palette::on_surface()
+                .bg(move || {
+                    if is_checked() {
+                        palette::primary()
+                    } else {
+                        palette::on_surface()
+                    }
                 }),
         )
 }
@@ -380,7 +424,7 @@ pub fn toggle_switch(checked: bool, on_toggle: impl Fn(bool) + 'static) -> View 
 pub fn toggle_row(
     label: impl Into<String>,
     sublabel: impl Into<String>,
-    checked: bool,
+    is_checked: impl Fn() -> bool + Copy + 'static,
     on_toggle: impl Fn(bool) + 'static,
 ) -> View {
     let lbl = label.into();
@@ -408,7 +452,7 @@ pub fn toggle_row(
         .justify_between()
         .gap(px(8.0))
         .child(left)
-        .child(toggle_switch(checked, on_toggle))
+        .child(toggle_switch(is_checked, on_toggle))
 }
 
 /// Primary CTA button (`276x44` in Figma Inspector).
@@ -426,6 +470,9 @@ pub fn primary_button(
         .items_center()
         .justify_center()
         .gap(px(8.0))
+        .transition()
+        .duration(140.0)
+        .ease_out()
         .bg(if enabled {
             palette::primary()
         } else {
@@ -436,7 +483,7 @@ pub fn primary_button(
         v = v
             .cursor_pointer()
             .hover(|s| s.bg(palette::primary_hover()))
-            .active(|s| s.bg(palette::accent_active()))
+            .active(|s| s.bg(palette::accent_active()).scale(0.985))
             .on_press(move || on_click());
     }
 
@@ -469,8 +516,11 @@ pub fn secondary_button(
         .border_1()
         .border_color(palette::border())
         .cursor_pointer()
+        .transition()
+        .duration(140.0)
+        .ease_out()
         .hover(|s| s.bg(palette::highest()))
-        .active(|s| s.bg(palette::surface()))
+        .active(|s| s.bg(palette::surface()).scale(0.97))
         .on_press(move || on_click())
         .child(
             text(label.into())

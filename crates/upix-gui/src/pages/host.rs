@@ -396,79 +396,94 @@ fn ip_kind_badge(ip: &str) -> &'static str {
     }
 }
 
-fn ip_selector_box(store: Store) -> AnyElement {
-    dynamic(move || {
-        let is_open = store.show_ip_picker.get();
+fn ip_selector_box(store: Store) -> View {
+    let cur_ip_fn = move || {
         let ips = store.host_ips.get();
         let idx = store.host_ip_idx.get().min(ips.len().saturating_sub(1));
-        let cur_ip = ips
-            .get(idx)
+        ips.get(idx)
             .cloned()
-            .unwrap_or_else(|| "192.168.0.126".to_string());
-        let tag = ip_kind_badge(&cur_ip);
+            .unwrap_or_else(|| "192.168.0.126".to_string())
+    };
 
-        view()
-            .w(px(216.0))
-            .h(px(30.0))
-            .rounded(px(6.0))
-            .bg(AdaptiveColor::rgb(0xEAE9E4, 0x16161B))
-            .border_1()
-            .border_color(if is_open {
+    view()
+        .w(px(216.0))
+        .h(px(30.0))
+        .rounded(px(6.0))
+        .bg(AdaptiveColor::rgb(0xEAE9E4, 0x16161B))
+        .border_1()
+        .border_color(move || {
+            if store.show_ip_picker.get() {
                 palette::primary()
             } else {
                 AdaptiveColor::rgb(0xD6D5CD, 0x2A2A32)
-            })
-            .hover(|s| s.bg(AdaptiveColor::rgb(0xE3E2DC, 0x22222A)))
-            .pl(px(10.0))
-            .pr(px(9.0))
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .cursor_pointer()
-            .on_press(move || store.show_ip_picker.update(|v| *v = !*v))
-            .child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(8.0))
-                    .child(view().size(px(5.0)).rounded_full().bg(palette::primary()))
-                    .child(
-                        text(cur_ip)
-                            .text_size(px(12.0))
-                            .font_weight(FontWeight::MEDIUM)
-                            .font_family(FONT_MONO)
-                            .tabular_nums()
-                            .text_color(palette::on_surface()),
-                    ),
-            )
-            .child(
-                view()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(6.0))
-                    .child(
-                        view()
-                            .w(px(28.0))
-                            .h(px(16.0))
-                            .rounded(px(4.0))
-                            .bg(AdaptiveColor::rgb(0xDDDCDA, 0x23232B))
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                text(tag)
-                                    .text_size(px(9.5))
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .font_family(FONT_MONO)
-                                    .text_color(AdaptiveColor::rgb(0x706F68, 0x8E8E9A)),
-                            ),
-                    )
-                    .child(svg_icon(
+            }
+        })
+        .hover(|s| s.bg(AdaptiveColor::rgb(0xE3E2DC, 0x22222A)))
+        .active(|s| s.scale(0.99))
+        .transition()
+        .duration(150.0)
+        .ease_out()
+        .pl(px(10.0))
+        .pr(px(9.0))
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .cursor_pointer()
+        .on_press(move || store.show_ip_picker.update(|v| *v = !*v))
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .child(view().size(px(5.0)).rounded_full().bg(palette::primary()))
+                .child(
+                    text(cur_ip_fn)
+                        .text_size(px(12.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .font_family(FONT_MONO)
+                        .tabular_nums()
+                        .text_color(palette::on_surface()),
+                ),
+        )
+        .child(
+            view()
+                .flex_row()
+                .items_center()
+                .gap(px(6.0))
+                .child(
+                    view()
+                        .w(px(28.0))
+                        .h(px(16.0))
+                        .rounded(px(4.0))
+                        .bg(AdaptiveColor::rgb(0xDDDCDA, 0x23232B))
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            text(move || ip_kind_badge(&cur_ip_fn()))
+                                .text_size(px(9.5))
+                                .font_weight(FontWeight::MEDIUM)
+                                .font_family(FONT_MONO)
+                                .text_color(AdaptiveColor::rgb(0x706F68, 0x8E8E9A)),
+                        ),
+                )
+                .child(
+                    svg_icon(
                         crate::ui::icons::CHEVRON_DOWN,
                         10.0,
                         AdaptiveColor::rgb(0x706F68, 0x7E7E8A),
-                    )),
-            )
-    })
+                    )
+                    .rotate(move || {
+                        deg(if store.show_ip_picker.get() {
+                            180.0
+                        } else {
+                            0.0
+                        })
+                    })
+                    .transition_transform()
+                    .duration(180.0)
+                    .ease_out(),
+                ),
+        )
 }
 
 fn ip_picker_popup(store: Store) -> View {

@@ -105,12 +105,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "anyhow"
-version = "1.0.104"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
-
-[[package]]
 name = "arbitrary"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -418,15 +412,6 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
-]
-
-[[package]]
-name = "clap_complete"
-version = "4.6.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "037e2a1a92236d0aff7e845093f64661d6df4c02c9fcc61a60e9e1d736fa392f"
-dependencies = [
- "clap",
 ]
 
 [[package]]
@@ -3634,10 +3619,7 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 name = "upix-cli"
 version = "0.3.0"
 dependencies = [
- "anyhow",
  "clap",
- "clap_complete",
- "env_logger",
  "libc",
  "log",
  "qrcodegen",
@@ -3678,7 +3660,6 @@ dependencies = [
  "env_logger",
  "jpeg-encoder",
  "log",
- "nsh-base",
  "nsh-core",
  "nsh-platform-linux",
  "nsh-platform-macos",

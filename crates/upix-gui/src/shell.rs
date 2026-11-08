@@ -4,7 +4,9 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use nsh_core::element::ImageSrc;
 use nsh_core::prelude::*;
+use nsh_core::{LayoutCurve, LayoutTransition};
 
 use crate::host_bridge::{ApprovalReply, ApprovalRequest};
 use crate::nav::NavTab;
@@ -92,12 +94,39 @@ pub fn shell(store: Store) -> View {
 }
 
 fn nav_rail(store: Store) -> View {
-    let mut items_col = view().w_full().flex_col().items_center().gap(px(2.0));
+    const NAV_SPRING: LayoutTransition =
+        LayoutTransition::new(LayoutCurve::Spring { damping: 0.85 }, 270.0);
 
-    for tab in NavTab::ALL {
-        items_col = items_col.child(dynamic(move || {
-            let selected = store.nav.get() == tab;
+    let refs: [(NavTab, ElementRef); 3] = NavTab::ALL.map(|tab| (tab, element_ref()));
+
+    // Spring-animated background pill that follows the selected nav tab natively
+    let active_pill = view()
+        .absolute()
+        .left(px(8.0))
+        .right(px(8.0))
+        .rounded(px(10.0))
+        .bg(palette::high())
+        .pointer_events(PointerEvents::None)
+        .follow(move || {
+            let cur = store.nav.get();
+            refs.iter()
+                .find(|(t, _)| *t == cur)
+                .map(|(_, r)| *r)
+        })
+        .follow_transition(move || (!reduce_motion()).then_some(NAV_SPRING));
+
+    let mut items_col = view()
+        .w_full()
+        .relative()
+        .flex_col()
+        .items_center()
+        .gap(px(2.0))
+        .child(active_pill);
+
+    for (tab, el_ref) in refs {
+        items_col = items_col.child(
             view()
+                .element_ref(&el_ref)
                 .size(px(60.0))
                 .rounded(px(10.0))
                 .flex_col()
@@ -105,39 +134,44 @@ fn nav_rail(store: Store) -> View {
                 .justify_center()
                 .gap(px(3.0))
                 .cursor_pointer()
-                .bg(if selected {
-                    palette::high()
-                } else {
-                    AdaptiveColor::TRANSPARENT
-                })
+                .transition()
+                .duration(140.0)
+                .ease_out()
                 .hover(move |s| {
-                    s.bg(if selected {
-                        palette::high()
-                    } else {
-                        palette::container_low()
-                    })
+                    s.bg(AdaptiveColor::new(rgba(0x0000000A), rgba(0xFFFFFF08)))
                 })
+                .active(|s| s.scale(0.95))
                 .on_press(move || store.nav.set(tab))
-                .child(svg_icon(
-                    tab.icon_svg(),
-                    20.0,
-                    if selected {
-                        palette::primary()
-                    } else {
-                        palette::muted()
-                    },
-                ))
+                .child(
+                    svg(ImageSrc::svg_markup(tab.icon_svg()))
+                        .size(px(20.0))
+                        .transition_colors()
+                        .duration(150.0)
+                        .ease_out()
+                        .tint_color(move || {
+                            if store.nav.get() == tab {
+                                palette::primary()
+                            } else {
+                                palette::muted()
+                            }
+                        }),
+                )
                 .child(
                     text(tab.label())
                         .text_size(px(11.0))
                         .font_weight(FontWeight::MEDIUM)
-                        .text_color(if selected {
-                            palette::on_surface()
-                        } else {
-                            palette::muted()
+                        .transition_colors()
+                        .duration(150.0)
+                        .ease_out()
+                        .text_color(move || {
+                            if store.nav.get() == tab {
+                                palette::on_surface()
+                            } else {
+                                palette::muted()
+                            }
                         }),
-                )
-        }));
+                ),
+        );
     }
 
     view()

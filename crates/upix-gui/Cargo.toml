@@ -8,7 +8,6 @@ publish = false
 # must stay at the CLI's version — a mismatch is a build problem.
 [dependencies]
 nsh-core = "=0.4.0"
-nsh-base = "=0.4.0"
 env_logger.workspace = true
 log.workspace = true
 upix-core.workspace = true

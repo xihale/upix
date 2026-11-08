@@ -31,7 +31,13 @@ pub fn evict_file_backed_font_pages() {
         return;
     };
     for line in maps.lines() {
-        if !(line.ends_with(".ttc") || line.ends_with(".ttf") || line.ends_with(".otf")) {
+        let is_evictable_ro = line.ends_with(".ttc")
+            || line.ends_with(".ttf")
+            || line.ends_with(".otf")
+            || line.contains("/fontconfig/")
+            || line.ends_with("/locale-archive")
+            || line.ends_with("/icon-theme.cache");
+        if !is_evictable_ro {
             continue;
         }
         let mut parts = line.split_whitespace();

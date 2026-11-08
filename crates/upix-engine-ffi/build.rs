@@ -63,6 +63,8 @@ fn main() {
     build
         .cpp(true)
         .flag_if_supported("-std=c++23")
+        .flag_if_supported("-ffunction-sections")
+        .flag_if_supported("-fdata-sections")
         .define("UPIX_SPIRV_PACK_EXTERNAL", None)
         .include(&csrc)
         .include(&share)
@@ -89,6 +91,7 @@ fn main() {
     // --- link ---------------------------------------------------------------
     // Static ncnn + its transitive needs (simpleomp is bundled; vulkan is
     // dlopen'd at runtime but linked for presence per CONTRACT).
+    println!("cargo:rustc-link-arg=-Wl,--gc-sections");
     println!("cargo:rustc-link-search=native={}", ncnn_lib.display());
     println!("cargo:rustc-link-lib=static=ncnn");
     println!("cargo:rustc-link-lib=dylib=vulkan");

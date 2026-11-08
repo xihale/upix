@@ -656,9 +656,6 @@ impl Store {
     }
 
     fn drain_daemon(self) {
-        if self.daemon_loading.get_untracked() {
-            self.spinner_tick.update(|t| *t = t.wrapping_add(1));
-        }
         let mut finished = None;
         self.daemon_rx.with(|slot| {
             if let Some(rx) = slot {

@@ -100,37 +100,35 @@ pub fn models_page(store: Store) -> View {
                                                         .border(px(0.0)),
                                                 ),
                                         )
-                                        // 5-way Scene Filter (210x34)
-                                        .child(view().w(px(210.0)).child(dynamic(move || {
-                                            segmented_sized(
-                                                &[
-                                                    SegmentItem {
-                                                        value: SceneFilter::All,
-                                                        label: "全部",
-                                                    },
-                                                    SegmentItem {
-                                                        value: SceneFilter::Anime,
-                                                        label: "动漫",
-                                                    },
-                                                    SegmentItem {
-                                                        value: SceneFilter::Photo,
-                                                        label: "照片",
-                                                    },
-                                                    SegmentItem {
-                                                        value: SceneFilter::General,
-                                                        label: "综合",
-                                                    },
-                                                    SegmentItem {
-                                                        value: SceneFilter::Restore,
-                                                        label: "修复",
-                                                    },
-                                                ],
-                                                scene_filter.get(),
-                                                34.0,
-                                                12.0,
-                                                move |v| scene_filter.set(v),
-                                            )
-                                        }))),
+                                        // 5-way Scene Filter (210x34) with spring follower pill
+                                        .child(view().w(px(210.0)).child(segmented_sized(
+                                            &[
+                                                SegmentItem {
+                                                    value: SceneFilter::All,
+                                                    label: "全部",
+                                                },
+                                                SegmentItem {
+                                                    value: SceneFilter::Anime,
+                                                    label: "动漫",
+                                                },
+                                                SegmentItem {
+                                                    value: SceneFilter::Photo,
+                                                    label: "照片",
+                                                },
+                                                SegmentItem {
+                                                    value: SceneFilter::General,
+                                                    label: "综合",
+                                                },
+                                                SegmentItem {
+                                                    value: SceneFilter::Restore,
+                                                    label: "修复",
+                                                },
+                                            ],
+                                            scene_filter,
+                                            34.0,
+                                            12.0,
+                                            move |v| scene_filter.set(v),
+                                        ))),
                                 )
                                 // Right 3 square icon buttons (32x32, gap 6px)
                                 .child(
@@ -359,8 +357,6 @@ fn model_row(store: Store, m: ModelVariant, is_installed_section: bool) -> View 
     let is_selected = is_installed_section && store.selected_model.get() == m.name;
     let daemon_up = store.daemon_running.get();
     let daemon_loading = store.daemon_loading.get();
-    let loader_frame =
-        (store.spinner_tick.get() as usize) % crate::ui::icons::LOADER_FRAMES.len();
     let m_name = m.name.clone();
     let m_name_select = m.name.clone();
 
@@ -378,7 +374,10 @@ fn model_row(store: Store, m: ModelVariant, is_installed_section: bool) -> View 
         .flex_row()
         .items_center()
         .justify_between()
-        .hover(|s| s.bg(palette::container()));
+        .hover(|s| s.bg(palette::container()))
+        .transition_colors()
+        .duration(140.0)
+        .ease_out();
 
     if is_installed_section {
         row = row.cursor_pointer().on_press(move || {
@@ -416,10 +415,11 @@ fn model_row(store: Store, m: ModelVariant, is_installed_section: bool) -> View 
                         })
                         .child(if is_selected && daemon_loading {
                             svg_icon(
-                                crate::ui::icons::LOADER_FRAMES[loader_frame],
+                                crate::ui::icons::LOADER_FRAMES[0],
                                 12.0,
                                 palette::primary(),
                             )
+                            .animate_spin()
                             .into_element()
                         } else if is_selected && daemon_up {
                             svg_icon(crate::ui::icons::ZAP, 11.5, palette::primary()).into_element()
