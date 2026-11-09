@@ -300,7 +300,9 @@ pub enum DaemonCommand {
         #[arg(long)]
         socket: Option<String>,
         /// Emit one JSON document:
-        /// {running, pid, socket, socketMissing} | {running:false, stale}
+        /// {running, pid, endpoint, endpointMissing} | {running:false, stale}
+        /// (`endpoint` is the socket path on unix, the loopback port's pid
+        /// base on Windows)
         #[arg(long)]
         json: bool,
     },

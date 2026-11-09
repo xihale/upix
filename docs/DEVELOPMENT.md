@@ -33,7 +33,50 @@ git checkout legacy                              # C++ 完整快照（share/ cli
 git checkout rust-rewrite                        # 回到 Rust 主线
 ```
 
-## 3. 测试
+## 3. 跨平台交叉验证（Linux 本机）
+
+产品目标四平台：linux-x86_64（本机全量验证）、android-arm64-v8a（CI/本机）、
+x86_64-pc-windows-gnu 与 aarch64-apple-darwin（交叉检查 + CI 真实构建）。
+
+```bash
+# Windows（无 mingw 时用 zig 作 cc/cxx：UPIX 交叉工具链见仓库外 ~/.local/upix-cross/）
+UPIX_ENGINE_FFI_SKIP_NATIVE=1 cargo check --target x86_64-pc-windows-gnu --workspace
+
+# macOS（检查无需苹果工具链；真实构建/链接由 CI macos runner 完成）
+UPIX_ENGINE_FFI_SKIP_NATIVE=1 cargo check --target aarch64-apple-darwin --workspace
+```
+
+`UPIX_ENGINE_FFI_SKIP_NATIVE=1` 跳过引擎孤岛的 C++ 编译（build.rs 不产链接产物，
+真实链接仍会大声失败）——只服务传输层/状态机的编译检查；ncnn 静态库在各平台
+由 CI 提供（windows 用 mingw 工具链编译，manifest plat 记为 `mingw`，build.rs 两种都认）。
+
+### Windows GUI 的构建期依赖（仅编译检查需要，不进产物）
+
+nsh-platform-windows 0.4.0 无条件编译 WebView2 宿主模块（`#[link(WebView2LoaderStatic)]`），
+即使应用不含任何 `<web>` 元素（upix-gui 就不含）。Linux 上交叉检查需补一个静态库：
+
+```bash
+# 官方 NuGet 包取 WebView2LoaderStatic.lib（约 10MB，仅链接期解析符号）
+curl -sL -o wv2.nupkg https://api.nuget.org/v3-flatcontainer/microsoft.web.webview2/1.0.2903.40/microsoft.web.webview2.1.0.2903.40.nupkg
+unzip -o wv2.nupkg 'build/native/*' -d ~/.local/upix-cross/webview2
+ln -s $(realpath ~/.local/upix-cross/webview2/build/native/x64/WebView2LoaderStatic.lib) \
+      ~/.local/upix-cross/webview2/build/native/x64/libWebView2LoaderStatic.a   # rustc/gnu 按 lib<name>.a 搜索
+RUSTFLAGS="-L native=$HOME/.local/upix-cross/webview2/build/native/x64" \
+  UPIX_ENGINE_FFI_SKIP_NATIVE=1 cargo check --target x86_64-pc-windows-gnu -p upix-gui --no-default-features
+```
+
+真机运行零 WebView2 依赖：应用不渲染 web 视图，loader 只是链接期占位；
+渲染走系统 Direct2D/DirectWrite。CI 的 windows runner（MSVC）可直接从同
+一 NuGet 包取 lib。
+
+### Windows serve 守护进程
+
+unix 用 AF_UNIX socket 文件；Windows 端点为 127.0.0.1 回环 TCP（固定端口 47619，
+`UPIX_SERVE_PORT` 可覆盖，绑定 loopback 不触发防火墙弹窗）。pid 文件、帧协议、
+生命周期与 unix 完全一致；`daemon stop` 走 `taskkill /F`（分离进程收不到信号）；
+pid 存活探测用 `tasklist`。文件传输路径、输出推导逻辑两端共享。
+
+## 4. 测试
 
 ```bash
 # Rust 全量测试（单元 + 协议金标 + 协调器/serve 状态机 + 引擎验收）

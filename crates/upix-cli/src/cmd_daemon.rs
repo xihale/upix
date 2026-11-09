@@ -26,7 +26,7 @@ pub fn run(a: &DaemonArgs) -> i32 {
     };
     if socket_path.is_empty() {
         eprintln!(
-            "daemon: no default socket path available (set XDG_CACHE_HOME or HOME)"
+            "daemon: no default endpoint path available (set XDG_CACHE_HOME or HOME, or LOCALAPPDATA on Windows)"
         );
         return 1;
     }
@@ -34,16 +34,19 @@ pub fn run(a: &DaemonArgs) -> i32 {
     let pid_path = format!("{socket_path}.pid");
 
     if a.subcommand == "stop" {
+        // Read the pid before stopping: on Windows stop() removes the file
+        // itself (a killed process runs no cleanup), so a later read would
+        // report pid 0.
+        let pid: i32 = std::fs::read_to_string(&pid_path)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0);
         return match upix_host::stop(&socket_path) {
             Ok(()) => {
                 // Wait for the daemon to actually exit: its accept() loop only
                 // wakes on the next poll tick (~500 ms), so returning
                 // immediately would leave `daemon status` reporting "running"
                 // for a moment after stop.
-                let pid: i32 = std::fs::read_to_string(&pid_path)
-                    .ok()
-                    .and_then(|s| s.trim().parse().ok())
-                    .unwrap_or(0);
                 for _ in 0..60 {
                     // up to 3 s
                     if pid <= 0 || !pid_is_upix_daemon(pid) {
@@ -87,29 +90,65 @@ pub fn run(a: &DaemonArgs) -> i32 {
     // enters daemon_main() directly with foreground=true, so it never
     // reaches this fork.)
 
-    // Background via single fork + setsid (detaches controlling terminal).
+    // Background: unix forks in place (the child continues below); Windows
+    // re-execs itself as a detached process running the same daemon body via
+    // the `--upix-internal-daemon` argv contract (bypasses the CLI parser,
+    // foreground=true inside the child, so it never re-reaches this spawn).
+    // The parent returns immediately, mirroring the fork path.
     if !a.foreground {
-        // SAFETY: fork before any thread creation; the child either execs the
-        // daemon body via run_daemon_fg or exits.
-        let pid = unsafe { libc::fork() };
-        if pid < 0 {
-            log::error!(target: "Daemon", "fork failed");
-            return 1;
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const DETACHED_PROCESS: u32 = 0x0000_0008;
+            let Ok(exe) = std::env::current_exe() else {
+                eprintln!("daemon: cannot locate self");
+                return 1;
+            };
+            let dev = if a.force_cpu { "cpu" } else { "gpu" };
+            let spawned = std::process::Command::new(exe)
+                .args([
+                    crate::cmd_daemon::INTERNAL_DAEMON_FLAG,
+                    &socket_path,
+                    &a.models_dir,
+                    &a.model_name,
+                    dev,
+                    &a.idle_timeout_s.to_string(),
+                ])
+                .creation_flags(DETACHED_PROCESS)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+            if let Err(e) = spawned {
+                eprintln!("daemon: cannot spawn detached daemon: {e}");
+                return 1;
+            }
+            return 0;
         }
-        if pid > 0 {
-            return 0; // parent exits
-        }
-        // SAFETY: setsid with no preconditions in a freshly forked child.
-        unsafe {
-            libc::setsid();
-        }
-        // Close stdio: the daemon has no console output after this point
-        // (logs go through the logger, which would otherwise write to the
-        // inherited terminal fds).
-        unsafe {
-            libc::close(libc::STDIN_FILENO);
-            libc::close(libc::STDOUT_FILENO);
-            libc::close(libc::STDERR_FILENO);
+        #[cfg(unix)]
+        {
+            // SAFETY: fork before any thread creation; the child either execs
+            // the daemon body via run_daemon_fg or exits.
+            let pid = unsafe { libc::fork() };
+            if pid < 0 {
+                log::error!(target: "Daemon", "fork failed");
+                return 1;
+            }
+            if pid > 0 {
+                return 0; // parent exits
+            }
+            // SAFETY: setsid with no preconditions in a freshly forked child.
+            unsafe {
+                libc::setsid();
+            }
+            // Close stdio: the daemon has no console output after this point
+            // (logs go through the logger, which would otherwise write to the
+            // inherited terminal fds).
+            unsafe {
+                libc::close(libc::STDIN_FILENO);
+                libc::close(libc::STDOUT_FILENO);
+                libc::close(libc::STDERR_FILENO);
+            }
         }
     }
 
@@ -122,7 +161,9 @@ fn cmd_daemon_status(a: &DaemonArgs, socket_path: &str, pid_path: &str) -> i32 {
     // semantics are unchanged (1 = not running); consumers parse the
     // document regardless of the exit code. `stale` covers every
     // pid-file-without-live-daemon case (dead pid, corrupt file) — for
-    // UI purposes they are all "the file lies".
+    // UI purposes they are all "the file lies". The endpoint check is the
+    // real contract (socket file on unix, loopback TCP on Windows).
+    let endpoint_up = upix_host::daemon_endpoint_present(socket_path);
     if a.json {
         let text = match std::fs::read_to_string(pid_path) {
             Ok(t) => t,
@@ -136,12 +177,11 @@ fn cmd_daemon_status(a: &DaemonArgs, socket_path: &str, pid_path: &str) -> i32 {
             emit_json_line(r#"{"running":false,"stale":true}"#.to_string());
             return 1;
         }
-        let sock_up = std::path::Path::new(socket_path).exists();
         emit_json_line(format!(
-            r#"{{"running":true,"pid":{},"socket":"{}","socketMissing":{}}}"#,
+            r#"{{"running":true,"pid":{},"endpoint":"{}","endpointMissing":{}}}"#,
             pid,
             json_escape(socket_path),
-            if sock_up { "false" } else { "true" }
+            if endpoint_up { "false" } else { "true" }
         ));
         return 0;
     }
@@ -163,25 +203,36 @@ fn cmd_daemon_status(a: &DaemonArgs, socket_path: &str, pid_path: &str) -> i32 {
         println!("not running (stale pid file)");
         return 1;
     }
-    // Liveness alone can race with shutdown; the socket is the real contract.
-    let sock_up = std::path::Path::new(socket_path).exists();
-    if sock_up {
-        println!("running (pid {pid}, socket {socket_path})");
+    // Liveness alone can race with shutdown; the endpoint is the real contract.
+    let endpoint_up = upix_host::daemon_endpoint_present(socket_path);
+    if endpoint_up {
+        println!("running (pid {pid}, endpoint {socket_path})");
     } else {
-        println!("running (pid {pid}, socket {socket_path} — socket file missing!)");
+        println!("running (pid {pid}, endpoint {socket_path} — endpoint not answering!)");
     }
     0
 }
 
 /// Daemon body (foreground in the calling process). Writes the pid file on
-/// success and unlinks it on shutdown.
+/// success and unlinks it on shutdown. Transport-agnostic: the platform
+/// factory decides unix-socket vs loopback-TCP.
 fn daemon_main(a: &DaemonArgs, socket_path: &str, pid_path: &str) -> i32 {
-    let device = if a.force_cpu { ServeDevice::Cpu } else { ServeDevice::Gpu };
+    let device = if a.force_cpu {
+        ServeDevice::Cpu
+    } else {
+        ServeDevice::Gpu
+    };
     let idle = if a.idle_timeout_s <= 0 {
         0
     } else {
         a.idle_timeout_s
     };
+    #[cfg(unix)]
+    let uds: Box<dyn upix_host::seams::UdsFactory> =
+        Box::new(upix_host::transport_std::StdUdsFactory);
+    #[cfg(windows)]
+    let uds: Box<dyn upix_host::seams::UdsFactory> =
+        Box::new(upix_host::transport_std::LoopbackFactory);
     let cfg = ServeConfig {
         socket_path: socket_path.to_string(),
         models_dir: PathBuf::from(&a.models_dir),
@@ -192,15 +243,19 @@ fn daemon_main(a: &DaemonArgs, socket_path: &str, pid_path: &str) -> i32 {
             models_dir: PathBuf::from(&a.models_dir),
         }),
         framer: Arc::new(NetFramer),
-        uds: Box::new(upix_host::transport_std::StdUdsFactory),
+        uds,
     };
     // Preflight = the bind that C++'s ServeDaemon ctor does before the pid
-    // file is written: a throwaway listener at the same path. Binding twice
-    // is safe — the second (real) bind in run_daemon_fg unlinks the stale
-    // file first, exactly like the C++ UnixServer.
-    let uds: Box<dyn upix_host::seams::UdsFactory> =
+    // file is written: a throwaway listener at the same endpoint. A second
+    // start must fail here (unix: socket path taken; Windows: loopback port
+    // taken), before any pid file exists.
+    #[cfg(unix)]
+    let preflight: Box<dyn upix_host::seams::UdsFactory> =
         Box::new(upix_host::transport_std::StdUdsFactory);
-    if let Err(e) = uds.listen(std::path::Path::new(socket_path)) {
+    #[cfg(windows)]
+    let preflight: Box<dyn upix_host::seams::UdsFactory> =
+        Box::new(upix_host::transport_std::LoopbackFactory);
+    if let Err(e) = preflight.listen(std::path::Path::new(socket_path)) {
         // We never wrote the pid file on a failed start, so whatever sits
         // there belongs to someone else. Remove it only when it describes
         // no live upix daemon: a lost start race (bind refused because
@@ -233,8 +288,10 @@ fn daemon_main(a: &DaemonArgs, socket_path: &str, pid_path: &str) -> i32 {
     // C++ parity: daemon.run() blocks on the calling thread and returns when
     // stop is requested (signal) or the idle timeout fired. run_daemon runs
     // the loop on a worker; this thread watches both exits:
-    //   - SIGTERM/SIGINT → STOP_FLAG → handle.stop()
-    //   - idle timeout → the loop unlinks the socket file → we observe it.
+    //   - SIGTERM/SIGINT (Windows: Ctrl+C in a console) → STOP_FLAG → stop()
+    //   - idle timeout / fatal loop error → handle.is_finished()
+    // (is_finished replaces the old socket-file-exists watch: a fatal bind
+    // error in the worker must not leave this thread waiting forever.)
     let handle = match upix_host::run_daemon(cfg) {
         Ok(h) => h,
         Err(e) => {
@@ -243,9 +300,7 @@ fn daemon_main(a: &DaemonArgs, socket_path: &str, pid_path: &str) -> i32 {
             return 1;
         }
     };
-    while !STOP_FLAG.load(Ordering::SeqCst)
-        && std::path::Path::new(socket_path).exists()
-    {
+    while !STOP_FLAG.load(Ordering::SeqCst) && !handle.is_finished() {
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
     handle.stop();

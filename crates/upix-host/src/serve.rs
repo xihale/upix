@@ -1,6 +1,10 @@
-//! Rust port of `engine/core/serve/daemon.cpp` — the warm-engine Unix-socket
+//! Rust port of `engine/core/serve/daemon.cpp` — the warm-engine local
 //! daemon — plus the client-side helpers (`status`/`stop`/`ensure_running`/
 //! `request`) that the CLI's `daemon` / first-upscale-auto-start paths use.
+//!
+//! Transport: AF_UNIX on unix, loopback TCP (127.0.0.1, fixed port, see
+//! `transport_std::loopback`) on Windows. Everything above the factory —
+//! framing, request pipeline, lifecycle, pid file — is transport-agnostic.
 //!
 //! Semantics preserved from the C++:
 //!   * the daemon is the whole pipeline: the client sends PATHS (no image
@@ -50,18 +54,35 @@ const SERVE_IO_TIMEOUT_MS: i64 = 30 * 1000;
 pub const DEFAULT_IDLE_TIMEOUT_S: i64 = 600;
 
 /// Default socket path: `$XDG_CACHE_HOME/upix/serve.sock` or
-/// `$HOME/.cache/upix/serve.sock`. Empty if neither env nor HOME is set.
+/// `$HOME/.cache/upix/serve.sock`; on Windows
+/// `%LOCALAPPDATA%\upix\serve.sock`. The path is the pid-file base and the
+/// display name; the actual endpoint is the loopback TCP port (Windows) —
+/// empty if neither env nor HOME is set.
 pub fn default_serve_socket_path() -> String {
+    #[cfg(unix)]
     if let Ok(cache) = std::env::var("XDG_CACHE_HOME") {
         if !cache.is_empty() {
             return format!("{cache}/upix/serve.sock");
         }
     }
-    let home = std::env::var("HOME").unwrap_or_default();
-    if home.is_empty() {
-        return String::new();
+    #[cfg(unix)]
+    {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if home.is_empty() {
+            return String::new();
+        }
+        format!("{home}/.cache/upix/serve.sock")
     }
-    format!("{home}/.cache/upix/serve.sock")
+    #[cfg(windows)]
+    {
+        let base = std::env::var("LOCALAPPDATA")
+            .or_else(|_| std::env::var("APPDATA"))
+            .unwrap_or_default();
+        if base.is_empty() {
+            return String::new();
+        }
+        format!("{base}\\upix\\serve.sock")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -324,14 +345,23 @@ fn daemon_accept_loop(state: Arc<DaemonState>) -> Result<(), String> {
 }
 
 /// Signal shutdown from any thread (SIGTERM handler, `daemon stop`, tests).
+/// `finished` flips when the accept loop has exited (idle timeout, stop or
+/// fatal error) — the daemon wrapper thread watches it instead of guessing
+/// from filesystem side effects.
 #[derive(Clone)]
 pub struct ServeDaemonHandle {
     state: Arc<DaemonState>,
+    finished: Arc<AtomicBool>,
 }
 
 impl ServeDaemonHandle {
     pub fn stop(&self) {
         self.state.stop.store(true, Ordering::SeqCst);
+    }
+
+    /// True once the accept loop has returned (any reason).
+    pub fn is_finished(&self) -> bool {
+        self.finished.load(Ordering::SeqCst)
     }
 }
 
@@ -340,13 +370,17 @@ impl ServeDaemonHandle {
 /// exits (stop or idle) via the returned handle's `stop()`.
 pub fn run_daemon(cfg: ServeConfig) -> Result<ServeDaemonHandle, String> {
     let state = build_state(cfg)?;
+    let finished = Arc::new(AtomicBool::new(false));
     let handle = ServeDaemonHandle {
         state: Arc::clone(&state),
+        finished: Arc::clone(&finished),
     };
     std::thread::Builder::new()
         .name("upix-daemon-run".into())
         .spawn(move || {
-            if let Err(e) = daemon_accept_loop(state) {
+            let r = daemon_accept_loop(state);
+            finished.store(true, Ordering::SeqCst);
+            if let Err(e) = r {
                 log::error!("daemon loop failed: {e}");
             }
         })
@@ -489,11 +523,19 @@ fn handle_connection_inner(
     // Character devices (/dev/null, /dev/zero) read 0 bytes and fail cleanly,
     // so they stay allowed.
     if let Ok(md) = std::fs::metadata(&input_path) {
-        use std::os::unix::fs::FileTypeExt;
-        let ft = md.file_type();
-        if ft.is_fifo() || ft.is_socket() {
-            send_serve_error(sock, framer, "load failed: refusing fifo/socket input");
-            return Ok(());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::FileTypeExt;
+            let ft = md.file_type();
+            if ft.is_fifo() || ft.is_socket() {
+                send_serve_error(sock, framer, "load failed: refusing fifo/socket input");
+                return Ok(());
+            }
+        }
+        #[cfg(windows)]
+        {
+            let _ = md; // no fifo/socket file types on Windows; named pipes
+                        // opened as files fail cleanly on read
         }
     }
 
@@ -937,27 +979,77 @@ pub fn pid_file_path(socket_path: &str) -> String {
 /// `pid_is_upix_daemon`: kill(0)-equivalent liveness is implied by readable
 /// /proc; the exe symlink is the reliable check — it fails for zombies and
 /// names the real binary otherwise. And it must be the daemon subcommand,
-/// not an unrelated upix process.
+/// not an unrelated upix process. Windows: no /proc and no kill(0); the
+/// closest equivalent without pulling a Win32 binding crate is the tasklist
+/// filter — the image name is the zombie/recycled-pid guard here (a dead or
+/// recycled pid simply does not match; a live non-daemon upix process can
+/// pass, which only costs a poll loop, never a wrong kill: stop() validates
+/// via this same check and the endpoint probe is the real contract).
 fn pid_alive_upix_daemon(pid: i32) -> bool {
     if pid <= 0 {
         return false;
     }
-    let exe = match std::fs::read_link(format!("/proc/{pid}/exe")) {
-        Ok(e) => e.to_string_lossy().into_owned(),
-        Err(_) => return false,
-    };
-    if !exe.contains("upix") {
-        return false;
+    #[cfg(windows)]
+    {
+        windows_tasklist_is_upix(pid)
     }
-    match std::fs::read(format!("/proc/{pid}/cmdline")) {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).contains("daemon"),
+    #[cfg(unix)]
+    {
+        // SAFETY: kill with signal 0 is a permission probe with no side effects.
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return false;
+        }
+        let exe = match std::fs::read_link(format!("/proc/{pid}/exe")) {
+            Ok(e) => e.to_string_lossy().into_owned(),
+            Err(_) => return false,
+        };
+        if !exe.contains("upix") {
+            return false;
+        }
+        match std::fs::read(format!("/proc/{pid}/cmdline")) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).contains("daemon"),
+            Err(_) => false,
+        }
+    }
+}
+
+/// tasklist probe for Windows pid liveness. CREATE_NO_WINDOW keeps the
+/// console flash away when a GUI parent runs this.
+#[cfg(windows)]
+fn windows_tasklist_is_upix(pid: i32) -> bool {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let out = std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    match out {
+        Ok(o) => String::from_utf8_lossy(&o.stdout)
+            .to_ascii_lowercase()
+            // CSV image-name field: "upix-cli.exe",... The quoted prefix
+            // cannot match tasklist's "INFO: No tasks are running" banner.
+            .contains("\"upix"),
         Err(_) => false,
+    }
+}
+
+/// Reachability of the daemon endpoint (status display / CLI probes).
+/// Unix: the socket file exists. Windows: the loopback TCP port answers.
+pub fn daemon_endpoint_present(socket_path: &str) -> bool {
+    #[cfg(windows)]
+    {
+        let _ = socket_path;
+        crate::transport_std::loopback::probe()
+    }
+    #[cfg(unix)]
+    {
+        Path::new(socket_path).exists()
     }
 }
 
 pub fn status(socket_path: &str) -> DaemonStatus {
     let pid_path = pid_file_path(socket_path);
-    let socket_present = Path::new(socket_path).exists();
+    let socket_present = daemon_endpoint_present(socket_path);
     let pid = std::fs::read_to_string(&pid_path)
         .ok()
         .and_then(|s| s.trim().parse::<i32>().ok())
@@ -988,22 +1080,58 @@ pub fn stop(socket_path: &str) -> Result<(), String> {
             "stop: pid {pid} is not a live upix daemon — removing stale pid file"
         ));
     }
-    let rc = unsafe { libc::kill(pid, libc::SIGTERM) };
-    if rc != 0 {
-        let err = std::io::Error::last_os_error();
-        if err.raw_os_error() == Some(libc::ESRCH) {
-            let _ = std::fs::remove_file(&pid_path);
-            return Err(format!("stop: pid {pid} vanished"));
+    #[cfg(windows)]
+    {
+        // A detached Windows process receives no deliverable signal, so
+        // `taskkill /F` is the documented stop path (hard kill — a request
+        // mid-encode can leave a torn output file, the same exposure as a
+        // power loss; the idle-exit path never needs it). The CLI wrapper
+        // polls liveness afterwards to confirm the kill.
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let out = std::process::Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+            .map_err(|e| format!("stop: cannot spawn taskkill: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "stop: taskkill /PID {pid} failed: {}",
+                String::from_utf8_lossy(&out.stdout).trim()
+            ));
         }
-        return Err(format!("stop: kill pid {pid} failed: {err}"));
+        // The killed daemon cannot clean up after itself.
+        let _ = std::fs::remove_file(&pid_path);
+        Ok(())
     }
-    Ok(())
+    #[cfg(unix)]
+    {
+        let rc = unsafe { libc::kill(pid, libc::SIGTERM) };
+        if rc != 0 {
+            let err = std::io::Error::last_os_error();
+            if err.raw_os_error() == Some(libc::ESRCH) {
+                let _ = std::fs::remove_file(&pid_path);
+                return Err(format!("stop: pid {pid} vanished"));
+            }
+            return Err(format!("stop: kill pid {pid} failed: {err}"));
+        }
+        Ok(())
+    }
 }
 
 /// CLI pid-file duty (cmd_daemon): write after a successful start so `stop`
-/// can find us; the start path unlinks it on shutdown.
+/// can find us; the start path unlinks it on shutdown. The parent is created
+/// here because on Windows nothing else does: the unix listener mkdir's the
+/// socket's directory, while the loopback endpoint has no file at all.
 pub fn write_pid_file(socket_path: &str) -> Result<(), String> {
-    std::fs::write(pid_file_path(socket_path), std::process::id().to_string())
+    let pid_path = pid_file_path(socket_path);
+    if let Some(parent) = Path::new(&pid_path).parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create pid file directory {parent:?}: {e}"))?;
+    }
+    std::fs::write(&pid_path, std::process::id().to_string())
         .map_err(|e| format!("cannot write pid file: {e}"))
 }
 
@@ -1024,7 +1152,7 @@ pub fn ensure_running(
     idle_timeout_s: i64,
     wait: Duration,
 ) -> Result<bool, String> {
-    // Liveness alone can race with shutdown; the socket is the real contract.
+    // Liveness alone can race with shutdown; the endpoint is the real contract.
     if uds.connect(Path::new(socket_path)).is_ok() {
         return Ok(false);
     }
@@ -1039,16 +1167,25 @@ pub fn ensure_running(
         ServeDevice::Cpu => "cpu",
     };
     use std::process::Stdio;
-    std::process::Command::new(exe)
-        .args([
-            "--upix-internal-daemon",
-            socket_path,
-            &models_dir.to_string_lossy(),
-            model_name,
-            dev,
-            &idle_timeout_s.to_string(),
-        ])
-        .stdin(Stdio::null())
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args([
+        "--upix-internal-daemon",
+        socket_path,
+        &models_dir.to_string_lossy(),
+        model_name,
+        dev,
+        &idle_timeout_s.to_string(),
+    ]);
+    #[cfg(windows)]
+    {
+        // Detached: the daemon must outlive this CLI invocation and own no
+        // console window (DETACHED_PROCESS; CREATE_NO_WINDOW allocates a
+        // hidden console instead and is mutually exclusive with it).
+        use std::os::windows::process::CommandExt;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        cmd.creation_flags(DETACHED_PROCESS);
+    }
+    cmd.stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()

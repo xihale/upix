@@ -13,7 +13,9 @@
 
 use std::io::{Read, Write};
 use std::net::TcpStream;
+#[cfg(unix)]
 use std::os::unix::io::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -26,11 +28,15 @@ use crate::error::NetError;
 /// `impl Read/Write for &TcpStream` adapters — concurrent send/recv on one
 /// socket is exactly what the direction locks are NOT protecting against
 /// (they serialize per direction); the OS handles simultaneity.
-pub(crate) trait StreamLike: AsRawFd {
+///
+/// `shutdown_both` interrupts a thread parked in read/write WITHOUT closing
+/// the descriptor (fd-recycling hazard — see StreamCore::shutdown).
+pub(crate) trait StreamLike {
     fn stream_read(&self, buf: &mut [u8]) -> std::io::Result<usize>;
     fn stream_write(&self, buf: &[u8]) -> std::io::Result<usize>;
     fn set_rx_timeout_opt(&self, d: Option<Duration>) -> std::io::Result<()>;
     fn set_tx_timeout_opt(&self, d: Option<Duration>) -> std::io::Result<()>;
+    fn shutdown_both(&self);
 }
 
 impl StreamLike for TcpStream {
@@ -48,8 +54,26 @@ impl StreamLike for TcpStream {
     fn set_tx_timeout_opt(&self, d: Option<Duration>) -> std::io::Result<()> {
         self.set_write_timeout(d)
     }
+    fn shutdown_both(&self) {
+        #[cfg(unix)]
+        {
+            // SAFETY: plain fd shutdown(2) on a live stream; see
+            // StreamCore::shutdown for the lifetime contract.
+            unsafe {
+                libc::shutdown(self.as_raw_fd(), libc::SHUT_RDWR);
+            }
+        }
+        #[cfg(windows)]
+        {
+            // Same wake-up via Winsock shutdown(SD_BOTH); SockRef borrows the
+            // socket without taking ownership.
+            use socket2::SockRef;
+            let _ = SockRef::from(self).shutdown(std::net::Shutdown::Both);
+        }
+    }
 }
 
+#[cfg(unix)]
 impl StreamLike for UnixStream {
     fn stream_read(&self, buf: &mut [u8]) -> std::io::Result<usize> {
         let mut r = self;
@@ -64,6 +88,13 @@ impl StreamLike for UnixStream {
     }
     fn set_tx_timeout_opt(&self, d: Option<Duration>) -> std::io::Result<()> {
         self.set_write_timeout(d)
+    }
+    fn shutdown_both(&self) {
+        // SAFETY: plain fd shutdown(2) on a live stream; see
+        // StreamCore::shutdown for the lifetime contract.
+        unsafe {
+            libc::shutdown(self.as_raw_fd(), libc::SHUT_RDWR);
+        }
     }
 }
 
@@ -274,10 +305,7 @@ impl<S: StreamLike> StreamCore<S> {
     /// cannot be recycled while any clone exists because it is closed only
     /// when the last clone drops.
     pub(crate) fn shutdown(&self) {
-        // SAFETY: plain fd shutdown(2); see the lifetime contract above.
-        unsafe {
-            libc::shutdown(self.sock.as_raw_fd(), libc::SHUT_RDWR);
-        }
+        self.sock.shutdown_both();
     }
 }
 

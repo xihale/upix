@@ -14,6 +14,17 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    // Check-only escape hatch (UPIX_ENGINE_FFI_SKIP_NATIVE=1): skip the C++
+    // compile entirely and emit NO link artifacts, so `cargo check` of this
+    // crate (and anything that depends on it) works on hosts without a
+    // matching ncnn toolchain. Anything that actually LINKS still fails
+    // loudly (the static lib is simply absent), so this can never silently
+    // produce a broken binary — it exists for cross-platform static checks
+    // on non-linux dev machines.
+    if env::var("UPIX_ENGINE_FFI_SKIP_NATIVE").as_deref() == Ok("1") {
+        println!("cargo:warning=upix-engine-ffi: skipping native engine build (UPIX_ENGINE_FFI_SKIP_NATIVE=1)");
+        return;
+    }
     println!("cargo:rerun-if-changed=build.rs");
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let csrc = manifest_dir.join("csrc");
@@ -99,17 +110,31 @@ fn main() {
     println!("cargo:rustc-link-lib=dylib=vulkan");
     println!("cargo:rustc-link-lib=dylib=deflate"); // spirv_pack zlib inflate
     println!("cargo:rustc-link-lib=dylib=z");
-    println!("cargo:rustc-link-lib=dylib=pthread");
-    println!("cargo:rustc-link-lib=dylib=dl");
-    println!("cargo:rustc-link-lib=dylib=stdc++"); // ncnn + engine C++ runtime
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
+        // mingw: libc++ lives in libstdc++, pthreads/dl are inside the CRT.
+        // Fully static runtime so the released CLI runs standalone (no
+        // libstdc++-6.dll / libgcc_s_seh-1.dll / libwinpthread-1.dll hunt).
+        println!("cargo:rustc-link-lib=dylib=stdc++");
+        println!("cargo:rustc-link-arg=-static");
+    } else {
+        println!("cargo:rustc-link-lib=dylib=pthread");
+        println!("cargo:rustc-link-lib=dylib=dl");
+        println!("cargo:rustc-link-lib=dylib=stdc++"); // ncnn + engine C++ runtime
+    }
 }
 
-/// Scans the xmake package cache for the linux/x86_64 ncnn variant this
-/// project pins: shared=false, vulkan=true, online_spirv=false, simpleomp=true
-/// (see xmake.lua `ncnn~runtime`; the online_spirv=true variant is the
-/// glslang-linked toolchain build and must not be linked into the runtime).
+/// Scans the xmake package cache for an ncnn 20260526 static variant matching
+/// the build target: shared=false, vulkan=true, online_spirv=false,
+/// simpleomp=true (see xmake.lua `ncnn~runtime`; the online_spirv=true
+/// variant is the glslang-linked toolchain build and must not be linked into
+/// the runtime). plat/arch come from [`target_plat_arch`], so the macos and
+/// windows release runners find their own cache entry with no extra env.
 fn discover_ncnn() -> Option<PathBuf> {
-    let home = env::var("HOME").ok()?;
+    let (plat, arch) = target_plat_arch();
+    // Unix uses HOME; Windows runners set USERPROFILE instead.
+    let home = env::var("HOME")
+        .or_else(|_| env::var("USERPROFILE"))
+        .ok()?;
     let base = PathBuf::from(home)
         .join(".xmake/packages/n/ncnn/20260526");
     let mut hits: Vec<PathBuf> = Vec::new();
@@ -126,8 +151,17 @@ fn discover_ncnn() -> Option<PathBuf> {
                 (k.trim() == key).then(|| v.trim().trim_matches('"').to_string())
             })
         };
-        if raw("plat").as_deref() != Some("linux")
-            || raw("arch").as_deref() != Some("x86_64")
+        let manifest_plat = raw("plat");
+        // Windows targets may be served by either a `-p windows` (msvc) or
+        // `-p mingw` (gcc) ncnn cache entry — the rust windows-gnu target
+        // needs the mingw one, but accept both so discovery survives the
+        // toolchain choice. macOS xmake naming is "macosx".
+        let plat_ok = match plat {
+            "windows" => matches!(manifest_plat.as_deref(), Some("windows") | Some("mingw")),
+            other => manifest_plat.as_deref() == Some(other),
+        };
+        if !plat_ok
+            || raw("arch").as_deref() != Some(arch)
             || raw("shared").as_deref() != Some("false")
             || raw("vulkan").as_deref() != Some("true")
             || raw("online_spirv").as_deref() != Some("false")
@@ -138,4 +172,24 @@ fn discover_ncnn() -> Option<PathBuf> {
     }
     hits.sort();
     hits.into_iter().next()
+}
+
+/// rustc target env → (xmake plat, xmake arch) for the ncnn cache manifest.
+/// xmake naming: linux / macosx / windows, x86_64 / arm64 / aarch64.
+fn target_plat_arch() -> (&'static str, &'static str) {
+    let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let plat = match os.as_str() {
+        "linux" => "linux",
+        "macos" => "macosx",
+        "windows" => "windows",
+        _ => return ("", ""),
+    };
+    let xarch = match (os.as_str(), arch.as_str()) {
+        ("macos", "aarch64") => "arm64",
+        (_, "x86_64") => "x86_64",
+        (_, "aarch64") => "aarch64",
+        _ => return (plat, ""),
+    };
+    (plat, xarch)
 }

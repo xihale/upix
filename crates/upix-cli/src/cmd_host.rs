@@ -300,11 +300,19 @@ impl Listener for StdListener {
     }
     fn shutdown(&self) {
         // Closing the listener wakes accept(); dropping the Arc happens on
-        // stop(). Use a libc shutdown on the raw fd for prompt wakeup.
-        use std::os::fd::AsRawFd;
-        // SAFETY: shutdown on a valid listening fd only wakes pending accepts.
-        unsafe {
-            libc::shutdown(self.listener.as_raw_fd(), libc::SHUT_RDWR);
+        // stop(). Shutdown (not close) for prompt wakeup without fd recycling.
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            // SAFETY: shutdown on a valid listening fd only wakes pending accepts.
+            unsafe {
+                libc::shutdown(self.listener.as_raw_fd(), libc::SHUT_RDWR);
+            }
+        }
+        #[cfg(windows)]
+        {
+            use socket2::SockRef;
+            let _ = SockRef::from(&*self.listener).shutdown(std::net::Shutdown::Both);
         }
     }
 }

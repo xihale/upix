@@ -1,13 +1,16 @@
 name: Release CLI
 
-# Desktop CLI (Rust workspace: upix-cli) for linux-x86_64 and macos-arm64.
-# Android is a separate product (release-android.yml → android-arm64-v8a).
+# Desktop CLI (Rust workspace: upix-cli) for linux-x86_64, macos-arm64 and
+# windows-x86_64. Android is a separate product (release-android.yml →
+# android-arm64-v8a).
 #
 # The engine island (crates/upix-engine-ffi) compiles the engine/ C++
 # sources against a static ncnn; setup-xmake provides the pinned ncnn package
 # island in place. The SPIR-V pack is tracked at engine/core/spirv_pack.bin, so
-# no dump-spirv pass is needed. ncnn discovery in engine-ffi's build.rs only
-# auto-detects linux/x86_64 — other platforms export UPIX_NCNN_DIR explicitly.
+# no dump-spirv pass is needed. ncnn discovery in engine-ffi's build.rs
+# auto-detects linux-x86_64 / macosx-arm64 / windows|mingw-x86_64 from the
+# xmake package cache manifest; non-linux runners also export UPIX_NCNN_DIR
+# explicitly (belt and suspenders).
 on:
   push:
     tags: ["cli-v*"]
@@ -75,29 +78,48 @@ jobs:
             plat: macosx
             arch: arm64
             artifact: macos-arm64
+          - os: windows-latest
+            plat: windows
+            arch: x86_64
+            artifact: windows-x86_64
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (v4.4.0)
       - uses: ./.github/actions/setup-xmake
         with:
           cache-kind: host-${{ matrix.artifact }}
+      - name: Warm the ncnn package cache for this platform (first run builds it)
+        if: matrix.plat == 'windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The engine island links the mingw-built static ncnn (rust target
+          # is x86_64-pc-windows-gnu). `xmake require` installs the project's
+          # pinned ncnn~runtime variant for the mingw plat into the cache;
+          # cached runs are a no-op.
+          xmake f -p mingw -a x86_64 -m release -y
+          xmake require -y
       - name: Locate ncnn for engine-ffi (non-linux auto-detect)
         if: matrix.plat != 'linux'
+        shell: bash
         run: |
           set -euo pipefail
           # Pick the newest cached ncnn 20260526 build matching this plat/arch
-          # (mirrors discover_ncnn's manifest filter in build.rs).
+          # (mirrors discover_ncnn's manifest filter in build.rs; windows
+          # accepts both 'windows' and 'mingw' manifests).
           base="$HOME/.xmake/packages/n/ncnn/20260526"
           dir=$(for d in "$base"/*/; do
             m="$d/manifest.txt"
-            grep -q 'plat *= *"${{ matrix.plat }}"' "$m" || continue
-            grep -q 'arch *= *"${{ matrix.arch }}"' "$m" || continue
-            echo "$d"
+            grep -q 'plat *= *"${{ matrix.plat }}"' "$m" && { echo "$d"; continue; }
+            if [[ "${{ matrix.plat }}" == "windows" ]]; then
+              grep -q 'plat *= *"mingw"' "$m" && { echo "$d"; continue; }
+            fi
           done | sort | tail -1)
           test -n "$dir" && test -f "${dir}lib/libncnn.a"
           echo "UPIX_NCNN_DIR=${dir%/}" >> "$GITHUB_ENV"
       - name: Build CLI (cargo)
         run: cargo build --release -p upix-cli
       - name: Pack
+        shell: bash
         env:
           VER: ${{ needs.meta.outputs.version }}
         run: |
@@ -107,9 +129,15 @@ jobs:
           # group: the binary comes from the cargo target dir, LICENSE from
           # the checkout (absolute, so the second -C does not depend on the
           # first).
-          tar czf "upix-cli-${VER}-${{ matrix.artifact }}.tar.gz" \
-            -C target/release upix-cli \
-            -C "$GITHUB_WORKSPACE" LICENSE
+          if [[ "${{ matrix.plat }}" == "windows" ]]; then
+            tar czf "upix-cli-${VER}-${{ matrix.artifact }}.zip" \
+              -C target/release upix-cli.exe \
+              -C "$GITHUB_WORKSPACE" LICENSE
+          else
+            tar czf "upix-cli-${VER}-${{ matrix.artifact }}.tar.gz" \
+              -C target/release upix-cli \
+              -C "$GITHUB_WORKSPACE" LICENSE
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4 (v4.6.2)
         with:
           name: cli-${{ matrix.artifact }}
@@ -130,15 +158,21 @@ jobs:
             artifact: linux-x86_64
           - os: macos-latest
             artifact: macos-arm64
+          - os: windows-latest
+            artifact: windows-x86_64
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4 (v4.3.0)
         with:
           name: cli-${{ matrix.artifact }}
       - name: Unpack and --version
+        shell: bash
         run: |
-          tar xzf upix-cli-*.tar.gz
-          chmod +x upix-cli
-          if ./upix-cli --version; then
+          # Windows artifact is a zip (bsdtar handles it); unix are tarballs.
+          case "${{ matrix.artifact }}" in
+            windows-*) tar xf upix-cli-*.zip ;;
+            *)         tar xzf upix-cli-*.tar.gz; chmod +x upix-cli ;;
+          esac
+          if ./upix-cli${{ matrix.artifact == 'windows-x86_64' && '.exe' || '' }} --version; then
             exit 0
           fi
           # Dynamic deps if the binary is not fully static.
@@ -153,7 +187,7 @@ jobs:
               brew install libdeflate libpng jpeg webp libzip libomp
               ;;
           esac
-          ./upix-cli --version
+          ./upix-cli${{ matrix.artifact == 'windows-x86_64' && '.exe' || '' }} --version
 
   publish:
     name: upload release
@@ -176,6 +210,7 @@ jobs:
           files: |
             upix-cli-*-linux-x86_64.tar.gz
             upix-cli-*-macos-arm64.tar.gz
+            upix-cli-*-windows-x86_64.zip
           fail_on_unmatched_files: true
           generate_release_notes: true
           target_commitish: ${{ github.sha }}

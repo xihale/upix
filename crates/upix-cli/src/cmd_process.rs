@@ -514,7 +514,9 @@ fn delegate_to_daemon(
         force,
     };
 
-    let uds = upix_host::transport_std::StdUdsFactory;
+    #[cfg(unix)] let uds = upix_host::transport_std::StdUdsFactory;
+    // Windows: the daemon endpoint is loopback TCP (transport_std::loopback).
+    #[cfg(windows)] let uds = upix_host::transport_std::LoopbackFactory;
     let on_progress = |sp: &upix_net::protocol::ServeProgress| {
         if sp.stage == 0 {
             let prog = upix_core::engine::ProcessingProgress {

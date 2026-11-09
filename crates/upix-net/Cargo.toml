@@ -18,6 +18,11 @@ if-addrs = "0.13"
 libc = "0.2"
 zeroize = "1"
 
+# Windows socket options (TCP_NODELAY / buffers / keepalive via
+# SIO_KEEPALIVE_VALS); unix keeps the direct libc calls.
+[target.'cfg(windows)'.dependencies]
+socket2 = "0.6"
+
 [dev-dependencies]
 serde.workspace = true
 serde_json.workspace = true

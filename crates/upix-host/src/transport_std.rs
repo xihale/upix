@@ -10,17 +10,63 @@
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener as StdListener, TcpStream, ToSocketAddrs};
+#[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(unix)]
 use std::os::unix::net::UnixListener as StdUnixListener;
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::PathBuf;
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
-use crate::seams::{Listener, ListenerFactory, RecvErr, Transport, UdsFactory};
+#[cfg(unix)]
+use crate::seams::UdsFactory;
+use crate::seams::{Listener, ListenerFactory, RecvErr, Transport};
 
 /// Accept poll tick: bounds how promptly the accept loop notices a stop.
 const ACCEPT_POLL_MS: u64 = 500;
+
+/// Wake any thread parked in read/write on `stream` WITHOUT closing the
+/// descriptor (a close from another thread would race fd recycling; a
+/// shutdown only interrupts). Unix: shutdown(2) on the raw fd. Windows:
+/// Winsock shutdown(SD_BOTH) via socket2 (std has no shutdown).
+fn shutdown_stream(stream: &TcpStream) {
+    #[cfg(unix)]
+    {
+        let fd = stream.as_raw_fd();
+        // SAFETY: shutdown(2) on a live descriptor; see the doc above.
+        unsafe {
+            libc::shutdown(fd, libc::SHUT_RDWR);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use socket2::SockRef;
+        let _ = SockRef::from(stream).shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Listener variant: shutdown(2) on a listening socket wakes pending
+/// accept(2)s — the coordinator's prompt-stop path.
+fn shutdown_listener(listener: &StdListener) {
+    #[cfg(unix)]
+    {
+        let fd = listener.as_raw_fd();
+        // SAFETY: shutdown(2) on a live listening descriptor only wakes
+        // pending accepts; see shutdown_stream.
+        unsafe {
+            libc::shutdown(fd, libc::SHUT_RDWR);
+        }
+    }
+    #[cfg(windows)]
+    {
+        use socket2::SockRef;
+        let _ = SockRef::from(listener).shutdown(std::net::Shutdown::Both);
+    }
+}
 
 fn io_msg(e: &std::io::Error) -> String {
     match e.kind() {
@@ -131,16 +177,10 @@ impl Transport for StdTcpSocket {
     }
 
     fn shutdown(&self) {
-        // libc::shutdown wakes a thread parked in recv(2) — close() from
+        // shutdown() wakes a thread parked in recv(2) — close() from
         // another thread would deadlock on the rx lock.
-        let fd = self.halves.rx.lock().unwrap().as_raw_fd();
-        unsafe {
-            libc::shutdown(fd, libc::SHUT_RDWR);
-        }
-        let fd = self.halves.tx.lock().unwrap().as_raw_fd();
-        unsafe {
-            libc::shutdown(fd, libc::SHUT_RDWR);
-        }
+        shutdown_stream(&self.halves.rx.lock().unwrap());
+        shutdown_stream(&self.halves.tx.lock().unwrap());
     }
 }
 
@@ -171,10 +211,7 @@ impl Listener for StdTcpListener {
     }
 
     fn shutdown(&self) {
-        let fd = self.inner.as_raw_fd();
-        unsafe {
-            libc::shutdown(fd, libc::SHUT_RDWR);
-        }
+        shutdown_listener(&self.inner);
     }
 }
 
@@ -188,7 +225,12 @@ impl ListenerFactory for TcpFactory {
     }
 }
 
-// ── UDS ─────────────────────────────────────────────────────────────────────
+// ── UDS (unix-only: Windows std has no UnixListener; the serve daemon is
+//    a unix feature — named pipes are future work) ──────────────────
+
+#[cfg(unix)]
+mod uds_transport {
+    use super::*;
 
 pub struct StdUdsSocket {
     halves: TcpLikeHalves,
@@ -322,3 +364,76 @@ impl UdsFactory for StdUdsFactory {
         Ok(Box::new(sock))
     }
 }
+}
+
+#[cfg(unix)]
+pub use uds_transport::{StdUdsFactory, StdUdsListener, StdUdsSocket};
+
+// ── Windows serve-daemon transport ─────────────────────────────────────────
+// The serve daemon's endpoint on Windows is loopback TCP. The protocol,
+// framing, lifecycle and pid-file conventions are identical to the unix
+// AF_UNIX daemon — only the transport differs. Loopback-only binding never
+// triggers the Windows Firewall prompt, and (like the unix socket, whose file
+// mode defaults to umask rather than 0600) it is reachable by local processes
+// only. One daemon per session: a second `daemon start` fails at bind, the
+// same exclusivity the unix socket file provides.
+#[cfg(windows)]
+pub mod loopback {
+    use super::*;
+    use std::net::{IpAddr, SocketAddr};
+
+    /// Fixed service port. IANA-unassigned dynamic range. Override with
+    /// `UPIX_SERVE_PORT` for parallel daemons (e.g. different model sets).
+    pub const DEFAULT_SERVE_PORT: u16 = 47619;
+
+    pub fn serve_port() -> u16 {
+        match std::env::var("UPIX_SERVE_PORT") {
+            Ok(v) => v.trim().parse().ok().filter(|&p| p != 0).unwrap_or(DEFAULT_SERVE_PORT),
+            Err(_) => DEFAULT_SERVE_PORT,
+        }
+    }
+
+    fn endpoint() -> SocketAddr {
+        SocketAddr::new(IpAddr::from([127, 0, 0, 1]), serve_port())
+    }
+
+    /// Cheap reachability probe (`daemon status`, delegation preflight).
+    /// Short timeout: a refused connect fails instantly; a silently dropping
+    /// firewall stack must not stall the caller.
+    pub fn probe() -> bool {
+        StdTcpSocket::connect(endpoint(), Duration::from_millis(250)).is_ok()
+    }
+
+    /// Drop-in [`UdsFactory`] replacement: `socket_path` is kept as the
+    /// pid-file base (display/status), the endpoint itself is the port.
+    pub struct LoopbackFactory;
+
+    impl crate::seams::UdsFactory for LoopbackFactory {
+        fn listen(&self, _socket_path: &Path) -> Result<Box<dyn crate::seams::Listener>, String> {
+            let port = serve_port();
+            let addr = SocketAddr::new(IpAddr::from([127, 0, 0, 1]), port);
+            let l = StdListener::bind(addr)
+                .map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::AddrInUse {
+                        format!(
+                            "bind {addr}: address already in use — another daemon (or an unrelated service) holds port {port}; set UPIX_SERVE_PORT to pick a different one"
+                        )
+                    } else {
+                        format!("bind {addr}: {e}")
+                    }
+                })?;
+            Ok(Box::new(StdTcpListener { inner: l }))
+        }
+
+        fn connect(&self, _socket_path: &Path) -> Result<Box<dyn crate::seams::Transport>, String> {
+            // Same bound as the unix UnixStream::connect: no explicit timeout,
+            // refusal is immediate; a firewalled loopback connect cannot
+            // happen, so the OS default is fine.
+            StdTcpSocket::connect(endpoint(), Duration::from_millis(1000))
+                .map(|s| Box::new(s) as Box<dyn crate::seams::Transport>)
+        }
+    }
+}
+
+#[cfg(windows)]
+pub use loopback::LoopbackFactory;

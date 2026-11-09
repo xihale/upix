@@ -10,6 +10,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -83,13 +84,21 @@ impl TrustStore {
             body.push('\n');
         }
         // Same 0600-at-creation rule as the identity key.
+        #[cfg(unix)]
         let mut f = OpenOptions::new()
             .write(true)
             .create(true)
             .truncate(true)
             .mode(0o600)
             .open(&self.file)?;
+        #[cfg(windows)]
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(&self.file)?;
         f.write_all(body.as_bytes())?;
+        #[cfg(unix)]
         if let Ok(meta) = fs::metadata(&self.file) {
             let mut perms = meta.permissions();
             perms.set_mode(0o600);
@@ -138,8 +147,11 @@ mod tests {
         assert!(store.contains(&k2));
 
         store.save().expect("save");
-        let mode = fs::metadata(&path).expect("meta").permissions().mode();
-        assert_eq!(mode & 0o777, 0o600, "trust store must be 0600");
+        #[cfg(unix)]
+        {
+            let mode = fs::metadata(&path).expect("meta").permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "trust store must be 0600");
+        }
 
         let reloaded = TrustStore::load(&path);
         assert_eq!(reloaded.size(), 2);

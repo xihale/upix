@@ -20,11 +20,22 @@ pub static G_CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 // ── Defaults ────────────────────────────────────────────────────────────────
 // Models directory resolution: the --models-dir flag (bound directly to each
-// subcommand's field) > $UPIX_MODELS_DIR > $XDG_DATA_HOME/upix/models
-// (~/.local/share/upix/models). A fixed user-level store, never cwd-relative.
+// subcommand's field) > $UPIX_MODELS_DIR > platform default > ./models.
+// Unix default: $XDG_DATA_HOME/upix/models (~/.local/share/upix/models).
+// Windows default: %LOCALAPPDATA%\upix\models. A fixed user-level store,
+// never cwd-relative.
 pub fn default_models_dir() -> String {
     if let Some(env) = env_nonempty("UPIX_MODELS_DIR") {
         return env;
+    }
+    #[cfg(windows)]
+    {
+        let base = env_nonempty("LOCALAPPDATA").unwrap_or_else(|| {
+            env_nonempty("APPDATA").unwrap_or_default()
+        });
+        if !base.is_empty() {
+            return format!("{base}\\upix\\models");
+        }
     }
     if let Some(xdg) = env_nonempty("XDG_DATA_HOME") {
         return format!("{xdg}/upix/models");
@@ -59,20 +70,45 @@ pub fn pid_is_upix_daemon(pid: i32) -> bool {
     if pid <= 0 {
         return false;
     }
-    // SAFETY: kill with signal 0 is a permission probe with no side effects.
-    if unsafe { libc::kill(pid, 0) } != 0 {
-        return false;
+    // Windows: no /proc and no kill(0) in libc-windows; tasklist is the
+    // closest std-only equivalent — the image-name field ("upix-cli.exe")
+    // is the zombie/recycled-pid guard (a dead or recycled pid simply does
+    // not match). The command-line check is not available without heavier
+    // Win32 bindings; the endpoint probe in the callers is the real daemon
+    // contract, so a live non-daemon upix process passing here only costs a
+    // bounded wait, never a wrong kill (stop() revalidates the same way).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        match std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output()
+        {
+            Ok(o) => String::from_utf8_lossy(&o.stdout)
+                .to_ascii_lowercase()
+                .contains("\"upix"),
+            Err(_) => false,
+        }
     }
-    let exe = match std::fs::read_link(format!("/proc/{pid}/exe")) {
-        Ok(e) => e.to_string_lossy().into_owned(),
-        Err(_) => return false, // zombie or vanished
-    };
-    if !exe.contains("upix") {
-        return false;
-    }
-    match std::fs::read(format!("/proc/{pid}/cmdline")) {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).contains("daemon"),
-        Err(_) => false,
+    #[cfg(unix)]
+    {
+        // SAFETY: kill with signal 0 is a permission probe with no side effects.
+        if unsafe { libc::kill(pid, 0) } != 0 {
+            return false;
+        }
+        let exe = match std::fs::read_link(format!("/proc/{pid}/exe")) {
+            Ok(e) => e.to_string_lossy().into_owned(),
+            Err(_) => return false, // zombie or vanished
+        };
+        if !exe.contains("upix") {
+            return false;
+        }
+        match std::fs::read(format!("/proc/{pid}/cmdline")) {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).contains("daemon"),
+            Err(_) => false,
+        }
     }
 }
 
@@ -237,6 +273,32 @@ pub fn read_line_interruptible(
     still_waiting: &dyn Fn() -> bool,
 ) -> bool {
     line.clear();
+    // Windows: no poll(2) on fds in libc; use blocking std reads. Degraded
+    // but correct: still_waiting is re-checked between reads, and the CRT
+    // delivers Ctrl+C to the handler after the current read returns.
+    #[cfg(windows)]
+    {
+        use std::io::Read;
+        let mut buf = [0u8; 256];
+        match std::io::stdin().read(&mut buf) {
+            Ok(0) => return !line.is_empty(),
+            Ok(n) => {
+                line.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if let Some(nl) = line.find('\n') {
+                    line.truncate(nl);
+                    return true;
+                }
+                // Same hostile-writer bound as the unix loop.
+                if line.len() > MAX_PROMPT_LINE_BYTES {
+                    line.truncate(MAX_PROMPT_LINE_BYTES);
+                    return true;
+                }
+                !still_waiting()
+            }
+            Err(_) => false,
+        }
+    }
+    #[cfg(unix)]
     loop {
         if !still_waiting() {
             return false; // shutting down: the caller answers the request

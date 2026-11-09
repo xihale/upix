@@ -291,8 +291,8 @@ fn options_of(node: Node) -> Vec<(&'static str, &'static str, bool, &'static str
         }
         Node::DaemonStatus => {
             v.extend([
-                ("--socket", "", true, "Unix socket path"),
-                ("--json", "", false, "Emit one JSON document: {running, pid, socket, socketMissing} | {running:false, stale}"),
+                ("--socket", "", true, "Daemon endpoint path (unix socket; Windows: pid-file base for the loopback port)"),
+                ("--json", "", false, "Emit one JSON document: {running, pid, endpoint, endpointMissing} | {running:false, stale}"),
             ]);
         }
         Node::Completions => {

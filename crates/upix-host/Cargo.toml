@@ -17,5 +17,9 @@ base64 = "0.22"
 ureq = "3"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 
+# Windows shutdown wake for the transport adapters (unix uses libc::shutdown).
+[target.'cfg(windows)'.dependencies]
+socket2 = "0.6"
+
 [dev-dependencies]
 png = "0.18"

@@ -20,3 +20,7 @@ clap = { version = "4", features = ["derive"] }
 ureq = "3"
 qrcodegen = "1"
 libc = "0.2.191"
+
+# Windows socket shutdown for the host listener (unix uses libc::shutdown).
+[target.'cfg(windows)'.dependencies]
+socket2 = "0.6"

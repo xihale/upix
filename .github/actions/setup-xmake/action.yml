@@ -22,6 +22,12 @@ runs:
           macOS)
             brew install libdeflate ccache
             ;;
+          Windows)
+            # The windows-gnu rust target links the mingw-w64 g++ runtime; the
+            # ncnn island for the CLI is built with the same toolchain.
+            choco install mingw ccache -y --no-progress
+            echo "C:\\ProgramData\\mingw64\\mingw64\\bin" >> "$GITHUB_PATH"
+            ;;
           *)
             echo "unsupported RUNNER_OS=${RUNNER_OS}" >&2
             exit 1

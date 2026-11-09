@@ -4,6 +4,7 @@
 //! rx/tx locks live in `crate::stream::StreamCore` (stream_socket.cpp port).
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
+#[cfg(unix)]
 use std::os::unix::io::AsRawFd;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -22,6 +23,7 @@ pub const MAX_NETWORK_PAYLOAD: u32 = 100 * 1024 * 1024;
 ///   idle=10s before first probe (under typical NAT timeouts), intvl=3s, count=5
 /// Plus TCP_NODELAY and the default 1MB socket buffers, exactly mirroring
 /// `apply_tcp_keepalive` + the connect-path setsockopt calls in network.cpp.
+#[cfg(unix)]
 fn apply_stream_sockopts(stream: &TcpStream) {
     let fd = stream.as_raw_fd();
     let flag: libc::c_int = 1;
@@ -55,7 +57,18 @@ fn apply_stream_sockopts(stream: &TcpStream) {
             &flag as *const _ as *const libc::c_void,
             std::mem::size_of::<libc::c_int>() as libc::socklen_t,
         );
+        // First-probe idle time: macOS names the option TCP_KEEPALIVE (no
+        // TCP_KEEPIDLE); Linux/BSD use TCP_KEEPIDLE.
         let idle: libc::c_int = 10;
+        #[cfg(target_os = "macos")]
+        libc::setsockopt(
+            fd,
+            libc::IPPROTO_TCP,
+            libc::TCP_KEEPALIVE,
+            &idle as *const _ as *const libc::c_void,
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        );
+        #[cfg(not(target_os = "macos"))]
         libc::setsockopt(
             fd,
             libc::IPPROTO_TCP,
@@ -80,6 +93,25 @@ fn apply_stream_sockopts(stream: &TcpStream) {
             std::mem::size_of::<libc::c_int>() as libc::socklen_t,
         );
     }
+}
+
+/// Windows variant of the unix sockopts above: same NAT-survival goal.
+/// Windows has no TCP_KEEPIDLE family; SIO_KEEPALIVE_VALS (via socket2's
+/// TcpKeepalive) carries the idle/interval pair, probe count is OS-fixed.
+#[cfg(windows)]
+fn apply_stream_sockopts(stream: &TcpStream) {
+    use std::time::Duration;
+
+    use socket2::{SockRef, TcpKeepalive};
+
+    let sock = SockRef::from(stream);
+    let _ = sock.set_tcp_nodelay(true);
+    let _ = sock.set_send_buffer_size(1024 * 1024);
+    let _ = sock.set_recv_buffer_size(1024 * 1024);
+    let mut ka = TcpKeepalive::new();
+    ka = ka.with_time(Duration::from_secs(10));
+    ka = ka.with_interval(Duration::from_secs(3));
+    let _ = sock.set_tcp_keepalive(&ka);
 }
 
 /// Basic TCP socket wrapper (mirrors `TCPSocket`).
@@ -126,10 +158,10 @@ impl TcpSocket {
     pub fn connect_with_timeout(host: &str, port: u16, timeout_ms: u64) -> Result<Self, NetError> {
         let addrs: Vec<SocketAddr> = (host, port)
             .to_socket_addrs()
-            .map_err(|_| NetError::new(libc::EAI_NONAME, "Resolution failed"))?
+            .map_err(|_| NetError::new(resolution_failed_code(), "Resolution failed"))?
             .collect();
         if addrs.is_empty() {
-            return Err(NetError::new(libc::EAI_NONAME, "Resolution failed"));
+            return Err(NetError::new(resolution_failed_code(), "Resolution failed"));
         }
 
         let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
@@ -236,6 +268,18 @@ impl TcpSocket {
     }
 }
 
+/// Errno-style code for getaddrinfo failure. libc-windows has no
+/// EAI_* constants; EINVAL carries the message through unchanged.
+#[cfg(windows)]
+fn resolution_failed_code() -> i32 {
+    libc::EINVAL
+}
+
+#[cfg(unix)]
+fn resolution_failed_code() -> i32 {
+    libc::EAI_NONAME
+}
+
 /// TCP server (mirrors `TCPServer`).
 pub struct TcpServer {
     listener: Mutex<Option<TcpListener>>,
@@ -258,6 +302,7 @@ impl TcpServer {
 
     /// Start listening (mirrors `TCPServer::listen`: SO_REUSEADDR, INADDR_ANY,
     /// caller-chosen backlog).
+    #[cfg(unix)]
     pub fn listen(&self, port: u16, backlog: i32) -> Result<(), NetError> {
         self.stop();
 
@@ -282,6 +327,8 @@ impl TcpServer {
         }
 
         let addr = libc::sockaddr_in {
+            #[cfg(target_os = "macos")]
+            sin_len: std::mem::size_of::<libc::sockaddr_in>() as u8,
             sin_family: libc::AF_INET as libc::sa_family_t,
             sin_port: port.to_be(),
             sin_addr: libc::in_addr {
@@ -316,6 +363,20 @@ impl TcpServer {
         Ok(())
     }
 
+    /// Windows variant of `listen`: std bind on INADDR_ANY. Windows sets
+    /// SO_REUSEADDR semantics per-binding (no stolen-port hijack concern for
+    /// a user-level coordinator); `backlog` is accepted for API parity and
+    /// clamped to the OS default by the stack.
+    #[cfg(windows)]
+    pub fn listen(&self, port: u16, _backlog: i32) -> Result<(), NetError> {
+        self.stop();
+        let listener = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port))
+            .map_err(|e| NetError::from_io("Bind failed", &e))?;
+        *self.listener.lock().unwrap_or_else(|e| e.into_inner()) = Some(listener);
+        *self.port.lock().unwrap_or_else(|e| e.into_inner()) = port;
+        Ok(())
+    }
+
     /// Block until a client connects. Polls with a 500ms timeout so the
     /// accept loop can wake up periodically and observe a shutdown (a bare
     /// accept(2) would block forever and a concurrent close does not
@@ -327,6 +388,7 @@ impl TcpServer {
     ///
     /// Poll timeout surfaces as errno EAGAIN so the caller can re-check its
     /// run flag and loop back if still alive.
+    #[cfg(unix)]
     pub fn accept(&self) -> Result<TcpSocket, NetError> {
         let guard = self.listener.lock().unwrap_or_else(|e| e.into_inner());
         let Some(listener) = guard.as_ref() else {
@@ -377,6 +439,44 @@ impl TcpServer {
             peer_port: Mutex::new(peer.port()),
         })
     }
+
+    /// Windows variant of `accept`: nonblocking accept in a 500ms poll loop
+    /// (std accept(2) cannot be interrupted by a concurrent stop() on
+    /// Windows either). A quiet tick surfaces as EAGAIN, matching the unix
+    /// contract so the caller's run-flag re-check works unchanged.
+    #[cfg(windows)]
+    pub fn accept(&self) -> Result<TcpSocket, NetError> {
+        loop {
+            let guard = self.listener.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(listener) = guard.as_ref() else {
+                return Err(NetError::ebadf("Server not listening"));
+            };
+            listener
+                .set_nonblocking(true)
+                .map_err(|e| NetError::from_io("set_nonblocking failed", &e))?;
+            match listener.accept() {
+                Ok((stream, peer)) => {
+                    let _ = stream.set_nonblocking(false);
+                    drop(guard);
+                    apply_stream_sockopts(&stream);
+                    let peer_ip = peer.ip().to_string();
+                    return Ok(TcpSocket {
+                        core: Arc::new(StreamCore::new(stream)),
+                        peer_address: Mutex::new(peer_ip),
+                        peer_port: Mutex::new(peer.port()),
+                    });
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                    drop(guard);
+                    std::thread::sleep(Duration::from_millis(500));
+                    // Loop re-takes the lock, so a concurrent stop() is seen.
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(NetError::from_io("Accept failed", &e)),
+            }
+        }
+    }
+
 
     /// Stop listening and release the descriptor.
     pub fn stop(&self) {

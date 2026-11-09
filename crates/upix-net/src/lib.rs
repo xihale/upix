@@ -18,6 +18,7 @@ pub mod session;
 pub mod stream;
 pub mod tcp;
 pub mod trust_store;
+#[cfg(unix)] // AF_UNIX; Windows std has no UnixListener (serve daemon is unix-only)
 pub mod uds;
 
 pub use error::{CryptoError, IdentityError, NetError};

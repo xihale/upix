@@ -3,6 +3,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
+#[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
@@ -41,6 +42,9 @@ pub fn default_trust_path() -> PathBuf {
 /// never exist even briefly with the process umask's permissions — a plain
 /// `fs::write` creates the file 0644 first and only gets chmod'ed afterwards,
 /// leaving a window where another local user can read the Ed25519 secret key.
+/// Windows has no umask; the file is created with the default user profile
+/// ACLs (the .upix directory is under %USERPROFILE%, already private).
+#[cfg(unix)]
 fn write_private_file(file: &Path, data: &[u8]) -> std::io::Result<()> {
     let mut f = OpenOptions::new()
         .write(true)
@@ -51,7 +55,18 @@ fn write_private_file(file: &Path, data: &[u8]) -> std::io::Result<()> {
     f.write_all(data)
 }
 
+#[cfg(windows)]
+fn write_private_file(file: &Path, data: &[u8]) -> std::io::Result<()> {
+    let mut f = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(file)?;
+    f.write_all(data)
+}
+
 /// chmod 0600 after the fact; failure is not fatal (e.g. Windows), ignored.
+#[cfg(unix)]
 fn ensure_0600(file: &Path) {
     if let Ok(meta) = fs::metadata(file) {
         let mut perms = meta.permissions();
@@ -59,6 +74,9 @@ fn ensure_0600(file: &Path) {
         let _ = fs::set_permissions(file, perms);
     }
 }
+
+#[cfg(windows)]
+fn ensure_0600(_file: &Path) {}
 
 /// Persistent Ed25519 identity. Loads the existing key file or generates a
 /// new keypair and writes it (permissions 0600, 0600 *at creation* — see
