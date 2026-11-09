@@ -185,9 +185,14 @@ private:
     }
 
     LogLevel min_level_ = [] {
-        // UPIX_LOG_LEVEL=debug enables DEBUG output (default INFO).
+        // UPIX_LOG_LEVEL: debug | info | warn | error (default INFO). Mirrors
+        // the Rust CLI logger so one variable silences both halves of the
+        // output; warn/error are what scripted runs use.
         if (const char* lvl = std::getenv("UPIX_LOG_LEVEL")) {
-            if (std::string_view(lvl) == "debug") return LogLevel::DEBUG;
+            const std::string_view v(lvl);
+            if (v == "debug") return LogLevel::DEBUG;
+            if (v == "warn" || v == "warning") return LogLevel::WARNING;
+            if (v == "error") return LogLevel::ERROR;
         }
         return LogLevel::INFO;
     }();

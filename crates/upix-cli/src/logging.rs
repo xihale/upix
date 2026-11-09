@@ -8,7 +8,7 @@
 //! `UPIX_PROGRESS=json` event stream owns stdout).
 //!
 //! Env knobs mirror the C++:
-//!   * `UPIX_LOG_LEVEL=debug` enables DEBUG (default: INFO);
+//!   * `UPIX_LOG_LEVEL=debug|info|warn|error` sets the floor (default: INFO);
 //!   * `NO_COLOR` (non-empty) disables color, `FORCE_COLOR` (non-empty) and
 //!     `CLICOLOR_FORCE` (non-empty and not "0") force it; otherwise color is
 //!     on only when stdout is a TTY.
@@ -27,6 +27,10 @@ pub fn machine_output_enabled() -> bool {
 /// so stdout stays a clean event stream.
 pub fn enable_machine_output() {
     TO_STDERR.store(true, Ordering::Relaxed);
+    // The engine formats and prints its own lines (engine/utils/logger.hpp),
+    // so its sink is a separate switch on the C++ side; without this, engine
+    // lines land on stdout in the middle of the JSON event stream.
+    upix_engine_ffi::set_log_to_stderr(true);
 }
 
 fn env_nonempty(name: &str) -> Option<String> {
@@ -225,8 +229,12 @@ impl log::Log for CliLogger {
 
 /// Install the process-wide logger (first call wins; later calls are no-ops).
 pub fn init() {
+    // error/warn silence the INFO chatter (progress noise, per-file start
+    // lines) for scripted runs; anything unrecognized keeps the INFO default.
     let min = match env_nonempty("UPIX_LOG_LEVEL").as_deref() {
         Some("debug") => log::LevelFilter::Debug,
+        Some("warn") | Some("warning") => log::LevelFilter::Warn,
+        Some("error") => log::LevelFilter::Error,
         _ => log::LevelFilter::Info,
     };
     let logger = CliLogger { min, color: console_color_enabled() };

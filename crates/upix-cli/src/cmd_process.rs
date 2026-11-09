@@ -95,7 +95,6 @@ pub fn run(a: &ProcessArgs) -> i32 {
 
     // Check if input is a directory for batch processing
     let is_dir = Path::new(input_path).is_dir();
-    log::info!(target: "Debug", "Input path: {} is_dir: {}", input_path, is_dir as i32);
 
     // ── Already-super-resolved guard (single-file only) ────────────────────
     // Read the file once here: the marker check needs the raw bytes, and the
@@ -105,7 +104,7 @@ pub fn run(a: &ProcessArgs) -> i32 {
         match std::fs::read(input_path) {
             Ok(raw) => input_bytes = raw,
             Err(e) => {
-                log::error!(target: "Engine", "Failed to load image: {e}");
+                log::error!(target: "Engine", "Failed to load image {input_path}: {e}");
                 return 1;
             }
         }
@@ -161,7 +160,9 @@ pub fn run(a: &ProcessArgs) -> i32 {
                 model_name.clone()
             };
             batch.output_path = derive_default_output(input_path, &model, true);
-            log::info!(target: "Engine", "Output directory: {}", batch.output_path);
+            // Not logged here: run_batch creates the directory only after it
+            // finds inputs, so announcing it up front claimed an output
+            // directory that an empty run never created.
         }
         return run_batch(&batch, effective);
     }
@@ -174,7 +175,7 @@ pub fn run(a: &ProcessArgs) -> i32 {
     let (mut image, orientation) = match upix_img::decode(&input_bytes) {
         Ok(img) => (img, upix_img::exif::parse_jpeg_exif_orientation(&input_bytes)),
         Err(e) => {
-            log::error!(target: "Engine", "Failed to load image: {}", e.message);
+            log::error!(target: "Engine", "Failed to load image {input_path}: {}", e.message);
             return 1;
         }
     };
@@ -208,6 +209,19 @@ pub fn run(a: &ProcessArgs) -> i32 {
         Ok(s) => s,
         Err(e) => {
             log::error!(target: "Engine", "{e}");
+            // First-run dead end: the bare message named the directory but
+            // never the command that fills it, so a new user was stuck here.
+            if e.starts_with("no models found in:") {
+                log::error!(
+                    target: "Engine",
+                    "Install one with `upix model download <name>` (see `upix model list-remote`)"
+                );
+            } else if e.starts_with("model not found:") {
+                log::error!(
+                    target: "Engine",
+                    "Run `upix model list` for the installed names, or `upix model list-remote` to download one"
+                );
+            }
             return 1;
         }
     };
@@ -425,7 +439,12 @@ pub fn run(a: &ProcessArgs) -> i32 {
             .map_err(|e| upix_img::ImgError { code: 1, message: format!("write failed: {e}") })
     });
     if let Err(e) = save_result {
-        log::error!(target: "Engine", "Failed to save output: {}", e.message);
+        log::error!(
+            target: "Engine",
+            "Failed to save output {}: {}",
+            final_output_path.display(),
+            e.message
+        );
         return 1;
     }
 

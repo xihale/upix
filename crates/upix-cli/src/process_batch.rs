@@ -127,6 +127,11 @@ struct BatchState {
     enable_progress_log: bool,
     batch_start_time: Instant,
     skip_count: AtomicUsize,
+    /// Images discovered for this run; the human progress line numbers files
+    /// against it ("[3/5] b.jpg") so a multi-image run is attributable.
+    total_count: usize,
+    /// Files that reached the engine, in the order they started.
+    started_count: AtomicUsize,
 }
 
 impl BatchState {
@@ -203,8 +208,19 @@ impl BatchState {
                 r#"{{"t":"current","file":"{}"}}"#,
                 json_escape(&name)
             ));
-        } else if self.enable_progress_log {
-            log::info!(target: "Engine", "Processing image: {}", prepared.in_path);
+        } else {
+            // Human mode: name the file and its place in the batch. Without
+            // this a 5-image run printed five identical "100% (1/1)" lines
+            // and there was no way to tell which image was in flight.
+            let n = self.started_count.fetch_add(1, Ordering::SeqCst) + 1;
+            let name = Path::new(&prepared.in_path)
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| prepared.in_path.clone());
+            log::info!(target: "Engine", "[{n}/{}] {name}", self.total_count);
+            if self.enable_progress_log {
+                log::info!(target: "Engine", "Processing image: {}", prepared.in_path);
+            }
         }
 
         let mut local_config = self.config.clone();
@@ -362,6 +378,10 @@ impl BatchState {
 
         if self.enable_progress_log {
             log::info!(target: "Task", "Completed: {}", final_out_path.display());
+        } else if !crate::logging::machine_output_enabled() {
+            // Human mode: close the "[3/5] b.jpg" line with where the result
+            // went, so the batch output is a readable transcript.
+            log::info!(target: "Engine", "Saved: {}", final_out_path.display());
         }
         if crate::logging::machine_output_enabled() {
             emit_json_line(format!(
@@ -453,11 +473,6 @@ pub fn run_batch(a: &ProcessArgs, effective: crate::common::EffectiveProcessingC
             }
         }
     }
-    if let Err(e) = std::fs::create_dir_all(output_path) {
-        log::error!(target: "CLI", "Cannot create output directory {output_path}: {e}");
-        return 1;
-    }
-
     // Gather image files recursively. Must mirror the decoders Image::load
     // actually ships: .bmp/.tiff used to be enumerated here but always failed
     // at load with "Unsupported image format", so they are not tasks at all.
@@ -522,10 +537,20 @@ pub fn run_batch(a: &ProcessArgs, effective: crate::common::EffectiveProcessingC
         }
     }
     if tasks.is_empty() {
-        log::warn!(target: "CLI", "No image files found in input directory");
-        return 0;
+        // No inputs is a failure, not a success: scripts branch on the exit
+        // code. The output directory is created after this check, so an empty
+        // run no longer leaves an empty "<dir>_<model>/" behind.
+        log::error!(
+            target: "CLI",
+            "No image files (.png/.jpg/.jpeg/.webp/.avif) found in {input_path}"
+        );
+        return 1;
     }
     log::info!(target: "CLI", "Found {} images to process", tasks.len());
+    if let Err(e) = std::fs::create_dir_all(output_path) {
+        log::error!(target: "CLI", "Cannot create output directory {output_path}: {e}");
+        return 1;
+    }
 
     // Largest-first (LPT) scheduling: the biggest image dominates the
     // critical path, so it must start first when workers run in
@@ -541,11 +566,19 @@ pub fn run_batch(a: &ProcessArgs, effective: crate::common::EffectiveProcessingC
     let models = match manager.scan_models() {
         Ok(m) if !m.is_empty() => m,
         Ok(_) => {
-            log::error!(target: "Engine", "No models found in {models_dir}");
+            log::error!(target: "Engine", "No models installed in {models_dir}");
+            log::error!(
+                target: "Engine",
+                "Install one with `upix model download <name>` (see `upix model list-remote`)"
+            );
             return 1;
         }
         Err(e) => {
-            log::error!(target: "Engine", "No models found in {models_dir} ({})", e.message);
+            log::error!(target: "Engine", "No models installed in {models_dir} ({})", e.message);
+            log::error!(
+                target: "Engine",
+                "Install one with `upix model download <name>` (see `upix model list-remote`)"
+            );
             return 1;
         }
     };
@@ -566,6 +599,10 @@ pub fn run_batch(a: &ProcessArgs, effective: crate::common::EffectiveProcessingC
                 for m in &models {
                     log::error!(target: "Engine", "  - {} ({}x)", m.name, m.scale_factor);
                 }
+                log::error!(
+                    target: "Engine",
+                    "Install more models with `upix model download <name>` (see `upix model list-remote`)"
+                );
                 return 1;
             }
         }
@@ -582,6 +619,8 @@ pub fn run_batch(a: &ProcessArgs, effective: crate::common::EffectiveProcessingC
         enable_progress_log: std::env::var("UPIX_PROGRESS").is_ok_and(|v| v == "1"),
         batch_start_time: Instant::now(),
         skip_count: AtomicUsize::new(0),
+        total_count: tasks.len(),
+        started_count: AtomicUsize::new(0),
     });
     log::info!(
         target: "Engine",

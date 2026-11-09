@@ -6,6 +6,7 @@
 #include "shim.h"
 
 #include "ncnn_engine_impl.hpp"
+#include "utils/logger.hpp" // upix_engine_set_log_stderr: the engine's own sink
 
 #include <cstddef>
 #include <cstring>
@@ -106,6 +107,10 @@ extern "C" {
 
 // NOTE: upix_engine_set_spirv_pack is defined in spirv_pack.cpp (the injection
 // point); only declared in shim.h.
+
+void upix_engine_set_log_stderr(int enable) {
+    upix::Logger::instance().set_output_stderr(enable != 0);
+}
 
 UpixEngine* upix_engine_create(void) {
     try {
