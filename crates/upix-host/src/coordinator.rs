@@ -308,6 +308,12 @@ fn recv_encrypted_poll(conn: &Conn, poll_ms: i64) -> FramePoll {
     let Some(parsed) = conn.framer.parse_header(&hdr) else {
         return FramePoll::Error;
     };
+    // Same bound as recv_encrypted: never trust a declared payload_length
+    // (u32 max ≈ 4 GB) when sizing the allocation, or one authenticated peer
+    // could OOM-abort the whole coordinator process.
+    if parsed.payload_length > MAX_NETWORK_PAYLOAD {
+        return FramePoll::Error;
+    }
     let mut wire = Vec::with_capacity(HEADER_SIZE + parsed.payload_length as usize);
     wire.extend_from_slice(&hdr);
     if parsed.payload_length > 0 {
@@ -1695,7 +1701,7 @@ fn run_client_task(
     } else {
         task.output_quality as i32
     };
-    let encoder_opts: EncoderOptions = task.encoder.into();
+    let encoder_opts: EncoderOptions = wireio::dec_opts_wire(task.encoder);
 
     // Cancel raced the upload/parse: don't even decode.
     if run.canceled() {

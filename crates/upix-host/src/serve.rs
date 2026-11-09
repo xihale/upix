@@ -725,7 +725,7 @@ fn handle_connection_inner(
                 .unwrap_or(0),
         );
     let out_img = out_image.ok_or_else(|| "internal: output missing".to_string())?;
-    let encoder_opts: EncoderOptions = req.encoder.into();
+    let encoder_opts: EncoderOptions = wireio::dec_opts_wire(req.encoder);
     let save = backend.save_image(
         &out_img,
         &final_path,
@@ -823,7 +823,7 @@ pub fn request(
         output_quality: args.output_quality,
         input_path_length: input.len() as u32,
         output_path_length: output.len() as u32,
-        encoder: (&args.encoder).into(),
+        encoder: wireio::enc_opts_wire(&args.encoder),
         force: u8::from(args.force),
         reserved: [0u8; 7],
     };
@@ -897,10 +897,14 @@ pub fn request(
                         skipped: true,
                     });
                 }
-                let out_path = String::from_utf8_lossy(
-                    &payload[resp_bytes..resp_bytes + r.out_path_length as usize],
-                )
-                .into_owned();
+                // Clamp to the actual payload: a stale/hostile daemon reply
+                // with an inflated out_path_length must not slice-panic the
+                // client (release is panic=abort).
+                let path_end = (resp_bytes
+                    .saturating_add(r.out_path_length as usize))
+                    .min(payload.len());
+                let out_path = String::from_utf8_lossy(&payload[resp_bytes..path_end])
+                    .into_owned();
                 return Ok(ServeOutcome {
                     width: r.width,
                     height: r.height,

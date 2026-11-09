@@ -9,8 +9,6 @@
 //! session (in `crate::session`) must be byte-identical to the C++
 //! implementation — proven by golden vectors in `tests/golden/`.
 
-use crate::EncoderOptions;
-
 pub const MAGIC: u32 = 0x5353_4358;
 /// magic[4] type[2] payload_length[4] checksum[4], little-endian.
 pub const HEADER_SIZE: usize = 14;
@@ -122,9 +120,12 @@ pub struct AuthResponse {
     pub trusted: u8,         // 0 = first-time (TOFU pending), 1 = already in TrustStore
 }
 
-/// Fixed-layout mirror of `upix_img::EncoderOptions` that rides
-/// ClientTaskSubmit and ServeRequest. Natural 4-byte alignment, identical on
-/// Android arm64 and desktop x86_64. sizeof == 28 — assert in tests.
+/// Fixed-layout mirror of the encoder options that rides ClientTaskSubmit
+/// and ServeRequest. Natural 4-byte alignment, identical on Android arm64 and
+/// desktop x86_64. sizeof == 28 — assert in tests. Conversion to/from the
+/// canonical `upix_img::EncoderOptions` lives in `upix-host` (wireio) —
+/// keeping this crate free of an upix-img dependency (net must not depend on
+/// the codec layer).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
 pub struct EncoderOptionsWire {
@@ -136,35 +137,6 @@ pub struct EncoderOptionsWire {
     pub avif_speed: i32,        // 6 default
     pub avif_subsampling: i32,  // 420 default
     pub avif_threads: i32,      // 0 = auto (hardware concurrency)
-}
-
-impl From<&EncoderOptions> for EncoderOptionsWire {
-    fn from(o: &EncoderOptions) -> Self {
-        Self {
-            png_level: o.png_level,
-            jpeg_subsampling: o.jpeg_subsampling,
-            webp_method: o.webp_method,
-            webp_lossless: u8::from(o.webp_lossless),
-            reserved: [0; 3],
-            avif_speed: o.avif_speed,
-            avif_subsampling: o.avif_subsampling,
-            avif_threads: o.avif_threads,
-        }
-    }
-}
-
-impl From<EncoderOptionsWire> for EncoderOptions {
-    fn from(w: EncoderOptionsWire) -> Self {
-        Self {
-            png_level: w.png_level,
-            jpeg_subsampling: w.jpeg_subsampling,
-            webp_method: w.webp_method,
-            webp_lossless: w.webp_lossless != 0,
-            avif_speed: w.avif_speed,
-            avif_subsampling: w.avif_subsampling,
-            avif_threads: w.avif_threads,
-        }
-    }
 }
 
 /// One-shot image submit (phone→PC). Two wire formats, distinguished by the

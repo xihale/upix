@@ -4,7 +4,6 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
-upix-img.workspace = true
 thiserror.workspace = true
 log.workspace = true
 x25519-dalek = { version = "2", features = ["static_secrets"] }

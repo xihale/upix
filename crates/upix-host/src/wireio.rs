@@ -8,6 +8,7 @@
 //! structs on the wire (natural alignment, little-endian; identical on
 //! Android arm64 and desktop x86_64).
 
+use upix_img::EncoderOptions;
 use upix_net::protocol::{
     AuthResponse, ClientConnectRequest, ClientConnectResponse, ClientTaskResponse,
     ClientTaskSubmit, EncoderOptionsWire, KeyHelloMessage, ModelDownloadRequest,
@@ -486,6 +487,39 @@ pub fn dec_serve_progress(b: &[u8]) -> Option<ServeProgress> {
         total_tiles: rd_u32(b, 4)?,
         stage: rd_u32(b, 8)?,
     })
+}
+
+// ── EncoderOptions conversions ──────────────────────────────────
+// Lives here, not in upix-net: the wire struct is net's, the canonical
+// options are img's, and net must not depend on the codec layer (orphan
+// rule forbids a From impl in upix-host, so these are plain functions).
+
+/// Canonical options → wire struct (encoder knobs only; formats/quality are
+/// separate fields).
+pub fn enc_opts_wire(o: &EncoderOptions) -> EncoderOptionsWire {
+    EncoderOptionsWire {
+        png_level: o.png_level,
+        jpeg_subsampling: o.jpeg_subsampling,
+        webp_method: o.webp_method,
+        webp_lossless: u8::from(o.webp_lossless),
+        reserved: [0; 3],
+        avif_speed: o.avif_speed,
+        avif_subsampling: o.avif_subsampling,
+        avif_threads: o.avif_threads,
+    }
+}
+
+/// Wire struct → canonical options.
+pub fn dec_opts_wire(w: EncoderOptionsWire) -> EncoderOptions {
+    EncoderOptions {
+        png_level: w.png_level,
+        jpeg_subsampling: w.jpeg_subsampling,
+        webp_method: w.webp_method,
+        webp_lossless: w.webp_lossless != 0,
+        avif_speed: w.avif_speed,
+        avif_subsampling: w.avif_subsampling,
+        avif_threads: w.avif_threads,
+    }
 }
 
 #[cfg(test)]

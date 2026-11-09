@@ -23,9 +23,9 @@ pub mod uds;
 pub use error::{CryptoError, IdentityError, NetError};
 pub use session::{EncryptedSession, SessionKey};
 pub use trust_store::TrustStore;
-pub use upix_img::EncoderOptions;
 
 // Module-level re-exports mirroring the pinned API names.
 pub use identity::{fingerprint, Identity};
 pub use tcp::{local_ips, TcpServer, TcpSocket};
+#[cfg(unix)]
 pub use uds::{UnixServer, UnixSocket};
