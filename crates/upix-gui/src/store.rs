@@ -106,6 +106,10 @@ pub struct Store {
 
     // Active job state
     pub job_phase: Signal<JobPhase>,
+    /// Set when the last job failed because the selected model is not on disk.
+    /// The failure banner offers "下载模型" only in that case (a generic retry
+    /// loops forever otherwise).
+    pub job_missing_model: Signal<Option<String>>,
     job_rx: Stored<Option<mpsc::Receiver<EngineEvent>>>,
     job_cancel: Stored<Option<Arc<AtomicBool>>>,
     backend: Stored<Arc<dyn JobBackend>>,
@@ -225,6 +229,7 @@ impl Store {
             force: signal(false),
 
             job_phase: signal(JobPhase::Idle),
+            job_missing_model: signal(None),
             job_rx: stored(None),
             job_cancel: stored(None),
             backend: stored(backend),
@@ -381,6 +386,7 @@ impl Store {
         let _ = self.job_rx.replace(Some(rx));
 
         let total = paths.len();
+        self.job_missing_model.set(None);
         self.job_phase.set(JobPhase::Running {
             item_index: 0,
             item_total: total,
@@ -735,6 +741,15 @@ impl Store {
                     let _ = self.job_cancel.replace(None);
                 }
                 EngineEvent::Failed(msg) => {
+                    // "模型文件缺失" / "model not found" are recoverable by
+                    // installing the model; anything else is not, so the
+                    // banner must not offer a download that cannot help.
+                    let missing = msg.contains("模型文件缺失")
+                        || msg.contains("model not found")
+                        || msg.contains("No models found")
+                        || msg.contains("no models found");
+                    self.job_missing_model
+                        .set(missing.then(|| self.selected_model.get()));
                     self.job_phase.set(JobPhase::Failed(msg));
                     let _ = self.job_rx.replace(None);
                     let _ = self.job_cancel.replace(None);

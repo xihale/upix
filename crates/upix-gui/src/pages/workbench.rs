@@ -786,7 +786,12 @@ fn telemetry_bar(store: Store) -> View {
                             view()
                         })
                 }
-                JobPhase::Failed(err_msg) => view()
+                JobPhase::Failed(err_msg) => {
+                    // A missing model cannot be fixed by pressing retry: it
+                    // needs a download. Only that case (recorded in the store)
+                    // swaps the banner action, everything else keeps 重试.
+                    let missing = store.job_missing_model.get();
+                    view()
                     .w_full()
                     .flex_row()
                     .items_center()
@@ -821,28 +826,41 @@ fn telemetry_bar(store: Store) -> View {
                             ),
                     )
                     .child(
-                        view()
-                            .w(px(44.0))
-                            .h(px(24.0))
-                            .rounded(px(4.0))
-                            .bg(palette::container_low())
-                            .border_1()
-                            .border_color(palette::outline_input())
-                            .transition()
-                            .duration(140.0)
-                            .ease_out()
-                            .hover(|s| s.bg(palette::high()))
-                            .active(|s| if reduce_motion() { s } else { s.scale(0.96) })
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .on_press(move || store.start_job())
-                            .child(
-                                text("重试")
-                                    .text_size(px(11.0))
-                                    .text_color(palette::on_surface()),
-                            ),
-                    ),
+                        {
+                            let label = if missing.is_some() { "下载模型" } else { "重试" };
+                            view()
+                                .w(px(if missing.is_some() { 68.0 } else { 44.0 }))
+                                .h(px(24.0))
+                                .rounded(px(4.0))
+                                .bg(palette::container_low())
+                                .border_1()
+                                .border_color(palette::outline_input())
+                                .transition()
+                                .duration(140.0)
+                                .ease_out()
+                                .hover(|s| s.bg(palette::high()))
+                                .active(|s| if reduce_motion() { s } else { s.scale(0.96) })
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .on_press(move || match missing.clone() {
+                                    Some(name) if !name.is_empty() => {
+                                        store.download_model(name);
+                                        store.nav.set(crate::nav::NavTab::Models);
+                                    }
+                                    // Empty name (no model selected at all):
+                                    // the Models page is where the choice and
+                                    // the download live.
+                                    _ => store.nav.set(crate::nav::NavTab::Models),
+                                })
+                                .child(
+                                    text(label)
+                                        .text_size(px(11.0))
+                                        .text_color(palette::on_surface()),
+                                )
+                        },
+                    )
+                }
                 JobPhase::Idle | JobPhase::Cancelled => {
                     let ready_str = format!("已就绪 · {} 项输入待处理", inputs.len());
                     view()
@@ -1447,6 +1465,7 @@ fn model_picker_popup(store: Store) -> View {
                     let current = store.selected_model.get();
                     let groups = store.installed_groups.get();
                     let mut col = view().w_full().flex_col().gap(px(2.0));
+                    let mut shown = 0usize;
 
                     for g in groups {
                         for m in g.items {
@@ -1469,6 +1488,7 @@ fn model_picker_popup(store: Store) -> View {
                                 m.scale
                             );
 
+                            shown += 1;
                             col = col.child(
                                 view()
                                     .w_full()
@@ -1522,6 +1542,65 @@ fn model_picker_popup(store: Store) -> View {
                                     } else {
                                         view()
                                     }),
+                            );
+                        }
+                    }
+                    if shown == 0 {
+                        // An empty popup (fresh install: nothing on disk) read
+                        // as a rendering bug — it offered only a search box.
+                        let filtered = !q.is_empty();
+                        col = col.child(
+                            view()
+                                .w_full()
+                                .py(px(18.0))
+                                .px(px(10.0))
+                                .flex_col()
+                                .items_center()
+                                .gap(px(4.0))
+                                .child(
+                                    text(if filtered {
+                                        "没有匹配的模型"
+                                    } else {
+                                        "尚未安装模型"
+                                    })
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(palette::on_surface()),
+                                )
+                                .child(
+                                    text(if filtered {
+                                        "换个关键词，或到「模型」页下载"
+                                    } else {
+                                        "到「模型」页挑选并下载"
+                                    })
+                                    .text_size(px(11.0))
+                                    .text_color(palette::muted()),
+                                ),
+                        );
+                        if !filtered {
+                            col = col.child(
+                                view()
+                                    .w_full()
+                                    .h(px(28.0))
+                                    .mt(px(6.0))
+                                    .rounded(px(6.0))
+                                    .bg(palette::high())
+                                    .border_1()
+                                    .border_color(palette::border())
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(palette::highest()))
+                                    .on_press(move || {
+                                        store.show_model_picker.set(false);
+                                        store.nav.set(crate::nav::NavTab::Models);
+                                    })
+                                    .child(
+                                        text("打开模型页")
+                                            .text_size(px(11.0))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(palette::text()),
+                                    ),
                             );
                         }
                     }
@@ -1654,13 +1733,18 @@ fn inspector_cta_button(store: Store) -> AnyElement {
                 ),
             JobPhase::Done { .. } => primary_button("重新超分", true, move || store.start_job()),
             JobPhase::Failed(_) => primary_button("继续超分", true, move || store.start_job()),
-            _ => primary_button("开始超分", true, move || {
-                if has_inputs {
-                    store.start_job();
-                } else {
-                    pick_image_files(store);
-                }
-            }),
+            _ => {
+                // No inputs yet: the button opens the file picker, so it must
+                // not claim to start a job that cannot run.
+                let label = if has_inputs { "开始超分" } else { "选择图片" };
+                primary_button(label, true, move || {
+                    if has_inputs {
+                        store.start_job();
+                    } else {
+                        pick_image_files(store);
+                    }
+                })
+            }
         }
     })
 }
