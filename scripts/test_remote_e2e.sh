@@ -18,11 +18,12 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CLI_DIR="$ROOT/cli"
+CLI_DIR="$ROOT/legacy/cli"
 APPS_DIR="$ROOT/apps"
-# xmake outputs to the project-root build dir ($(projectdir)/build/...), not
-# cli/build. Prefer the fresh root build; fall back to a legacy cli/build copy.
-CLI_BIN="$ROOT/build/linux/x86_64/release/upix-cli"
+# The host side is the Rust CLI (cargo target/release). Fall back to the
+# legacy xmake outputs (root build dir, then legacy/cli/build).
+CLI_BIN="$ROOT/target/release/upix-cli"
+[ -x "$CLI_BIN" ] || CLI_BIN="$ROOT/build/linux/x86_64/release/upix-cli"
 [ -x "$CLI_BIN" ] || CLI_BIN="$CLI_DIR/build/linux/x86_64/release/upix-cli"
 APP_APK="$APPS_DIR/app/build/outputs/apk/debug/app-debug.apk"
 TEST_APK="$APPS_DIR/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk"

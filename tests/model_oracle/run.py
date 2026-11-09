@@ -87,6 +87,10 @@ def default_binary():
     arch = os.uname().machine
     root = Path(__file__).resolve().parent.parent.parent
     for mode in ("release", "debug"):
+        candidate = root / "target" / mode / "upix-cli"
+        if candidate.exists():
+            return str(candidate)
+    for mode in ("release", "debug"):
         candidate = root / "build" / plat / arch / mode / "upix-cli"
         if candidate.exists():
             return str(candidate)

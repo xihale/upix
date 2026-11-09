@@ -157,7 +157,7 @@ Same-commit checklist:
 - [ ] `apps/app/src/main/res/values/strings.xml`: `help_family_*` /
       `help_scenario_*` — the family cards mirror the models/README
       sections 1:1, the scenario layer crosses families.
-- [ ] Scene tables: `share/core/model_metadata.cpp` **and**
+- [ ] Scene tables: `legacy/share/core/model_metadata.cpp` **and**
       `apps/app/.../data/model/ModelScenes.kt` (the CLI/GUI badges read
       them; `cli/tests/test_model_scene.cpp` pins the C++ side).
 - [ ] `docs/ARCHITECTURE.md`, only if engine-visible behavior changed

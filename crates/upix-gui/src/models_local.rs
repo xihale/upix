@@ -20,7 +20,7 @@ pub struct ModelVariant {
     pub size_bytes: u64,
 }
 
-/// A grouped model family (`share/core/model_families.hpp` / `upix_core::model_families`).
+/// A grouped model family (`legacy/share/core/model_families.hpp` / `upix_core::model_families`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ModelGroup {
     pub title: String,

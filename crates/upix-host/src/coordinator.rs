@@ -1,4 +1,4 @@
-//! Rust port of `share/core/distributed/coordinator.cpp` (+ `coordinator_admin.cpp`):
+//! Rust port of `legacy/share/core/distributed/coordinator.cpp` (+ `coordinator_admin.cpp`):
 //! the PC-side coordinator of the phone↔PC offload protocol.
 //!
 //! Semantics preserved from the C++ (comments below cite the C++ reasoning
@@ -980,8 +980,9 @@ fn resolve_and_drop(sh: &Shared, pa: &PendingApproval, value: bool) {
 // ── handshake ───────────────────────────────────────────────────────────────
 
 fn run_handshake(sh: &Shared, conn: &mut Conn, c_hello: &upix_net::protocol::KeyHelloMessage) -> bool {
-    // (1) Server ephemeral keypair.
-    let (s_eph_priv, s_eph_pub) = sh.cfg.crypto.x25519_keygen();
+    // (1) Server ephemeral keypair. x25519_keygen returns (public, private)
+    // — same order as the C++ X25519Keypair struct (crypto_sodium.hpp:15).
+    let (s_eph_pub, s_eph_priv) = sh.cfg.crypto.x25519_keygen();
     let s_id_pub = sh.cfg.signer.public_key();
 
     // (2) Transcript c_eph||c_id||s_eph||s_id (128 bytes).

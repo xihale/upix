@@ -1,5 +1,5 @@
 //! Engine abstraction — the single inference-backend contract for the whole
-//! workspace. Rust mirror of `share/core/engine.hpp` + `share/core/tile_types.hpp`.
+//! workspace. Rust mirror of `legacy/share/core/engine.hpp` + `legacy/share/core/tile_types.hpp`.
 //!
 //! Porting rule: semantics (including error codes and the documented device
 //! quirks) must match the C++ original. The ncnn implementation behind
@@ -45,7 +45,7 @@ pub fn is_oom_error(e: &EngineError) -> bool {
     e.code == ERR_OUT_OF_MEMORY || e.message.contains("out of memory")
 }
 
-/// `share/core/tile_types.hpp::TileRegion`
+/// `legacy/share/core/tile_types.hpp::TileRegion`
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TileRegion {
     pub x: u32,
@@ -55,7 +55,7 @@ pub struct TileRegion {
     pub overlap: u32,
 }
 
-/// `share/core/tile_types.hpp::TileConfig`
+/// `legacy/share/core/tile_types.hpp::TileConfig`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TileConfig {
     pub tile_size: i32,
@@ -69,7 +69,7 @@ impl Default for TileConfig {
     }
 }
 
-/// `share/core/tile_types.hpp::ProcessingProgress`
+/// `legacy/share/core/tile_types.hpp::ProcessingProgress`
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ProcessingProgress {
     pub total_tiles: i32,
@@ -87,7 +87,7 @@ impl ProcessingProgress {
     }
 }
 
-/// `share/core/engine.hpp::GPUTileTaskU8` — one whole-image u8 GPU tile task.
+/// `legacy/share/core/engine.hpp::GPUTileTaskU8` — one whole-image u8 GPU tile task.
 /// `input`/`output` are full-image interleaved buffers (`input_width * input_height * channels`).
 pub struct GpuTileTaskU8<'a> {
     pub input: &'a [u8],

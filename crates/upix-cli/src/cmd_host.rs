@@ -10,15 +10,10 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use upix_host::coordinator::{Coordinator, CoordinatorConfig, PendingApproval};
-use upix_host::seams::{
-    Backend, CryptoProvider, Listener, ListenerFactory, SessionCodec, Signer, TrustApi,
-};
-use upix_host::Framer;
-use upix_net::frame::{parse_header, serialize_frame, verify_frame};
-use upix_net::protocol::HEADER_SIZE;
-use upix_net::protocol::MessageHeader;
+use upix_host::net_adapters::{NetCrypto, NetFramer, NetSigner, NetTrust};
+use upix_host::seams::{Backend, Listener, ListenerFactory};
 use upix_net::identity::{default_identity_path, default_trust_path};
-use upix_net::{crypto, protocol::MessageType, EncryptedSession, TrustStore};
+use upix_net::TrustStore;
 
 use crate::args::HostArgs;
 use crate::common::{
@@ -26,110 +21,6 @@ use crate::common::{
     read_line_interruptible, G_RUNNING,
 };
 use crate::logging;
-
-/// Wire framing over the net crate (plaintext frames enforce the header
-/// checksum; sealed frames skip it — Poly1305 covers integrity).
-pub struct NetFramer;
-
-impl Framer for NetFramer {
-    fn serialize_frame(&self, ty: MessageType, payload: &[u8]) -> Vec<u8> {
-        serialize_frame(
-            MessageHeader {
-                magic: upix_net::protocol::MAGIC,
-                msg_type: ty,
-                payload_length: payload.len() as u32,
-                checksum: 0, // filled by serialize
-            },
-            payload,
-        )
-    }
-    fn parse_header(&self, buf: &[u8]) -> Option<MessageHeader> {
-        parse_header(buf)
-    }
-    fn verify_frame(&self, header: &[u8; HEADER_SIZE], payload: &[u8]) -> bool {
-        verify_frame(header, payload)
-    }
-}
-
-/// Crypto over the net crate's golden-vector functions.
-pub struct NetCrypto;
-
-impl CryptoProvider for NetCrypto {
-    fn x25519_keygen(&self) -> ([u8; 32], [u8; 32]) {
-        crypto::x25519_keygen()
-    }
-    fn x25519_shared(&self, secret: &[u8; 32], peer_public: &[u8; 32]) -> [u8; 32] {
-        crypto::x25519_shared(secret, peer_public).unwrap_or([0u8; 32])
-    }
-    fn ed25519_verify(&self, public: &[u8; 32], sig: &[u8; 64], msg: &[u8]) -> bool {
-        crypto::ed25519_verify(public, sig, msg)
-    }
-    fn new_session(&self, key: &[u8; 32]) -> Box<dyn SessionCodec> {
-        let mut session = EncryptedSession::default();
-        session.activate(key);
-        Box::new(NetCodec { session })
-    }
-    fn fingerprint(&self, public: &[u8; 32]) -> String {
-        upix_net::fingerprint(public)
-    }
-    fn new_device_id(&self) -> String {
-        crypto::generate_uuid().chars().take(35).collect()
-    }
-}
-
-/// Session codec over `EncryptedSession` (same wire: [14B header]
-/// [nonce 24B][ciphertext+MAC]).
-pub struct NetCodec {
-    session: EncryptedSession,
-}
-
-impl SessionCodec for NetCodec {
-    fn seal(&self, ty: MessageType, payload: &[u8]) -> Option<Vec<u8>> {
-        let header = MessageHeader {
-            magic: upix_net::protocol::MAGIC,
-            msg_type: ty,
-            payload_length: payload.len() as u32,
-            checksum: 0,
-        };
-        self.session.seal(header, payload).ok()
-    }
-    fn open(&self, wire: &[u8]) -> Option<(MessageHeader, Vec<u8>)> {
-        self.session.open(wire)
-    }
-}
-
-/// The host's Ed25519 identity from `~/.upix/identity`.
-pub struct NetSigner {
-    pub identity: upix_net::Identity,
-}
-
-impl Signer for NetSigner {
-    fn public_key(&self) -> [u8; 32] {
-        self.identity.public_key()
-    }
-    fn sign(&self, msg: &[u8]) -> [u8; 64] {
-        self.identity.sign(msg)
-    }
-    fn fingerprint(&self) -> String {
-        self.identity.fingerprint()
-    }
-}
-
-/// TrustApi over the net TrustStore (`~/.upix/trusted_clients`).
-pub struct NetTrust {
-    pub store: std::sync::Mutex<TrustStore>,
-}
-
-impl TrustApi for NetTrust {
-    fn is_trusted(&self, key: &[u8; 32]) -> bool {
-        self.store.lock().unwrap().contains(key)
-    }
-    fn approve_and_save(&self, key: &[u8; 32]) -> bool {
-        let mut store = self.store.lock().unwrap();
-        store.add(key);
-        store.save().is_ok()
-    }
-}
 
 /// The coordinator's Backend bundle: engine factory over the ncnn FFI
 /// plus the shared core/img pipeline calls, model scanning over
@@ -469,9 +360,7 @@ pub fn run(a: &HostArgs) -> i32 {
     crate::install_signal_handlers();
     G_RUNNING.store(true, Ordering::SeqCst);
 
-    let trust = Arc::new(NetTrust {
-        store: std::sync::Mutex::new(TrustStore::load(&default_trust_path())),
-    });
+    let trust = Arc::new(NetTrust::new(TrustStore::load(&default_trust_path())));
     let cfg = CoordinatorConfig {
         port: a.port,
         bind_addr: "0.0.0.0".to_string(),

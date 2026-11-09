@@ -48,7 +48,7 @@ apps/app/src/main/cpp/third_party/
 *.onnx
 *.tflite
 *.ncnn
-cli/models/
+legacy/cli/models/
 !models/README.md
 models/manifest.json
 # Machine-local model store symlink (e.g. -> ~/.config/Upix/models)
@@ -60,11 +60,11 @@ logs/
 
 # Test / debug outputs
 test_output/
-cli/tests/output/
-desktop/Testing/
-desktop/shots-*/
-desktop/.cache/
-desktop/.vite/
+legacy/cli/tests/output/
+legacy/desktop/Testing/
+legacy/desktop/shots-*/
+legacy/desktop/.cache/
+legacy/desktop/.vite/
 upix-test-wake-*
 *.png
 *.jpg

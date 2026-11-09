@@ -1,5 +1,5 @@
 //! Persistent Ed25519 identity — Rust port of
-//! `share/core/distributed/identity.{hpp,cpp}` (IdentityKey part).
+//! `legacy/share/core/distributed/identity.{hpp,cpp}` (IdentityKey part).
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -12,7 +12,7 @@ use crate::error::IdentityError;
 /// 64-byte libsodium Ed25519 secret key = seed(32) || pk(32).
 const ED_SECRETKEY_LEN: usize = 64;
 
-/// User home for on-disk state (mirrors `share/utils/platform.hpp`):
+/// User home for on-disk state (mirrors `legacy/share/utils/platform.hpp`):
 /// HOME covers Linux/macOS; USERPROFILE covers Windows where HOME is
 /// typically unset for GUI-launched processes. Falls back to "." when
 /// neither is set — same degenerate fallback the callers keep.

@@ -1,5 +1,5 @@
-//! upix-net — Rust port of `share/core/distributed/{protocol,crypto_sodium,
-//! crypto_session,identity}` + `share/utils/{network,stream_socket,
+//! upix-net — Rust port of `legacy/share/core/distributed/{protocol,crypto_sodium,
+//! crypto_session,identity}` + `legacy/share/utils/{network,stream_socket,
 //! unix_socket}`: binary frame protocol, libsodium-equivalent crypto
 //! (RustCrypto), identity/truststore, TCP/UDS transport.
 //!

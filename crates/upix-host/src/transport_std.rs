@@ -1,5 +1,5 @@
 //! std-based TCP/UDS transport adapters implementing [`crate::seams`]
-//! traits. These mirror `share/utils/{network,stream_socket,unix_socket}`
+//! traits. These mirror `legacy/share/utils/{network,stream_socket,unix_socket}`
 //! semantics: send/receive under SEPARATE locks (a handler's polled reads and
 //! a worker's sends share one connection without deadlocking), poll-tick
 //! accept, and `shutdown()` wake for teardown.

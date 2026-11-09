@@ -1,11 +1,12 @@
 //! Builds the workspace's only C++ FFI island: the ncnn/Vulkan engine subset
 //! plus the extern "C" shim.
 //!
-//! The engine sources stay in `share/` and are compiled in place, unmodified:
-//! the same files feed the xmake builds (Android .so, desktop) and this crate,
-//! so there is exactly one copy. The only engine-adjacent difference is the
-//! SPIR-V pack source: xmake embeds `share/core/spirv_pack.S`, while this build
-//! defines UPIX_SPIRV_PACK_EXTERNAL and injects csrc/spirv_pack.bin at startup.
+//! The engine sources stay in `legacy/share/` and are compiled in place,
+//! unmodified: the same files feed the xmake builds (Android .so, legacy
+//! desktop) and this crate, so there is exactly one copy. The only engine-
+//! adjacent difference is the SPIR-V pack source: xmake embeds
+//! `legacy/share/core/spirv_pack.S`, while this build defines
+//! UPIX_SPIRV_PACK_EXTERNAL and injects csrc/spirv_pack.bin at startup.
 
 use std::env;
 use std::fs;
@@ -20,7 +21,7 @@ fn main() {
         .and_then(Path::parent)
         .expect("workspace root")
         .to_path_buf();
-    let share = workspace.join("share");
+    let share = workspace.join("legacy/share");
 
     for dir in [csrc.clone(), share.join("core"), share.join("utils")] {
         println!("cargo:rerun-if-changed={}", dir.display());
@@ -56,7 +57,7 @@ fn main() {
 
     // --- compile ------------------------------------------------------------
     // Engine sources must stay pristine: they compile against
-    //   -I share      -> engine.hpp, tile_types.hpp, tile_processor*,
+    //   -I legacy/share -> engine.hpp, tile_types.hpp, tile_processor*,
     //                    model_graph*, utils/{expected,logger,benchmark}
     //   -I csrc       -> shim.h
     let mut build = cc::Build::new();

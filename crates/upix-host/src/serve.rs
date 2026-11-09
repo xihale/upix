@@ -1,4 +1,4 @@
-//! Rust port of `share/core/serve/daemon.cpp` — the warm-engine Unix-socket
+//! Rust port of `legacy/share/core/serve/daemon.cpp` — the warm-engine Unix-socket
 //! daemon — plus the client-side helpers (`status`/`stop`/`ensure_running`/
 //! `request`) that the CLI's `daemon` / first-upscale-auto-start paths use.
 //!

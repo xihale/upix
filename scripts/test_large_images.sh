@@ -11,7 +11,8 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CLI="${PROJECT_ROOT}/build/linux/x86_64/release/upix-cli"
+CLI="${PROJECT_ROOT}/target/release/upix-cli"
+[[ -x "$CLI" ]] || CLI="${PROJECT_ROOT}/build/linux/x86_64/release/upix-cli"  # legacy xmake build
 MODEL="Real-ESRGANv3-anime-x2"
 OUTPUT_DIR="test_output"
 LOG_FILE="large_image_test.log"
@@ -19,7 +20,7 @@ LOG_FILE="large_image_test.log"
 for tool in convert bc; do
     command -v "$tool" >/dev/null 2>&1 || { echo "missing required tool: $tool" >&2; exit 1; }
 done
-[ -x "$CLI" ] || { echo "CLI not built: $CLI (run scripts/build_cli.sh release)" >&2; exit 1; }
+[ -x "$CLI" ] || { echo "CLI not built: $CLI (run: cargo build --release -p upix-cli)" >&2; exit 1; }
 
 mkdir -p "$OUTPUT_DIR"
 

@@ -1,4 +1,4 @@
-//! model_graph — Rust port of `share/core/model_graph.{hpp,cpp}`.
+//! model_graph — Rust port of `legacy/share/core/model_graph.{hpp,cpp}`.
 //!
 //! Pure `.param` file analysis: filename xN convention, and the graph-derived
 //! scale via the upsampler ladder (Interp product; image-facing deconv

@@ -1,4 +1,4 @@
-//! model_families — Rust port of `share/core/model_families.hpp`:
+//! model_families — Rust port of `legacy/share/core/model_families.hpp`:
 //! single source of truth for model family grouping.
 //!
 //! Rules:

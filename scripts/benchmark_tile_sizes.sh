@@ -6,8 +6,8 @@
 set -e
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-BUILD_DIR="$PROJECT_ROOT/build/linux/x86_64/release"
-CLI="$BUILD_DIR/upix-cli"
+CLI="$PROJECT_ROOT/target/release/upix-cli"
+[[ -x "$CLI" ]] || CLI="$PROJECT_ROOT/build/linux/x86_64/release/upix-cli"  # legacy xmake build
 TEST_IMAGE="${1:-${UPIX_BENCH_IMAGE:-}}"
 if [ -z "$TEST_IMAGE" ] || [ ! -f "$TEST_IMAGE" ]; then
     echo "Usage: $0 <test-image>   (or set UPIX_BENCH_IMAGE)" >&2
@@ -20,7 +20,7 @@ OUTPUT_DIR="/tmp/benchmark_results"
 for tool in nvidia-smi bc column; do
     command -v "$tool" >/dev/null 2>&1 || { echo "missing required tool: $tool" >&2; exit 1; }
 done
-[ -x "$CLI" ] || { echo "CLI not built: $CLI (run scripts/build_cli.sh release)" >&2; exit 1; }
+[ -x "$CLI" ] || { echo "CLI not built: $CLI (run: cargo build --release -p upix-cli)" >&2; exit 1; }
 
 mkdir -p "$OUTPUT_DIR"
 

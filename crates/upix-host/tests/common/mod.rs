@@ -216,6 +216,8 @@ impl Framer for PlainFramer {
 pub struct MockCrypto;
 
 impl CryptoProvider for MockCrypto {
+    /// (public, private) — same order as the real `crypto::x25519_keygen`
+    /// (and the C++ X25519Keypair struct).
     fn x25519_keygen(&self) -> ([u8; 32], [u8; 32]) {
         static COUNTER: AtomicUsize = AtomicUsize::new(1);
         let n = COUNTER.fetch_add(1, Ordering::SeqCst) as u8;
@@ -223,7 +225,7 @@ impl CryptoProvider for MockCrypto {
         privk[0] = 0xEE;
         let mut pubk = [n; 32];
         pubk[0] = 0xDD;
-        (privk, pubk)
+        (pubk, privk)
     }
     fn x25519_shared(&self, _secret: &[u8; 32], _peer: &[u8; 32]) -> [u8; 32] {
         [0x5A; 32]
@@ -468,7 +470,7 @@ impl TestClient {
 pub fn client_handshake(client: &TestClient, id_pub: [u8; 32]) -> Result<(), String> {
     // CLIENT KEY_HELLO: eph, id, sig(zeros at this stage — the mock verify
     // only checks the transcript signature on the SERVER hello).
-    let (_c_priv, c_eph) = MockCrypto.x25519_keygen();
+    let (_c_pub, c_eph) = MockCrypto.x25519_keygen();  // (public, private)
     // Sign the transcript exactly like a real client: needs the server hello
     // first. Protocol order: client sends KEY_HELLO (sig zeroed? no — the
     // C++ client signs with its identity AFTER building the same transcript;

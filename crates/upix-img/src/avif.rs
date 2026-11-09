@@ -1,5 +1,5 @@
 //! AVIF codec via runtime dlopen of the system libavif. Port of
-//! `share/utils/image_avif.cpp` (the dlopen build, the default).
+//! `legacy/share/utils/image_avif.cpp` (the dlopen build, the default).
 //!
 //! libavif 1.x public ABI is used through hand-mirrored struct overlays;
 //! the library-sized objects are allocated by the library itself and we

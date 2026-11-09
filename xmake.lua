@@ -154,7 +154,7 @@ local ncnn_x86_isa = has_config("native_isa") and is_plat("linux") and "auto" or
 -- (fe88f421) that glslang-nihui 20260113 pins, so the pairing is identical
 -- to a native release. Runtime ncnn looks up a frozen SPIR-V pack and does
 -- not link glslang.
--- dump-spirv (glslang-linked ncnn) generates share/core/spirv_pack.bin if missing.
+-- dump-spirv (glslang-linked ncnn) generates legacy/share/core/spirv_pack.bin if missing.
 -- Desktop builds use ncnn's built-in minimal omp runtime (simpleomp): host
 -- binaries (release tarballs, dump-spirv) run directly with no rpath into
 -- xmake package dirs, so the real libomp shared runtime must not be a
@@ -208,13 +208,16 @@ if not is_plat("android") then
     add_requires("imgui v1.92.9+b-docking", {configs = {sdl3 = true, vulkan = true, freetype = true, wchar32 = true}})
 end
 
--- share/ declares upix-core (and its android-side SPIR-V pack hook); tools/
--- declares dump-spirv and the host-side hook on upix-core. Each hook is scoped
--- to its own platform, so this order is not load-bearing — but keep share/
+-- The C++ stack lives under legacy/ (cli, desktop, tools, share). The Rust
+-- workspace (Cargo.toml) is the product stack; root xmake exists for the
+-- Android JNI build and opt-in legacy desktop builds. legacy/share declares
+-- upix-core (and its android-side SPIR-V pack hook); legacy/tools declares
+-- dump-spirv and the host-side hook on upix-core. Each hook is scoped to its
+-- own platform, so this order is not load-bearing — but keep legacy/share
 -- first: upix-core must exist before anything depends on it.
-includes("share")
+includes("legacy/share")
 if is_plat("android") then
     includes("apps")
 else
-    includes("share/perf", "cli", "desktop", "tools")
+    includes("legacy/share/perf", "legacy/cli", "legacy/desktop", "legacy/tools")
 end

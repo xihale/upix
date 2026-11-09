@@ -15,7 +15,8 @@ use upix_host::{ServeConfig, ServeDevice};
 
 use crate::args::DaemonArgs;
 use crate::common::{emit_json_line, json_escape, pid_is_upix_daemon};
-use crate::cmd_host::{CliBackend, NetFramer};
+use crate::cmd_host::CliBackend;
+use upix_host::net_adapters::NetFramer;
 
 pub fn run(a: &DaemonArgs) -> i32 {
     let socket_path = if a.socket_path.is_empty() {

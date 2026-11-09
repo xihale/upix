@@ -14,7 +14,7 @@ upix-img.workspace = true
 upix-host.workspace = true
 upix-engine-ffi.workspace = true
 thiserror.workspace = true
-log.workspace = true
+log = { workspace = true, features = ["std"] }
 serde_json.workspace = true
 clap = { version = "4", features = ["derive"] }
 ureq = "3"

@@ -225,12 +225,13 @@ use ffi::{
 
 /// Injects the precompiled SPIR-V pack into the C++ side. Idempotent and
 /// thread-safe; must happen before the first GPU initialize (done eagerly by
-/// [`NcnnEngine::new`]). The pack is baked into this crate
-/// (`csrc/spirv_pack.bin`), replacing the retired `.S`/`.incbin` embedding.
+/// [`NcnnEngine::new`]). The pack is baked in from
+/// `legacy/share/core/spirv_pack.bin` (tracked, host-GPU independent),
+/// replacing the retired `.S`/`.incbin` embedding.
 pub fn init_spirv_pack() {
     static ONCE: Once = Once::new();
     ONCE.call_once(|| {
-        const PACK: &[u8] = include_bytes!("../../../share/core/spirv_pack.bin");
+        const PACK: &[u8] = include_bytes!("../../../legacy/share/core/spirv_pack.bin");
         unsafe { ffi::upix_engine_set_spirv_pack(PACK.as_ptr(), PACK.len()) };
     });
 }

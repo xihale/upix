@@ -1,11 +1,12 @@
-//! upix-host — Rust port of `share/core/distributed/coordinator*` (PC side
-//! of the phone↔PC offload protocol) and `share/core/serve/daemon.cpp` (the
+//! upix-host — Rust port of `legacy/share/core/distributed/coordinator*` (PC side
+//! of the phone↔PC offload protocol) and `legacy/share/core/serve/daemon.cpp` (the
 //! warm-engine Unix-socket daemon).
 //!
 //! Porting contract: docs/rewrite/CONTRACT.md §host.
 
 pub mod coordinator;
 pub mod modelctl;
+pub mod net_adapters;
 pub mod pairing;
 pub mod seams;
 pub mod serve;
@@ -31,4 +32,5 @@ pub mod modelctl_api {
 }
 
 pub use coordinator::Framer;
+pub use net_adapters::{NetCodec, NetCrypto, NetCryptoStack, NetFramer, NetSigner, NetTrust};
 pub use seams::Backend;

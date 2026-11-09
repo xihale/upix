@@ -3,12 +3,12 @@
 # Wraps tests/serve/run.py (python3 + numpy + Pillow required).
 #
 #   --device gpu     run the shared daemon on Vulkan (default: cpu)
-#   --binary PATH    upix-cli path (default: build/<plat>/<arch>/release)
+#   --binary PATH    upix-cli path (default: target/release, then legacy xmake)
 #   --model NAME     primary model, must exist in --models-dir
 #   --suite NAME     run a single suite: protocol|concurrency|io|lifecycle
 #   --keep-work      keep temp work dir for debugging
 #
-# First-time setup: scripts/build_cli.sh release
+# First-time setup: cargo build --release -p upix-cli
 # and: upix-cli model download NomosUni-SPAN-x2 [HFA2k-LUDVAE-SPAN-x2]
 set -euo pipefail
 

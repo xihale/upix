@@ -9,10 +9,10 @@
 //   g++ -std=c++23 -O0 -Wall -I share -I crates/upix-engine-ffi/csrc/upix
 //       -I crates/upix-engine-ffi/csrc/upix/utils
 //       crates/upix-net/vector_gen/dump.cpp
-//       share/core/distributed/protocol.cpp
-//       share/core/distributed/crypto_session.cpp
-//       share/core/distributed/identity.cpp
-//       share/utils/crypto_sodium.cpp share/utils/crypto.cpp
+//       legacy/share/core/distributed/protocol.cpp
+//       legacy/share/core/distributed/crypto_session.cpp
+//       legacy/share/core/distributed/identity.cpp
+//       legacy/share/utils/crypto_sodium.cpp legacy/share/utils/crypto.cpp
 //       -lsodium -o /tmp/upix-vgen
 //   /tmp/upix-vgen crates/upix-net/tests/golden
 //

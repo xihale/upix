@@ -41,9 +41,10 @@ mkdir -p "$OUT_DIR"
 # is not a usable fallback here — the sampler keys off the CLI's own PID, which
 # xmake's wrapper process would break.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CLI="${SCRIPT_DIR}/../build/linux/x86_64/release/upix-cli"
+CLI="${SCRIPT_DIR}/../target/release/upix-cli"
+[[ -x "$CLI" ]] || CLI="${SCRIPT_DIR}/../build/linux/x86_64/release/upix-cli"  # legacy xmake build
 [[ -x "$CLI" ]] || {
-    echo "upix-cli not built: $CLI (run scripts/build_cli.sh release)" >&2
+    echo "upix-cli not built: $CLI (run: cargo build --release -p upix-cli)" >&2
     exit 1
 }
 SAMPLE_MS=50

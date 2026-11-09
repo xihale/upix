@@ -24,7 +24,6 @@ jobs:
       - uses: ./.github/actions/setup-xmake
         with:
           cache-kind: android
-      - uses: ./.github/actions/spirv-pack
       - name: assembleDebug
         working-directory: apps
         run: ./gradlew assembleDebug --no-daemon

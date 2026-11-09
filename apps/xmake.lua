@@ -11,7 +11,7 @@ target("upix-native")
         add_packages("libavif")
     end
     add_files("app/src/main/cpp/jni_bridge.cpp")
-    add_includedirs("$(projectdir)/share/core/distributed")
+    add_includedirs("$(projectdir)/../legacy/share/core/distributed")
     add_syslinks("android", "log", "vulkan")
     -- ncnn's Android archive omits RTTI; consumers must not reference Layer typeinfo.
     add_cxflags("-fexceptions", "-fno-rtti")

@@ -1,6 +1,8 @@
 name: CI host
 
-# Manual only. Build and test are separate jobs; the test job has no compiler.
+# Manual only. Rust workspace: unit/integration tests, then the serve E2E
+# suite and the model-effect oracle against the cargo-built upix-cli. One job:
+# the suites consume the release binary built in the same runner.
 on:
   workflow_dispatch:
 
@@ -11,63 +13,43 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  CARGO_TERM_COLOR: always
+
 jobs:
-  build:
-    name: compile (linux-x86_64)
+  build-and-test:
+    name: build + test (linux-x86_64)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (v4.4.0)
       - uses: ./.github/actions/setup-xmake
         with:
           cache-kind: host
-      - uses: ./.github/actions/spirv-pack
-      - name: Build CLI
-        run: scripts/build_cli.sh release --cc=gcc-14 --cxx=g++-14
-      - name: Build host tests
-        run: scripts/build_host_tests.sh
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4 (v4.6.2)
-        with:
-          name: host-bins
-          path: |
-            build/linux/x86_64/release/upix-cli
-            cli/build/test_*
-          if-no-files-found: error
-          retention-days: 3
-      - name: ccache stats
-        if: always()
-        run: ccache -s || true
-
-  test:
-    name: run tests
-    needs: build
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (v4.4.0)
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4 (v4.3.0)
-        with:
-          name: host-bins
-      - name: Runtime libs (no compiler)
+      # Static ncnn for engine-ffi (legacy/share engine sources compile in
+      # place; the SPIR-V pack is tracked in legacy/share/core).
+      - name: cargo test (all crates)
+        run: cargo test --workspace
+      - name: cargo build (release cli for the E2E suites)
+        run: cargo build --release -p upix-cli
+      - name: Runtime libs + python deps for the suites
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
             libdeflate-dev libpng-dev libjpeg-dev libwebp-dev \
             libcurl4-openssl-dev libzip-dev libomp-dev \
-            mesa-vulkan-drivers
-      - name: Make binaries executable
-        run: chmod +x build/linux/x86_64/release/upix-cli cli/build/test_*
-      - name: Run host tests
-        run: scripts/run_host_tests.sh
+            mesa-vulkan-drivers \
+            python3-numpy python3-pil
       - name: Fetch test models (serve E2E + model oracle)
-        run: build/linux/x86_64/release/upix-cli model download \
+        run: target/release/upix-cli model download \
           NomosUni-SPAN-x2 HFA2k-LUDVAE-SPAN-x2 \
           Real-ESRGANv3-anime-x2 Archivist-Medium-Compact-x1 \
           NomosWebPhoto-RealPLKSR-x4 Real-ESRGAN-x2plus \
           Real-CUGAN-no-denoise-x2
       - name: Serve E2E suite (CPU)
-        run: |
-          sudo apt-get install -y -qq python3-numpy python3-pil
-          scripts/run_serve_tests.sh --device cpu
+        run: scripts/run_serve_tests.sh --device cpu
       - name: Model-effect oracle (CPU, golden images)
         run: scripts/run_model_oracle.sh --require-models
+      - name: ccache stats
+        if: always()
+        run: ccache -s || true

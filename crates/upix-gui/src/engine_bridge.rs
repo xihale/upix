@@ -310,7 +310,7 @@ pub fn run_internal_daemon_from_argv(argv: &[String]) -> u8 {
         device,
         idle_timeout_s,
         backend: Arc::new(crate::host_bridge::real_host::FfiBackendShim { models_dir }),
-        framer: Arc::new(crate::host_bridge::real_host::NetFramer),
+        framer: Arc::new(upix_host::net_adapters::NetFramer),
         uds: Box::new(upix_host::transport_std::StdUdsFactory),
     };
 
@@ -435,7 +435,7 @@ fn run_real_batch(req: JobRequest, tx: &Sender<EngineEvent>) -> Result<(), Strin
                 };
                 if let Ok(outcome) = upix_host::serve::request(
                     &upix_host::transport_std::StdUdsFactory,
-                    &crate::host_bridge::real_host::NetFramer,
+                    &upix_host::net_adapters::NetFramer,
                     Path::new(&sock),
                     &args,
                     Some(&on_prog),

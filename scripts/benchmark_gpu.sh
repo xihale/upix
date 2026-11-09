@@ -11,7 +11,8 @@
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-CLI="${PROJECT_ROOT}/build/linux/x86_64/release/upix-cli"
+CLI="${PROJECT_ROOT}/target/release/upix-cli"
+[[ -x "$CLI" ]] || CLI="${PROJECT_ROOT}/build/linux/x86_64/release/upix-cli"  # legacy xmake build
 MONITOR="${SCRIPT_DIR}/monitor_gpu.sh"
 INPUT="${1:-${UPIX_BENCH_IMAGE:-test_input.png}}"
 MODEL="Real-ESRGANv3-anime-x2"
@@ -19,7 +20,7 @@ MODEL="Real-ESRGANv3-anime-x2"
 for tool in nvidia-smi bc; do
     command -v "$tool" >/dev/null 2>&1 || { echo "missing required tool: $tool" >&2; exit 1; }
 done
-[ -x "$CLI" ] || { echo "CLI not built: $CLI (run scripts/build_cli.sh release)" >&2; exit 1; }
+[ -x "$CLI" ] || { echo "CLI not built: $CLI (run: cargo build --release -p upix-cli)" >&2; exit 1; }
 [ -x "$MONITOR" ] || { echo "monitor script missing: $MONITOR" >&2; exit 1; }
 [ -f "$INPUT" ] || { echo "input image not found: $INPUT (pass a path or set UPIX_BENCH_IMAGE)" >&2; exit 1; }
 

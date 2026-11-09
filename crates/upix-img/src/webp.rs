@@ -1,4 +1,4 @@
-//! WebP decode/encode. Port of the WebP paths in `share/utils/image.cpp`
+//! WebP decode/encode. Port of the WebP paths in `legacy/share/utils/image.cpp`
 //! (libwebp + libwebpmux) onto the `webp` crate (vendored libwebp) with a
 //! hand-rolled VP8X/"XMP " mux post-pass.
 

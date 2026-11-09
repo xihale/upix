@@ -4,14 +4,14 @@
 # fuzzing, resource-leak soak, and lifecycle abuse.
 #
 #   --device gpu     run the shared daemon on Vulkan (default: cpu)
-#   --binary PATH    upix-cli path (default: build/<plat>/<arch>/release)
+#   --binary PATH    upix-cli path (default: target/release, then legacy xmake)
 #   --model NAME     primary model, must exist in --models-dir
 #   --suite NAME     run a single suite: fuzz|semantic|churn|soak|lifecycle2
 #   --seed N         fuzz seed (default: 20260913)
 #   --quick          reduced iteration counts (smoke pass)
 #   --keep-work      keep temp work dir for debugging
 #
-# First-time setup: scripts/build_cli.sh release
+# First-time setup: cargo build --release -p upix-cli
 # and: upix-cli model download NomosUni-SPAN-x2
 set -euo pipefail
 

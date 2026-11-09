@@ -62,7 +62,6 @@ jobs:
       - uses: ./.github/actions/setup-xmake
         with:
           cache-kind: android
-      - uses: ./.github/actions/spirv-pack
       - name: Decode keystore
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}

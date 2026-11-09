@@ -1,5 +1,5 @@
 //! Encrypted session — Rust port of
-//! `share/core/distributed/crypto_session.{hpp,cpp}`.
+//! `legacy/share/core/distributed/crypto_session.{hpp,cpp}`.
 //!
 //! Wraps/unwraps secretbox-encrypted frames. Wire format:
 //!

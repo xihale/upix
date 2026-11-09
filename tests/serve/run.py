@@ -42,8 +42,10 @@ def default_binary():
     root = os.path.dirname(os.path.dirname(os.path.dirname(
         os.path.abspath(__file__))))
     hits = [p for mode in ("release", "debug")
-            if os.path.exists(p := os.path.join(
-                root, "build", plat, arch, mode, "upix-cli"))]
+            if os.path.exists(p := os.path.join(root, "target", mode, "upix-cli"))]
+    hits += [p for mode in ("release", "debug")
+             if os.path.exists(p := os.path.join(
+                 root, "build", plat, arch, mode, "upix-cli"))]
     return hits[0] if hits else ""
 
 
