@@ -40,6 +40,12 @@ pub fn initialize_engine(
     let mut engine = factory();
 
     // ── initialize ───────────────────────────────────────────────────────────
+    // NOTE (2026-11-09 perf pass): standalone CPU inference-thread tuning was
+    // evaluated here (min(physical_cores, 8) via set_inference_threads) and
+    // REVERTED: on hybrid (P+E core) machines under the powersave governor the
+    // gain did not reproduce — interleaved single-tile runs were bimodal
+    // (8 threads: 850–1359 ms vs ncnn's default 24 threads: 770–849 ms), and
+    // end-to-end A/B medians tied. ncnn's own default stays.
     match strategy {
         EngineStrategy::Gpu => {
             if let Err(r) = engine.initialize(DeviceType::GpuVulkan) {

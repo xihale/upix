@@ -3700,6 +3700,7 @@ dependencies = [
  "jpeg-encoder",
  "libloading",
  "log",
+ "memchr",
  "png 0.17.16",
  "serde",
  "thiserror 2.0.21",
