@@ -36,7 +36,7 @@
 #include "core/engine.hpp"
 #include "core/distributed/identity.hpp"
 #include "core/distributed/crypto_session.hpp"
-#include "protocol.hpp"
+#include "core/distributed/protocol.hpp"
 #include "utils/crypto_sodium.hpp"
 #include "utils/image.hpp"
 #include "utils/image_avif.hpp"

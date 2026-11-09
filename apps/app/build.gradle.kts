@@ -155,7 +155,7 @@ tasks.register<Exec>("xmakeNative") {
         repoRoot.resolve("scripts/build_native.sh"),
         buildNativeScript,
     )
-    inputs.dir(repoRoot.resolve("share"))
+    inputs.dir(repoRoot.resolve("engine"))
     inputs.dir(repoRoot.resolve("packages"))
     inputs.dir(file("src/main/cpp"))
     outputs.dir(file("src/main/jniLibs/arm64-v8a"))
