@@ -2,13 +2,13 @@
 //
 // ── Boundary rule (architecture review 2026-09-15) ──────────────────────────
 // This file is Android-client glue ONLY. The reusable primitives (frame
-// protocol, EncryptedSession, sockets, engine, TileProcessor) live in legacy/share/
+// protocol, EncryptedSession, sockets, engine, TileProcessor) live in engine/
 // and are shared with the PC. Session POLICY — pipeline depth, chunked
 // upload, retry/downgrade, cancel polling, reconnect — also lives here today,
 // but it has exactly one consumer (Kotlin) and changes with the product.
 // Rule: no NEW session policy goes into this file; add it Kotlin-side on top
 // of the existing exports. If a second C++ client ever appears (e.g. a PC
-// CLI client), extract the client session into legacy/share/core/distributed/
+// CLI client), extract the client session into engine/core/distributed/
 // first — do not grow this file into a second implementation.
 #include <jni.h>
 #include <string>
@@ -141,7 +141,7 @@ auto identity_snapshot() -> std::shared_ptr<const upix::IdentityKey> {
 }
 
 // Client side of the 3-message ECDH+signature handshake. Mirrors
-// Coordinator::run_handshake() in legacy/share/core/distributed/coordinator.cpp
+// Coordinator::run_handshake() in engine/core/distributed/coordinator.cpp
 // byte-for-byte. On success returns an activated EncryptedSession; on
 // failure returns nullopt and sets error_msg.
 auto run_client_handshake(

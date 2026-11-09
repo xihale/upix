@@ -27,7 +27,7 @@ import org.json.JSONObject
 /**
  * GitHub "models" release 客户端：拉取 manifest.json 并下载/校验/安装模型。
  *
- * 与 CLI (legacy/cli/src/model_downloader.cpp) 共享同一发布布局：
+ * 与 CLI (engine/core/model_downloader.cpp) 共享同一发布布局：
  *   manifest.json          — {"version":1,"models":[{name,scale,size_bytes,sha256,url}]}
  *   <model-name>.zip       — DEFLATE zip：<name>.param + <name>.bin
  *

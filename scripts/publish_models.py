@@ -9,7 +9,7 @@ Models already in the release are skipped by default (their manifest entry
 reuses the release asset's sha256/size); --overwrite re-uploads the selected
 ones. Assets absent from the local catalog are pruned unless --no-prune.
 
-Layout consumed by both clients (legacy/cli/src/model_downloader.cpp and
+Layout consumed by both clients (engine/core/model_downloader.cpp and
 apps/.../ModelReleaseRepository.kt):
 
     releases/download/models/manifest.json
@@ -63,7 +63,7 @@ def gh(*args: str, repo: str, check: bool = True) -> subprocess.CompletedProcess
 
 def find_model_pairs(models_dir: Path) -> list[tuple[str, Path, Path]]:
     """Return (name, param, bin) triples. Names follow ModelManager's rule
-    (legacy/share/core/model_manager.cpp): files directly under models_dir are named
+    (engine/core/model_manager.cpp): files directly under models_dir are named
     by stem; files in a subdirectory are "<dir>-<stem>". This keeps the name
     identical before and after download/install."""
     params: dict[str, Path] = {}

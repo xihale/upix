@@ -13,8 +13,7 @@ if [[ -n "${UPIX_CLI_BIN:-}" ]]; then
 else
     for candidate in \
         "${BASE_DIR}/target/release/upix-cli" \
-        "${BASE_DIR}/build/linux/x86_64/release/upix-cli" \
-        "${BASE_DIR}/legacy/cli/build/linux/x86_64/release/upix-cli"; do
+        "${BASE_DIR}/build/linux/x86_64/release/upix-cli"; do
         if [[ -x "${candidate}" ]]; then
             CLI="${candidate}"
             break

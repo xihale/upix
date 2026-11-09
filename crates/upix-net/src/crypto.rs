@@ -1,4 +1,4 @@
-//! Sodium-equivalent crypto — Rust port of `legacy/share/utils/crypto_sodium.cpp`.
+//! Sodium-equivalent crypto — Rust port of `engine/utils/crypto_sodium.cpp`.
 //!
 //! Wire compatibility with libsodium is contractual and proven by golden
 //! vectors (tests/golden/):
@@ -197,7 +197,7 @@ pub fn secretbox_open(key: &[u8; 32], nonce_ct: &[u8]) -> Option<Vec<u8>> {
     cipher.decrypt(&Nonce::from_slice(&nonce), payload).ok()
 }
 
-// ── misc (legacy/share/utils/crypto.cpp) ───────────────────────────────────────────
+// ── misc (engine/utils/crypto.cpp) ───────────────────────────────────────────
 
 /// SHA-256, lowercase hex (mirrors `crypto::sha256_hex`).
 pub fn sha256_hex(data: &[u8]) -> String {

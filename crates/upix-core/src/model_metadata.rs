@@ -1,4 +1,4 @@
-//! model_metadata — Rust port of `legacy/share/core/model_metadata.{hpp,cpp}`:
+//! model_metadata — Rust port of `engine/core/model_metadata.{hpp,cpp}`:
 //! curated scene labels for the model catalog.
 
 /// Scene label + recommendation flag for a catalog model. Empty scene =

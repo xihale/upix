@@ -1,5 +1,5 @@
 //! EXIF orientation: JPEG APP1 parse + pixel bake-in. Port of
-//! `legacy/share/utils/exif.cpp`.
+//! `engine/utils/exif.cpp`.
 //!
 //! The PC decoders hand back the *stored* pixel grid; for portrait shots
 //! with orientation 5-8 that grid is rotated relative to what the camera

@@ -1,4 +1,4 @@
-//! engine_setup — Rust port of `legacy/share/core/engine_setup.{hpp,cpp}`.
+//! engine_setup — Rust port of `engine/core/engine_setup.{hpp,cpp}`.
 //!
 //! Device strategies (GPU / CPU / GPU_THEN_CPU / engine default), lazy
 //! `switch_model`, full engine+model setup, and the import sanity probe.

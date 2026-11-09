@@ -5,7 +5,7 @@ import androidx.compose.runtime.Immutable
 /**
  * 目录模型的场景标注（动漫/照片/综合/修复…+ 推荐星标），供模型选择 sheet、
  * 远程下载 sheet 与模型库卡的场景徽标使用。本表是
- * legacy/share/core/model_metadata.cpp 的 Kotlin 对照版 —— 规则顺序即匹配优先级
+ * engine/core/model_metadata.cpp 的 Kotlin 对照版 —— 规则顺序即匹配优先级
  * （"real-cugan" 先于 1x "-denoise" 修复网、"x4plus-anime" 先于
  * "x4plus"），推荐位取自 models/README.md 点名的首选。目录新增模型时
  * 两处同步，权威描述见 README 的 "Use it for" 列。

@@ -1,4 +1,4 @@
-//! upix-img — Rust port of `legacy/share/utils/{image,image_avif,exif,sr_marker,
+//! upix-img — Rust port of `engine/utils/{image,image_avif,exif,sr_marker,
 //! encoder_options}`: decode/encode (png/jpeg/webp + avif via runtime-dlopen
 //! system libavif), EXIF orientation, SR marker (urn:upix:sr:1).
 //!
@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Canonical per-format encoder knobs (mirror of `upix::EncoderOptions`,
-/// legacy/share/utils/encoder_options.hpp). Defaults match EncoderOptionsWire and
+/// engine/utils/encoder_options.hpp). Defaults match EncoderOptionsWire and
 /// the C++ defaults exactly; the wire mirror lives in upix-net.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EncoderOptions {

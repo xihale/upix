@@ -1,4 +1,4 @@
-//! AF_UNIX transport — Rust port of `legacy/share/utils/unix_socket.{hpp,cpp}`
+//! AF_UNIX transport — Rust port of `engine/utils/unix_socket.{hpp,cpp}`
 //! (local serve daemon). Mirrors the TCPSocket/TCPServer surface so callers
 //! can swap between them. Framing I/O plus the I/O lock live in
 //! `crate::stream::StreamCore`.

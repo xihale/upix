@@ -1,4 +1,4 @@
-//! TileProcessor — Rust port of `legacy/share/core/tile_processor.{hpp,cpp}`.
+//! TileProcessor — Rust port of `engine/core/tile_processor.{hpp,cpp}`.
 //!
 //! Host-side tiled pipelines (float + u8), tile layout, blending with the
 //! w*w quadratic edge fade, and the Mitchell-Netravali `bicubic_scale_u8`

@@ -2,8 +2,8 @@
 
 > 分支 `rust-rewrite`。一次完成的大调：C++23 核心 → Rust workspace，唯一 C++ FFI 岛 = ncnn 引擎；
 > CLI（clap）与 GUI（nsh）都是一等公民，直连同一份核心。**cutover 已完成（2026-11-09）**：
-> 旧树（`share/ cli/ desktop/ tools/`）已整体迁入 `legacy/`，Rust 栈独立可用；引擎孤岛源码
-> （`legacy/share/core` 子集）由 engine-ffi 与 Android JNI 就地编译。本文其余章节保留为
+> 旧树（`share/ cli/ desktop/ tools/`）已整体移入 `legacy` git 分支，Rust 栈独立可用；引擎孤岛源码
+> （`engine/core`，即 share/core+utils 的存活副本）由 engine-ffi 与 Android JNI 就地编译。本文其余章节保留为
 > 移植期语义契约（Rust 代码注释仍引用 §N）。
 
 ## 0. 总则
@@ -35,11 +35,11 @@
 
 | crate | agent | 移植源（C++） | 依赖 |
 |---|---|---|---|
-| `upix-core` | CorePort | `legacy/share/core/{tile_processor,tile_optimizer,engine_pool,engine_setup,model_manager,model_graph,model_metadata,config}` + `image.cpp` 的 `bicubic_scale_u8` | — |
-| `upix-img` | ImgPort | `legacy/share/utils/{image,image_avif,exif,sr_marker,encoder_options}` | — |
-| `upix-net` | NetPort | `legacy/share/core/distributed/{protocol,crypto_sodium,crypto_session,identity}` + `legacy/share/utils/{network,stream_socket,unix_socket}` | img |
-| `upix-host` | HostPort | `legacy/share/core/distributed/{coordinator,coordinator_admin}` + `legacy/share/core/serve/daemon` | core, net, img |
-| `upix-engine-ffi` | EngineFfi | `legacy/share/core/{ncnn_engine*,ncnn_gpu_init,ncnn_gpu_pipeline,vulkan_shaders,groupnorm_layer,spirv_pack*,gpu_precision,tile_types}` + `utils/{expected,logger}`（仅头） | core |
+| `upix-core` | CorePort | `engine/core/{tile_processor,tile_optimizer,engine_pool,engine_setup,model_manager,model_graph,model_metadata,config}` + `image.cpp` 的 `bicubic_scale_u8` | — |
+| `upix-img` | ImgPort | `engine/utils/{image,image_avif,exif,sr_marker,encoder_options}` | — |
+| `upix-net` | NetPort | `engine/core/distributed/{protocol,crypto_sodium,crypto_session,identity}` + `engine/utils/{network,stream_socket,unix_socket}` | img |
+| `upix-host` | HostPort | `engine/core/distributed/{coordinator,coordinator_admin}` + `engine/core/serve/daemon` | core, net, img |
+| `upix-engine-ffi` | EngineFfi | `engine/core/{ncnn_engine*,ncnn_gpu_init,ncnn_gpu_pipeline,vulkan_shaders,groupnorm_layer,spirv_pack*,gpu_precision,tile_types}` + `utils/{expected,logger}`（仅头） | core |
 | `upix-gui` | GuiNsh | 新写（nsh app），参照 `apps/`（Compose）与 `desktop/`（Qt）的页面与交互 | core, net, img, host |
 | `upix-cli` | CliIntegrator（第二批） | `cli/src`（8K 行） | 全部 |
 
@@ -135,7 +135,7 @@ TrustStore（`~/.upix/trusted_clients` 每行一个 base64 公钥）、`network.
 
 **金标向量（本 crate 的核心交付）**：
 - dumper 源码放 `crates/upix-net/vector_gen/`（临时 C++，用 g++ 直接编
-  `legacy/share/core/distributed/{protocol,crypto_sodium,crypto_session,identity}.cpp` + `-I share
+  `engine/core/distributed/{protocol,crypto_sodium,crypto_session,identity}.cpp` + `-I engine
   -I <ncnn 不需要>` + `-lsodium`，只产出 JSON，不入 workspace 构建）。
 - 向量：① 多个消息类型的 serialize 精确字节；② parse_header 往返；③ checksum/verify 样本；
   ④ 固定 eph/id 密钥对 → 会话密钥字节（两侧一致）；⑤ KeyHello transcript 的 Ed25519 签名
@@ -199,10 +199,10 @@ chunked 打断 → per-task 错误且会话可复用；daemon：UDS 请求→进
 ## 7. §engine-ffi
 
 **文件搬移（git mv，唯一被允许动 share/ 的 agent）**：
-`legacy/share/core/{ncnn_engine.cpp, ncnn_engine_impl.hpp, ncnn_gpu_init.cpp, ncnn_gpu_pipeline.cpp,
+`engine/core/{ncnn_engine.cpp, ncnn_engine_impl.hpp, ncnn_gpu_init.cpp, ncnn_gpu_pipeline.cpp,
 vulkan_shaders.hpp, groupnorm_layer.hpp, spirv_pack.hpp, spirv_pack.cpp, spirv_pack.bin,
 gpu_precision.hpp, tile_types.hpp}` → `crates/upix-engine-ffi/csrc/upix/core/`；
-`legacy/share/utils/{expected.hpp, logger.hpp}` → `csrc/upix/utils/`（保 include 相对风格，build.rs
+`engine/utils/{expected.hpp, logger.hpp}` → `csrc/upix/utils/`（保 include 相对风格，build.rs
 加 `-I csrc/upix`）。`.S/.incbin` 弃用：Rust 侧 `include_bytes!` + shim setter
 `upix_engine_set_spirv_pack(const uint8_t*, size_t)` 注入（spirv_pack.cpp 最小 diff：extern
 符号换成 setter 存的指针）。
@@ -274,8 +274,11 @@ shape，≥ v0.2.0 语义）、退出码、`UPIX_MODELS_DIR`/`--models-dir`。
 （容器字节可不同，浮点 CPU 路径必须一致）；daemon status/stop 往返；completions 三 shell 输出；
 金标 wire（远端模式起 coordinator 自连）。并负责跨 crate 编译修复。
 
-## 10. cutover（集成 owner 专属，agent 勿动）
+## 10. cutover（已完成 2026-11-09）
 
-全部验证后：删 `legacy/share/`（已搬空的残余）、`cli/`、`apps/`、`desktop/`、`xmake.lua`、
-`CMakeLists.txt`、gradle 残留；`tools/` 暂留源码不保证构建（perf/dump-spirv 待后续 Rust 化，
-文档标注）；更新 `README.md`/`docs/ARCHITECTURE.md`/`DEVELOPMENT.md` 反映新拓扑与 cargo 构建。
+旧 C++ 栈整体移入 **`legacy` git 分支**（钉在最后完整快照，C++ 树在根路径）；本工作树只保留
+`engine/`（`share/{core,utils}` 的唯一存活副本，仍被 engine-ffi 与 Android JNI 就地编译，
+源码保持原样勿改）与 `tools/dump_spirv.cpp`（shader 变更后重新生成受管的
+`engine/core/spirv_pack.bin`）。`apps/`（Android）保留，JNI 直链 `engine/core`；根部
+xmake.lua 仅覆盖 Android + engine + tools（perf/cli/desktop 目标随 legacy 分支退役）。
+`README.md`/`docs/ARCHITECTURE.md`/`docs/DEVELOPMENT.md` 已同步。

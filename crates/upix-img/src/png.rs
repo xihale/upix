@@ -1,4 +1,4 @@
-//! PNG decode/encode. Port of the PNG paths in `legacy/share/utils/image.cpp`
+//! PNG decode/encode. Port of the PNG paths in `engine/utils/image.cpp`
 //! (libdeflate/libpng writers + libpng reader) onto the `png` crate.
 
 use crate::{Image, ImgError};

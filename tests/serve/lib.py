@@ -13,7 +13,7 @@ import zlib
 import numpy as np
 from PIL import Image
 
-# ── wire protocol (mirror of legacy/share/core/distributed/protocol.hpp) ───────────
+# ── wire protocol (mirror of engine/core/distributed/protocol.hpp) ───────────
 
 MAGIC = 0x53534358
 MSG_SERVE_REQUEST = 0x0601

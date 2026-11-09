@@ -1,5 +1,5 @@
 //! Safe little-endian codecs for the wire structs this crate consumes or
-//! produces (mirrors of `legacy/share/core/distributed/protocol.hpp` structs that
+//! produces (mirrors of `engine/core/distributed/protocol.hpp` structs that
 //! ride inside frame payloads). `upix-net` owns the byte-exact frame header
 //! (`frame::serialize_frame` / `parse_header`); these helpers only cover the
 //! payload structs so `upix-host` never needs unsafe `repr(C)` casts.

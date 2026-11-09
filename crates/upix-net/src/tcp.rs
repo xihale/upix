@@ -1,4 +1,4 @@
-//! TCP transport — Rust port of `legacy/share/utils/network.{hpp,cpp}`.
+//! TCP transport — Rust port of `engine/utils/network.{hpp,cpp}`.
 //!
 //! Framing I/O (send/recv and their `_all` variants) plus the separate
 //! rx/tx locks live in `crate::stream::StreamCore` (stream_socket.cpp port).

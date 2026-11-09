@@ -1,4 +1,4 @@
-//! Wire protocol types — Rust mirror of `legacy/share/core/distributed/protocol.hpp`.
+//! Wire protocol types — Rust mirror of `engine/core/distributed/protocol.hpp`.
 //!
 //! These types cross the wire to OLD C++ / Android clients. Byte layout and
 //! field order are contractual: `#[repr(C)]`, little-endian on the wire,

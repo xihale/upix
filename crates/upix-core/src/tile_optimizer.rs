@@ -1,4 +1,4 @@
-//! TileSizeOptimizer — Rust port of `legacy/share/core/tile_optimizer.hpp`
+//! TileSizeOptimizer — Rust port of `engine/core/tile_optimizer.hpp`
 //! (header-only in C++): candidate {64..512} benchmarking + memory-budget
 //! elimination, the ×1.05 tolerance band, and the persistent per-hardware
 //! probe cache at `$XDG_CACHE_HOME|$HOME/.cache/upix/auto_tile_cache.json`.

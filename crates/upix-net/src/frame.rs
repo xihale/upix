@@ -1,5 +1,5 @@
 //! Frame serialization / parsing / checksum — Rust port of
-//! `legacy/share/core/distributed/protocol.cpp`.
+//! `engine/core/distributed/protocol.cpp`.
 //!
 //! Frame layout (little-endian): `magic[4] type[2] payload_length[4]
 //! checksum[4] payload[...]`. The checksum slot is computed over the whole

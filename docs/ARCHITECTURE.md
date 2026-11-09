@@ -1,6 +1,6 @@
 # Upix 架构概览
 
-Upix 采用「**单一 Rust 共享核（`crates/upix-core` + `upix-net`/`upix-host`/`upix-img`）+ 一等公民前端（`upix-cli`、`upix-gui` [nsh]）+ Android（`apps/`，Kotlin）**」架构。业务规则、模型元数据与协议均已 Rust 化；唯一保留的 C++ 是 ncnn/Vulkan 推理引擎孤岛（`legacy/share/core/` 子集），由 Rust FFI 与 Android JNI 就地编译、共用一份源码。旧 C++ 共享核与 C++ 前端已整体迁入 `legacy/` 仅作存档参考。
+Upix 采用「**单一 Rust 共享核（`crates/upix-core` + `upix-net`/`upix-host`/`upix-img`）+ 一等公民前端（`upix-cli`、`upix-gui` [nsh]）+ Android（`apps/`，Kotlin）**」架构。业务规则、模型元数据与协议均已 Rust 化；唯一保留的 C++ 是 ncnn/Vulkan 推理引擎孤岛（`engine/core/`，Rust FFI 与 Android JNI 就地编译、共用一份源码）及 `tools/dump_spirv.cpp`（SPIR-V 包再生成）。旧 C++ 共享核与 C++ 前端已整体移入 **`legacy` git 分支** 仅作存档，不在本工作树中。
 
 ## 1. 目录结构
 
@@ -11,16 +11,12 @@ upix/
 │   ├── upix-net/       # 协议 wire 类型 + 加密（X25519/Ed25519/secretbox，libsodium 金标兼容）
 │   ├── upix-host/      # Coordinator / serve daemon / 配对 / 模型同步
 │   ├── upix-img/       # 图像编解码、EXIF、XMP 超分标记
-│   ├── upix-engine-ffi/# 唯一 C++ FFI 岛：ncnn 引擎子集（编译 legacy/share/core 就地）
+│   ├── upix-engine-ffi/# 唯一 C++ FFI 岛：ncnn 引擎子集（编译 engine/core 就地）
 │   ├── upix-cli/       # 命令行前端 (clap)
 │   └── upix-gui/       # 桌面端 GUI (nsh)
-├── legacy/         # 旧 C++ 栈存档（不再演进；构建入口仍是根部 xmake）
-│   ├── share/      # C++ 共享核心（引擎孤岛仍被 Rust FFI 与 Android JNI 编译）
-│   ├── cli/        # 命令行前端 (C++23)
-│   ├── desktop/    # 桌面端 GUI (Dear ImGui + SDL3 + Vulkan)
-│   ├── tools/      # dump-spirv、perf 工具
-│   └── scripts/    # legacy 构建脚本
-├── apps/           # Android 客户端 (Kotlin Compose + JNI 直链 legacy/share/core)
+├── engine/         # C++ 引擎孤岛（share/core+utils 的唯一存活副本，FFI 与 JNI 共用）
+├── tools/          # dump-spirv（SPIR-V 包再生成，改动 shader 后才需要）
+├── apps/           # Android 客户端 (Kotlin Compose + JNI 直链 engine/core)
 ├── scripts/        # 产品脚本（serve/oracle 套件、Android 构建、基准）
 ├── tests/          # Python E2E 套件（serve 协议、模型 oracle 金标）
 └── models/         # 模型说明与转换规范（模型权重按需从 GitHub Release 下载）
@@ -28,7 +24,7 @@ upix/
 
 ## 2. 核心模块职责
 
-- **推理与分块管线（`upix-core`，引擎孤岛 `legacy/share/core/ncnn_*`）**
+- **推理与分块管线（`upix-core`，引擎孤岛 `engine/core/ncnn_*`）**
   - 基于 ncnn（Vulkan GPU / CPU）执行超分推理，支持自动分块（Auto-Tile）与手动指定分块尺寸、重叠像素及批大小。
   - 输出前自动写入 XMP 超分标记（`upix-img::sr_marker`），再次输入时默认幂等跳过，可通过 `force` 覆盖。
 - **常驻热引擎（`upix-host::serve`）**
@@ -44,4 +40,4 @@ upix/
 
 - **CLI (`crates/upix-cli`)**、**Desktop (`crates/upix-gui`)** 与 **Android (`apps/`)** 均为共享核的一等公民调用方。
 - Rust CLI 与 GUI 直连同一份 workspace crate；GUI 进程内直链引擎（单图优先委派本地热引擎，批量目录、模型管理与配对协调在工作线程内直接调用），不依赖外部 `upix-cli` 进程。
-- Android 经 JNI 调用引擎孤岛与 distributed 协议栈（`legacy/share/core` + `apps/app/src/main/cpp/jni_bridge.cpp`）。
+- Android 经 JNI 调用引擎孤岛与 distributed 协议栈（`engine/core` + `apps/app/src/main/cpp/jni_bridge.cpp`）。

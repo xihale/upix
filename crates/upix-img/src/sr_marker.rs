@@ -1,4 +1,4 @@
-//! SR marker (`urn:upix:sr:1`): XMP build/probe port of `legacy/share/utils/sr_marker.cpp`.
+//! SR marker (`urn:upix:sr:1`): XMP build/probe port of `engine/utils/sr_marker.cpp`.
 
 /// Marker carried in the XMP payload of every super-resolution output this
 /// tool encodes. Inputs whose bytes contain a marker built with this URN are

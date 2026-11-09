@@ -1,5 +1,5 @@
-//! `bicubic_scale_u8` — Rust port of the kernel in `legacy/share/core/
-//! tile_processor.cpp` (also lives in legacy/share/utils/image.cpp for the alpha
+//! `bicubic_scale_u8` — Rust port of the kernel in `engine/core/
+//! tile_processor.cpp` (also lives in engine/utils/image.cpp for the alpha
 //! bypass; single shared implementation here). Mitchell-Netravali family with
 //! the a=-0.5 coefficients the C++ file ships.
 

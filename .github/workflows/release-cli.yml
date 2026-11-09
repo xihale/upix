@@ -3,9 +3,9 @@ name: Release CLI
 # Desktop CLI (Rust workspace: upix-cli) for linux-x86_64 and macos-arm64.
 # Android is a separate product (release-android.yml → android-arm64-v8a).
 #
-# The engine island (crates/upix-engine-ffi) compiles legacy/share engine
+# The engine island (crates/upix-engine-ffi) compiles the engine/ C++
 # sources against a static ncnn; setup-xmake provides the pinned ncnn package
-# cache. The SPIR-V pack is tracked at legacy/share/core/spirv_pack.bin, so
+# island in place. The SPIR-V pack is tracked at engine/core/spirv_pack.bin, so
 # no dump-spirv pass is needed. ncnn discovery in engine-ffi's build.rs only
 # auto-detects linux/x86_64 — other platforms export UPIX_NCNN_DIR explicitly.
 on:

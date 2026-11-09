@@ -1,5 +1,5 @@
-//! upix-host — Rust port of `legacy/share/core/distributed/coordinator*` (PC side
-//! of the phone↔PC offload protocol) and `legacy/share/core/serve/daemon.cpp` (the
+//! upix-host — Rust port of `engine/core/distributed/coordinator*` (PC side
+//! of the phone↔PC offload protocol) and `engine/core/serve/daemon.cpp` (the
 //! warm-engine Unix-socket daemon).
 //!
 //! Porting contract: docs/rewrite/CONTRACT.md §host.

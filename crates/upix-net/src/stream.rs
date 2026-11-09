@@ -1,5 +1,5 @@
 //! Shared stream-socket core — Rust port of
-//! `legacy/share/utils/stream_socket.{hpp,cpp}`.
+//! `engine/utils/stream_socket.{hpp,cpp}`.
 //!
 //! Plain-fd streams (TCP and AF_UNIX) share this core: it owns the stream
 //! plus SEPARATE receive/transmit locks. Full-duplex streams allow

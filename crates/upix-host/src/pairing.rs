@@ -59,7 +59,7 @@ pub fn build_connection_card(
 mod tests {
     use super::*;
 
-    /// Byte-exactness against `build_connection_card` in legacy/cli/src/common.cpp:
+    /// Byte-exactness against `build_connection_card` in cli/src/common.cpp (legacy branch):
     /// std::format(R"({{"v":2,"ip":"{}","port":{},"fp":"{}","pk":"{}"}})", ...)
     #[test]
     fn payload_matches_cpp_byte_for_byte() {

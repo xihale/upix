@@ -1,4 +1,4 @@
-//! ProcessingConfig + helpers — Rust port of `legacy/share/core/config.{hpp,cpp}`.
+//! ProcessingConfig + helpers — Rust port of `engine/core/config.{hpp,cpp}`.
 //!
 //! The on-disk JSON shape mirrors the C++ `detail::ConfigJson` glaze layout:
 //! field names, declaration order and defaults are byte-identical to what
@@ -32,7 +32,7 @@ const _: () = assert!(TILE_SIZE_MIN == 16 && TILE_SIZE_MAX == 2048);
 const _: () = assert!(BATCH_SIZE_MIN == 1 && BATCH_SIZE_MAX == 64);
 
 /// Per-format advanced encoder knobs (mirror of `upix::EncoderOptions`,
-/// legacy/share/utils/encoder_options.hpp — the canonical copy lives in upix-img;
+/// engine/utils/encoder_options.hpp — the canonical copy lives in upix-img;
 /// this wire mirror exists so upix-core stays dependency-free). Field names
 /// are the glaze JSON names, verbatim.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -154,7 +154,7 @@ local ncnn_x86_isa = has_config("native_isa") and is_plat("linux") and "auto" or
 -- (fe88f421) that glslang-nihui 20260113 pins, so the pairing is identical
 -- to a native release. Runtime ncnn looks up a frozen SPIR-V pack and does
 -- not link glslang.
--- dump-spirv (glslang-linked ncnn) generates legacy/share/core/spirv_pack.bin if missing.
+-- dump-spirv (glslang-linked ncnn) generates engine/core/spirv_pack.bin if missing.
 -- Desktop builds use ncnn's built-in minimal omp runtime (simpleomp): host
 -- binaries (release tarballs, dump-spirv) run directly with no rpath into
 -- xmake package dirs, so the real libomp shared runtime must not be a
@@ -194,30 +194,21 @@ if is_plat("android") then
 end
 
 if not is_plat("android") then
+    -- Host build = dump-spirv (regenerates engine/core/spirv_pack.bin when
+    -- shaders change) + upix-core's model_downloader deps (libcurl/libzip).
     add_requires("ncnn~glslang 20260526", {configs = {vulkan = true, online_spirv = true, skip_device_defines = true, x86_isa = ncnn_x86_isa, simpleomp = true}})
-    add_requires("qr-code-generator-cpp")
-    add_requires("cli11")
     add_requires("libcurl")
-    -- Test-only oracle: cli/tests/test_model_downloader.cpp hashes with
-    -- OpenSSL EVP on purpose, so the libsodium sha256 in model_downloader is
-    -- cross-validated against an independent implementation. Production code
-    -- must not add new OpenSSL includes.
-    add_requires("openssl")
     add_requires("libzip")
-    add_requires("libsdl3")
-    add_requires("imgui v1.92.9+b-docking", {configs = {sdl3 = true, vulkan = true, freetype = true, wchar32 = true}})
 end
 
--- The C++ stack lives under legacy/ (cli, desktop, tools, share). The Rust
--- workspace (Cargo.toml) is the product stack; root xmake exists for the
--- Android JNI build and opt-in legacy desktop builds. legacy/share declares
--- upix-core (and its android-side SPIR-V pack hook); legacy/tools declares
--- dump-spirv and the host-side hook on upix-core. Each hook is scoped to its
--- own platform, so this order is not load-bearing — but keep legacy/share
--- first: upix-core must exist before anything depends on it.
-includes("legacy/share")
+-- The C++ engine island lives under engine/ (core + utils): the single live
+-- copy compiled by the Android JNI build (apps/) and consumed in place by the
+-- Rust FFI crate. tools/ holds dump-spirv, which regenerates the tracked
+-- engine/core/spirv_pack.bin. The rest of the old C++ stack (cli, desktop,
+-- perf, tests) is archived on the `legacy` git branch — not in this tree.
+includes("engine")
 if is_plat("android") then
     includes("apps")
 else
-    includes("legacy/share/perf", "legacy/cli", "legacy/desktop", "legacy/tools")
+    includes("tools")
 end

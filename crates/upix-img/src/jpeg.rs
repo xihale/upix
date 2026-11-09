@@ -1,4 +1,4 @@
-//! JPEG decode/encode. Port of the JPEG paths in `legacy/share/utils/image.cpp`
+//! JPEG decode/encode. Port of the JPEG paths in `engine/utils/image.cpp`
 //! (libjpeg reader/writer) onto `zune-jpeg` (decode) / `jpeg-encoder`
 //! (encode).
 

@@ -26,8 +26,8 @@ jobs:
       - uses: ./.github/actions/setup-xmake
         with:
           cache-kind: host
-      # Static ncnn for engine-ffi (legacy/share engine sources compile in
-      # place; the SPIR-V pack is tracked in legacy/share/core).
+      # Static ncnn for engine-ffi (engine/ island sources compile in
+      # place; the SPIR-V pack is tracked in engine/core).
       - name: cargo test (all crates)
         run: cargo test --workspace
       - name: cargo build (release cli for the E2E suites)

@@ -4,7 +4,7 @@
 
 ## Rust 栈（产品主线）
 
-桌面端核心、CLI 与 GUI 均为 Rust 实现（`crates/` workspace），推理引擎通过 `upix-engine-ffi` 封装 `legacy/share/core/` 中的 ncnn/Vulkan C++ 引擎孤岛（与 Android JNI 共用同一份源码），Desktop GUI 使用 `nsh` 实现「暗房仪器」设计：
+桌面端核心、CLI 与 GUI 均为 Rust 实现（`crates/` workspace），推理引擎通过 `upix-engine-ffi` 封装 `engine/core/` 中的 ncnn/Vulkan C++ 引擎孤岛（与 Android JNI 共用同一份源码），Desktop GUI 使用 `nsh` 实现「暗房仪器」设计：
 
 ```bash
 cargo build --workspace                              # 编译全部 Rust crates（含 upix-cli 与 upix-gui）
@@ -37,15 +37,19 @@ cd apps
 ./gradlew assembleDebug
 ```
 
-### 3. Legacy C++ 栈（`legacy/`，仅存档参考）
+### 3. 旧 C++ 栈（`legacy` 分支，仅存档）
 
-旧 C++ CLI（`legacy/cli`）与 Dear ImGui 桌面端（`legacy/desktop`）已迁入
-`legacy/`，不再随产品演进；构建入口仍是仓库根部的 xmake：
+旧 C++ CLI 与 Dear ImGui 桌面端已整体移入 **`legacy` git 分支**（不在本工作树中），
+不再随产品演进。需要查阅或构建旧栈时：
 
 ```bash
-legacy/scripts/build_cli.sh release     # 产物: build/linux/x86_64/release/upix-cli
-cd legacy/desktop && ./build.sh         # ImGui 桌面端
+git checkout legacy          # C++ 栈完整快照（share/ cli/ desktop/ 在根路径）
+# 构建方式见该分支的 README
+git checkout rust-rewrite    # 回到 Rust 主线
 ```
+
+本分支仅保留产品仍在编译的 C++：`engine/`（ncnn/Vulkan 引擎孤岛，Rust FFI 与
+Android JNI 共用）与 `tools/dump_spirv.cpp`（SPIR-V 包再生成工具）。
 
 ## 常用 CLI 命令
 

@@ -1,4 +1,12 @@
-local spirv_pack = path.join(os.scriptdir(), "core", "spirv_pack.bin")
+-- The C++ engine island: the single live copy of share/{core,utils}, moved
+-- verbatim from the retired C++ stack (full archive on the `legacy` git
+-- branch). Compiled in place, unmodified — the same sources feed the Android
+-- JNI build (apps/) and are vendored by the Rust FFI crate
+-- (crates/upix-engine-ffi, which swaps spirv_pack.S for the tracked .bin via
+-- UPIX_SPIRV_PACK_EXTERNAL). Do not edit the C++ sources in place; fix on the
+-- legacy branch and re-copy, or port to Rust.
+
+local spirv_pack = path.join(os.projectdir(), "engine", "core", "spirv_pack.bin")
 
 target("upix-core")
     set_kind("static")
@@ -63,11 +71,9 @@ target("upix-core")
 
     -- Android NDK cannot run dump-spirv. If the pack is missing, spawn an
     -- isolated host xmake so the in-progress android config is not overwritten.
-    -- Scope: android only — the host flow is owned by tools/xmake.lua's
-    -- upix-core hook. `before_build` registrations are not cumulative (a second
-    -- registration on the same target replaces this one), so each hook
-    -- early-returns outside its own platform and the pair stays correct no
-    -- matter which `includes()` in the root project file runs last.
+    -- Scope: android only — the host flow is the second hook below (registered
+    -- here so both live on one target; `before_build` registrations are not
+    -- cumulative, so each hook early-returns outside its own platform).
     -- Also bump the .S mtime whenever the pack is newer. .incbin does not
     -- track the packed blob as a build dependency — without this a stale pack
     -- silently ships.
@@ -96,21 +102,38 @@ target("upix-core")
         end
     end)
 
--- Headless transport tests (utils/local_socket): POSIX CI + WIN32/wine.
--- Links only the socket slice — no ncnn/curl — so a mingw build can pin the
--- named-pipe backend without the engine.
-target("test_local_socket")
-    set_kind("binary")
-    set_default(false)
-    add_includedirs(".", {public = true})
-    add_files(
-        "tests/test_local_socket.cpp",
-        "utils/local_socket_posix.cpp",
-        "utils/local_socket_win.cpp",
-        "utils/stream_socket.cpp",
-        "utils/network.cpp"
-    )
-    add_packages("libpng", "libjpeg", "libwebp", "libdeflate")
-    if is_plat("windows", "mingw") then
-        add_syslinks("ws2_32", "iphlpapi")
-    end
+    -- Host counterpart of the android-scoped hook above: generate the pack
+    -- with the freshly built dump-spirv (tools/xmake.lua) when it is missing,
+    -- and bump spirv_pack.S's mtime so .incbin re-reads it.
+    on_load(function (target)
+        if is_plat("android") then return end
+        if not os.isfile(spirv_pack) then
+            target:add("deps", "dump-spirv")
+        end
+    end)
+    before_build(function (target)
+        if is_plat("android") then return end
+        if not os.isfile(spirv_pack) then
+            import("core.project.project")
+            local dump = project.target("dump-spirv")
+            assert(dump, "dump-spirv target missing")
+            local bin = dump:targetfile()
+            if not os.isfile(bin) then
+                os.execv(os.programfile(), {"build", "dump-spirv"})
+                bin = dump:targetfile()
+            end
+            print("generating " .. spirv_pack)
+            os.execv(bin, {spirv_pack})
+        end
+        -- The pack reaches the binary through .incbin inside spirv_pack.S,
+        -- which xmake's dependency scan cannot see: after regenerating the
+        -- pack, every target would keep linking the OLD shaders until the .S
+        -- happened to recompile. Rewrite it (same bytes) to bump its mtime so
+        -- the assembler reruns whenever the bin is newer.
+        local spirv_pack_s = path.join(os.scriptdir(), "core", "spirv_pack.S")
+        if os.mtime(spirv_pack) > os.mtime(spirv_pack_s) then
+            local source = io.readfile(spirv_pack_s)
+            io.writefile(spirv_pack_s, source)
+            print("bumping " .. spirv_pack_s .. " for regenerated SPIR-V pack")
+        end
+    end)

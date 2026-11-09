@@ -1,4 +1,4 @@
-//! Rust port of `legacy/share/core/distributed/coordinator.cpp` (+ `coordinator_admin.cpp`):
+//! Rust port of `engine/core/distributed/coordinator.cpp` (+ `coordinator_admin.cpp`):
 //! the PC-side coordinator of the phone↔PC offload protocol.
 //!
 //! Semantics preserved from the C++ (comments below cite the C++ reasoning

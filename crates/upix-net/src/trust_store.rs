@@ -1,5 +1,5 @@
 //! Trust whitelist — Rust port of the `TrustStore` half of
-//! `legacy/share/core/distributed/identity.{hpp,cpp}`.
+//! `engine/core/distributed/identity.{hpp,cpp}`.
 //!
 //! File format: one base64-encoded 32-byte Ed25519 public key per line.
 //! Loading drops invalid/short lines silently. `add` dedupes in memory;

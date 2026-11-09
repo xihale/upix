@@ -1,4 +1,4 @@
-//! ModelManager — Rust port of `legacy/share/core/model_manager.{hpp,cpp}`:
+//! ModelManager — Rust port of `engine/core/model_manager.{hpp,cpp}`:
 //! recursive model scan, `.param` parsing (input-channel inference incl. the
 //! head-Reorg divisor), tolerant name lookup.
 

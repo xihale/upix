@@ -48,7 +48,9 @@ apps/app/src/main/cpp/third_party/
 *.onnx
 *.tflite
 *.ncnn
-legacy/cli/models/
+# Tracked engine artifact: SPIR-V pack blob (host-GPU independent; regenerate
+# with tools/dump-spirv after shader changes — see engine/xmake.lua header).
+!engine/core/spirv_pack.bin
 !models/README.md
 models/manifest.json
 # Machine-local model store symlink (e.g. -> ~/.config/Upix/models)
@@ -60,11 +62,6 @@ logs/
 
 # Test / debug outputs
 test_output/
-legacy/cli/tests/output/
-legacy/desktop/Testing/
-legacy/desktop/shots-*/
-legacy/desktop/.cache/
-legacy/desktop/.vite/
 upix-test-wake-*
 *.png
 *.jpg

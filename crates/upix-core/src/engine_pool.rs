@@ -1,4 +1,4 @@
-//! EnginePool — Rust port of `legacy/share/core/engine_pool.{hpp,cpp}`.
+//! EnginePool — Rust port of `engine/core/engine_pool.{hpp,cpp}`.
 //!
 //! A fixed set of initialized, model-loaded engines with blocking
 //! acquire/release. CPU engines split the machine's physical cores so
