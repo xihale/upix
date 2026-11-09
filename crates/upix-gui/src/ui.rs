@@ -567,6 +567,12 @@ pub mod icons {
     /// Alias kept for compatibility.
     pub const MODELS: &str = LAYERS;
 
+    /// Open book (指南 nav entry).
+    pub const BOOK: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H11v16H5.5A1.5 1.5 0 0 1 4 18.5z"/><path d="M20 5.5A1.5 1.5 0 0 0 18.5 4H13v16h5.5a1.5 1.5 0 0 0 1.5-1.5z"/></svg>"#;
+
+    /// Gear (设置 nav entry).
+    pub const GEAR: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 3.2v2.1M12 18.7v2.1M4.9 7.95l1.8 1.05M17.3 15l1.8 1.05M4.9 16.05l1.8-1.05M17.3 9l1.8-1.05"/></svg>"#;
+
     /// Smartphone for Remote Host nav tab (`远程`) and Pairing Sheet modal.
     pub const SMARTPHONE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6.5" y="2.5" width="11" height="19" rx="2.2"/><circle cx="12" cy="18.2" r="1" fill="currentColor"/></svg>"#;
 

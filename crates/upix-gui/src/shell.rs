@@ -10,8 +10,10 @@ use nsh_core::{LayoutCurve, LayoutTransition};
 
 use crate::host_bridge::ApprovalReply;
 use crate::nav::NavTab;
+use crate::pages::guide::guide_page;
 use crate::pages::host::{host_page, split_fp_groups};
 use crate::pages::models::models_page;
+use crate::pages::settings::settings_page;
 use crate::pages::workbench::workbench_page;
 use crate::store::Store;
 use crate::theme::{palette, FONT_MONO};
@@ -37,6 +39,8 @@ pub fn shell(store: Store) -> View {
     on_key("mod+1", move |_| store.nav.set(NavTab::Workbench));
     on_key("mod+2", move |_| store.nav.set(NavTab::Models));
     on_key("mod+3", move |_| store.nav.set(NavTab::Host));
+    on_key("mod+4", move |_| store.nav.set(NavTab::Guide));
+    on_key("mod+5", move |_| store.nav.set(NavTab::Settings));
     on_key("mod+v", move |_| {
         if store.nav.get() == NavTab::Workbench {
             spawn(async move {
@@ -78,6 +82,8 @@ pub fn shell(store: Store) -> View {
                         NavTab::Workbench => workbench_page(store).into_element(),
                         NavTab::Models => models_page(store).into_element(),
                         NavTab::Host => host_page(store).into_element(),
+                        NavTab::Guide => guide_page(store).into_element(),
+                        NavTab::Settings => settings_page(store).into_element(),
                     };
                     #[cfg(target_os = "linux")]
                     std::thread::spawn(|| {
@@ -185,12 +191,74 @@ fn nav_rail(store: Store) -> View {
         .bg(palette::bg())
         .child(items_col)
         .child(
-            text("0.2.0")
-                .text_size(px(10.0))
-                .font_weight(FontWeight::MEDIUM)
-                .tabular_nums()
-                .text_color(palette::muted()),
+            view()
+                .w_full()
+                .flex_col()
+                .items_center()
+                .gap(px(2.0))
+                .child(footer_entries(store))
+                .child(
+                    text(env!("CARGO_PKG_VERSION"))
+                        .text_size(px(10.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .tabular_nums()
+                        .text_color(palette::muted()),
+                ),
         )
+}
+
+/// 指南 / 设置 — same 60x60 hit box as the primary tabs, no animated pill (they
+/// are destinations, not modes, and the rail must keep its 3-tab math).
+fn footer_entries(store: Store) -> View {
+    let mut col = view().w_full().flex_col().items_center().gap(px(2.0));
+    for tab in NavTab::FOOTER {
+        col = col.child(
+            view()
+                .size(px(60.0))
+                .rounded(px(10.0))
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(3.0))
+                .cursor_pointer()
+                .transition()
+                .duration(140.0)
+                .ease_out()
+                .hover(move |s| s.bg(AdaptiveColor::new(rgba(0x0000000A), rgba(0xFFFFFF08))))
+                .active(|s| if reduce_motion() { s } else { s.scale(0.95) })
+                .on_press(move || store.nav.set(tab))
+                .child(
+                    svg(ImageSrc::svg_markup(tab.icon_svg()))
+                        .size(px(20.0))
+                        .transition_colors()
+                        .duration(150.0)
+                        .ease_out()
+                        .tint_color(move || {
+                            if store.nav.get() == tab {
+                                palette::primary()
+                            } else {
+                                palette::muted()
+                            }
+                        }),
+                )
+                .child(
+                    text(tab.label())
+                        .text_size(px(11.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .transition_colors()
+                        .duration(150.0)
+                        .ease_out()
+                        .text_color(move || {
+                            if store.nav.get() == tab {
+                                palette::on_surface()
+                            } else {
+                                palette::muted()
+                            }
+                        }),
+                ),
+        );
+    }
+    col
 }
 
 fn pairing_modal_overlay(store: Store) -> View {
