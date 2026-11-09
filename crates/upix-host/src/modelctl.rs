@@ -131,6 +131,37 @@ pub fn list_remote(repo: &str) -> Result<Vec<RemoteModel>, String> {
         .collect())
 }
 
+/// The embedded catalog as manifest-shaped entries: names and scale only.
+/// `size_bytes`, `sha256` and `url` stay empty because they are per-release
+/// facts that only the live manifest knows — a fallback listing can say *what*
+/// exists, downloading still needs the network.
+pub fn catalog_models() -> Vec<RemoteModel> {
+    upix_core::model_catalog::names()
+        .iter()
+        .map(|name| RemoteModel {
+            name: (*name).to_string(),
+            scale: upix_core::model_graph::scale_from_filename(name).unwrap_or(2),
+            size_bytes: 0,
+            sha256: String::new(),
+            url: String::new(),
+        })
+        .collect()
+}
+
+/// `list_remote` with the embedded catalog as the offline fallback.
+///
+/// Returns `(models, fallback_reason)`: `None` means the release answered and
+/// the caller may download; `Some(e)` means the list came from
+/// [`catalog_models`] and carries the network error that caused it. Every
+/// caller gets the same answer for the same situation, which is the point —
+/// the CLI used to hard-fail where the GUI silently fell back to a stale list.
+pub fn list_remote_or_catalog(repo: &str) -> (Vec<RemoteModel>, Option<String>) {
+    match list_remote(repo) {
+        Ok(v) => (v, None),
+        Err(e) => (catalog_models(), Some(e)),
+    }
+}
+
 /// Download a model by (case/dash-insensitive) manifest name into
 /// `models_dir`. Returns the installed (param, bin) paths.
 pub fn download(

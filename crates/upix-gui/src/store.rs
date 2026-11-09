@@ -65,7 +65,9 @@ pub enum JobPhase {
 }
 
 enum ModelTaskEvent {
-    RemoteList(Result<Vec<String>, String>),
+    /// `fallback` carries the reason the release was not reachable (the names
+    /// then come from the shared catalog) so the status line can say which.
+    RemoteList { names: Vec<String>, fallback: Option<String> },
     DownloadDone {
         name: String,
         result: Result<(), String>,
@@ -504,15 +506,24 @@ impl Store {
         self.models_status.set("正在拉取远端模型清单…".into());
         let tx = self.model_tx.with(|t| t.clone());
         std::thread::spawn(move || {
+            // Shared with `upix model list-remote`: try the release, fall back
+            // to the embedded catalog, and report which one answered.
             #[cfg(feature = "integration")]
-            let res = upix_host::modelctl::list_remote(upix_host::modelctl::DEFAULT_MODEL_REPO)
-                .map(|v| v.into_iter().map(|m| m.name).collect());
+            let (names, fallback) = {
+                let (models, err) = upix_host::modelctl::list_remote_or_catalog(
+                    upix_host::modelctl::DEFAULT_MODEL_REPO,
+                );
+                (models.into_iter().map(|m| m.name).collect::<Vec<_>>(), err)
+            };
             #[cfg(not(feature = "integration"))]
-            let res = Ok(models_local::FALLBACK_CATALOG
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect());
-            let _ = tx.send(ModelTaskEvent::RemoteList(res));
+            let (names, fallback) = (
+                models_local::FALLBACK_CATALOG
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect::<Vec<_>>(),
+                Some("this build has no network layer".to_string()),
+            );
+            let _ = tx.send(ModelTaskEvent::RemoteList { names, fallback });
         });
     }
 
@@ -770,21 +781,15 @@ impl Store {
 
         for ev in events {
             match ev {
-                ModelTaskEvent::RemoteList(res) => {
+                ModelTaskEvent::RemoteList { names, fallback } => {
                     self.remote_loading.set(false);
-                    match res {
-                        Ok(stems) => {
-                            let count = stems.len();
-                            self.remote_stems.set(stems);
-                            self.rescan_models();
-                            self.models_status
-                                .set(format!("已同步远端模型清单（共 {count} 项）"));
-                        }
-                        Err(e) => {
-                            self.models_status
-                                .set(format!("拉取远端清单失败（使用内置目录）：{e}"));
-                        }
-                    }
+                    let count = names.len();
+                    self.remote_stems.set(names);
+                    self.rescan_models();
+                    self.models_status.set(match fallback {
+                        None => format!("已同步远端模型清单（共 {count} 项）"),
+                        Some(e) => format!("远端不可用，使用内置目录（{count} 项）：{e}"),
+                    });
                 }
                 ModelTaskEvent::DownloadDone { name, result } => {
                     let mut dl = self.downloading_models.get();
