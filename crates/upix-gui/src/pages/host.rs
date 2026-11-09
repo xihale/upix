@@ -934,7 +934,7 @@ fn telemetry_console_card(store: Store) -> View {
         .gap(px(4.0));
 
     if logs.is_empty() {
-        log_col = log_col.child(log_row("HOST", "等待移动端协同连接…", ""));
+        log_col = log_col.child(log_row("HOST", "等待手机连接…", ""));
     } else {
         for line in logs.iter().rev().take(3).rev() {
             log_col = log_col.child(log_row("HOST", line, ""));
@@ -967,7 +967,7 @@ fn telemetry_console_card(store: Store) -> View {
                         .gap(px(8.0))
                         .child(view().size(px(6.0)).rounded_full().bg(palette::primary()))
                         .child(
-                            text(if running { "协同服务就绪" } else { "服务日志" })
+                            text(if running { "远程服务就绪" } else { "服务日志" })
                                 .text_size(px(12.0))
                                 .font_weight(FontWeight::MEDIUM)
                                 .font_family(FONT_MONO)

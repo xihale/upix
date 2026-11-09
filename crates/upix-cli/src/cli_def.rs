@@ -148,7 +148,7 @@ pub enum Command {
         #[command(subcommand)]
         command: ModelCommand,
     },
-    /// Start or query the coordinator for phones
+    /// Serve images for paired phones (远程) — start or query the host
     Host {
         #[command(subcommand)]
         command: Option<HostCommand>,
@@ -157,7 +157,7 @@ pub enum Command {
         #[command(flatten)]
         start: HostStartFlags,
     },
-    /// Manage the warm-engine daemon
+    /// Manage the warm engine daemon (常驻热引擎)
     Daemon {
         #[command(subcommand)]
         command: Option<DaemonCommand>,
