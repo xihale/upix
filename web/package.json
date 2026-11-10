@@ -1,0 +1,25 @@
+{
+  "name": "upix-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Upix web frontend: pnnx→ONNX models + onnxruntime-web (WebGPU EP, wasm fallback). See issue #2.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "node --experimental-strip-types --test tests/*.test.ts"
+  },
+  "dependencies": {
+    "onnxruntime-web": "^1.23.0"
+  },
+  "devDependencies": {
+    "onnxruntime-node": "^1.23.0",
+    "typescript": "^5.9.0",
+    "vite": "^7.0.0"
+  },
+  "allowScripts": {
+    "onnxruntime-node@1.31.1": true,
+    "esbuild@0.28.2": true
+  }
+}

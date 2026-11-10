@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "models": [
+    {
+      "name": "dev-span-x2",
+      "scale": 2,
+      "license": "fixture (generated, seeded)",
+      "size_bytes": 37428,
+      "sha256": "61d80592f72a64eb968f4e4c97c0f0f8696452ce064551236b4dec26400c671e",
+      "url": "models/dev-span-x2.onnx",
+      "pixelshuffle": "native"
+    },
+    {
+      "name": "dev-span-x2-wnn",
+      "scale": 2,
+      "license": "fixture (generated, seeded)",
+      "size_bytes": 38588,
+      "sha256": "839306d72a13f614d68179bf6fd001be846416b373bcdebbfa9b43f652b3a04b",
+      "url": "models/dev-span-x2-wnn.onnx",
+      "pixelshuffle": "decomposed"
+    }
+  ]
+}

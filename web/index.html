@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="color-scheme" content="dark light" />
+  <title>Upix · Web 超分（实验）</title>
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+  <main class="app">
+    <header>
+      <h1>Upix <span class="tag">web · 实验通道</span></h1>
+      <p class="sub">pnnx→ONNX 模型 · ONNX Runtime Web（WebGPU，回退 wasm）· tile 调度与引擎同语义 · <a href="https://github.com/xihale/upix/issues/2">issue #2</a></p>
+    </header>
+
+    <section class="panel">
+      <div class="drop" id="drop">
+        <p><strong>拖入图片</strong>或点击选择</p>
+        <p class="hint">全程本地推理，图片不会上传</p>
+        <input type="file" id="file" accept="image/*" hidden />
+      </div>
+
+      <div class="row">
+        <label>模型 <select id="model"></select></label>
+        <label>执行后端 <select id="ep">
+          <option value="auto">自动（WebGPU→wasm）</option>
+          <option value="webgpu">WebGPU</option>
+          <option value="wasm">wasm（CPU）</option>
+          <option value="webnn">WebNN（实验）</option>
+        </select></label>
+        <label>分块 <input id="tile" type="number" value="256" min="32" max="1024" step="16" /></label>
+        <label>重叠 <input id="overlap" type="number" value="16" min="0" max="128" step="2" /></label>
+      </div>
+
+      <div class="row">
+        <button id="run" disabled>开始超分</button>
+        <button id="cancel" disabled>取消</button>
+        <button id="download" disabled>下载 PNG</button>
+        <span id="status" class="status"></span>
+      </div>
+      <div class="bar"><div id="bar-fill"></div></div>
+      <div id="notes" class="notes"></div>
+    </section>
+
+    <section class="compare" id="compare" hidden>
+      <div class="frame" id="frame">
+        <img id="after" alt="超分结果" />
+        <div class="before-wrap" id="before-wrap"><img id="before" alt="原图" /></div>
+        <div class="handle" id="handle"></div>
+      </div>
+      <p class="meta" id="meta"></p>
+    </section>
+  </main>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
