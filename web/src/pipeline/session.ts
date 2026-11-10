@@ -46,8 +46,30 @@ function configureEnv(): string[] {
   return notes;
 }
 
-export function hasWebGpu(): boolean {
-  return typeof navigator !== 'undefined' && 'gpu' in navigator;
+let webGpuAdapter: any = null;
+let webGpuProbed = false;
+
+/**
+ * WebGPU availability = an adapter actually exists, NOT merely that
+ * `navigator.gpu` is exposed. Chrome Android exposes the API on versions /
+ * devices without a usable adapter (e.g. Android < 12), and reporting ✓ there
+ * both misleads the user and sends `auto` down a path that can only fall back.
+ */
+export async function probeWebGpu(): Promise<boolean> {
+  if (webGpuProbed) return webGpuAdapter !== null;
+  webGpuProbed = true;
+  if (typeof navigator === 'undefined' || !('gpu' in navigator)) return false;
+  try {
+    webGpuAdapter = await (navigator as any).gpu.requestAdapter();
+  } catch {
+    webGpuAdapter = null;
+  }
+  return webGpuAdapter !== null;
+}
+
+export function webGpuAdapterInfo(): string {
+  const info = webGpuAdapter?.info ?? {};
+  return info.description || info.device || info.vendor || 'unknown adapter';
 }
 
 export function hasWebNn(): boolean {
@@ -59,7 +81,8 @@ export async function createSession(
   choice: ExecutionProvider,
 ): Promise<SessionInfo> {
   const notes = configureEnv();
-  const wants = choice === 'auto' ? (hasWebGpu() ? 'webgpu' : 'wasm') : choice;
+  const canGpu = await probeWebGpu();
+  const wants = choice === 'auto' ? (canGpu ? 'webgpu' : 'wasm') : choice;
 
   if (wants === 'webnn') {
     if (!hasWebNn()) throw new Error('WebNN (navigator.ml) not available in this browser');
@@ -74,9 +97,8 @@ export async function createSession(
 
   if (wants === 'webgpu') {
     try {
-      const adapter = await (navigator as any).gpu.requestAdapter();
-      if (!adapter) throw new Error('navigator.gpu: no adapter');
-      notes.push(`webgpu adapter: ${adapter.info?.description ?? adapter.info?.vendor ?? 'unknown'}`);
+      if (!canGpu) throw new Error('navigator.gpu has no adapter on this device');
+      notes.push(`webgpu adapter: ${webGpuAdapterInfo()}`);
       const session = await ortWebgpu.InferenceSession.create(modelBytes, {
         executionProviders: ['webgpu'],
       });

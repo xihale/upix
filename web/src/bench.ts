@@ -6,7 +6,7 @@
  * Trigger with ?bench=1 — results land in the notes area as a table.
  */
 import { fetchManifest, fetchModel } from './manifest';
-import { createSession, hasWebGpu, hasWebNn, type ExecutionProvider } from './pipeline/session';
+import { createSession, probeWebGpu, webGpuAdapterInfo, hasWebNn, type ExecutionProvider } from './pipeline/session';
 import { upscaleImage, type ModelInfo } from './engine';
 
 const BENCH_SIZE = 128; // single tile, 2× → 256×256 output
@@ -35,10 +35,17 @@ export async function runBench(log: (line: string) => void): Promise<void> {
   const source = syntheticSource();
   const eps: ExecutionProvider[] = ['wasm', 'webgpu', 'webnn'];
 
+  const canGpu = await probeWebGpu();
   log('bench: 128×128 → 256×256, single tile, 3 timed runs (median)');
+  if (!canGpu) {
+    // Honest caveat: ORT falls back to the CPU (wasm) EP SILENTLY when the
+    // WebGPU EP cannot initialize, so a "webgpu" row is only meaningful when an
+    // adapter actually exists. Never report a webgpu number without one.
+    log('note: no WebGPU adapter here — ORT would silently fall back to wasm');
+  }
   for (const ep of eps) {
-    if (ep === 'webgpu' && !hasWebGpu()) {
-      log(`webgpu   | unavailable`);
+    if (ep === 'webgpu' && !canGpu) {
+      log(`webgpu   | unavailable (navigator.gpu has no adapter on this device)`);
       continue;
     }
     if (ep === 'webnn' && !hasWebNn()) {
@@ -64,7 +71,7 @@ export async function runBench(log: (line: string) => void): Promise<void> {
       session.release();
       times.sort((a, b) => a - b);
       const median = times[Math.floor(times.length / 2)]!;
-      const extra = ep === 'webnn' ? notes.join('; ') : '';
+      const extra = ep === 'webnn' ? notes.join('; ') : ep === 'webgpu' ? webGpuAdapterInfo() : '';
       log(`${ep.padEnd(8)} | ${median.toFixed(0).padStart(6)} ms (load ${loadMs.toFixed(0)} ms) ${extra}`);
     } catch (err) {
       log(`${ep.padEnd(8)} | FAILED: ${err instanceof Error ? err.message : err}`);

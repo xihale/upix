@@ -1,5 +1,5 @@
 import { fetchManifest, fetchModel } from './manifest';
-import { createSession, hasWebGpu, hasWebNn, type ExecutionProvider } from './pipeline/session';
+import { createSession, probeWebGpu, hasWebNn, type ExecutionProvider } from './pipeline/session';
 import { decodeToRgba, upscaleImage, type ModelInfo } from './engine';
 import { runBench } from './bench';
 import type { InferenceSession } from 'onnxruntime-web/webgpu';
@@ -44,11 +44,14 @@ function setNotes(lines: string[]): void {
 }
 
 // --- capability badges ------------------------------------------------------
-const caps: string[] = [];
-caps.push(hasWebGpu() ? 'WebGPU ✓' : 'WebGPU ✗');
-caps.push(hasWebNn() ? 'WebNN ✓（实验）' : 'WebNN ✗');
-caps.push(crossOriginIsolated ? 'COOP/COEP ✓（wasm 多线程可用）' : 'COOP/COEP ✗（wasm 单线程）');
-setNotes([`环境：${caps.join(' · ')}`, '']);
+// WebGPU is reported only when an adapter really exists (see probeWebGpu).
+void probeWebGpu().then((canGpu) => {
+  const caps: string[] = [];
+  caps.push(canGpu ? 'WebGPU ✓' : 'WebGPU ✗');
+  caps.push(hasWebNn() ? 'WebNN ✓（实验）' : 'WebNN ✗');
+  caps.push(crossOriginIsolated ? 'COOP/COEP ✓（wasm 多线程可用）' : 'COOP/COEP ✗（wasm 单线程）');
+  setNotes([`环境：${caps.join(' · ')}`, '']);
+});
 
 // --- init -------------------------------------------------------------------
 async function init(): Promise<void> {
@@ -101,7 +104,7 @@ async function getSession(model: ModelInfo, ep: ExecutionProvider): Promise<Infe
   const info = await createSession(bytes, ep);
   session = info.session;
   sessionKey = key;
-  setNotes([`环境：${caps.join(' · ')}`, ...info.notes]);
+  setNotes([...info.notes]);
   return session;
 }
 

@@ -18,7 +18,10 @@ function copyOrtRuntime(): Plugin {
   ];
   return {
     name: 'upix-copy-ort-runtime',
-    buildStart() {
+    // configResolved runs BEFORE the dev server's static middleware snapshots
+    // publicDir: copying in buildStart leaves a first run serving the SPA
+    // fallback (text/html) for /ort/*.mjs, which the browser refuses to import.
+    configResolved() {
       const dst = join(__dirname, 'public', 'ort');
       mkdirSync(dst, { recursive: true });
       for (const f of files) {
