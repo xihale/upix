@@ -30,7 +30,9 @@ function configureEnv(): string[] {
   const ort = ortWebgpu.env;
   // Serve the wasm/jsep runtime from our own origin (public/ort/, copied by
   // the vite config) — the app stays fully local, no CDN.
-  ort.wasm.wasmPaths = 'ort/';
+  // Absolute URL required: ORT dynamic-import()s the .mjs glue, and a bare
+  // relative specifier ('ort/…') is unresolvable from a page module.
+  ort.wasm.wasmPaths = new URL('ort/', document.baseURI).href;
   // SharedArrayBuffer/threads need COOP/COEP; GitHub Pages can't set response
   // headers (see issue #2), so threads are opt-in on crossOriginIsolated only.
   if (typeof crossOriginIsolated !== 'undefined' && crossOriginIsolated) {

@@ -57,7 +57,7 @@ async function init(): Promise<void> {
     for (const m of manifest.models) {
       const opt = document.createElement('option');
       opt.value = m.name;
-      opt.textContent = `${m.name}（${m.scale}×, ${(m.size_bytes / 1e6).toFixed(1)} MB）`;
+      opt.textContent = `${m.name}（${m.scale}×, ${m.size_bytes >= 1e6 ? `${(m.size_bytes / 1e6).toFixed(1)} MB` : `${Math.round(m.size_bytes / 1e3)} KB`}）`;
       els.model.append(opt);
     }
   } catch (err) {
