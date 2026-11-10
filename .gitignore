@@ -51,6 +51,10 @@ apps/app/src/main/cpp/third_party/
 # Tracked engine artifact: SPIR-V pack blob (host-GPU independent; regenerate
 # with tools/dump-spirv after shader changes — see engine/xmake.lua header).
 !engine/core/spirv_pack.bin
+# Web dev fixtures: tiny seeded ONNX test models (web/tools/make_dev_model.py,
+# ~37 KB each — NOT catalog weights; those stay release-only). Tracked so the
+# numeric gate (web/tests) is reproducible without the Python toolchain.
+!web/public/models/*.onnx
 !models/README.md
 models/manifest.json
 # Machine-local model store symlink (e.g. -> ~/.config/Upix/models)
@@ -144,3 +148,9 @@ skills-lock.json
 crates/upix-gui/.nsh/
 target/
 
+
+# web frontend (issue #2)
+web/node_modules/
+web/dist/
+web/public/ort/
+web/tools/.venv/

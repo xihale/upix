@@ -65,7 +65,9 @@ pub enum JobPhase {
 }
 
 enum ModelTaskEvent {
-    RemoteList(Result<Vec<String>, String>),
+    /// `fallback` carries the reason the release was not reachable (the names
+    /// then come from the shared catalog) so the status line can say which.
+    RemoteList { names: Vec<String>, fallback: Option<String> },
     DownloadDone {
         name: String,
         result: Result<(), String>,
@@ -106,6 +108,10 @@ pub struct Store {
 
     // Active job state
     pub job_phase: Signal<JobPhase>,
+    /// Set when the last job failed because the selected model is not on disk.
+    /// The failure banner offers "下载模型" only in that case (a generic retry
+    /// loops forever otherwise).
+    pub job_missing_model: Signal<Option<String>>,
     job_rx: Stored<Option<mpsc::Receiver<EngineEvent>>>,
     job_cancel: Stored<Option<Arc<AtomicBool>>>,
     backend: Stored<Arc<dyn JobBackend>>,
@@ -225,6 +231,7 @@ impl Store {
             force: signal(false),
 
             job_phase: signal(JobPhase::Idle),
+            job_missing_model: signal(None),
             job_rx: stored(None),
             job_cancel: stored(None),
             backend: stored(backend),
@@ -381,6 +388,7 @@ impl Store {
         let _ = self.job_rx.replace(Some(rx));
 
         let total = paths.len();
+        self.job_missing_model.set(None);
         self.job_phase.set(JobPhase::Running {
             item_index: 0,
             item_total: total,
@@ -498,15 +506,24 @@ impl Store {
         self.models_status.set("正在拉取远端模型清单…".into());
         let tx = self.model_tx.with(|t| t.clone());
         std::thread::spawn(move || {
+            // Shared with `upix model list-remote`: try the release, fall back
+            // to the embedded catalog, and report which one answered.
             #[cfg(feature = "integration")]
-            let res = upix_host::modelctl::list_remote(upix_host::modelctl::DEFAULT_MODEL_REPO)
-                .map(|v| v.into_iter().map(|m| m.name).collect());
+            let (names, fallback) = {
+                let (models, err) = upix_host::modelctl::list_remote_or_catalog(
+                    upix_host::modelctl::DEFAULT_MODEL_REPO,
+                );
+                (models.into_iter().map(|m| m.name).collect::<Vec<_>>(), err)
+            };
             #[cfg(not(feature = "integration"))]
-            let res = Ok(models_local::FALLBACK_CATALOG
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect());
-            let _ = tx.send(ModelTaskEvent::RemoteList(res));
+            let (names, fallback) = (
+                models_local::FALLBACK_CATALOG
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect::<Vec<_>>(),
+                Some("this build has no network layer".to_string()),
+            );
+            let _ = tx.send(ModelTaskEvent::RemoteList { names, fallback });
         });
     }
 
@@ -735,6 +752,15 @@ impl Store {
                     let _ = self.job_cancel.replace(None);
                 }
                 EngineEvent::Failed(msg) => {
+                    // "模型文件缺失" / "model not found" are recoverable by
+                    // installing the model; anything else is not, so the
+                    // banner must not offer a download that cannot help.
+                    let missing = msg.contains("模型文件缺失")
+                        || msg.contains("model not found")
+                        || msg.contains("No models found")
+                        || msg.contains("no models found");
+                    self.job_missing_model
+                        .set(missing.then(|| self.selected_model.get()));
                     self.job_phase.set(JobPhase::Failed(msg));
                     let _ = self.job_rx.replace(None);
                     let _ = self.job_cancel.replace(None);
@@ -755,21 +781,15 @@ impl Store {
 
         for ev in events {
             match ev {
-                ModelTaskEvent::RemoteList(res) => {
+                ModelTaskEvent::RemoteList { names, fallback } => {
                     self.remote_loading.set(false);
-                    match res {
-                        Ok(stems) => {
-                            let count = stems.len();
-                            self.remote_stems.set(stems);
-                            self.rescan_models();
-                            self.models_status
-                                .set(format!("已同步远端模型清单（共 {count} 项）"));
-                        }
-                        Err(e) => {
-                            self.models_status
-                                .set(format!("拉取远端清单失败（使用内置目录）：{e}"));
-                        }
-                    }
+                    let count = names.len();
+                    self.remote_stems.set(names);
+                    self.rescan_models();
+                    self.models_status.set(match fallback {
+                        None => format!("已同步远端模型清单（共 {count} 项）"),
+                        Some(e) => format!("远端不可用，使用内置目录（{count} 项）：{e}"),
+                    });
                 }
                 ModelTaskEvent::DownloadDone { name, result } => {
                     let mut dl = self.downloading_models.get();

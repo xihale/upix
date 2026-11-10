@@ -16,7 +16,7 @@ use crate::store::{file_uri_path, InputItem, ItemStatus, JobPhase, Store};
 use crate::theme::{palette, FONT_MONO, FONT_SANS};
 use crate::ui::{
     primary_button, quality_slider, section_header, segmented, segmented_sized,
-    segmented_with_font, svg_icon, toggle_row, toggle_switch, SegmentItem,
+    segmented_with_font, svg_icon, SegmentItem,
 };
 
 pub const POS_MIN: f32 = 0.02;
@@ -786,7 +786,12 @@ fn telemetry_bar(store: Store) -> View {
                             view()
                         })
                 }
-                JobPhase::Failed(err_msg) => view()
+                JobPhase::Failed(err_msg) => {
+                    // A missing model cannot be fixed by pressing retry: it
+                    // needs a download. Only that case (recorded in the store)
+                    // swaps the banner action, everything else keeps 重试.
+                    let missing = store.job_missing_model.get();
+                    view()
                     .w_full()
                     .flex_row()
                     .items_center()
@@ -821,28 +826,41 @@ fn telemetry_bar(store: Store) -> View {
                             ),
                     )
                     .child(
-                        view()
-                            .w(px(44.0))
-                            .h(px(24.0))
-                            .rounded(px(4.0))
-                            .bg(palette::container_low())
-                            .border_1()
-                            .border_color(palette::outline_input())
-                            .transition()
-                            .duration(140.0)
-                            .ease_out()
-                            .hover(|s| s.bg(palette::high()))
-                            .active(|s| if reduce_motion() { s } else { s.scale(0.96) })
-                            .items_center()
-                            .justify_center()
-                            .cursor_pointer()
-                            .on_press(move || store.start_job())
-                            .child(
-                                text("重试")
-                                    .text_size(px(11.0))
-                                    .text_color(palette::on_surface()),
-                            ),
-                    ),
+                        {
+                            let label = if missing.is_some() { "下载模型" } else { "重试" };
+                            view()
+                                .w(px(if missing.is_some() { 68.0 } else { 44.0 }))
+                                .h(px(24.0))
+                                .rounded(px(4.0))
+                                .bg(palette::container_low())
+                                .border_1()
+                                .border_color(palette::outline_input())
+                                .transition()
+                                .duration(140.0)
+                                .ease_out()
+                                .hover(|s| s.bg(palette::high()))
+                                .active(|s| if reduce_motion() { s } else { s.scale(0.96) })
+                                .items_center()
+                                .justify_center()
+                                .cursor_pointer()
+                                .on_press(move || match missing.clone() {
+                                    Some(name) if !name.is_empty() => {
+                                        store.download_model(name);
+                                        store.nav.set(crate::nav::NavTab::Models);
+                                    }
+                                    // Empty name (no model selected at all):
+                                    // the Models page is where the choice and
+                                    // the download live.
+                                    _ => store.nav.set(crate::nav::NavTab::Models),
+                                })
+                                .child(
+                                    text(label)
+                                        .text_size(px(11.0))
+                                        .text_color(palette::on_surface()),
+                                )
+                        },
+                    )
+                }
                 JobPhase::Idle | JobPhase::Cancelled => {
                     let ready_str = format!("已就绪 · {} 项输入待处理", inputs.len());
                     view()
@@ -1133,164 +1151,6 @@ fn inspector_column(store: Store) -> View {
                                 .child(output_dir_box(store)),
                         ),
                 )
-                // ── Section 3: 引擎与处理 ──
-                .child(
-                    view()
-                        .w_full()
-                        .flex_col()
-                        .gap(px(12.0))
-                        .child(section_header("引擎与处理"))
-                        // Compute device (inline row: 14px #ececee + 164x28 segmented GPU/CPU)
-                        .child(
-                            view()
-                                .w_full()
-                                .h(px(28.0))
-                                .flex_row()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    text("计算设备")
-                                        .text_size(px(14.0))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(palette::on_surface()),
-                                )
-                                .child(
-                                    view().w(px(164.0)).child(segmented_sized(
-                                        &[
-                                            SegmentItem {
-                                                value: true,
-                                                label: "GPU",
-                                            },
-                                            SegmentItem {
-                                                value: false,
-                                                label: "CPU",
-                                            },
-                                        ],
-                                        store.use_gpu,
-                                        28.0,
-                                        12.0,
-                                        move |v| store.use_gpu.set(v),
-                                    )),
-                                ),
-                        )
-                        // Tile size (inline row: 14px #ececee + 164x28 segmented 自动/512/256/128)
-                        .child(
-                            view()
-                                .w_full()
-                                .h(px(28.0))
-                                .flex_row()
-                                .items_center()
-                                .justify_between()
-                                .child(
-                                    text("分块尺寸")
-                                        .text_size(px(14.0))
-                                        .font_weight(FontWeight::MEDIUM)
-                                        .text_color(palette::on_surface()),
-                                )
-                                .child(
-                                    view().w(px(164.0)).child(segmented_sized(
-                                        &[
-                                            SegmentItem {
-                                                value: 0,
-                                                label: "自动",
-                                            },
-                                            SegmentItem {
-                                                value: 512,
-                                                label: "512",
-                                            },
-                                            SegmentItem {
-                                                value: 256,
-                                                label: "256",
-                                            },
-                                            SegmentItem {
-                                                value: 128,
-                                                label: "128",
-                                            },
-                                        ],
-                                        store.tile_size,
-                                        28.0,
-                                        12.0,
-                                        move |v| store.tile_size.set(v),
-                                    )),
-                                ),
-                        )
-                        // Warm daemon toggle (inline row: 14px #ececee + 60fps spinning/active badge + 44x26 animated toggle)
-                        .child(
-                            view()
-                                .flex_row()
-                                .w_full()
-                                .min_h(px(28.0))
-                                .items_center()
-                                .justify_between()
-                                .gap(px(8.0))
-                                .child(
-                                    view()
-                                        .flex_row()
-                                        .items_center()
-                                        .gap(px(6.0))
-                                        .child(
-                                            text("常驻热引擎")
-                                                .text_size(px(14.0))
-                                                .font_weight(FontWeight::MEDIUM)
-                                                .text_color(palette::on_surface()),
-                                        )
-                                        .child(when(
-                                            move || store.daemon_loading.get(),
-                                            move || {
-                                                let spinner = svg_icon(
-                                                    crate::ui::icons::LOADER_FRAMES[0],
-                                                    13.0,
-                                                    palette::primary(),
-                                                );
-                                                let spinner_el = if reduce_motion() {
-                                                    spinner.into_element()
-                                                } else {
-                                                    spinner.animate_spin().into_element()
-                                                };
-                                                view()
-                                                    .flex_row()
-                                                    .items_center()
-                                                    .gap(px(5.0))
-                                                    .child(spinner_el)
-                                                    .child(
-                                                        text("预热中")
-                                                            .text_size(px(11.0))
-                                                            .font_family(FONT_MONO)
-                                                            .text_color(palette::primary()),
-                                                    )
-                                            },
-                                        ))
-                                        .child(when(
-                                            move || {
-                                                store.daemon_running.get()
-                                                    && !store.daemon_loading.get()
-                                            },
-                                            move || {
-                                                view()
-                                                    .flex_row()
-                                                    .items_center()
-                                                    .gap(px(3.0))
-                                                    .child(svg_icon(
-                                                        crate::ui::icons::ZAP,
-                                                        12.0,
-                                                        palette::primary(),
-                                                    ))
-                                            },
-                                        )),
-                                )
-                                .child(toggle_switch(
-                                    move || store.daemon_running.get() || store.daemon_loading.get(),
-                                    move |v| store.toggle_daemon(v),
-                                )),
-                        )
-                        // Force overwrite toggle (inline row: 14px #ececee + 44x26 animated toggle)
-                        .child(toggle_row(
-                            "覆盖已有结果",
-                            "",
-                            move || store.force.get(),
-                            move |v| store.force.set(v),
-                        )),
-                ),
         )
         // Bottom sticky CTA bar (16px padding, no top border in Figma)
         .child(
@@ -1447,6 +1307,7 @@ fn model_picker_popup(store: Store) -> View {
                     let current = store.selected_model.get();
                     let groups = store.installed_groups.get();
                     let mut col = view().w_full().flex_col().gap(px(2.0));
+                    let mut shown = 0usize;
 
                     for g in groups {
                         for m in g.items {
@@ -1469,6 +1330,7 @@ fn model_picker_popup(store: Store) -> View {
                                 m.scale
                             );
 
+                            shown += 1;
                             col = col.child(
                                 view()
                                     .w_full()
@@ -1522,6 +1384,65 @@ fn model_picker_popup(store: Store) -> View {
                                     } else {
                                         view()
                                     }),
+                            );
+                        }
+                    }
+                    if shown == 0 {
+                        // An empty popup (fresh install: nothing on disk) read
+                        // as a rendering bug — it offered only a search box.
+                        let filtered = !q.is_empty();
+                        col = col.child(
+                            view()
+                                .w_full()
+                                .py(px(18.0))
+                                .px(px(10.0))
+                                .flex_col()
+                                .items_center()
+                                .gap(px(4.0))
+                                .child(
+                                    text(if filtered {
+                                        "没有匹配的模型"
+                                    } else {
+                                        "尚未安装模型"
+                                    })
+                                    .text_size(px(12.0))
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .text_color(palette::on_surface()),
+                                )
+                                .child(
+                                    text(if filtered {
+                                        "换个关键词，或到「模型」页下载"
+                                    } else {
+                                        "到「模型」页挑选并下载"
+                                    })
+                                    .text_size(px(11.0))
+                                    .text_color(palette::muted()),
+                                ),
+                        );
+                        if !filtered {
+                            col = col.child(
+                                view()
+                                    .w_full()
+                                    .h(px(28.0))
+                                    .mt(px(6.0))
+                                    .rounded(px(6.0))
+                                    .bg(palette::high())
+                                    .border_1()
+                                    .border_color(palette::border())
+                                    .items_center()
+                                    .justify_center()
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(palette::highest()))
+                                    .on_press(move || {
+                                        store.show_model_picker.set(false);
+                                        store.nav.set(crate::nav::NavTab::Models);
+                                    })
+                                    .child(
+                                        text("打开模型页")
+                                            .text_size(px(11.0))
+                                            .font_weight(FontWeight::MEDIUM)
+                                            .text_color(palette::text()),
+                                    ),
                             );
                         }
                     }
@@ -1654,13 +1575,18 @@ fn inspector_cta_button(store: Store) -> AnyElement {
                 ),
             JobPhase::Done { .. } => primary_button("重新超分", true, move || store.start_job()),
             JobPhase::Failed(_) => primary_button("继续超分", true, move || store.start_job()),
-            _ => primary_button("开始超分", true, move || {
-                if has_inputs {
-                    store.start_job();
-                } else {
-                    pick_image_files(store);
-                }
-            }),
+            _ => {
+                // No inputs yet: the button opens the file picker, so it must
+                // not claim to start a job that cannot run.
+                let label = if has_inputs { "开始超分" } else { "选择图片" };
+                primary_button(label, true, move || {
+                    if has_inputs {
+                        store.start_job();
+                    } else {
+                        pick_image_files(store);
+                    }
+                })
+            }
         }
     })
 }

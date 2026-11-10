@@ -123,9 +123,10 @@ pub fn setup_engine(
     models_dir: &str,
     model_name: &str,
 ) -> Result<EngineSetupResult, String> {
-    let engine = initialize_engine(factory, strategy)?;
-
     // ── scan_models ──────────────────────────────────────────────────────────
+    // Before engine init: a missing model directory is the common first-run
+    // state, and initializing ncnn only to fail afterwards costs a device
+    // probe plus a screenful of engine logs the user did not ask for.
     let resolved_models_dir =
         if models_dir.is_empty() { "./models".to_string() } else { models_dir.to_string() };
     let mut models = ModelManager::new(PathBuf::from(&resolved_models_dir));
@@ -149,7 +150,7 @@ pub fn setup_engine(
     };
 
     // ── load_model ───────────────────────────────────────────────────────────
-    let mut engine = engine;
+    let mut engine = initialize_engine(factory, strategy)?;
     engine
         .load_model(&selected.param_path, &selected.bin_path)
         .map_err(|e| format!("model load failed: {}", e.message))?;

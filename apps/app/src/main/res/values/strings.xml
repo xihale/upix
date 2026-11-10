@@ -22,7 +22,7 @@
 
     <!-- Bottom navigation / destinations -->
     <string name="nav_home">主页</string>
-    <string name="nav_connection">连接</string>
+    <string name="nav_connection">远程</string>
     <string name="nav_help">帮助</string>
 
     <!-- Home screen -->
@@ -85,7 +85,7 @@
     <string name="queue_no_image">无预览</string>
     <string name="queue_allocation_label">%1$s</string>
     <string name="queue_allocation_summary">%1$s · 共 %2$s · %3$s%4$s</string>
-    <string name="queue_mode_distributed">PC 协同</string>
+    <string name="queue_mode_distributed">远程</string>
     <string name="queue_mode_standalone">本地</string>
     <string name="queue_expected_count">共 %1$d 张</string>
     <string name="queue_expected_pending">待统计</string>
@@ -148,7 +148,7 @@
     <string name="connection_error_invalid_address">无效的地址</string>
 
     <!-- Connection screen -->
-    <string name="connection_title">连接 PC</string>
+    <string name="connection_title">远程处理</string>
     <string name="connection_ignore">忽略</string>
     <string name="connection_fingerprint">指纹：%1$s</string>
     <string name="connection_disconnect">断开连接</string>

@@ -24,6 +24,13 @@ fn mb(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / 1024.0 / 1024.0)
 }
 
+/// Manifest-shaped size, or "—" when the entry came from the embedded catalog
+/// (sizes are per-release facts, so the offline list cannot know them; printing
+/// "0.0 MB" there read like a truncated download).
+fn size_label(bytes: u64) -> String {
+    if bytes == 0 { "—".to_string() } else { mb(bytes) }
+}
+
 /// "[动漫] ★" style annotation for catalog models; empty for user imports.
 fn scene_suffix(name: &str) -> String {
     let meta = upix_core::model_metadata::classify_model_scene(name);
@@ -126,18 +133,16 @@ fn cmd_model_list_remote(a: &ModelArgs) -> i32 {
     if a.json {
         logging::enable_machine_output();
     }
-    let remote = match modelctl::list_remote(&a.repo) {
-        Ok(r) => r,
-        Err(e) => {
-            log::error!(target: "Model", "Failed to fetch remote models: {e}");
-            return 1;
-        }
-    };
+    // Same fallback the GUI uses: without the release manifest a listing is
+    // still answerable from the embedded catalog, so an offline machine can
+    // see what exists (downloading itself still needs the network).
+    let (remote, fallback) = modelctl::list_remote_or_catalog(&a.repo);
 
     if a.json {
         let mut json = format!(
-            r#"{{"manifestUrl":"{}","remote":["#,
-            json_escape(&modelctl::manifest_url(&a.repo))
+            r#"{{"manifestUrl":"{}","source":"{}","remote":["#,
+            json_escape(&modelctl::manifest_url(&a.repo)),
+            if fallback.is_some() { "catalog" } else { "release" }
         );
         for (i, m) in remote.iter().enumerate() {
             if i > 0 {
@@ -148,16 +153,23 @@ fn cmd_model_list_remote(a: &ModelArgs) -> i32 {
                 r#"{{"name":"{}","scale":{},"size":"{}","scene":"{}","recommended":{}}}"#,
                 json_escape(&m.name),
                 m.scale,
-                mb(m.size_bytes),
+                size_label(m.size_bytes),
                 json_escape(&meta.scene),
                 meta.recommended
             ));
         }
         json.push_str("]}");
         emit_json_line(json);
+        if let Some(err) = &fallback {
+            log::warn!(target: "Model", "Release manifest unavailable, listing the built-in catalog: {err}");
+        }
         return 0;
     }
 
+    if let Some(err) = &fallback {
+        log::warn!(target: "Model", "Release manifest unavailable, listing the built-in catalog: {err}");
+        log::warn!(target: "Model", "Sizes/URLs need the release; `model download` will fail until the network is back");
+    }
     println!(
         "Models available in the release ({}):",
         modelctl::manifest_url(&a.repo)
@@ -170,7 +182,7 @@ fn cmd_model_list_remote(a: &ModelArgs) -> i32 {
             "  {} ({}x, {}){}",
             m.name,
             m.scale,
-            mb(m.size_bytes),
+            size_label(m.size_bytes),
             scene_suffix(&m.name)
         );
     }
@@ -194,7 +206,13 @@ fn cmd_model_download(a: &ModelArgs) -> i32 {
     let remote = match modelctl::list_remote(&a.repo) {
         Ok(r) => r,
         Err(e) => {
-            log::error!(target: "Model", "Failed to fetch remote models: {e}");
+            // Downloading needs per-release URLs, so there is no offline path
+            // here — but the message must name one the user can take.
+            log::error!(target: "Model", "Cannot reach the model release: {e}");
+            log::error!(
+                target: "Model",
+                "Check the network/proxy, or install files you already have with `upix model import <file.param> <file.bin>`"
+            );
             return 1;
         }
     };

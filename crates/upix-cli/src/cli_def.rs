@@ -127,7 +127,12 @@ fn rewrite_implicit_args(argv: &[String]) -> Vec<String> {
     name = "upix",
     bin_name = "upix",
     version = crate::version_str(),
-    about = "Upix - Distributed Image Super-Resolution"
+    about = "Upix - Distributed Image Super-Resolution",
+    after_help = "Environment:\n  \
+                  UPIX_LOG_LEVEL   debug|info|warn|error (default: info)\n  \
+                  UPIX_PROGRESS    =1 per-tile log lines; =json JSON events on stdout\n  \
+                  UPIX_MODELS_DIR  default model directory\n  \
+                  NO_COLOR         non-empty disables color output"
 )]
 pub struct Cli {
     #[command(flatten)]
@@ -143,7 +148,7 @@ pub enum Command {
         #[command(subcommand)]
         command: ModelCommand,
     },
-    /// Start or query the coordinator for phones
+    /// Serve images for paired phones (远程) — start or query the host
     Host {
         #[command(subcommand)]
         command: Option<HostCommand>,
@@ -152,7 +157,7 @@ pub enum Command {
         #[command(flatten)]
         start: HostStartFlags,
     },
-    /// Manage the warm-engine daemon
+    /// Manage the warm engine daemon (常驻热引擎)
     Daemon {
         #[command(subcommand)]
         command: Option<DaemonCommand>,
@@ -162,7 +167,7 @@ pub enum Command {
         start: DaemonStartFlags,
     },
     /// Print or install a shell completion script (bash/zsh/fish)
-    #[command(hide = true)]
+
     Completions {
         /// Target shell
         #[arg(value_parser = ["bash", "zsh", "fish"])]

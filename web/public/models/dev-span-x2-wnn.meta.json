@@ -1,0 +1,13 @@
+{
+  "name": "dev-span-x2-wnn",
+  "arch": "span-dev",
+  "scale": 2,
+  "channels": 16,
+  "blocks": 2,
+  "seed": 42,
+  "mean": 0.5,
+  "pixelshuffle": "decomposed",
+  "input": "NCHW float32 [1,3,H,W], values in [0,1]",
+  "output": "NCHW float32 [1,3,H*r,W*r], values in [0,1] (Sigmoid)",
+  "sha256": "839306d72a13f614d68179bf6fd001be846416b373bcdebbfa9b43f652b3a04b"
+}

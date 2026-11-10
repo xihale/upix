@@ -30,21 +30,11 @@ pub struct ModelGroup {
     pub items: Vec<ModelVariant>,
 }
 
-/// Fallback catalog when offline or when `integration` is disabled.
-pub const FALLBACK_CATALOG: &[&str] = &[
-    "NomosUni-SPAN-x2",
-    "NomosUni-SPAN-x4",
-    "Real-ESRGANv3-anime-x2",
-    "Real-ESRGANv3-anime-x4",
-    "Real-ESRGANv3-general-x2",
-    "Real-ESRGAN-x4plus",
-    "Real-CUGAN-4x",
-    "DeJPG-x1",
-    "Archivist-Medium-x1",
-    "UltraSharp-x4",
-    "Remacri-x4",
-    "Animesharp-x4",
-];
+/// The published catalog, shared with the CLI (`upix_core::model_catalog`).
+/// This module used to carry its own list, which drifted out of date; the
+/// single source also means an offline GUI shows the same models as
+/// `upix model list-remote`.
+pub use upix_core::model_catalog::CATALOG as FALLBACK_CATALOG;
 
 /// `UPIX_MODELS_DIR`, else `$HOME/.local/share/upix/models` (flat cache).
 pub fn models_dir() -> PathBuf {

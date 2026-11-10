@@ -9,6 +9,7 @@ pub mod config;
 pub mod engine;
 pub mod engine_pool;
 pub mod engine_setup;
+pub mod model_catalog;
 pub mod model_families;
 pub mod model_graph;
 pub mod model_manager;

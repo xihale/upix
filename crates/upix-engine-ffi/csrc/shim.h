@@ -101,6 +101,13 @@ void upix_engine_destroy(UpixEngine* engine);
 // preferred: UPIX_DEVICE_CPU / UPIX_DEVICE_GPU_VULKAN.
 UpixEngineStatus upix_engine_initialize(UpixEngine* engine, int preferred);
 
+// Route engine logs to stderr (1) or stdout (0). The CLI's machine-output modes
+// (`--json`, UPIX_PROGRESS=json) reserve stdout for events, but the engine has
+// its own logger (utils/logger.hpp) whose sink this Rust-side flag cannot
+// reach — without this entry point those lines corrupt the event stream.
+// Process-global; call before the first engine LOG_*.
+void upix_engine_set_log_stderr(int enable);
+
 // Writes up to cap devices; actual count in *out_len. *out_len is always set
 // (also when returning an error).
 UpixEngineStatus upix_engine_list_devices(UpixEngine* engine, UpixDevice* out,

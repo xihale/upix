@@ -180,8 +180,8 @@ fn subcommands_of(node: Node) -> &'static [(&'static str, &'static str)] {
     match node {
         Node::Root => &[
             ("model", "Manage models (list, download, import)"),
-            ("host", "Start or query the coordinator for phones"),
-            ("daemon", "Manage the warm-engine daemon"),
+            ("host", "Serve images for paired phones (远程)"),
+            ("daemon", "Manage the warm engine daemon (常驻热引擎)"),
         ],
         Node::Model => &[
             ("list", "List installed models"),

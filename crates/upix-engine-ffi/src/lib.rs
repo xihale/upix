@@ -109,6 +109,7 @@ pub mod ffi {
 
     unsafe extern "C" {
         pub fn upix_engine_set_spirv_pack(data: *const u8, size: usize);
+        pub fn upix_engine_set_log_stderr(enable: c_int);
         pub fn upix_engine_create() -> *mut CEngine;
         pub fn upix_engine_destroy(engine: *mut CEngine);
         pub fn upix_engine_initialize(engine: *mut CEngine, preferred: c_int) -> CStatus;
@@ -234,6 +235,15 @@ pub fn init_spirv_pack() {
         const PACK: &[u8] = include_bytes!("../../../engine/core/spirv_pack.bin");
         unsafe { ffi::upix_engine_set_spirv_pack(PACK.as_ptr(), PACK.len()) };
     });
+}
+
+/// Route engine logs to stderr (true) or stdout (false). The engine formats
+/// and prints its own lines (utils/logger.hpp), so the CLI's Rust-side log
+/// sink switch cannot contain them: in `--json` / `UPIX_PROGRESS=json` mode
+/// those lines land on stdout mid-stream unless this is called. Process-wide,
+/// and safe to call before any engine exists.
+pub fn set_log_to_stderr(enable: bool) {
+    unsafe { ffi::upix_engine_set_log_stderr(i32::from(enable)) };
 }
 
 /// FFI boundary catch-all code: a C++ exception escaped engine-internal scope
