@@ -1,463 +1,769 @@
 #include "views/common.hpp"
 
-#include "ui_theme.hpp"
-#include "ui_widgets.hpp"
-
 #include "imgui.h"
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <format>
 #include <string>
-#include <vector>
+#include <unordered_map>
 
 namespace upix::views {
+namespace {
 
-void renderWorkbench(ImDrawList* dl, ImVec2 winSize, UiViewState& ui,
-                            upix::gui::AppState& app, const upix::gui::Snapshot& snap,
-                            SDL_Window* window, DialogBridge* dlgFiles, DialogBridge* dlgFolder, DialogBridge* dlgOutDir) {
+// Same workaround as shell.cpp: motion::springTo's Spring1D boots at 1.0f and
+// only honors defaultValue after 120 dormant frames, so a pill or a progress
+// bar would animate in from the wrong place (an entrance). Seed at `target`.
+// Params match ctl::selectionSpring {360,30}, ctl::progressSpring {180,26},
+// and motion::PLACE for the switch knob.
+float followSpring(ImGuiID id, float target, upix::ui::motion::SpringParams params) {
+    struct Slot {
+        upix::ui::motion::Spring1D s;
+        int frame = -1;
+        bool live = false;
+    };
+    static std::unordered_map<ImGuiID, Slot> store;
+    Slot& slot = store[id];
+    const int frame = ImGui::GetFrameCount();
+    if (!slot.live || slot.frame + 120 < frame) {
+        slot.s.value = target;
+        slot.s.velocity = 0.0f;
+        slot.live = true;
+    }
+    slot.frame = frame;
+    return upix::ui::motion::advance(slot.s, target, params, ImGui::GetIO().DeltaTime);
+}
+
+float easeTo(ImGuiID id, float target, float durMs) {
+    struct Slot {
+        float v = 0.0f;
+        int frame = -1;
+        bool live = false;
+    };
+    static std::unordered_map<ImGuiID, Slot> store;
+    Slot& slot = store[id];
+    const int frame = ImGui::GetFrameCount();
+    if (!slot.live || slot.frame + 120 < frame) {
+        slot.v = target;
+        slot.live = true;
+    }
+    slot.frame = frame;
+    const float step = ImGui::GetIO().DeltaTime / (durMs / 1000.0f);
+    if (slot.v < target) slot.v = std::min(target, slot.v + step);
+    else slot.v = std::max(target, slot.v - step);
+    return slot.v;
+}
+
+// Finish::Inset strokes its inner shadow and then fills the same rect, so the
+// shadow never shows. Fill wellBg, then a 1px black rim inside the clip, then
+// the hairline the spec asks for.
+void drawInsetWell(ImDrawList* dl, ImVec2 p0, ImVec2 p1, float radius) {
     using namespace upix::ui;
-    const auto& pal = ui.pal;
+    const auto& t = geist::tokens();
+    p0 = snapPt(p0);
+    p1 = snapPt(p1);
+    dl->AddRectFilled(p0, p1, t.wellBg, radius);
+    dl->PushClipRect(p0, p1, true);
+    dl->AddRect(ImVec2(p0.x + 1.0f, p0.y + 1.0f), ImVec2(p1.x - 1.0f, p1.y - 1.0f),
+                hex(0x000000, 0x73), std::max(0.0f, radius - 1.0f), 0, 1.0f);
+    dl->PopClipRect();
+    dl->AddRect(p0, p1, t.outline, radius, 0, hairlinePx());
+}
 
-    float railW = 76.0f;
-    float inspW = 308.0f;
-    float inspX = winSize.x - inspW;
-    float stageAreaX = railW;
-    float stageAreaW = inspX - railW;
+struct SegOpt {
+    const char* label;
+    const char* value;
+};
 
-    bool hasInputs = !snap.inputs.empty() || snap.job.phase != upix::gui::JobPhase::Idle;
-    bool hasDock = snap.inputs.size() > 1 || snap.job.phase == upix::gui::JobPhase::Running || snap.job.phase == upix::gui::JobPhase::Error;
+// Track = recessed + hairline. Selected block = Pill that spring-slides.
+// Item press 0.97 + 6% wash. Selected label promotes mute → ink over FAST.
+bool segmented(ImDrawList* dl, const char* id, ImFont* font, ImVec2 pos, ImVec2 size,
+               const SegOpt* opts, int count, std::string& current, bool modal) {
+    using namespace upix::ui;
+    const auto& t = geist::tokens();
+    pos = snapPt(pos);
+    const ImVec2 track1(pos.x + size.x, pos.y + size.y);
+    dl->AddRectFilled(pos, track1, t.recessed, 8.0f);
+    dl->AddRect(pos, track1, t.outline, 8.0f, 0, hairlinePx());
 
-    float padX = 8.0f;
-    float padY = 16.0f;
-    float dockBarH = 54.0f;
-    float dockH = hasDock ? (dockBarH + 10.0f) : 0.0f;
-    ImVec2 stageMin = snapPt(stageAreaX + padX, padY);
-    ImVec2 stageMax = snapPt(stageAreaX + stageAreaW - padX, winSize.y - padY - dockH);
+    const float pad = 2.0f;
+    const float segW = (size.x - pad * 2.0f) / static_cast<float>(count);
+    const float segH = size.y - pad * 2.0f;
 
-    // Stage Well container (Figma 4:18 & 71:1133: background #18181c, border 1px solid #282830, radius 12px)
-    ImU32 stageBg = (snap.job.phase == upix::gui::JobPhase::Running) ? pal.recessed() : pal.surface();
-    drawBox(dl, stageMin, stageMax, stageBg, pal.outline(), 12.0f);
+    int active = 0;
+    for (int i = 0; i < count; ++i) {
+        if (current == opts[i].value) active = i;
+    }
+
+    ImGui::PushID(id);
+    const float targetX = pos.x + pad + static_cast<float>(active) * segW;
+    const float pillX = followSpring(ImGui::GetID("pill"), targetX, motion::SpringParams{360.0f, 30.0f});
+    ctl::finish(dl, snapPt(pillX, pos.y + pad), snapPt(pillX + segW, pos.y + pad + segH), ctl::Finish::Pill, 6.0f);
+
+    bool changed = false;
+    for (int i = 0; i < count; ++i) {
+        const ImVec2 s0 = snapPt(pos.x + pad + static_cast<float>(i) * segW, pos.y + pad);
+        const ImVec2 s1 = snapPt(pos.x + pad + static_cast<float>(i + 1) * segW, pos.y + pad + segH);
+        ImGui::PushID(i);
+        bool hov = false;
+        bool held = false;
+        if (!modal) {
+            ImGui::SetCursorScreenPos(s0);
+            ImGui::InvisibleButton("##seg", ImVec2(std::max(1.0f, s1.x - s0.x), std::max(1.0f, segH)));
+            hov = ImGui::IsItemHovered();
+            held = ImGui::IsItemActive();
+            if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            if (ImGui::IsItemClicked() && current != opts[i].value) {
+                current = opts[i].value;
+                active = i;
+                changed = true;
+            }
+        }
+        float sc = motion::pressScale(ImGui::GetID("press"), held, motion::PRESS_SCALE);
+        if (std::fabs(sc - 1.0f) < 0.001f) sc = 1.0f;
+        if (hov || held) dl->AddRectFilled(s0, s1, hex(0xFFFFFF, 0x0F), 6.0f);
+        const float promo = easeTo(ImGui::GetID("ink"), (i == active) ? 1.0f : 0.0f, motion::FAST);
+        const ImU32 col = motion::mix(t.mute, t.ink, promo);
+        const ImVec2 c((s0.x + s1.x) * 0.5f, (s0.y + s1.y) * 0.5f);
+        const ImVec2 q0(c.x + (s0.x - c.x) * sc, c.y + (s0.y - c.y) * sc);
+        const ImVec2 q1(c.x + (s1.x - c.x) * sc, c.y + (s1.y - c.y) * sc);
+        drawTextCentered(dl, font, 12.0f * sc, q0, q1, col, opts[i].label);
+        ImGui::PopID();
+    }
+    ImGui::PopID();
+    return changed;
+}
+
+// Thumb and fill follow the pointer 1:1. No spring, no throw on release.
+// Quantiles 0/25/50/75/100 catch the pointer within 2.2% of the track
+// (rust quality_slider). Track is a 2px hairline; fill is ink.
+bool qualitySlider(ImDrawList* dl, const char* id, ImVec2 pos, float width, int& value, int minV, int maxV, bool modal) {
+    using namespace upix::ui;
+    const auto& t = geist::tokens();
+    pos = snapPt(pos);
+    const float hitH = 18.0f;
+    bool changed = false;
+    if (!modal) {
+        ImGui::SetCursorScreenPos(pos);
+        ImGui::InvisibleButton(id, ImVec2(width, hitH));
+        if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        if (ImGui::IsItemActive()) {
+            float frac = (ImGui::GetIO().MousePos.x - pos.x) / std::max(1.0f, width);
+            frac = std::clamp(frac, 0.0f, 1.0f);
+            const float qs[5] = {0.0f, 0.25f, 0.5f, 0.75f, 1.0f};
+            for (float q : qs) {
+                if (std::fabs(frac - q) <= 0.022f) frac = q;
+            }
+            int next = static_cast<int>(std::lround(minV + frac * static_cast<float>(maxV - minV)));
+            next = std::clamp(next, minV, maxV);
+            if (next != value) {
+                value = next;
+                changed = true;
+            }
+        }
+    }
+
+    const float span = static_cast<float>(std::max(1, maxV - minV));
+    const float tNorm = std::clamp(static_cast<float>(value - minV) / span, 0.0f, 1.0f);
+    const float trackY = snapPx(pos.y + 8.0f);
+    const float fillW = snapPx(tNorm * width);
+    dl->AddRectFilled(ImVec2(pos.x, trackY), ImVec2(pos.x + width, trackY + 2.0f), t.outline, 1.0f);
+    if (fillW > 0.5f) {
+        dl->AddRectFilled(ImVec2(pos.x, trackY), ImVec2(pos.x + fillW, trackY + 2.0f), t.ink, 1.0f);
+    }
+    for (int i = 0; i < 5; ++i) {
+        const float tx = snapPx(pos.x + width * (static_cast<float>(i) / 4.0f));
+        dl->AddRectFilled(ImVec2(tx, snapPx(pos.y + 13.0f)), ImVec2(tx + hairlinePx(), snapPx(pos.y + 16.0f)), t.faint);
+    }
+    const float thumbX = std::clamp(pos.x + tNorm * width, pos.x + 6.5f, pos.x + width - 6.5f);
+    const ImVec2 c = snapPt(thumbX, trackY + 1.0f);
+    dl->AddCircleFilled(ImVec2(c.x, c.y + 1.0f), 6.5f, hex(0x000000, 0x55), 24);
+    dl->AddCircleFilled(c, 6.5f, t.bg, 24);
+    dl->AddCircle(c, 6.5f, t.ink, 24, 1.5f);
+    return changed;
+}
+
+// Off = recessed track + ink knob. On = ink track + onPrimary knob.
+// Knob travels with motion::PLACE (ctl::switchKnob's spring). Track color eases BASE.
+bool inkSwitch(ImDrawList* dl, const char* id, ImVec2 pos, bool& on, bool modal) {
+    using namespace upix::ui;
+    const auto& t = geist::tokens();
+    pos = snapPt(pos);
+    const ImVec2 sz(44.0f, 26.0f);
+    bool toggled = false;
+    if (!modal) {
+        ImGui::SetCursorScreenPos(pos);
+        if (ImGui::InvisibleButton(id, sz)) {
+            on = !on;
+            toggled = true;
+        }
+        if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
+    ImGui::PushID(id);
+    const float k = followSpring(ImGui::GetID("knob"), on ? 1.0f : 0.0f, motion::PLACE);
+    const float c = easeTo(ImGui::GetID("col"), on ? 1.0f : 0.0f, motion::BASE);
+    ImGui::PopID();
+
+    const ImU32 track = motion::mix(t.recessed, t.ink, c);
+    const ImVec2 p1(pos.x + sz.x, pos.y + sz.y);
+    dl->AddRectFilled(pos, p1, track, 13.0f);
+    dl->AddRect(pos, p1, motion::mix(t.outline, t.ink, c), 13.0f, 0, hairlinePx());
+    const float knob = 20.0f;
+    const float kx = pos.x + 3.0f + k * (sz.x - 6.0f - knob);
+    const ImVec2 kc = snapPt(kx + knob * 0.5f, pos.y + sz.y * 0.5f);
+    dl->AddCircleFilled(ImVec2(kc.x, kc.y + 1.0f), 10.0f, hex(0x000000, 0x40), 20);
+    dl->AddCircleFilled(kc, 10.0f, motion::mix(t.ink, t.onPrimary, c), 24);
+    return toggled;
+}
+
+// ctl::primaryCta draws PrimaryHover and then paints Primary over it, because
+// `f` stays Primary while hovered — the hover never shows. Same contract,
+// fixed: solid ink, hover PrimaryHover INSTANT, press PrimaryPress + sink of
+// 1 logical px snapped onto the pixel grid (a whole physical pixel). Never scales.
+bool inkCta(ImDrawList* dl, const char* id, ImFont* font, const char* label, ImVec2 p0, ImVec2 p1, bool modal) {
+    using namespace upix::ui;
+    const auto& t = geist::tokens();
+    bool fired = false;
+    bool held = false;
+    bool hov = false;
+    if (!modal) {
+        ImGui::SetCursorScreenPos(p0);
+        fired = ImGui::InvisibleButton(id, ImVec2(p1.x - p0.x, p1.y - p0.y));
+        hov = ImGui::IsItemHovered();
+        held = ImGui::IsItemActive();
+        if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
+    ImVec2 a = p0;
+    ImVec2 b = p1;
+    if (held) {
+        a.y += 1.0f;
+        b.y += 1.0f;
+    }
+    a = snapPt(a);
+    b = snapPt(b);
+    const ImU32 fill = held ? t.primaryPress : (hov ? t.primaryHover : t.primary);
+    dl->AddRectFilled(ImVec2(a.x, a.y + 1.0f), ImVec2(b.x, b.y + 1.0f), hex(0x000000, 0x4D), geist::radius::MD);
+    dl->AddRectFilled(a, b, fill, geist::radius::MD);
+    drawTextCentered(dl, font, geist::type::BODY, a, b, t.onPrimary, label);
+    return fired;
+}
+
+bool quietButton(ImDrawList* dl, const char* id, ImFont* font, ImVec2 p0, ImVec2 sz, const char* label, const char* icon, bool modal) {
+    using namespace upix::ui;
+    const auto& t = geist::tokens();
+    bool fired = false;
+    bool hov = false;
+    bool held = false;
+    if (!modal) {
+        ImGui::SetCursorScreenPos(p0);
+        fired = ImGui::InvisibleButton(id, sz);
+        hov = ImGui::IsItemHovered();
+        held = ImGui::IsItemActive();
+        if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
+    ImGui::PushID(id);
+    float sc = motion::pressScale(ImGui::GetID("press"), held, motion::PRESS_SCALE);
+    ImGui::PopID();
+    if (std::fabs(sc - 1.0f) < 0.001f) sc = 1.0f;
+    const ImVec2 c(p0.x + sz.x * 0.5f, p0.y + sz.y * 0.5f);
+    const ImVec2 a(c.x + (p0.x - c.x) * sc, c.y + (p0.y - c.y) * sc);
+    const ImVec2 b(c.x + (p0.x + sz.x - c.x) * sc, c.y + (p0.y + sz.y - c.y) * sc);
+    dl->AddRectFilled(a, b, hov ? t.high : t.container, 8.0f);
+    dl->AddRect(a, b, t.outline, 8.0f, 0, hairlinePx());
+
+    const bool hasIcon = icon && icon[0] != '\0';
+    const float iconPx = hasIcon ? 14.0f : 0.0f;
+    const float textPx = 12.0f;
+    const ImVec2 ts = calcText(font, textPx, label);
+    const float gap = hasIcon ? 8.0f : 0.0f;
+    const float total = iconPx + gap + ts.x;
+    const float start = c.x - total * 0.5f * sc;
+    if (hasIcon) drawIcon(dl, icon, ImVec2(start + iconPx * 0.5f * sc, c.y), iconPx * sc, t.mute);
+    drawText(dl, font, textPx * sc, ImVec2(start + (iconPx + gap) * sc, c.y - ts.y * 0.5f * sc), t.mute, label);
+    return fired;
+}
+
+bool iconPlate(ImDrawList* dl, const char* id, ImVec2 pos, float box, const char* icon, float iconPx, bool modal, bool raised) {
+    using namespace upix::ui;
+    const auto& t = geist::tokens();
+    bool fired = false;
+    bool hov = false;
+    bool held = false;
+    if (!modal) {
+        ImGui::SetCursorScreenPos(pos);
+        fired = ImGui::InvisibleButton(id, ImVec2(box, box));
+        hov = ImGui::IsItemHovered();
+        held = ImGui::IsItemActive();
+        if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    }
+    ImGui::PushID(id);
+    float sc = motion::pressScale(ImGui::GetID("press"), held, motion::PRESS_SCALE_ICON);
+    ImGui::PopID();
+    if (std::fabs(sc - 1.0f) < 0.001f) sc = 1.0f;
+    const ImVec2 c(pos.x + box * 0.5f, pos.y + box * 0.5f);
+    const ImVec2 a(c.x - box * 0.5f * sc, c.y - box * 0.5f * sc);
+    const ImVec2 b(c.x + box * 0.5f * sc, c.y + box * 0.5f * sc);
+    if (raised) {
+        ctl::finish(dl, a, b, hov ? ctl::Finish::RaisedHover : ctl::Finish::Raised, 6.0f);
+        dl->AddRect(a, b, t.outline, 6.0f, 0, hairlinePx());
+    } else {
+        dl->AddRectFilled(a, b, hov ? t.high : hex(0x141414, 210), 6.0f);
+        dl->AddRect(a, b, t.outline, 6.0f, 0, hairlinePx());
+    }
+    drawIcon(dl, icon, c, iconPx * sc, t.mute);
+    return fired;
+}
+
+ImU32 sceneDot(const std::string& scene) {
+    const auto& t = upix::ui::geist::tokens();
+    if (scene.find("修复") != std::string::npos) return t.sceneRestore;
+    if (scene.find("照片") != std::string::npos) return t.scenePhoto;
+    if (scene.find("动漫") != std::string::npos) return t.sceneAnime;
+    return t.sceneGeneral;
+}
+
+bool nameHasScale(const std::string& name, int scale) {
+    const std::string n = std::to_string(scale);
+    return name.find("x" + n) != std::string::npos || name.find("X" + n) != std::string::npos ||
+           name.find(n + "×") != std::string::npos;
+}
+
+void drawHudChip(ImDrawList* dl, ImFont* font, ImVec2 p0, float w, const char* text, ImU32 col) {
+    using namespace upix::ui;
+    const auto& t = geist::tokens();
+    const ImVec2 p1(p0.x + w, p0.y + 26.0f);
+    dl->AddRectFilled(p0, p1, hex(0x141414, 210), 6.0f);
+    dl->AddRect(p0, p1, t.outline, 6.0f, 0, hairlinePx());
+    drawTextCentered(dl, font, 11.0f, p0, p1, col, text);
+}
+
+} // namespace
+
+void renderWorkbench(ImDrawList* dl, ImVec2 winSize, UiViewState& ui, upix::gui::AppState& app, const upix::gui::Snapshot& snap,
+                     SDL_Window* window, DialogBridge* dlgFiles, DialogBridge* dlgFolder, DialogBridge* dlgOutDir) {
+    using namespace upix::ui;
+    const auto& t = geist::tokens();
+    const bool modal = ui.showModelPicker;
+
+    const float railW = 76.0f;
+    const float inspCol = 332.0f;
+    dl->AddRectFilled(ImVec2(railW, 0), winSize, t.bg);
+
+    const float stageX = railW;
+    const float stageW = std::max(0.0f, winSize.x - railW - inspCol);
+    const bool hasInputs = !snap.inputs.empty() || snap.job.phase != upix::gui::JobPhase::Idle;
+    const bool hasDock = snap.inputs.size() > 1 || snap.job.phase == upix::gui::JobPhase::Running ||
+                         snap.job.phase == upix::gui::JobPhase::Error;
+    const float dockBlock = hasDock ? (54.0f + 10.0f) : 0.0f;
+    const ImVec2 stageMin = snapPt(stageX + geist::space::SM, geist::space::LG);
+    const ImVec2 stageMax = snapPt(stageX + stageW - geist::space::SM, winSize.y - geist::space::LG - dockBlock);
+
+    // ---------------------------------------------------------------- stage
+    drawInsetWell(dl, stageMin, stageMax, geist::radius::LG);
 
     if (!hasInputs) {
-        // ---- Empty State (Figma Frame 4:2) ----
-        // Registration marks: inset 28px, 16x2px, #343440
-        drawRegistrationMarks(dl, stageMin, stageMax, 28.0f, 16.0f, 2.0f, pal.regMark());
+        // Empty content is instant — no fade, no rise. Marks stay at the
+        // hairline color so they read as crop registration, not chrome.
+        drawRegistrationMarks(dl, stageMin, stageMax, 28.0f, 16.0f, 2.0f, t.outline);
 
-        ImVec2 center = snapPt((stageMin.x + stageMax.x) * 0.5f, (stageMin.y + stageMax.y) * 0.5f);
+        const ImVec2 center((stageMin.x + stageMax.x) * 0.5f, (stageMin.y + stageMax.y) * 0.5f);
+        drawIcon(dl, "zoom-in", ImVec2(center.x, center.y - 22.0f), 32.0f, t.mute, 1.8f);
+        drawTextCentered(dl, ui.fontSans, 15.0f, ImVec2(stageMin.x, center.y + 4.0f), ImVec2(stageMax.x, center.y + 28.0f), t.mute,
+                         "拖入图片，或按 Ctrl+V 粘贴");
 
-        // Figma 7:6: top 352px (center - 52px), 32x32 zoom-in icon, gap 14px, 15px weight 500 text #a2a2ac
-        drawIcon(dl, "zoom-in", ImVec2(center.x, center.y - 36.0f), 32.0f, pal.muted(), 1.8f);
-        drawTextCentered(dl, ui.fontSans, 15.0f,
-                         ImVec2(stageMin.x, center.y - 6.0f), ImVec2(stageMax.x, center.y + 20.0f),
-                         pal.muted(), "拖入图片，或按 Ctrl+V 粘贴");
-
-        // Figma 12:366: 162x32px button at top:732px (44px above stage bottom), #1c1c21 fill, #2d2d34 border, radius 8px, 12px #a2a2ac
-        ImVec2 folderBtnSz(162.0f, 32.0f);
-        ImVec2 btnPos = snapPt(center.x - folderBtnSz.x * 0.5f, stageMax.y - 44.0f - folderBtnSz.y);
-        if (pillButton(dl, "##pick_folder", btnPos, folderBtnSz, "选择文件夹批量处理", "folder-open", pal, ui.fontSans, false, 8.0f, 12.0f, true)) {
+        const ImVec2 btnSz(162.0f, 32.0f);
+        const ImVec2 btnPos = snapPt(center.x - btnSz.x * 0.5f, stageMax.y - 36.0f - btnSz.y);
+        if (quietButton(dl, "##pick_folder", ui.fontSans, btnPos, btnSz, "选择文件夹批量处理", "folder-open", modal)) {
             SDL_ShowOpenFolderDialog(onFileDialog, dlgFolder, window, nullptr, false);
         }
-
-        // Click on the rest of the stage opens file picker
-        ImGui::SetCursorScreenPos(stageMin);
-        if (ImGui::InvisibleButton("##stage_empty_click", ImVec2(stageMax.x - stageMin.x, btnPos.y - stageMin.y - 8.0f))) {
-            SDL_ShowOpenFileDialog(onFileDialog, dlgFiles, window, nullptr, 0, nullptr, true);
+        if (!modal) {
+            ImGui::SetCursorScreenPos(stageMin);
+            const float hitH = std::max(1.0f, btnPos.y - stageMin.y - 8.0f);
+            if (ImGui::InvisibleButton("##stage_empty", ImVec2(stageMax.x - stageMin.x, hitH))) {
+                SDL_ShowOpenFileDialog(onFileDialog, dlgFiles, window, nullptr, 0, nullptr, true);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         }
     } else {
-        // ---- Active Stage (Compare / Running / Error) ----
-        float telemH = 40.0f;
-        ImVec2 viewMin = snapPt(stageMin.x + 1.0f, stageMin.y + 1.0f);
-        ImVec2 viewMax = snapPt(stageMax.x - 1.0f, stageMax.y - telemH);
-
+        const float telemH = 40.0f;
+        const ImVec2 viewMin = snapPt(stageMin.x + 1.0f, stageMin.y + 1.0f);
+        const ImVec2 viewMax = snapPt(stageMax.x - 1.0f, stageMax.y - telemH);
         dl->PushClipRect(viewMin, viewMax, true);
 
-        bool isCompare = (snap.job.phase == upix::gui::JobPhase::Done);
+        const bool isCompare = snap.job.phase == upix::gui::JobPhase::Done;
         if (isCompare) {
-            float splitX = snapPx(viewMin.x + (viewMax.x - viewMin.x) * ui.splitRatio);
-
-            // Left: Before (1x)
+            const float splitX = snapPx(viewMin.x + (viewMax.x - viewMin.x) * ui.splitRatio);
             dl->PushClipRect(viewMin, ImVec2(splitX, viewMax.y), true);
             drawStageArtwork(dl, viewMin, viewMax, false, ui);
             dl->PopClipRect();
-
-            // Right: After (4x)
             dl->PushClipRect(ImVec2(splitX, viewMin.y), viewMax, true);
             drawStageArtwork(dl, viewMin, viewMax, true, ui);
             dl->PopClipRect();
 
-            // 1px vertical split line (#ececeee5) + 28x28 rounded square handle (Figma Frame 71:1129)
-            dl->AddRectFilled(ImVec2(splitX, viewMin.y), ImVec2(splitX + hairlinePx(), viewMax.y), pal.withAlpha(pal.onSurface(), 0.90f));
-            ImVec2 hCenter = snapPt(splitX, (viewMin.y + viewMax.y) * 0.5f);
-            ImVec2 h0(hCenter.x - 14.0f, hCenter.y - 14.0f);
-            ImVec2 h1(hCenter.x + 14.0f, hCenter.y + 14.0f);
-            drawBox(dl, h0, h1, rgba(20, 20, 24, 215), hex(0x2C2C35), 7.0f);
-            ImVec2 cL[3] = {ImVec2(hCenter.x - 3.0f, hCenter.y - 3.5f), ImVec2(hCenter.x - 6.5f, hCenter.y), ImVec2(hCenter.x - 3.0f, hCenter.y + 3.5f)};
-            ImVec2 cR[3] = {ImVec2(hCenter.x + 3.0f, hCenter.y - 3.5f), ImVec2(hCenter.x + 6.5f, hCenter.y), ImVec2(hCenter.x + 3.0f, hCenter.y + 3.5f)};
-            dl->AddPolyline(cL, 3, pal.muted(), ImDrawFlags_None, 1.4f);
-            dl->AddPolyline(cR, 3, pal.muted(), ImDrawFlags_None, 1.4f);
+            dl->AddRectFilled(ImVec2(splitX, viewMin.y), ImVec2(splitX + hairlinePx(), viewMax.y), t.ink);
+            const ImVec2 hC = snapPt(splitX, (viewMin.y + viewMax.y) * 0.5f);
+            const ImVec2 h0(hC.x - 14.0f, hC.y - 14.0f);
+            const ImVec2 h1(hC.x + 14.0f, hC.y + 14.0f);
+            dl->AddRectFilled(h0, h1, hex(0x141414, 220), 6.0f);
+            dl->AddRect(h0, h1, t.outline, 6.0f, 0, hairlinePx());
+            ImVec2 cL[3] = {ImVec2(hC.x - 3.0f, hC.y - 3.5f), ImVec2(hC.x - 6.5f, hC.y), ImVec2(hC.x - 3.0f, hC.y + 3.5f)};
+            ImVec2 cR[3] = {ImVec2(hC.x + 3.0f, hC.y - 3.5f), ImVec2(hC.x + 6.5f, hC.y), ImVec2(hC.x + 3.0f, hC.y + 3.5f)};
+            dl->AddPolyline(cL, 3, t.mute, ImDrawFlags_None, 1.4f);
+            dl->AddPolyline(cR, 3, t.mute, ImDrawFlags_None, 1.4f);
 
-            ImGui::SetCursorScreenPos(ImVec2(splitX - 16.0f, viewMin.y));
-            ImGui::InvisibleButton("##split_drag", ImVec2(32.0f, viewMax.y - viewMin.y));
-            if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
-                ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+            if (!modal) {
+                ImGui::SetCursorScreenPos(ImVec2(splitX - 16.0f, viewMin.y));
+                ImGui::InvisibleButton("##split_drag", ImVec2(32.0f, std::max(1.0f, viewMax.y - viewMin.y)));
+                if (ImGui::IsItemHovered() || ImGui::IsItemActive()) ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+                if (ImGui::IsItemActive()) {
+                    ui.splitRatio = std::clamp((ImGui::GetIO().MousePos.x - viewMin.x) / std::max(1.0f, viewMax.x - viewMin.x), 0.05f, 0.95f);
+                }
             }
-            if (ImGui::IsItemActive()) {
-                ui.splitRatio = std::clamp((ImGui::GetIO().MousePos.x - viewMin.x) / (viewMax.x - viewMin.x), 0.05f, 0.95f);
+
+            drawHudChip(dl, ui.fontMono, snapPt(viewMin.x + 14.0f, viewMin.y + 14.0f), 77.0f, "原图 · 1×", t.mute);
+            int scale = 4;
+            for (const auto& m : snap.installed) {
+                if (m.name == snap.model) scale = m.scale;
             }
-
-            // Optical HUD chips (Figma 75:2993 & 75:2995: 77x26px, #141418c7, border #2c2c35, radius 6px, 11px JetBrains Mono)
-            ImVec2 chipL0 = snapPt(viewMin.x + 14.0f, viewMin.y + 14.0f);
-            drawBox(dl, chipL0, ImVec2(chipL0.x + 77.0f, chipL0.y + 26.0f), rgba(20, 20, 24, 199), hex(0x2C2C35), 6.0f);
-            drawTextCentered(dl, ui.fontMono, 11.0f, chipL0, ImVec2(chipL0.x + 77.0f, chipL0.y + 26.0f), pal.muted(), "原图 · 1×");
-
-            ImVec2 close0 = snapPt(viewMax.x - 14.0f - 26.0f, viewMin.y + 14.0f);
-            ImVec2 chipR0 = snapPt(close0.x - 10.0f - 77.0f, viewMin.y + 14.0f);
-            drawBox(dl, chipR0, ImVec2(chipR0.x + 77.0f, chipR0.y + 26.0f), rgba(20, 20, 24, 199), hex(0x2C2C35), 6.0f);
-            drawTextCentered(dl, ui.fontMono, 11.0f, chipR0, ImVec2(chipR0.x + 77.0f, chipR0.y + 26.0f), pal.onSurface(), "超分 · 4×");
-
-            ImGui::SetCursorScreenPos(close0);
-            if (ImGui::InvisibleButton("##close_stage_done", ImVec2(26.0f, 26.0f))) {
-                app.clearInputs();
-            }
-            drawBox(dl, close0, ImVec2(close0.x + 26.0f, close0.y + 26.0f), rgba(20, 20, 24, 199), hex(0x2C2C35), 6.0f);
-            drawIcon(dl, "x", ImVec2(close0.x + 13.0f, close0.y + 13.0f), 12.0f, pal.muted());
+            const std::string after = std::format("超分 · {}×", scale);
+            const ImVec2 close0 = snapPt(viewMax.x - 14.0f - 28.0f, viewMin.y + 14.0f);
+            drawHudChip(dl, ui.fontMono, snapPt(close0.x - 10.0f - 77.0f, viewMin.y + 14.0f), 77.0f, after.c_str(), t.ink);
+            if (iconPlate(dl, "##close_stage_done", close0, 28.0f, "x", 13.0f, modal, false)) app.clearInputs();
         } else {
-            // Running / Idle / Error plate
             drawStageArtwork(dl, viewMin, viewMax, false, ui);
-
             if (snap.job.phase == upix::gui::JobPhase::Running) {
-                float scanY = snapPx(viewMin.y + (viewMax.y - viewMin.y) * (snap.job.percent / 100.0f));
-                dl->AddRectFilled(ImVec2(viewMin.x, scanY), ImVec2(viewMax.x, scanY + hairlinePx()), pal.withAlpha(pal.primary(), 0.55f));
+                const float scanY = snapPx(viewMin.y + (viewMax.y - viewMin.y) * (snap.job.percent / 100.0f));
+                dl->AddRectFilled(ImVec2(viewMin.x, scanY), ImVec2(viewMax.x, scanY + hairlinePx()), t.accent);
             }
-
-            ImVec2 close0 = snapPt(viewMax.x - 14.0f - 28.0f, viewMin.y + 14.0f);
-            ImGui::SetCursorScreenPos(close0);
-            if (ImGui::InvisibleButton("##close_stage_run", ImVec2(28.0f, 28.0f))) {
-                app.clearInputs();
-            }
-            drawBox(dl, close0, ImVec2(close0.x + 28.0f, close0.y + 28.0f), rgba(20, 20, 24, 199), hex(0x2C2C35), 6.0f);
-            drawIcon(dl, "x", ImVec2(close0.x + 14.0f, close0.y + 14.0f), 13.0f, pal.muted());
+            const ImVec2 close0 = snapPt(viewMax.x - 14.0f - 28.0f, viewMin.y + 14.0f);
+            if (iconPlate(dl, "##close_stage_run", close0, 28.0f, "x", 13.0f, modal, false)) app.clearInputs();
         }
         dl->PopClipRect();
 
-        // ---- Bottom 40px Stage Telemetry Bar (Figma 83:3540 & 83:3528: #18181c, border #26262e) ----
-        ImVec2 bar0 = snapPt(stageMin.x + 1.0f, stageMax.y - telemH);
-        ImVec2 bar1 = snapPt(stageMax.x - 1.0f, stageMax.y - 1.0f);
-        dl->AddRectFilled(bar0, bar1, pal.surface(), 11.0f, ImDrawFlags_RoundCornersBottom);
-        dl->AddRectFilled(ImVec2(stageMin.x + 1.0f, bar0.y), ImVec2(stageMax.x - 1.0f, bar0.y + hairlinePx()), hex(0x26262E));
-
-        float cy = snapPx((bar0.y + bar1.y) * 0.5f);
+        const ImVec2 bar0 = snapPt(stageMin.x + 1.0f, stageMax.y - telemH);
+        const ImVec2 bar1 = snapPt(stageMax.x - 1.0f, stageMax.y - 1.0f);
+        dl->AddRectFilled(bar0, bar1, t.surface, 11.0f, ImDrawFlags_RoundCornersBottom);
+        dl->AddRectFilled(ImVec2(bar0.x, bar0.y), ImVec2(bar1.x, bar0.y + hairlinePx()), t.outline);
+        const float cy = snapPx((bar0.y + bar1.y) * 0.5f);
 
         if (snap.job.phase == upix::gui::JobPhase::Running) {
-            dl->AddCircleFilled(ImVec2(bar0.x + 18.0f, cy), 3.0f, pal.primary());
-
-            drawText(dl, ui.fontMono, 12.0f, ImVec2(bar0.x + 30.0f, cy - 7.5f), pal.onSurface(), snap.job.current_file.c_str());
-            ImVec2 csz = calcText(ui.fontMono, 12.0f, snap.job.current_file.c_str());
-
-            std::string tileMeta = std::format("分块 {}/{} · 剩余 ~0.3s",
-                                               snap.job.tiles_done > 0 ? snap.job.tiles_done : 18,
-                                               snap.job.tiles_total > 0 ? snap.job.tiles_total : 24);
-            drawText(dl, ui.fontMono, 11.0f, ImVec2(bar0.x + 42.0f + csz.x, cy - 7.0f), pal.dim(), tileMeta.c_str());
-
-            // Right: 148x4px inline progress track (#121216) + "75%" (11px #7fdac9)
-            std::string pctStr = std::format("{}%", snap.job.percent);
-            ImVec2 psz = calcText(ui.fontMono, 11.0f, pctStr.c_str());
-            drawText(dl, ui.fontMono, 11.0f, ImVec2(bar1.x - 14.0f - psz.x, cy - 7.0f), pal.primary(), pctStr.c_str());
-
-            float trkW = 148.0f;
-            float trkX = snapPx(bar1.x - 24.0f - psz.x - trkW);
-            dl->AddRectFilled(ImVec2(trkX, cy - 2.0f), ImVec2(trkX + trkW, cy + 2.0f), hex(0x121216), 2.0f);
-            dl->AddRectFilled(ImVec2(trkX, cy - 2.0f), ImVec2(trkX + trkW * (snap.job.percent / 100.0f), cy + 2.0f), pal.primary(), 2.0f);
-        } else if (snap.job.phase == upix::gui::JobPhase::Done) {
-            dl->AddCircleFilled(ImVec2(bar0.x + 19.0f, cy), 3.0f, pal.primary());
-
-            ImVec2 t0 = snapPt(bar0.x + 32.0f, cy - 10.0f);
-            ImVec2 t1 = snapPt(t0.x + 58.0f, cy + 10.0f);
-            drawBox(dl, t0, t1, pal.primaryDimBg(), pal.primaryDimBorder(), 4.0f);
-            drawTextCentered(dl, ui.fontMono, 10.0f, t0, t1, pal.primary(), "4× · PNG");
-
-            std::string resStr = std::format("{}×{} → {}×{}", snap.job.in_w, snap.job.in_h, snap.job.out_w, snap.job.out_h);
-            drawText(dl, ui.fontMono, 12.0f, ImVec2(t1.x + 10.0f, cy - 7.5f), pal.onSurface(), resStr.c_str());
-            ImVec2 rsz = calcText(ui.fontMono, 12.0f, resStr.c_str());
-
-            std::string metaStr = std::format("{:.2f}s · {} · {}", snap.job.elapsed_sec, snap.job.out_size_str, snap.model);
-            drawText(dl, ui.fontMono, 11.0f, ImVec2(t1.x + 20.0f + rsz.x, cy - 7.0f), pal.dim(), metaStr.c_str());
-
-            drawText(dl, ui.fontSans, 11.0f, ImVec2(bar1.x - 134.0f, cy - 7.5f), hex(0x8E8E9A), "定位文件");
-            ImVec2 open0 = snapPt(bar1.x - 76.0f, cy - 12.0f);
-            drawBox(dl, open0, ImVec2(open0.x + 64.0f, open0.y + 24.0f), hex(0x24242C), hex(0x343440), 4.0f);
-            drawTextCentered(dl, ui.fontSans, 11.0f, open0, ImVec2(open0.x + 64.0f, open0.y + 24.0f), pal.onSurface(), "打开图像");
-        } else if (snap.job.phase == upix::gui::JobPhase::Error) {
-            dl->AddCircleFilled(ImVec2(bar0.x + 19.0f, cy), 3.0f, pal.error());
-
-            ImVec2 t0 = snapPt(bar0.x + 32.0f, cy - 10.0f);
-            ImVec2 t1 = snapPt(t0.x + 42.0f, cy + 10.0f);
-            drawBox(dl, t0, t1, pal.errorDimBg(), pal.errorDimBorder(), 4.0f);
-            drawTextCentered(dl, ui.fontMono, 10.0f, t0, t1, pal.error(), "VRAM");
-
-            drawText(dl, ui.fontSans, 12.0f, ImVec2(t1.x + 10.0f, cy - 8.0f), pal.onSurface(), snap.job.message.c_str());
-            ImVec2 msz = calcText(ui.fontSans, 12.0f, snap.job.message.c_str());
-
-            drawText(dl, ui.fontMono, 11.0f, ImVec2(t1.x + 18.0f + msz.x, cy - 7.0f), pal.dim(), snap.job.diag_detail.c_str());
-
-            drawText(dl, ui.fontSans, 11.0f, ImVec2(bar1.x - 94.0f, cy - 7.5f), hex(0x8E8E9A), "跳过");
-            if (pillButton(dl, "##retry_job", ImVec2(bar1.x - 56.0f, cy - 12.0f), ImVec2(44.0f, 24.0f), "重试", "", pal, ui.fontSans, false, 4.0f, 11.0f)) {
-                app.startJob();
+            dl->AddCircleFilled(ImVec2(bar0.x + 16.0f, cy), 3.0f, t.accent);
+            const float textX = bar0.x + 28.0f;
+            drawText(dl, ui.fontMono, 12.0f, ImVec2(textX, cy - 7.5f), t.ink, snap.job.current_file.c_str());
+            const ImVec2 csz = calcText(ui.fontMono, 12.0f, snap.job.current_file.c_str());
+            std::string tileMeta;
+            if (snap.job.tiles_total > 0) {
+                tileMeta = std::format("分块 {}/{}", snap.job.tiles_done, snap.job.tiles_total);
             }
+            if (snap.job.eta_sec > 0) {
+                if (!tileMeta.empty()) tileMeta += " · ";
+                tileMeta += std::format("剩余 ~{}s", snap.job.eta_sec);
+            }
+            if (!tileMeta.empty()) {
+                drawText(dl, ui.fontMono, 11.0f, ImVec2(textX + csz.x + 10.0f, cy - 7.0f), t.mute, tileMeta.c_str());
+            }
+
+            const std::string pctStr = std::format("{}%", snap.job.percent);
+            const ImVec2 psz = calcText(ui.fontMono, 11.0f, pctStr.c_str());
+            const float pctX = bar1.x - 14.0f - psz.x;
+            drawText(dl, ui.fontMono, 11.0f, ImVec2(pctX, cy - 7.0f), t.ink, pctStr.c_str());
+            const float trkW = 148.0f;
+            const float trkX = snapPx(pctX - 10.0f - trkW);
+            const float frac = std::clamp(snap.job.percent / 100.0f, 0.0f, 1.0f);
+            const float fillW = followSpring(ImGui::GetID("job-progress"), frac * trkW, motion::SpringParams{180.0f, 26.0f});
+            dl->AddRectFilled(ImVec2(trkX, cy - 2.0f), ImVec2(trkX + trkW, cy + 2.0f), t.recessed, 2.0f);
+            dl->AddRectFilled(ImVec2(trkX, cy - 2.0f), ImVec2(trkX + std::clamp(fillW, 0.0f, trkW), cy + 2.0f), t.accent, 2.0f);
+        } else if (snap.job.phase == upix::gui::JobPhase::Done) {
+            dl->AddCircleFilled(ImVec2(bar0.x + 16.0f, cy), 3.0f, t.accent);
+            int scale = 4;
+            for (const auto& m : snap.installed) {
+                if (m.name == snap.model) scale = m.scale;
+            }
+            const std::string fmtLabel = snap.format.empty() ? "PNG" : snap.format;
+            const std::string badge = std::format("{}× · {}", scale, fmtLabel == "png" ? "PNG" : (fmtLabel == "jpg" ? "JPG" : (fmtLabel == "webp" ? "WebP" : (fmtLabel == "avif" ? "AVIF" : "PNG"))));
+            const ImVec2 bsz = calcText(ui.fontMono, 10.0f, badge.c_str());
+            const ImVec2 b0 = snapPt(bar0.x + 28.0f, cy - 10.0f);
+            const ImVec2 b1 = snapPt(b0.x + bsz.x + 12.0f, cy + 10.0f);
+            dl->AddRectFilled(b0, b1, t.accentSoft, 4.0f);
+            dl->AddRect(b0, b1, t.accentBorder, 4.0f, 0, hairlinePx());
+            drawTextCentered(dl, ui.fontMono, 10.0f, b0, b1, t.accent, badge.c_str());
+
+            const std::string resStr = std::format("{}×{} → {}×{}", snap.job.in_w, snap.job.in_h, snap.job.out_w, snap.job.out_h);
+            drawText(dl, ui.fontMono, 12.0f, ImVec2(b1.x + 10.0f, cy - 7.5f), t.ink, resStr.c_str());
+            const ImVec2 rsz = calcText(ui.fontMono, 12.0f, resStr.c_str());
+            const std::string metaStr = std::format("{:.2f}s · {} · {}", snap.job.elapsed_sec, snap.job.out_size_str, snap.model);
+            drawText(dl, ui.fontMono, 11.0f, ImVec2(b1.x + 18.0f + rsz.x, cy - 7.0f), t.mute, metaStr.c_str());
+
+            drawText(dl, ui.fontSans, 11.0f, ImVec2(bar1.x - 148.0f, cy - 7.0f), t.mute, "定位文件");
+            const ImVec2 open0 = snapPt(bar1.x - 86.0f, cy - 12.0f);
+            dl->AddRectFilled(open0, ImVec2(open0.x + 72.0f, open0.y + 24.0f), t.container, 6.0f);
+            dl->AddRect(open0, ImVec2(open0.x + 72.0f, open0.y + 24.0f), t.outline, 6.0f, 0, hairlinePx());
+            drawTextCentered(dl, ui.fontSans, 11.0f, open0, ImVec2(open0.x + 72.0f, open0.y + 24.0f), t.body, "打开图像");
+        } else if (snap.job.phase == upix::gui::JobPhase::Error) {
+            dl->AddCircleFilled(ImVec2(bar0.x + 16.0f, cy), 3.0f, t.error);
+            const ImVec2 e0 = snapPt(bar0.x + 28.0f, cy - 10.0f);
+            const ImVec2 e1 = snapPt(e0.x + 36.0f, cy + 10.0f);
+            dl->AddRectFilled(e0, e1, t.errorSoft, 4.0f);
+            dl->AddRect(e0, e1, t.errorBorder, 4.0f, 0, hairlinePx());
+            drawTextCentered(dl, ui.fontMono, 10.0f, e0, e1, t.error, "ERR");
+            drawText(dl, ui.fontSans, 12.0f, ImVec2(e1.x + 10.0f, cy - 8.0f), t.ink, snap.job.message.c_str());
+            const ImVec2 msz = calcText(ui.fontSans, 12.0f, snap.job.message.c_str());
+            drawText(dl, ui.fontMono, 11.0f, ImVec2(e1.x + 18.0f + msz.x, cy - 7.0f), t.mute, snap.job.diag_detail.c_str());
+            const ImVec2 retry0 = snapPt(bar1.x - 60.0f, cy - 12.0f);
+            if (quietButton(dl, "##retry_job", ui.fontSans, retry0, ImVec2(48.0f, 24.0f), "重试", "", modal)) app.startJob();
         } else {
-            std::string readyStr = std::format("已就绪 · {} 项输入待处理", snap.inputs.size());
-            drawText(dl, ui.fontSans, 12.0f, ImVec2(bar0.x + 16.0f, cy - 8.0f), pal.muted(), readyStr.c_str());
+            const std::string ready = std::format("已就绪 · {} 项输入待处理", snap.inputs.size());
+            drawText(dl, ui.fontSans, 12.0f, ImVec2(bar0.x + 16.0f, cy - 8.0f), t.mute, ready.c_str());
         }
     }
 
-    // ---- Minimal Filmstrip Dock (880x54: pure 40x40 thumbnails + bottom status hairline, no text clutter) ----
     if (hasDock) {
-        ImVec2 dock0 = snapPt(stageMin.x, stageMax.y + 10.0f);
-        ImVec2 dock1 = snapPt(stageMax.x, stageMax.y + 10.0f + dockBarH);
-        drawBox(dl, dock0, dock1, pal.surface(), hex(0x26262E), 10.0f);
+        const ImVec2 dock0 = snapPt(stageMin.x, stageMax.y + 10.0f);
+        const ImVec2 dock1 = snapPt(stageMax.x, stageMax.y + 10.0f + 54.0f);
+        ctl::finish(dl, dock0, dock1, ctl::Finish::Card, geist::radius::LG);
 
-        float cx = dock0.x + 8.0f;
-        float cy = dock0.y + 7.0f;
         size_t doneCnt = 0;
         for (const auto& it : snap.inputs) {
             if (it.status_kind == 2) ++doneCnt;
         }
-        for (size_t i = 0; i < snap.inputs.size() && i < 16; ++i) {
+        const std::string cntText = std::format("{} / {}", doneCnt, snap.inputs.size());
+        const ImVec2 cntSz = calcText(ui.fontMono, 11.0f, cntText.c_str());
+        const ImVec2 add0 = snapPt(dock1.x - 8.0f - 28.0f, dock0.y + 13.0f);
+        const float divX = snapPx(add0.x - 10.0f);
+        drawText(dl, ui.fontMono, 11.0f, ImVec2(divX - 10.0f - cntSz.x, dock0.y + 19.5f), t.mute, cntText.c_str());
+        dl->AddRectFilled(ImVec2(divX, dock0.y + 18.0f), ImVec2(divX + hairlinePx(), dock0.y + 36.0f), t.outline);
+
+        const float thumbsRight = divX - 10.0f - cntSz.x - 8.0f;
+        dl->PushClipRect(ImVec2(dock0.x + 6.0f, dock0.y), ImVec2(thumbsRight, dock1.y), true);
+        float cx = dock0.x + 8.0f;
+        const float ty = dock0.y + 7.0f;
+        for (size_t i = 0; i < snap.inputs.size(); ++i) {
             const auto& item = snap.inputs[i];
-            ImVec2 th0 = snapPt(cx, cy);
-            ImVec2 th1 = snapPt(cx + 40.0f, cy + 40.0f);
-
+            const ImVec2 th0 = snapPt(cx, ty);
+            const ImVec2 th1 = snapPt(cx + 40.0f, ty + 40.0f);
+            const bool hot = ctl::mouseIn(th0, th1);
             drawMiniThumb(dl, th0, th1, ui, 6.0f, i);
-
-            if (item.status_kind == 0) { // queued
-                dl->AddRectFilled(th0, th1, rgba(16, 16, 20, 145), 6.0f);
-                dl->AddRect(th0, th1, hex(0x25252D), 6.0f, 0, hairlinePx());
-            } else if (item.status_kind == 1) { // running (active glow border + bottom progress bar)
-                dl->AddRect(th0, th1, pal.primary(), 6.0f, 0, hairlinePx() * 1.5f);
-                float progW = std::clamp(snap.job.percent / 100.0f, 0.08f, 1.0f) * 32.0f;
-                dl->AddRectFilled(snapPt(th0.x + 4.0f, th1.y - 3.5f), snapPt(th0.x + 4.0f + 32.0f, th1.y - 1.5f), rgba(14, 14, 18, 200), 1.0f);
-                dl->AddRectFilled(snapPt(th0.x + 4.0f, th1.y - 3.5f), snapPt(th0.x + 4.0f + progW, th1.y - 1.5f), pal.primary(), 1.0f);
-            } else if (item.status_kind == 2) { // done (subtle frame + bottom teal accent line)
-                dl->AddRect(th0, th1, hex(0x2E3836), 6.0f, 0, hairlinePx());
-                dl->AddRectFilled(snapPt(th0.x + 10.0f, th1.y - 2.5f), snapPt(th1.x - 10.0f, th1.y - 1.0f), pal.primary(), 1.0f);
-            } else if (item.status_kind == 3) { // error (coral border + bottom error bar)
-                dl->AddRectFilled(th0, th1, rgba(35, 16, 18, 120), 6.0f);
-                dl->AddRect(th0, th1, pal.error(), 6.0f, 0, hairlinePx() * 1.5f);
-                dl->AddRectFilled(snapPt(th0.x + 8.0f, th1.y - 3.0f), snapPt(th1.x - 8.0f, th1.y - 1.0f), pal.error(), 1.0f);
+            if (item.status_kind == 0) dl->AddRectFilled(th0, th1, hex(0x000000, 90), 6.0f);
+            if (item.status_kind == 3) dl->AddRectFilled(th0, th1, t.errorSoft, 6.0f);
+            if (hot) dl->AddRectFilled(th0, th1, hex(0xFFFFFF, 0x14), 6.0f);
+            ImU32 stroke = t.outline;
+            if (item.status_kind == 1) stroke = t.accent;
+            else if (item.status_kind == 3) stroke = t.error;
+            dl->AddRect(th0, th1, stroke, 6.0f, 0, hairlinePx());
+            if (item.status_kind == 1) {
+                const float progW = std::clamp(snap.job.percent / 100.0f, 0.08f, 1.0f) * 32.0f;
+                dl->AddRectFilled(snapPt(th0.x + 4.0f, th1.y - 3.0f), snapPt(th0.x + 4.0f + progW, th1.y - 1.5f), t.accent, 1.0f);
             }
-
-            cx += 40.0f + 6.0f;
+            cx += 46.0f;
         }
-
-        // Right counter ("2 / 5") + 1x18px divider + 28x28 "+" button
-        std::string cntText = std::format("{} / {}", doneCnt, snap.inputs.size());
-        ImVec2 cntSz = calcText(ui.fontMono, 11.0f, cntText.c_str());
-        drawText(dl, ui.fontMono, 11.0f, ImVec2(dock1.x - 58.0f - cntSz.x, dock0.y + 19.5f), pal.dim(), cntText.c_str());
-        dl->AddRectFilled(snapPt(dock1.x - 46.0f, dock0.y + 18.0f), snapPt(dock1.x - 46.0f + hairlinePx(), dock0.y + 36.0f), hex(0x26262E));
-        ImVec2 add0 = snapPt(dock1.x - 36.0f, dock0.y + 13.0f);
-        ImGui::SetCursorScreenPos(add0);
-        if (ImGui::InvisibleButton("##dock_add", ImVec2(28.0f, 28.0f))) {
+        dl->PopClipRect();
+        if (iconPlate(dl, "##dock_add", add0, 28.0f, "plus", 12.0f, modal, true)) {
             SDL_ShowOpenFileDialog(onFileDialog, dlgFiles, window, nullptr, 0, nullptr, true);
         }
-        drawBox(dl, add0, ImVec2(add0.x + 28.0f, add0.y + 28.0f), hex(0x202027), hex(0x2E2E38), 6.0f);
-        drawIcon(dl, "plus", ImVec2(add0.x + 14.0f, add0.y + 14.0f), 12.0f, pal.muted());
     }
 
-    // -----------------------------------------------------------------------
-    // 3. Right Inspector (308px fixed width) — Figma "Desktop / Inspector"
-    // Note: In Figma 4:2 & 73:1931, Inspector background is #131316 (var(--bg)) with NO left border!
-    // -----------------------------------------------------------------------
-    dl->AddRectFilled(ImVec2(inspX, 0), ImVec2(winSize.x, winSize.y), pal.bg());
+    // ------------------------------------------------------------- inspector
+    const float inspX = winSize.x - inspCol;
+    const ImVec2 card0 = snapPt(inspX + geist::space::SM, geist::space::LG);
+    const ImVec2 card1 = snapPt(winSize.x - geist::space::LG, winSize.y - geist::space::LG);
+    ctl::finish(dl, card0, card1, ctl::Finish::Card, geist::radius::LG);
 
-    float ix = snapPx(inspX + 16.0f);
-    float iw = 276.0f;
-    float iy = 16.0f;
+    const float ix = card0.x + geist::space::LG;
+    const float iw = std::max(80.0f, (card1.x - card0.x) - geist::space::LG * 2.0f);
+    const float seam = snapPx(card1.y - geist::space::LG - 44.0f - geist::space::MD);
+    float y = card0.y + geist::space::LG;
 
-    // --- Section: 模型 (Figma: 12px #a2a2ac, gap 8px/12px) ---
-    drawText(dl, ui.fontSans, 12.0f, ImVec2(ix, iy), pal.muted(), "模型");
-    iy += 24.0f;
+    auto overline = [&](const char* s) {
+        drawText(dl, ui.fontSans, geist::type::LABEL, snapPt(ix, y), t.mute, s);
+        y += calcText(ui.fontSans, geist::type::LABEL, s).y + geist::space::XS;
+    };
+    auto fieldLabel = [&](const char* s) {
+        drawText(dl, ui.fontSans, geist::type::LABEL, snapPt(ix, y), t.mute, s);
+        y += calcText(ui.fontSans, geist::type::LABEL, s).y + geist::space::XS;
+    };
 
-    // Model Picker Field (Figma: height 36px, #18181d, border #2d2d36, radius 8px)
-    ImVec2 mp0 = snapPt(ix, iy);
-    ImVec2 mp1 = snapPt(ix + iw, iy + 36.0f);
-    ImGui::SetCursorScreenPos(mp0);
-    if (ImGui::InvisibleButton("##model_picker_btn", ImVec2(iw, 36.0f))) {
-        ui.showModelPicker = !ui.showModelPicker;
-    }
-    bool mpHover = ImGui::IsItemHovered();
-    if (mpHover) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-    drawBox(dl, mp0, mp1, mpHover ? pal.container() : hex(0x18181D), ui.showModelPicker ? pal.primaryDimBorder() : hex(0x2D2D36), 8.0f);
+    dl->PushClipRect(ImVec2(card0.x + 1.0f, card0.y + 1.0f), ImVec2(card1.x - 1.0f, seam), true);
 
     std::string shortMod = snap.model;
     int modScale = 4;
-    bool modRec = true;
+    bool modRec = false;
     for (const auto& m : snap.installed) {
         if (m.name == snap.model) {
-            shortMod = m.short_name;
+            shortMod = m.short_name.empty() ? m.name : m.short_name;
             modScale = m.scale;
             modRec = m.recommended;
             break;
         }
     }
-    drawText(dl, ui.fontMono, 13.0f, ImVec2(mp0.x + 12.0f, mp0.y + 9.0f), pal.onSurface(), shortMod.c_str());
-    if (modRec) {
-        ImVec2 mtsz = calcText(ui.fontMono, 13.0f, shortMod.c_str());
-        drawText(dl, ui.fontSans, 11.0f, ImVec2(mp0.x + 18.0f + mtsz.x, mp0.y + 10.5f), pal.onSurface(), "★");
-    }
 
-    // [4×] badge (Figma: height 20px, #1c1c22, border #2e2e37, radius 4px, 11px #a2a2ac) + 14x14 chevron
-    std::string scaleBadge = std::format("{}×", modScale);
-    ImVec2 b0 = snapPt(mp1.x - 58.0f, mp0.y + 8.0f);
-    ImVec2 b1 = snapPt(mp1.x - 32.0f, mp0.y + 28.0f);
-    drawBox(dl, b0, b1, hex(0x1C1C22), hex(0x2E2E37), 4.0f);
-    drawTextCentered(dl, ui.fontMono, 11.0f, b0, b1, pal.muted(), scaleBadge.c_str());
-    drawIcon(dl, "chevron-down", ImVec2(mp1.x - 18.0f, mp0.y + 18.0f), 14.0f, pal.muted());
-    iy += 48.0f;
-
-    // --- Section: 输出 (Figma: 12px #a2a2ac) ---
-    drawText(dl, ui.fontSans, 12.0f, ImVec2(ix, iy), pal.muted(), "输出");
-    iy += 24.0f;
-    const SegmentOption fmtOpts[5] = {
-        {"跟随", ""},
-        {"PNG", "png"},
-        {"JPG", "jpg"},
-        {"WebP", "webp"},
-        {"AVIF", "avif"},
-    };
-    std::string curFmt = snap.format;
-    if (segmentedControl(dl, "##fmt_seg", ImVec2(ix, iy), ImVec2(iw, 32.0f), fmtOpts, 5, curFmt, pal, ui.fontSans, 12.0f)) {
-        app.setFormat(curFmt);
-    }
-    iy += 44.0f;
-
-    // Quality Slider ("质量" — Figma: label 14px #ececee, value 12.5px/14px JetBrains Mono #ececee)
-    if (snap.format != "png") {
-        drawText(dl, ui.fontSans, 14.0f, ImVec2(ix, iy), pal.onSurface(), "质量");
-        std::string qValStr = std::format("{}", snap.quality);
-        ImVec2 qsz = calcText(ui.fontMono, 13.0f, qValStr.c_str());
-        drawText(dl, ui.fontMono, 13.0f, ImVec2(ix + iw - qsz.x, iy + 1.0f), pal.onSurface(), qValStr.c_str());
-        iy += 26.0f;
-
-        int q = snap.quality;
-        if (qualitySlider(dl, "##q_slider", ImVec2(ix, iy), iw, q, 1, 100, pal)) {
-            app.setQuality(q);
+    overline("模型");
+    const ImVec2 mp0 = snapPt(ix, y);
+    const ImVec2 mp1 = snapPt(ix + iw, y + 36.0f);
+    auto paintTrigger = [&]() {
+        const bool hov = ctl::mouseIn(mp0, mp1);
+        ctl::finish(dl, mp0, mp1, hov ? ctl::Finish::RaisedHover : ctl::Finish::Raised, 8.0f);
+        dl->AddRect(mp0, mp1, ui.showModelPicker ? t.accent : t.outlineInput, 8.0f, 0, hairlinePx());
+        const float textMax = mp1.x - 36.0f - (nameHasScale(shortMod, modScale) ? 0.0f : 36.0f);
+        dl->PushClipRect(ImVec2(mp0.x + 10.0f, mp0.y), ImVec2(textMax, mp1.y), true);
+        drawText(dl, ui.fontMono, geist::type::BODY, ImVec2(mp0.x + 12.0f, mp0.y + 10.0f), t.ink, shortMod.c_str());
+        dl->PopClipRect();
+        const ImVec2 nsz = calcText(ui.fontMono, geist::type::BODY, shortMod.c_str());
+        float cursor = mp0.x + 12.0f + nsz.x + 6.0f;
+        if (modRec && cursor < textMax) {
+            drawIcon(dl, "star", ImVec2(cursor + 6.0f, mp0.y + 18.0f), 11.0f, t.warning);
         }
-        iy += 30.0f;
-    }
+        if (!nameHasScale(shortMod, modScale)) {
+            const std::string badge = std::format("{}×", modScale);
+            const ImVec2 b0 = snapPt(mp1.x - 56.0f, mp0.y + 8.0f);
+            const ImVec2 b1 = snapPt(mp1.x - 28.0f, mp0.y + 28.0f);
+            dl->AddRectFilled(b0, b1, t.container, 4.0f);
+            dl->AddRect(b0, b1, t.outline, 4.0f, 0, hairlinePx());
+            drawTextCentered(dl, ui.fontMono, 11.0f, b0, b1, t.mute, badge.c_str());
+        }
+        drawIcon(dl, ui.showModelPicker ? "chevron-up" : "chevron-down", ImVec2(mp1.x - 16.0f, mp0.y + 18.0f), 14.0f, t.mute);
+        if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+    };
+    paintTrigger();
+    ImGui::SetCursorScreenPos(mp0);
+    if (ImGui::InvisibleButton("##model_picker_btn", ImVec2(iw, 36.0f))) ui.showModelPicker = !ui.showModelPicker;
+    y += 36.0f;
 
-    // Format-linked encoder parameters (AVIF / JPG chroma & speed — Figma Frame 73:1931: 14px label, 164x28 segmented)
+    y += geist::space::SECTION;
+    overline("输出");
+    const SegOpt fmtOpts[5] = {{"跟随", ""}, {"PNG", "png"}, {"JPG", "jpg"}, {"WebP", "webp"}, {"AVIF", "avif"}};
+    std::string curFmt = snap.format;
+    if (segmented(dl, "##fmt", ui.fontSans, ImVec2(ix, y), ImVec2(iw, 32.0f), fmtOpts, 5, curFmt, modal)) app.setFormat(curFmt);
+    y += 32.0f;
+
+    if (snap.format != "png") {
+        y += geist::space::SM;
+        const std::string qVal = std::format("{}", snap.quality);
+        const ImVec2 qsz = calcText(ui.fontMono, geist::type::BODY, qVal.c_str());
+        drawText(dl, ui.fontSans, geist::type::LABEL, snapPt(ix, y), t.mute, "质量");
+        drawText(dl, ui.fontMono, geist::type::BODY, ImVec2(ix + iw - qsz.x, y - 1.0f), t.ink, qVal.c_str());
+        y += calcText(ui.fontSans, geist::type::LABEL, "质量").y + geist::space::XS;
+        int q = snap.quality;
+        if (qualitySlider(dl, "##q_slider", ImVec2(ix, y), iw, q, 1, 100, modal)) app.setQuality(q);
+        y += 18.0f;
+    }
     if (snap.format == "avif" || snap.format == "jpg") {
-        drawText(dl, ui.fontSans, 14.0f, ImVec2(ix, iy + 4.0f), pal.onSurface(), "色度抽样");
-        const SegmentOption chromaOpts[2] = {{"4:2:0", "420"}, {"4:4:4", "444"}};
+        y += geist::space::SM;
+        fieldLabel("色度抽样");
+        const SegOpt chromaOpts[2] = {{"4:2:0", "420"}, {"4:4:4", "444"}};
         std::string cVal = std::to_string(snap.chroma);
-        if (segmentedControl(dl, "##chroma_seg", ImVec2(ix + iw - 164.0f, iy), ImVec2(164.0f, 28.0f), chromaOpts, 2, cVal, pal, ui.fontMono, 12.0f)) {
+        if (segmented(dl, "##chroma", ui.fontMono, ImVec2(ix, y), ImVec2(iw, 28.0f), chromaOpts, 2, cVal, modal)) {
             app.setChroma(std::atoi(cVal.c_str()));
         }
-        iy += 38.0f;
+        y += 28.0f;
     }
     if (snap.format == "avif") {
-        drawText(dl, ui.fontSans, 14.0f, ImVec2(ix, iy + 4.0f), pal.onSurface(), "编码速度");
-        const SegmentOption spdOpts[3] = {{"精细", "4"}, {"均衡", "6"}, {"快速", "8"}};
+        y += geist::space::SM;
+        fieldLabel("编码速度");
+        const SegOpt spdOpts[3] = {{"精细", "4"}, {"均衡", "6"}, {"快速", "8"}};
         std::string sVal = std::to_string(snap.avif_speed);
-        if (segmentedControl(dl, "##spd_seg", ImVec2(ix + iw - 164.0f, iy), ImVec2(164.0f, 28.0f), spdOpts, 3, sVal, pal, ui.fontSans, 12.0f)) {
+        if (segmented(dl, "##spd", ui.fontSans, ImVec2(ix, y), ImVec2(iw, 28.0f), spdOpts, 3, sVal, modal)) {
             app.setAvifSpeed(std::atoi(sVal.c_str()));
         }
-        iy += 38.0f;
+        y += 28.0f;
     }
 
-    // Export Directory ("导出位置" — Figma: 13px #ececee, gap 8px, box 34px #16161a border #282830 radius 8px)
-    drawText(dl, ui.fontSans, 13.0f, ImVec2(ix, iy), pal.onSurface(), "导出位置");
-    iy += 24.0f;
-    ImVec2 dir0 = snapPt(ix, iy);
-    ImVec2 dir1 = snapPt(ix + iw, iy + 34.0f);
-    drawBox(dl, dir0, dir1, hex(0x16161A), pal.outline(), 8.0f);
-    drawIcon(dl, "folder", ImVec2(dir0.x + 16.5f, dir0.y + 17.0f), 13.0f, hex(0x7E7E8A));
-
-    bool hasCustomDir = !snap.custom_out_dir.empty();
-    std::string outLabel = hasCustomDir ? snap.custom_out_dir : "跟随原图目录";
-    drawText(dl, hasCustomDir ? ui.fontMono : ui.fontSans, 12.0f, ImVec2(dir0.x + 31.0f, dir0.y + 9.0f),
-             hex(0xD0D0D8), outLabel.c_str());
-
-    // Pill "指定…" / "更改" (Figma: height 24px, #202026, border #2e2e38, radius 6px, 11px #a2a2ac)
-    const char* dirBtnLbl = hasCustomDir ? "更改" : "指定…";
-    float dirBtnW = hasCustomDir ? 40.0f : 48.0f;
-    ImVec2 db0 = snapPt(dir1.x - dirBtnW - 4.0f, dir0.y + 5.0f);
-    ImGui::SetCursorScreenPos(db0);
-    if (ImGui::InvisibleButton("##pick_outdir", ImVec2(dirBtnW, 24.0f))) {
+    y += geist::space::SM;
+    fieldLabel("导出位置");
+    const ImVec2 dir0 = snapPt(ix, y);
+    const ImVec2 dir1 = snapPt(ix + iw, y + 34.0f);
+    dl->AddRectFilled(dir0, dir1, t.wellBg, 8.0f);
+    dl->AddRect(dir0, dir1, t.outline, 8.0f, 0, hairlinePx());
+    drawIcon(dl, "folder", ImVec2(dir0.x + 16.0f, dir0.y + 17.0f), 13.0f, t.mute);
+    const bool hasCustom = !snap.custom_out_dir.empty();
+    const std::string outLabel = hasCustom ? snap.custom_out_dir : "跟随原图目录";
+    const char* dirBtn = hasCustom ? "更改" : "指定…";
+    const float dirBtnW = hasCustom ? 44.0f : 56.0f;
+    const ImVec2 db0 = snapPt(dir1.x - dirBtnW - 5.0f, dir0.y + 5.0f);
+    dl->PushClipRect(ImVec2(dir0.x + 28.0f, dir0.y), ImVec2(db0.x - 6.0f, dir1.y), true);
+    drawText(dl, hasCustom ? ui.fontMono : ui.fontSans, 12.0f, ImVec2(dir0.x + 28.0f, dir0.y + 9.0f), t.body, outLabel.c_str());
+    dl->PopClipRect();
+    if (quietButton(dl, "##pick_outdir", ui.fontSans, db0, ImVec2(dirBtnW, 24.0f), dirBtn, "", modal)) {
         SDL_ShowOpenFolderDialog(onFileDialog, dlgOutDir, window, nullptr, false);
     }
-    drawBox(dl, db0, ImVec2(db0.x + dirBtnW, db0.y + 24.0f), pal.container(), hex(0x2E2E38), 6.0f);
-    drawTextCentered(dl, ui.fontSans, 11.0f, db0, ImVec2(db0.x + dirBtnW, db0.y + 24.0f), pal.muted(), dirBtnLbl);
-    iy += 46.0f;
+    y += 34.0f;
 
-    // --- Section: 引擎与处理 (Figma: 12px #a2a2ac, gap 12px) ---
-    drawText(dl, ui.fontSans, 12.0f, ImVec2(ix, iy), pal.muted(), "引擎与处理");
-    iy += 26.0f;
-
-    // 计算设备 (Figma: 14px #ececee, segmented 164x28px)
-    drawText(dl, ui.fontSans, 14.0f, ImVec2(ix, iy + 4.0f), pal.onSurface(), "计算设备");
-    const SegmentOption devOpts[2] = {{"GPU", "gpu"}, {"CPU", "cpu"}};
+    y += geist::space::SECTION;
+    overline("引擎与处理");
+    fieldLabel("计算设备");
+    const SegOpt devOpts[2] = {{"GPU", "gpu"}, {"CPU", "cpu"}};
     std::string curDev = snap.gpu ? "gpu" : "cpu";
-    if (segmentedControl(dl, "##dev_seg", ImVec2(ix + iw - 164.0f, iy), ImVec2(164.0f, 28.0f), devOpts, 2, curDev, pal, ui.fontSans, 12.0f)) {
-        app.setGpu(curDev == "gpu");
-    }
-    iy += 40.0f;
+    if (segmented(dl, "##dev", ui.fontSans, ImVec2(ix, y), ImVec2(iw, 28.0f), devOpts, 2, curDev, modal)) app.setGpu(curDev == "gpu");
+    y += 28.0f;
 
-    // 分块尺寸 (Figma: 14px #ececee, segmented 164x28px)
-    drawText(dl, ui.fontSans, 14.0f, ImVec2(ix, iy + 4.0f), pal.onSurface(), "分块尺寸");
-    const SegmentOption tileOpts[4] = {{"自动", "0"}, {"512", "512"}, {"256", "256"}, {"128", "128"}};
+    y += geist::space::SM;
+    fieldLabel("分块尺寸");
+    const SegOpt tileOpts[4] = {{"自动", "0"}, {"512", "512"}, {"256", "256"}, {"128", "128"}};
     std::string curTile = std::to_string(snap.tile_size);
-    if (segmentedControl(dl, "##tile_seg", ImVec2(ix + iw - 164.0f, iy), ImVec2(164.0f, 28.0f), tileOpts, 4, curTile, pal, ui.fontSans, 12.0f)) {
+    if (segmented(dl, "##tile", ui.fontSans, ImVec2(ix, y), ImVec2(iw, 28.0f), tileOpts, 4, curTile, modal)) {
         app.setTileSize(std::atoi(curTile.c_str()));
     }
-    iy += 40.0f;
+    y += 28.0f;
 
-    // 常驻热引擎 (Figma: 14px #ececee, toggle 44x26px)
-    drawText(dl, ui.fontSans, 14.0f, ImVec2(ix, iy + 3.0f), pal.onSurface(), "常驻热引擎");
-    bool daemonOn = snap.daemon.running;
-    if (toggleSwitch(dl, "##daemon_toggle", ImVec2(ix + iw - 44.0f, iy), daemonOn, pal)) {
-        app.toggleDaemon();
+    y += geist::space::SM;
+    {
+        const char* lab = "常驻热引擎";
+        const ImVec2 ls = calcText(ui.fontSans, geist::type::BODY, lab);
+        drawText(dl, ui.fontSans, geist::type::BODY, snapPt(ix, y + (26.0f - ls.y) * 0.5f), t.ink, lab);
+        bool daemonOn = snap.daemon.running;
+        if (inkSwitch(dl, "##daemon", ImVec2(ix + iw - 44.0f, y), daemonOn, modal)) app.toggleDaemon();
+        y += 26.0f;
     }
-    iy += 38.0f;
-
-    // 覆盖已有结果 (Figma: 14px/15px #ececee, toggle 44x26px)
-    drawText(dl, ui.fontSans, 14.0f, ImVec2(ix, iy + 3.0f), pal.onSurface(), "覆盖已有结果");
-    bool forceOn = snap.force;
-    if (toggleSwitch(dl, "##force_toggle", ImVec2(ix + iw - 44.0f, iy), forceOn, pal)) {
-        app.setForce(forceOn);
+    y += geist::space::SM;
+    {
+        const char* lab = "覆盖已有结果";
+        const ImVec2 ls = calcText(ui.fontSans, geist::type::BODY, lab);
+        drawText(dl, ui.fontSans, geist::type::BODY, snapPt(ix, y + (26.0f - ls.y) * 0.5f), t.ink, lab);
+        bool forceOn = snap.force;
+        if (inkSwitch(dl, "##force", ImVec2(ix + iw - 44.0f, y), forceOn, modal)) app.setForce(forceOn);
+        y += 26.0f;
     }
 
-    // --- Bottom Sticky Action Area (Figma: 276x44px, bottom 16px, font 14px weight 500) ---
-    ImVec2 cta0 = snapPt(ix, winSize.y - 60.0f);
-    ImVec2 ctaSz(iw, 44.0f);
+    dl->PopClipRect();
+
+    dl->AddRectFilled(ImVec2(card0.x, seam), ImVec2(card1.x, seam + hairlinePx()), t.outline);
+    const ImVec2 cta0 = snapPt(ix, seam + geist::space::MD);
+    const ImVec2 cta1 = snapPt(ix + iw, cta0.y + 44.0f);
     if (snap.job.phase == upix::gui::JobPhase::Running) {
-        // Cancel CTA (Figma Frame 73:1931: #1e1416, border #58282c, stop 9x9px #ff7361, "取消超分" 14px, pill "Ctrl+." #2a181a border #4a2528)
-        ImGui::SetCursorScreenPos(cta0);
-        if (ImGui::InvisibleButton("##cancel_job", ctaSz)) {
-            app.cancelJob();
+        bool fired = false;
+        bool hov = false;
+        if (!modal) {
+            ImGui::SetCursorScreenPos(cta0);
+            fired = ImGui::InvisibleButton("##cancel_job", ImVec2(cta1.x - cta0.x, cta1.y - cta0.y));
+            hov = ImGui::IsItemHovered();
+            if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
         }
-        bool hov = ImGui::IsItemHovered();
-        if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-        drawBox(dl, cta0, ImVec2(cta0.x + ctaSz.x, cta0.y + ctaSz.y), pal.errorDimBg(), pal.errorDimBorder(), 8.0f);
-
-        float midY = snapPx(cta0.y + ctaSz.y * 0.5f);
-        dl->AddRectFilled(snapPt(cta0.x + 74.0f, midY - 4.5f), snapPt(cta0.x + 83.0f, midY + 4.5f), pal.error(), 2.0f);
-        drawText(dl, ui.fontSans, 14.0f, ImVec2(cta0.x + 91.0f, midY - 9.0f), pal.error(), "取消超分");
-        ImVec2 kbd0 = snapPt(cta0.x + 155.0f, midY - 9.0f);
-        ImVec2 kbd1 = snapPt(kbd0.x + 44.0f, midY + 9.0f);
-        drawBox(dl, kbd0, kbd1, hex(0x2A181A), hex(0x4A2528), 4.0f);
-        drawTextCentered(dl, ui.fontMono, 10.0f, kbd0, kbd1, hex(0xFF897A), "Ctrl+.");
-    } else if (snap.job.phase == upix::gui::JobPhase::Error) {
-        if (pillButton(dl, "##resume_job", cta0, ctaSz, "继续超分", "play", pal, ui.fontSans, false, 8.0f, 14.0f)) {
-            app.startJob();
-        }
-    } else if (snap.job.phase == upix::gui::JobPhase::Done) {
-        if (pillButton(dl, "##rerun_job", cta0, ctaSz, "重新超分", "play", pal, ui.fontSans, true, 8.0f, 14.0f)) {
-            app.startJob();
-        }
+        dl->AddRectFilled(cta0, cta1, hov ? hex(0xE5484D, 0x40) : t.errorSoft, geist::radius::MD);
+        dl->AddRect(cta0, cta1, t.errorBorder, geist::radius::MD, 0, hairlinePx());
+        const char* cancel = "取消超分";
+        const ImVec2 tsz = calcText(ui.fontSans, 14.0f, cancel);
+        const float kbdW = 48.0f;
+        const float group = 9.0f + 8.0f + tsz.x + 8.0f + kbdW;
+        float x = cta0.x + ((cta1.x - cta0.x) - group) * 0.5f;
+        const float mid = (cta0.y + cta1.y) * 0.5f;
+        dl->AddRectFilled(snapPt(x, mid - 4.5f), snapPt(x + 9.0f, mid + 4.5f), t.error, 2.0f);
+        x += 17.0f;
+        drawText(dl, ui.fontSans, 14.0f, ImVec2(x, mid - tsz.y * 0.5f), t.error, cancel);
+        x += tsz.x + 8.0f;
+        const ImVec2 k0 = snapPt(x, mid - 9.0f);
+        const ImVec2 k1 = snapPt(x + kbdW, mid + 9.0f);
+        dl->AddRectFilled(k0, k1, hex(0x2A181A), 4.0f);
+        dl->AddRect(k0, k1, t.errorBorder, 4.0f, 0, hairlinePx());
+        drawTextCentered(dl, ui.fontMono, 10.0f, k0, k1, t.error, "Ctrl+.");
+        if (fired) app.cancelJob();
     } else {
-        if (pillButton(dl, "##start_job", cta0, ctaSz, "开始超分", "play", pal, ui.fontSans, true, 8.0f, 14.0f)) {
-            if (snap.inputs.empty()) {
+        const char* label = "开始超分";
+        if (snap.job.phase == upix::gui::JobPhase::Error) label = "继续超分";
+        else if (snap.job.phase == upix::gui::JobPhase::Done) label = "重新超分";
+        if (inkCta(dl, "##start_job", ui.fontSans, label, cta0, cta1, modal)) {
+            if (snap.job.phase == upix::gui::JobPhase::Idle && snap.inputs.empty()) {
                 SDL_ShowOpenFileDialog(onFileDialog, dlgFiles, window, nullptr, 0, nullptr, true);
             } else {
                 app.startJob();
@@ -465,51 +771,74 @@ void renderWorkbench(ImDrawList* dl, ImVec2 winSize, UiViewState& ui,
         }
     }
 
-    // --- Floating Model Picker Popup (Figma "Desktop / Input / Model picker", 276px wide) ---
+    // Model picker: instant scrim + Menu panel. No fade, no scale.
+    // Hits are geometric so they don't depend on ImGui item order.
     if (ui.showModelPicker) {
-        ImVec2 pop0 = snapPt(ix, mp1.y + 6.0f);
-        ImVec2 pop1 = snapPt(ix + iw, mp1.y + 274.0f);
-        drawBox(dl, pop0, pop1, pal.surface(), pal.outlineStrong(), 8.0f);
+        const float rowH = 32.0f;
+        const float rowGap = 2.0f;
+        const float pad = 6.0f;
+        const int n = static_cast<int>(snap.installed.size());
+        const float listH = n == 0 ? 64.0f : static_cast<float>(n) * rowH + static_cast<float>(std::max(0, n - 1)) * rowGap;
+        const float panelH = std::min(320.0f, pad * 2.0f + listH);
+        float py = mp1.y + 6.0f;
+        if (py + panelH > winSize.y - 8.0f) py = std::max(8.0f, mp0.y - 6.0f - panelH);
+        const ImVec2 pop0 = snapPt(mp0.x, py);
+        const ImVec2 pop1 = snapPt(mp1.x, py + panelH);
 
-        ImVec2 sb0 = snapPt(pop0.x + 6.0f, pop0.y + 6.0f);
-        ImVec2 sb1 = snapPt(pop1.x - 6.0f, pop0.y + 40.0f);
-        dl->AddRectFilled(sb0, sb1, pal.recessed(), 6.0f);
-        drawIcon(dl, "search", ImVec2(sb0.x + 16.0f, sb0.y + 17.0f), 14.0f, pal.muted());
-        dl->AddRectFilled(ImVec2(sb0.x + 30.0f, sb0.y + 10.0f), ImVec2(sb0.x + 31.5f, sb0.y + 24.0f), pal.primary());
-        dl->AddRectFilled(ImVec2(sb0.x, sb1.y), ImVec2(sb1.x, sb1.y + 1.5f), pal.primary());
-
-        float ry = sb1.y + 6.0f;
-        for (size_t i = 0; i < snap.installed.size() && ry + 42.0f < pop1.y - 4.0f; ++i) {
-            const auto& m = snap.installed[i];
-            ImVec2 r0 = snapPt(pop0.x + 6.0f, ry);
-            ImVec2 r1 = snapPt(pop1.x - 6.0f, ry + 42.0f);
-            ImGui::SetCursorScreenPos(r0);
-            ImGui::PushID((int)i);
-            bool clicked = ImGui::InvisibleButton("##mp_row", ImVec2(r1.x - r0.x, 42.0f));
-            bool hov = ImGui::IsItemHovered();
-            ImGui::PopID();
-
-            bool sel = (m.name == snap.model);
-            if (sel || hov) {
-                drawBox(dl, r0, r1, sel ? pal.high() : pal.containerLow(), sel ? pal.outlineStrong() : 0, 6.0f);
+        const bool click = ImGui::IsMouseClicked(ImGuiMouseButton_Left);
+        bool ate = ctl::mouseIn(mp0, mp1);
+        if (click && !ate) {
+            bool hitRow = false;
+            for (int i = 0; i < n; ++i) {
+                const float ry = pop0.y + pad + static_cast<float>(i) * (rowH + rowGap);
+                if (ry + rowH > pop1.y - pad + 0.5f) break;
+                const ImVec2 r0 = snapPt(pop0.x + pad, ry);
+                const ImVec2 r1 = snapPt(pop1.x - pad, ry + rowH);
+                if (ctl::mouseIn(r0, r1)) {
+                    app.setModel(snap.installed[static_cast<size_t>(i)].name);
+                    ui.showModelPicker = false;
+                    hitRow = true;
+                    break;
+                }
             }
-            drawText(dl, ui.fontMono, 12.5f, ImVec2(r0.x + 12.0f, r0.y + 6.0f), pal.onSurface(), m.name.c_str());
-            std::string subMeta = std::format("{} · x{}", m.size, m.scale);
-            drawText(dl, ui.fontMono, 11.0f, ImVec2(r0.x + 12.0f, r0.y + 23.0f), pal.dim(), subMeta.c_str());
-
-            if (sel) {
-                dl->AddCircleFilled(ImVec2(r1.x - 14.0f, (r0.y + r1.y) * 0.5f), 3.5f, pal.primary());
-            }
-
-            if (clicked) {
-                app.setModel(m.name);
-                ui.showModelPicker = false;
-            }
-            ry += 44.0f;
+            if (!hitRow && !ctl::mouseIn(pop0, pop1)) ui.showModelPicker = false;
         }
+
+        dl->AddRectFilled(ImVec2(0, 0), winSize, hex(0x000000, 102));
+        paintTrigger();
+        ctl::finish(dl, pop0, pop1, ctl::Finish::Menu, 10.0f);
+
+        if (n == 0) {
+            drawTextCentered(dl, ui.fontSans, 12.0f, pop0, pop1, t.mute, "尚未安装模型");
+        }
+        dl->PushClipRect(pop0, pop1, true);
+        for (int i = 0; i < n; ++i) {
+            const auto& m = snap.installed[static_cast<size_t>(i)];
+            const float ry = pop0.y + pad + static_cast<float>(i) * (rowH + rowGap);
+            if (ry + rowH > pop1.y - pad + 0.5f) break;
+            const ImVec2 r0 = snapPt(pop0.x + pad, ry);
+            const ImVec2 r1 = snapPt(pop1.x - pad, ry + rowH);
+            const bool sel = m.name == snap.model;
+            const bool hov = ctl::mouseIn(r0, r1);
+            if (sel) dl->AddRectFilled(r0, r1, t.accentSoft, 6.0f);
+            else if (hov) dl->AddRectFilled(r0, r1, t.high, 6.0f);
+            if (hov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+
+            const char* title = m.short_name.empty() ? m.name.c_str() : m.short_name.c_str();
+            const std::string meta = std::format("{} · {}×", m.scene.empty() ? "综合" : m.scene, m.scale);
+            const ImVec2 msz = calcText(ui.fontSans, 11.0f, meta.c_str());
+            dl->PushClipRect(ImVec2(r0.x + 8.0f, r0.y), ImVec2(r1.x - 16.0f - msz.x - (m.recommended ? 16.0f : 0.0f), r1.y), true);
+            drawText(dl, ui.fontMono, 12.5f, ImVec2(r0.x + 10.0f, r0.y + 8.0f), t.ink, title);
+            dl->PopClipRect();
+            if (m.recommended) {
+                const ImVec2 tsz = calcText(ui.fontMono, 12.5f, title);
+                drawIcon(dl, "star", ImVec2(r0.x + 10.0f + std::min(tsz.x, r1.x - r0.x - 80.0f) + 8.0f, r0.y + 16.0f), 10.0f, t.warning);
+            }
+            dl->AddCircleFilled(ImVec2(r1.x - msz.x - 16.0f, (r0.y + r1.y) * 0.5f), 2.5f, sceneDot(m.scene));
+            drawText(dl, ui.fontSans, 11.0f, ImVec2(r1.x - 8.0f - msz.x, r0.y + 9.0f), t.mute, meta.c_str());
+        }
+        dl->PopClipRect();
     }
 }
-
-
 
 } // namespace upix::views
