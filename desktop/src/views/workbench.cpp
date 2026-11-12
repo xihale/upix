@@ -366,17 +366,22 @@ void renderWorkbench(ImDrawList* dl, ImVec2 winSize, UiViewState& ui, upix::gui:
             drawStageArtwork(dl, img0, img1, true, ui);
             dl->PopClipRect();
 
-            // Crisp 1px vertical split line & 28x28 `< >` drag handle
-            dl->AddRectFilled(ImVec2(splitX, viewMin.y), ImVec2(splitX + hairlinePx(), viewMax.y), t.ink);
-            const ImVec2 hC = snapPt(splitX, (viewMin.y + viewMax.y) * 0.5f);
-            const ImVec2 h0(hC.x - 14.0f, hC.y - 14.0f);
-            const ImVec2 h1(hC.x + 14.0f, hC.y + 14.0f);
-            dl->AddRectFilled(h0, h1, t.hudBg, geist::radius::MD);
-            dl->AddRect(h0, h1, t.hudBorder, geist::radius::MD, 0, hairlinePx());
-            ImVec2 cL[3] = {ImVec2(hC.x - 3.0f, hC.y - 3.5f), ImVec2(hC.x - 6.5f, hC.y), ImVec2(hC.x - 3.0f, hC.y + 3.5f)};
-            ImVec2 cR[3] = {ImVec2(hC.x + 3.0f, hC.y - 3.5f), ImVec2(hC.x + 6.5f, hC.y), ImVec2(hC.x + 3.0f, hC.y + 3.5f)};
-            dl->AddPolyline(cL, 3, t.mute, ImDrawFlags_None, 1.4f);
-            dl->AddPolyline(cR, 3, t.mute, ImDrawFlags_None, 1.4f);
+            // Crisp 1px vertical split line constrained strictly to rendered image bounds + 28x28 `< >` drag handle
+            const float lineY0 = snapPx(std::max(viewMin.y, img0.y));
+            const float lineY1 = snapPx(std::min(viewMax.y, img1.y));
+            if (lineY1 > lineY0) {
+                dl->AddRectFilled(ImVec2(splitX, lineY0), ImVec2(splitX + hairlinePx(), lineY1), t.ink);
+                const float handleY = std::clamp((lineY0 + lineY1) * 0.5f, viewMin.y + 18.0f, viewMax.y - 18.0f);
+                const ImVec2 hC = snapPt(splitX, handleY);
+                const ImVec2 h0(hC.x - 14.0f, hC.y - 14.0f);
+                const ImVec2 h1(hC.x + 14.0f, hC.y + 14.0f);
+                dl->AddRectFilled(h0, h1, t.hudBg, geist::radius::MD);
+                dl->AddRect(h0, h1, t.hudBorder, geist::radius::MD, 0, hairlinePx());
+                ImVec2 cL[3] = {ImVec2(hC.x - 3.0f, hC.y - 3.5f), ImVec2(hC.x - 6.5f, hC.y), ImVec2(hC.x - 3.0f, hC.y + 3.5f)};
+                ImVec2 cR[3] = {ImVec2(hC.x + 3.0f, hC.y - 3.5f), ImVec2(hC.x + 6.5f, hC.y), ImVec2(hC.x + 3.0f, hC.y + 3.5f)};
+                dl->AddPolyline(cL, 3, t.mute, ImDrawFlags_None, 1.4f);
+                dl->AddPolyline(cR, 3, t.mute, ImDrawFlags_None, 1.4f);
+            }
         } else {
             drawCheckerboard(dl, img0, img1, 10.0f);
             drawStageArtwork(dl, img0, img1, false, ui);
