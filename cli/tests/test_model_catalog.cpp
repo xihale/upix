@@ -6,14 +6,18 @@
 // three historically drifted by hand. Skips cleanly when no models are
 // installed (CI has none); run it on a machine with the catalog downloaded.
 
+#include "core/model_catalog.hpp"
+#include "core/model_downloader.hpp"
 #include "core/model_graph.hpp"
 #include "core/model_manager.hpp"
+#include "core/model_metadata.hpp"
 
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -106,6 +110,56 @@ int main() {
     failures += check_filename_scale("x99999999999", 0);
     failures += check_filename_scale("7x2147483647", 0);
     failures += check_hostile_scale_rejected();
+
+    // Shared offline catalog invariants (mirrors crates/upix-core/src/model_catalog.rs).
+    {
+        const auto& names = upix::catalog_names();
+        if (names.size() != 34) {
+            std::cerr << "expected 34 catalog entries, got " << names.size() << "\n";
+            failures++;
+        }
+        std::unordered_set<std::string_view> seen;
+        for (std::string_view entry : names) {
+            if (!seen.insert(entry).second) {
+                std::cerr << "duplicate catalog entry: " << entry << "\n";
+                failures++;
+            }
+            const auto meta = upix::classify_model_scene(entry);
+            if (meta.scene.empty()) {
+                std::cerr << "catalog entry has empty scene: " << entry << "\n";
+                failures++;
+            }
+            const int s_graph = scale_from_filename(entry);
+            const int s_hint = upix::catalog_scale_hint(entry);
+            if (s_graph < 1 || s_hint != s_graph) {
+                std::cerr << "catalog scale mismatch for " << entry
+                          << ": graph=" << s_graph << " hint=" << s_hint << "\n";
+                failures++;
+            }
+        }
+        if (!upix::is_known_catalog_model("AnimeJaNai-v2-Compact-x2") ||
+            upix::is_known_catalog_model("Animesharp-x4")) {
+            std::cerr << "is_known_catalog_model failed exact-name check\n";
+            failures++;
+        }
+        const auto offline_models = upix::catalog_models();
+        if (offline_models.size() != names.size()) {
+            std::cerr << "catalog_models() size mismatch\n";
+            failures++;
+        } else {
+            for (size_t i = 0; i < names.size(); ++i) {
+                if (offline_models[i].name != names[i] ||
+                    offline_models[i].size_bytes != 0 ||
+                    !offline_models[i].sha256.empty() ||
+                    !offline_models[i].url.empty() ||
+                    offline_models[i].scale != upix::catalog_scale_hint(names[i])) {
+                    std::cerr << "catalog_models() entry malformed at " << i << "\n";
+                    failures++;
+                    break;
+                }
+            }
+        }
+    }
 
     const fs::path dir = models_dir_from_env();
     if (dir.empty() || !fs::exists(dir)) {

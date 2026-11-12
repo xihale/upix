@@ -42,11 +42,33 @@ struct ModelDownloadResult {
 // Default release endpoint: the "models" tag of the upstream repo.
 inline constexpr std::string_view kDefaultModelRepo = "xihale/upix";
 
+// Upper bound for manifest HTTP GET responses (10 MiB).
+inline constexpr std::size_t kMaxManifestBytes = 10u << 20;
+
+struct RemoteCatalogResult {
+    std::vector<RemoteModel> models;
+    // Populated with the network/parse error when falling back to the embedded catalog.
+    std::optional<std::string> fallback_error;
+};
+
+// Embedded published catalog as manifest-shaped entries (names + scale hints;
+// size_bytes/sha256/url stay empty because those are per-release facts).
+auto catalog_models() -> std::vector<RemoteModel>;
+
 // Fetch and parse the release manifest. Returns nullopt + error message in
 // `error` on failure.
 auto fetch_remote_models(const std::string& repo /* "owner/name" */,
                          std::string& error)
     -> std::optional<std::vector<RemoteModel>>;
+
+// Same as fetch_remote_models(), falling back to catalog_models() on failure.
+// When `fallback_error` is set, the caller should warn that downloads require
+// live release metadata.
+auto fetch_remote_models_or_catalog(const std::string& repo = "")
+    -> RemoteCatalogResult;
+auto fetch_remote_models_or_catalog(const std::string& repo,
+                                    std::string& error_out)
+    -> RemoteCatalogResult;
 
 // Transport policy for a manifest-supplied artifact `url`. Production requires
 // https: the manifest is remote input (a user-supplied --repo controls it) and

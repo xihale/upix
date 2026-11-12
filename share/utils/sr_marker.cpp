@@ -1,6 +1,8 @@
 #include "sr_marker.hpp"
 
+#include <algorithm>
 #include <charconv>
+#include <cstring>
 
 namespace upix::sr_marker {
 
@@ -97,10 +99,19 @@ auto probe(const uint8_t* data, size_t size) -> std::optional<SrMarker> {
     }
     const auto bytes = std::string_view(
         reinterpret_cast<const char*>(data), size);
+#if defined(__GLIBC__) || defined(__APPLE__)
+    const void* match = ::memmem(data, size, kNamespaceUrn.data(), kNamespaceUrn.size());
+    if (match == nullptr) {
+        return std::nullopt;
+    }
+    const size_t urn_pos = static_cast<size_t>(
+        static_cast<const char*>(match) - reinterpret_cast<const char*>(data));
+#else
     const size_t urn_pos = bytes.find(kNamespaceUrn);
     if (urn_pos == std::string_view::npos) {
         return std::nullopt;
     }
+#endif
     // Attributes live in the same tag right after the xmlns declaration.
     const size_t window_len = std::min(kAttributeWindowBytes, bytes.size() - urn_pos);
     const auto window = bytes.substr(urn_pos, window_len);

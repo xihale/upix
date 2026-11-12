@@ -202,8 +202,13 @@ std::mutex g_vulkan_init_mutex;
             input_channels_ = graph->input_channels;
         }
 
-        LOG_INFO("Engine", "Detected input: {}x{}x{}, scale: {}",
-                 graph->input_width, graph->input_height, input_channels_, scale_factor_);
+        if (graph->input_width > 0 && graph->input_height > 0) {
+            LOG_INFO("Engine", "Detected input: {}x{}x{}, scale: {}",
+                     graph->input_width, graph->input_height, input_channels_, scale_factor_);
+        } else {
+            LOG_INFO("Engine", "Detected input: dynamic shape, {} channels, scale: {}",
+                     input_channels_, scale_factor_);
+        }
     }
 
 } // namespace upix

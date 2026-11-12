@@ -4,6 +4,8 @@
 #include <vector>
 #include <filesystem>
 #include <cstdint>
+#include <optional>
+#include <utility>
 #include "expected.hpp"
 #include "encoder_options.hpp"
 
@@ -44,6 +46,17 @@ public:
     static auto load_from_memory(const std::string& format,
                                  const std::vector<uint8_t>& data)
         -> expected<Image, ImageError>;
+
+    // Header-only dimension sniff from memory (PNG IHDR, WebP VP8/VP8L/VP8X,
+    // JPEG SOF). Safe against hostile/truncated JPEG marker chains.
+    static auto probe_header_dimensions(const uint8_t* data, size_t size)
+        -> std::optional<std::pair<int, int>>;
+
+    // Probe image dimensions from file headers (first 64 KiB for PNG/JPEG/WebP,
+    // up to 256 KiB for AVIF `ispe`), falling back to Image::load() only if
+    // header probing cannot answer.
+    static auto probe_dimensions(const std::filesystem::path& path)
+        -> std::optional<std::pair<int, int>>;
 
     // `xmp`: optional XMP payload embedded as a metadata marker (PNG iTXt,
     // JPEG APP1, WebP "XMP " chunk, AVIF XMP item). Empty = no marker.

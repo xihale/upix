@@ -99,6 +99,29 @@ int main() {
     CHECK(padded_marker->model == "realsr-anime64v3");
     CHECK(padded_marker->ts == 1724500000);
 
+    // Large unmarked buffer (4 MiB) + boundary-offset probes for SIMD memmem.
+    {
+        std::vector<uint8_t> large(4u << 20, 0x5A);
+        CHECK(!sr_marker::probe(large.data(), large.size()).has_value());
+
+        // Cross a 4 KiB page boundary right inside the URN prefix.
+        const size_t boundary_off = 4096u - 13u;
+        std::memcpy(large.data() + boundary_off, xmp.data(), xmp.size());
+        auto boundary = sr_marker::probe(large.data(), large.size());
+        CHECK(boundary.has_value());
+        CHECK(boundary->model == "realsr-anime64v3");
+        CHECK(boundary->scale == 4);
+
+        // Flush and place right at the tail end of the 4 MiB buffer.
+        std::fill(large.data() + boundary_off,
+                  large.data() + boundary_off + xmp.size(), 0x5A);
+        const size_t tail_off = large.size() - xmp.size();
+        std::memcpy(large.data() + tail_off, xmp.data(), xmp.size());
+        auto tail = sr_marker::probe(large.data(), large.size());
+        CHECK(tail.has_value());
+        CHECK(tail->model == "realsr-anime64v3");
+    }
+
     // Container round-trips.
     CHECK(round_trip("png", "model-png", 2, 1724500001));
     CHECK(round_trip("jpg", "model-jpg", 3, 1724500002));

@@ -1,6 +1,7 @@
 // See model_downloader.hpp. libcurl for HTTP(S), glaze for the manifest JSON,
 // libsodium for sha256, libzip for extraction.
 #include "core/model_downloader.hpp"
+#include "core/model_catalog.hpp"
 
 #include <algorithm>
 #include <array>
@@ -10,6 +11,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <string_view>
 
@@ -66,6 +68,11 @@ void restrict_redirect_protocols(CURL* curl, UrlPolicy policy) {
 #endif
 }
 
+struct HttpBodyCtx {
+    std::string* body;
+    bool size_exceeded = false;
+};
+
 auto http_get(const std::string& url, std::string& body, std::string& error,
               long timeout_s = 30) -> bool {
     ensure_curl();
@@ -78,25 +85,39 @@ auto http_get(const std::string& url, std::string& body, std::string& error,
         error = "failed to init libcurl";
         return false;
     }
+    HttpBodyCtx ctx{&body, false};
     curl_easy_setopt(curl.get(), CURLOPT_URL, url.c_str());
     curl_easy_setopt(curl.get(), CURLOPT_FOLLOWLOCATION, 1L);  // GitHub → S3 redirect
     curl_easy_setopt(curl.get(), CURLOPT_MAXREDIRS, 5L);
     restrict_redirect_protocols(curl.get(), UrlPolicy::HttpsOnly);
     curl_easy_setopt(curl.get(), CURLOPT_FAILONERROR, 1L);  // do not read error bodies
+    curl_easy_setopt(curl.get(), CURLOPT_MAXFILESIZE_LARGE,
+                     static_cast<curl_off_t>(kMaxManifestBytes));
     curl_easy_setopt(curl.get(), CURLOPT_WRITEFUNCTION,
                      +[](char* ptr, size_t size, size_t nmemb, void* ud) -> size_t {
-                         auto* s = static_cast<std::string*>(ud);
-                         s->append(ptr, size * nmemb);
-                         return size * nmemb;
+                         auto* c = static_cast<HttpBodyCtx*>(ud);
+                         if (size != 0 && nmemb > std::numeric_limits<size_t>::max() / size) {
+                             c->size_exceeded = true;
+                             return 0;
+                         }
+                         const size_t chunk = size * nmemb;
+                         if (c->body->size() + chunk > kMaxManifestBytes) {
+                             c->size_exceeded = true;
+                             return 0;
+                         }
+                         c->body->append(ptr, chunk);
+                         return chunk;
                      });
-    curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &body);
+    curl_easy_setopt(curl.get(), CURLOPT_WRITEDATA, &ctx);
     curl_easy_setopt(curl.get(), CURLOPT_TIMEOUT, timeout_s);
     curl_easy_setopt(curl.get(), CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl.get(), CURLOPT_USERAGENT, "upix-cli/0.1");
 
     CURLcode rc = curl_easy_perform(curl.get());
     if (rc != CURLE_OK) {
-        error = std::string("HTTP request failed: ") + curl_easy_strerror(rc);
+        error = ctx.size_exceeded
+            ? std::format("manifest exceeded maximum size ({} bytes)", kMaxManifestBytes)
+            : std::string("HTTP request failed: ") + curl_easy_strerror(rc);
         return false;
     }
     long status = 0;
@@ -368,6 +389,34 @@ struct ManifestJson {
     };
     std::vector<Entry> models;
 };
+
+auto catalog_models() -> std::vector<RemoteModel> {
+    std::vector<RemoteModel> out;
+    out.reserve(kModelCatalog.size());
+    for (std::string_view name : kModelCatalog) {
+        RemoteModel m;
+        m.name = std::string(name);
+        m.scale = catalog_scale_hint(name);
+        out.push_back(std::move(m));
+    }
+    return out;
+}
+
+auto fetch_remote_models_or_catalog(const std::string& repo)
+    -> RemoteCatalogResult {
+    std::string err;
+    return fetch_remote_models_or_catalog(repo, err);
+}
+
+auto fetch_remote_models_or_catalog(const std::string& repo,
+                                    std::string& error_out)
+    -> RemoteCatalogResult {
+    error_out.clear();
+    if (auto remote = fetch_remote_models(repo, error_out)) {
+        return {std::move(*remote), std::nullopt};
+    }
+    return {catalog_models(), error_out};
+}
 
 auto manifest_url(const std::string& repo) -> std::string {
     std::string_view r = repo.empty() ? kDefaultModelRepo : repo;
