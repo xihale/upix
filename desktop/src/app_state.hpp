@@ -18,8 +18,10 @@
 #include "qrcodegen.hpp"
 
 #include <atomic>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -29,8 +31,11 @@
 namespace upix::gui {
 
 struct InputItem {
+    std::uint64_t id = 0;
     std::string path;
     std::string name;
+    std::string batch_root;
+    std::string output_path;
     bool is_dir = false;
     int count = 1;
     int width = 0;
@@ -54,12 +59,13 @@ struct ModelFamily {
     std::vector<ModelItem> items;
 };
 
-enum class JobPhase { Idle, Running, Done, Error, Cancelled };
+enum class JobPhase { Idle, Running, Cancelling, Done, Error, Cancelled };
 
 struct JobState {
     JobPhase phase = JobPhase::Idle;
     std::string message;
     std::string diag_detail;
+    std::string missing_model;
     int index = 0;
     int total = 0;
     int percent = 0;
@@ -97,13 +103,16 @@ struct HostState {
 
 struct DaemonState {
     bool running = false;
+    bool loading = false;
     int pid = 0;
-    std::string label = "未运行";
+    int idle_secs = 300;
+    std::string label = "热引擎未启动";
 };
 
 struct Snapshot {
     std::string version = "0.2.0";
     std::vector<InputItem> inputs;
+    int active_input = 0;
     std::string model = "AnimeSharp-x4";
     std::string format = "";          // "" (跟随), "png", "jpg", "webp", "avif"
     int quality = 90;
@@ -112,9 +121,14 @@ struct Snapshot {
     bool webp_lossless = false;
     int png_level = 6;
     std::string custom_out_dir = "";  // "" = 原图同目录
+    bool overwrite_original = false;
+    bool backup_original = true;
+    bool recursive = false;
     bool gpu = true;
     int tile_size = 0;                // 0 = 自动, 512, 256, 128
     bool force = false;
+    bool dark_mode = true;
+    bool reduce_motion = false;
 
     std::string models_dir;
     std::vector<ModelItem> installed;
@@ -122,6 +136,7 @@ struct Snapshot {
     std::vector<ModelItem> remote;
     std::vector<ModelFamily> remote_groups;
     std::string remote_error;
+    std::string models_status;
     std::string downloading;
     int download_pct = -1;
 
@@ -136,7 +151,11 @@ struct Snapshot {
 class AppState {
 public:
     AppState();
+    explicit AppState(std::string custom_prefs_path);
     ~AppState();
+
+    AppState(const AppState&) = delete;
+    AppState& operator=(const AppState&) = delete;
 
     // Thread-safe snapshot copy for rendering on the main thread
     Snapshot snapshot() const;
@@ -144,13 +163,17 @@ public:
     // Drain queued main-thread tasks; returns true if state changed
     bool pollEvents();
 
-    // Fixture states for --shot / preview ("empty", "picked", "running", "done", "error", "models", "host", "pairing")
+    // Fixture states for --shot / preview
     void applyFixture(const std::string& state);
 
     // Commands
     void addPaths(const std::vector<std::string>& paths);
+    void addFolder(const std::string& path, bool recursive);
+    bool addFromClipboardText(const std::string& text);
+    bool addFromClipboardRgba(int width, int height, const std::uint8_t* rgba, std::size_t bytes);
     void clearInputs();
     void removeInput(const std::string& path);
+    void setActiveInput(int idx);
     void startJob();
     void cancelJob();
 
@@ -162,41 +185,67 @@ public:
     void setTileSize(int ts);
     void setGpu(bool g);
     void setForce(bool f);
+    void setOverwriteOriginal(bool ov);
+    void setBackupOriginal(bool b);
+    void setRecursive(bool r);
     void setCustomOutDir(const std::string& dir);
+    void setDarkMode(bool dark);
+    void setReduceMotion(bool reduce);
 
     void refreshModels();
     void importModels(const std::vector<std::string>& paths);
     void downloadModel(const std::string& name);
     void removeModel(const std::string& name);
+    void clearModelsStatus();
 
     void toggleDaemon();
     void refreshDaemonStatus();
+    void setDaemonIdleSecs(int secs);
 
     void hostStart();
     void hostStop();
     void setHostPort(int port);
     void selectHostIp(int idx);
     void hostDecide(bool allow);
+    void removeTrustedDevice(const std::string& fingerprint);
+    void clearTrustedDevices();
 
     void setNotice(const std::string& msg);
+    void clearNotice();
+    void setPrefsPath(const std::string& path);
 
 private:
+    struct TrackedWorker {
+        std::shared_ptr<std::atomic<bool>> done = std::make_shared<std::atomic<bool>>(false);
+        std::jthread thread;
+    };
+
+    void initRuntime();
     void post(std::function<void()> fn);
+    void spawnWorker(std::function<void(std::shared_ptr<std::atomic<bool>> alive)> fn);
+    void reapWorkers();
     void rebuildModelGroups();
     void loadPrefs();
     void savePrefs();
+    std::string resolvePrefsPath() const;
 
     mutable std::mutex mtx_;
     Snapshot snap_;
     std::vector<std::function<void()>> queue_;
     std::atomic<bool> dirty_{true};
+    std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
+    std::uint64_t next_input_id_ = 1;
+    std::string prefs_path_;
 
-    // Background job / host workers
+    // Background job / worker / host coordination
     std::atomic<bool> job_cancel_{false};
-    std::thread job_thread_;
+    std::jthread job_thread_;
+
+    std::mutex workers_mtx_;
+    std::vector<TrackedWorker> workers_;
 
     struct HostWorker;
-    HostWorker* host_worker_ = nullptr;
+    std::unique_ptr<HostWorker> host_worker_;
 };
 
 } // namespace upix::gui

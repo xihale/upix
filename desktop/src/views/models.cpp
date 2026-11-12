@@ -1,8 +1,5 @@
 #include "views/common.hpp"
 
-#include "ui_theme.hpp"
-#include "ui_widgets.hpp"
-
 #include "imgui.h"
 
 #include <SDL3/SDL.h>

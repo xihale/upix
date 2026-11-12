@@ -32,6 +32,29 @@ target("upix")
         "src/views/shell.cpp",
         "src/views/workbench.cpp",
         "src/views/models.cpp",
-        "src/views/host.cpp"
+        "src/views/host.cpp",
+        "src/views/settings.cpp",
+        "src/views/guide.cpp"
     )
     set_targetdir("$(projectdir)/desktop/build")
+
+-- Headless AppState & job lifecycle test
+target("test_app_state_jobs")
+    set_kind("binary")
+    add_deps("upix-core")
+    add_packages("ncnn~runtime", "libwebp", "libpng", "libjpeg", "libdeflate",
+                 "glaze", "qr-code-generator-cpp", "libsodium", "libcurl", "libzip")
+    if has_config("avif-encoder") or has_config("avif-decoder") then
+        add_packages("libavif")
+    end
+    add_includedirs("src", "$(projectdir)/share")
+    add_files("tests/test_app_state_jobs.cpp", "src/app_state.cpp", "src/qrcodegen.cpp")
+    set_targetdir("$(projectdir)/desktop/build/tests")
+
+-- Headless Geist math, slider magnet, DPI snap & motion spring test
+target("test_gui_math_and_motion")
+    set_kind("binary")
+    add_packages("imgui")
+    add_includedirs("src")
+    add_files("tests/test_gui_math_and_motion.cpp")
+    set_targetdir("$(projectdir)/desktop/build/tests")

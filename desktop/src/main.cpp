@@ -1,20 +1,6 @@
 #include "app_state.hpp"
 #include "views/common.hpp"
 
-using upix::views::DialogBridge;
-using upix::views::MmapFontRegion;
-using upix::views::UiViewState;
-using upix::views::VulkanTexture;
-using upix::views::drawMiniThumb;
-using upix::views::drawStageArtwork;
-using upix::views::renderNavRail;
-using upix::views::renderWorkbench;
-using upix::views::renderModelsPage;
-using upix::views::renderRemotePage;
-using upix::views::renderPairingModal;
-#include "ui_theme.hpp"
-#include "ui_widgets.hpp"
-
 #include "imgui.h"
 #include "backends/imgui_impl_sdl3.h"
 #include "backends/imgui_impl_vulkan.h"
@@ -39,17 +25,26 @@ using upix::views::renderPairingModal;
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
-#include <format>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace fs = std::filesystem;
 
+using upix::views::DialogBridge;
+using upix::views::MmapFontRegion;
+using upix::views::UiViewState;
+using upix::views::VulkanTexture;
+using upix::views::renderGuidePage;
+using upix::views::renderModelsPage;
+using upix::views::renderNavRail;
+using upix::views::renderPairingModal;
+using upix::views::renderRemotePage;
+using upix::views::renderSettingsPage;
+using upix::views::renderWorkbench;
+
 namespace {
 
-// ---------------------------------------------------------------------------
-// Minimal SDL3 + Vulkan boilerplate for Dear ImGui 1.92
-// ---------------------------------------------------------------------------
 static VkAllocationCallbacks* g_Allocator = nullptr;
 static VkInstance g_Instance = VK_NULL_HANDLE;
 static VkPhysicalDevice g_PhysicalDevice = VK_NULL_HANDLE;
@@ -60,6 +55,18 @@ static VkPipelineCache g_PipelineCache = VK_NULL_HANDLE;
 static ImGui_ImplVulkanH_Window g_MainWindowData;
 static uint32_t g_MinImageCount = 2;
 static bool g_SwapChainRebuild = false;
+
+// Dedicated upload command pool + fence (isolated from swapchain frame pools)
+static VkCommandPool g_UploadPool = VK_NULL_HANDLE;
+static VkCommandBuffer g_UploadCmd = VK_NULL_HANDLE;
+static VkFence g_UploadFence = VK_NULL_HANDLE;
+
+struct PendingTexDestroy {
+    VulkanTexture tex;
+    uint64_t retireFrame = 0;
+};
+static std::vector<PendingTexDestroy> g_DestroyQueue;
+static uint64_t g_FrameCounter = 0;
 
 static void check_vk_result(VkResult err) {
     if (err == VK_SUCCESS) return;
@@ -81,11 +88,9 @@ static uint32_t FindMemoryType(uint32_t type_filter, VkMemoryPropertyFlags prope
         if ((type_filter & (1 << i)) && (mem_props.memoryTypes[i].propertyFlags & properties) == properties)
             return i;
     }
-    return 0;
+    return UINT32_MAX;
 }
 
-// Select integrated GPU first for the lightweight 2D GUI window so hybrid laptops
-// don't spin up a 70MB+ discrete GPU driver context just for 2D UI rendering.
 static VkPhysicalDevice SelectGuiPhysicalDevice(VkInstance instance) {
     uint32_t gpu_count = 0;
     vkEnumeratePhysicalDevices(instance, &gpu_count, nullptr);
@@ -163,6 +168,23 @@ static void SetupVulkan(std::vector<const char*> instance_extensions) {
     err = vkCreateDevice(g_PhysicalDevice, &dev_info, g_Allocator, &g_Device);
     check_vk_result(err);
     vkGetDeviceQueue(g_Device, g_QueueFamily, 0, &g_Queue);
+
+    VkCommandPoolCreateInfo poolInfo = {};
+    poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo.queueFamilyIndex = g_QueueFamily;
+    poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    check_vk_result(vkCreateCommandPool(g_Device, &poolInfo, g_Allocator, &g_UploadPool));
+
+    VkCommandBufferAllocateInfo cmdAlloc = {};
+    cmdAlloc.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAlloc.commandPool = g_UploadPool;
+    cmdAlloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAlloc.commandBufferCount = 1;
+    check_vk_result(vkAllocateCommandBuffers(g_Device, &cmdAlloc, &g_UploadCmd));
+
+    VkFenceCreateInfo fenceInfo = {};
+    fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    check_vk_result(vkCreateFence(g_Device, &fenceInfo, g_Allocator, &g_UploadFence));
 }
 
 static void SetupVulkanWindow(ImGui_ImplVulkanH_Window* wd, VkSurfaceKHR surface, int width, int height, VkImageUsageFlags extra_usage) {
@@ -196,7 +218,43 @@ static void CleanupVulkanWindow() {
     ImGui_ImplVulkanH_DestroyWindow(g_Instance, g_Device, &g_MainWindowData, g_Allocator);
 }
 
+static void DestroyVulkanTextureImmediate(VulkanTexture& tex) {
+    if (tex.desc) ImGui_ImplVulkan_RemoveTexture(tex.desc);
+    if (tex.sampler) vkDestroySampler(g_Device, tex.sampler, g_Allocator);
+    if (tex.view) vkDestroyImageView(g_Device, tex.view, g_Allocator);
+    if (tex.image) vkDestroyImage(g_Device, tex.image, g_Allocator);
+    if (tex.memory) vkFreeMemory(g_Device, tex.memory, g_Allocator);
+    tex = VulkanTexture{};
+}
+
+static void FlushDestroyQueue(bool forceAll = false) {
+    auto it = g_DestroyQueue.begin();
+    while (it != g_DestroyQueue.end()) {
+        if (forceAll || g_FrameCounter >= it->retireFrame) {
+            DestroyVulkanTextureImmediate(it->tex);
+            it = g_DestroyQueue.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+static void QueueDestroyVulkanTexture(VulkanTexture& tex) {
+    if (!tex.valid() && tex.image == VK_NULL_HANDLE) return;
+    const uint64_t lag = static_cast<uint64_t>(std::max<uint32_t>(2u, g_MainWindowData.ImageCount)) + 1;
+    g_DestroyQueue.push_back(PendingTexDestroy{tex, g_FrameCounter + lag});
+    tex = VulkanTexture{};
+}
+
 static void CleanupVulkan() {
+    if (g_UploadFence) {
+        vkDestroyFence(g_Device, g_UploadFence, g_Allocator);
+        g_UploadFence = VK_NULL_HANDLE;
+    }
+    if (g_UploadPool) {
+        vkDestroyCommandPool(g_Device, g_UploadPool, g_Allocator);
+        g_UploadPool = VK_NULL_HANDLE;
+    }
     vkDestroyDevice(g_Device, g_Allocator);
     vkDestroyInstance(g_Instance, g_Allocator);
 }
@@ -282,7 +340,6 @@ static void FramePresent(ImGui_ImplVulkanH_Window* wd) {
     wd->SemaphoreIndex = (wd->SemaphoreIndex + 1) % wd->SemaphoreCount;
 }
 
-// Capture current swapchain backbuffer to PNG via upix::Image
 static bool CaptureSwapchainToPng(ImGui_ImplVulkanH_Window* wd, const std::string& outPath) {
     vkDeviceWaitIdle(g_Device);
     ImGui_ImplVulkanH_Frame* fd = &wd->Frames[wd->FrameIndex];
@@ -298,22 +355,31 @@ static bool CaptureSwapchainToPng(ImGui_ImplVulkanH_Window* wd, const std::strin
     bufInfo.size = bufSize;
     bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT;
     bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    check_vk_result(vkCreateBuffer(g_Device, &bufInfo, g_Allocator, &stagingBuf));
+    if (vkCreateBuffer(g_Device, &bufInfo, g_Allocator, &stagingBuf) != VK_SUCCESS) return false;
 
     VkMemoryRequirements memReq;
     vkGetBufferMemoryRequirements(g_Device, stagingBuf, &memReq);
+    uint32_t memIdx = FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (memIdx == UINT32_MAX) {
+        vkDestroyBuffer(g_Device, stagingBuf, g_Allocator);
+        return false;
+    }
     VkMemoryAllocateInfo allocInfo = {};
     allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     allocInfo.allocationSize = memReq.size;
-    allocInfo.memoryTypeIndex = FindMemoryType(memReq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    check_vk_result(vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &stagingMem));
-    check_vk_result(vkBindBufferMemory(g_Device, stagingBuf, stagingMem, 0));
+    allocInfo.memoryTypeIndex = memIdx;
+    if (vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &stagingMem) != VK_SUCCESS) {
+        vkDestroyBuffer(g_Device, stagingBuf, g_Allocator);
+        return false;
+    }
+    vkBindBufferMemory(g_Device, stagingBuf, stagingMem, 0);
 
-    vkResetCommandPool(g_Device, fd->CommandPool, 0);
+    vkResetFences(g_Device, 1, &g_UploadFence);
+    vkResetCommandPool(g_Device, g_UploadPool, 0);
     VkCommandBufferBeginInfo beginInfo = {};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(fd->CommandBuffer, &beginInfo);
+    vkBeginCommandBuffer(g_UploadCmd, &beginInfo);
 
     VkImageMemoryBarrier barrier = {};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -323,26 +389,26 @@ static bool CaptureSwapchainToPng(ImGui_ImplVulkanH_Window* wd, const std::strin
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     barrier.image = fd->Backbuffer;
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdPipelineBarrier(fd->CommandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    vkCmdPipelineBarrier(g_UploadCmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
     VkBufferImageCopy region = {};
     region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.imageExtent = {w, h, 1};
-    vkCmdCopyImageToBuffer(fd->CommandBuffer, fd->Backbuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuf, 1, &region);
+    vkCmdCopyImageToBuffer(g_UploadCmd, fd->Backbuffer, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, stagingBuf, 1, &region);
 
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     barrier.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
-    vkCmdPipelineBarrier(fd->CommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+    vkCmdPipelineBarrier(g_UploadCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
 
-    vkEndCommandBuffer(fd->CommandBuffer);
+    vkEndCommandBuffer(g_UploadCmd);
     VkSubmitInfo submit = {};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &fd->CommandBuffer;
-    vkQueueSubmit(g_Queue, 1, &submit, VK_NULL_HANDLE);
-    vkQueueWaitIdle(g_Queue);
+    submit.pCommandBuffers = &g_UploadCmd;
+    vkQueueSubmit(g_Queue, 1, &submit, g_UploadFence);
+    vkWaitForFences(g_Device, 1, &g_UploadFence, VK_TRUE, UINT64_MAX);
 
     void* mapped = nullptr;
     vkMapMemory(g_Device, stagingMem, 0, bufSize, 0, &mapped);
@@ -369,23 +435,190 @@ static bool CaptureSwapchainToPng(ImGui_ImplVulkanH_Window* wd, const std::strin
     return saved.has_value();
 }
 
-// ---------------------------------------------------------------------------
-// Native File Dialog Callbacks (SDL3)
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Vulkan Image Texture Loader (for Stage preview & thumbnails)
-static void DestroyVulkanTexture(VulkanTexture& tex) {
-    if (!tex.valid()) return;
-    vkDeviceWaitIdle(g_Device);
-    ImGui_ImplVulkan_RemoveTexture(tex.desc);
-    if (tex.sampler) vkDestroySampler(g_Device, tex.sampler, g_Allocator);
-    if (tex.view) vkDestroyImageView(g_Device, tex.view, g_Allocator);
-    if (tex.image) vkDestroyImage(g_Device, tex.image, g_Allocator);
-    if (tex.memory) vkFreeMemory(g_Device, tex.memory, g_Allocator);
-    tex = VulkanTexture{};
+static void DownscaleRgbaIfNeeded(std::vector<uint8_t>& rgba, int& w, int& h, int maxDim) {
+    if (w <= maxDim && h <= maxDim) return;
+    double scale = static_cast<double>(maxDim) / static_cast<double>(std::max(w, h));
+    int nw = std::max(1, static_cast<int>(std::lround(w * scale)));
+    int nh = std::max(1, static_cast<int>(std::lround(h * scale)));
+    std::vector<uint8_t> out(static_cast<size_t>(nw) * nh * 4, 255);
+    for (int y = 0; y < nh; ++y) {
+        float sy = (static_cast<float>(y) + 0.5f) * static_cast<float>(h) / static_cast<float>(nh) - 0.5f;
+        int y0 = std::clamp(static_cast<int>(std::floor(sy)), 0, h - 1);
+        int y1 = std::min(h - 1, y0 + 1);
+        float fy = std::clamp(sy - y0, 0.0f, 1.0f);
+        for (int x = 0; x < nw; ++x) {
+            float sx = (static_cast<float>(x) + 0.5f) * static_cast<float>(w) / static_cast<float>(nw) - 0.5f;
+            int x0 = std::clamp(static_cast<int>(std::floor(sx)), 0, w - 1);
+            int x1 = std::min(w - 1, x0 + 1);
+            float fx = std::clamp(sx - x0, 0.0f, 1.0f);
+            for (int c = 0; c < 4; ++c) {
+                float p00 = rgba[(static_cast<size_t>(y0) * w + x0) * 4 + c];
+                float p10 = rgba[(static_cast<size_t>(y0) * w + x1) * 4 + c];
+                float p01 = rgba[(static_cast<size_t>(y1) * w + x0) * 4 + c];
+                float p11 = rgba[(static_cast<size_t>(y1) * w + x1) * 4 + c];
+                float top = p00 + (p10 - p00) * fx;
+                float bot = p01 + (p11 - p01) * fx;
+                out[(static_cast<size_t>(y) * nw + x) * 4 + c] = static_cast<uint8_t>(std::clamp(top + (bot - top) * fy, 0.0f, 255.0f));
+            }
+        }
+    }
+    rgba = std::move(out);
+    w = nw;
+    h = nh;
 }
 
-static bool LoadVulkanTextureFromFile(ImGui_ImplVulkanH_Window* wd, const std::string& path, VulkanTexture& outTex) {
+static bool UploadVulkanTextureFromRgba(const std::vector<uint8_t>& rgbaIn, int w, int h, VulkanTexture& outTex) {
+    if (w <= 0 || h <= 0 || rgbaIn.size() < static_cast<size_t>(w) * h * 4) return false;
+    std::vector<uint8_t> rgba = rgbaIn;
+    DownscaleRgbaIfNeeded(rgba, w, h, 4096);
+
+    QueueDestroyVulkanTexture(outTex);
+    VulkanTexture tex;
+    VkDeviceSize uploadSize = static_cast<VkDeviceSize>(w) * h * 4;
+
+    VkImageCreateInfo imgInfo = {};
+    imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imgInfo.imageType = VK_IMAGE_TYPE_2D;
+    imgInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    imgInfo.extent = {(uint32_t)w, (uint32_t)h, 1};
+    imgInfo.mipLevels = 1;
+    imgInfo.arrayLayers = 1;
+    imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imgInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    imgInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (vkCreateImage(g_Device, &imgInfo, g_Allocator, &tex.image) != VK_SUCCESS) {
+        DestroyVulkanTextureImmediate(tex);
+        return false;
+    }
+
+    VkMemoryRequirements imgReq;
+    vkGetImageMemoryRequirements(g_Device, tex.image, &imgReq);
+    uint32_t imgMemIdx = FindMemoryType(imgReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (imgMemIdx == UINT32_MAX) {
+        DestroyVulkanTextureImmediate(tex);
+        return false;
+    }
+    VkMemoryAllocateInfo allocInfo = {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = imgReq.size;
+    allocInfo.memoryTypeIndex = imgMemIdx;
+    if (vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &tex.memory) != VK_SUCCESS) {
+        DestroyVulkanTextureImmediate(tex);
+        return false;
+    }
+    if (vkBindImageMemory(g_Device, tex.image, tex.memory, 0) != VK_SUCCESS) {
+        DestroyVulkanTextureImmediate(tex);
+        return false;
+    }
+
+    VkImageViewCreateInfo viewInfo = {};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = tex.image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
+    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(g_Device, &viewInfo, g_Allocator, &tex.view) != VK_SUCCESS) {
+        DestroyVulkanTextureImmediate(tex);
+        return false;
+    }
+
+    VkSamplerCreateInfo sampInfo = {};
+    sampInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    sampInfo.magFilter = VK_FILTER_LINEAR;
+    sampInfo.minFilter = VK_FILTER_LINEAR;
+    sampInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    sampInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    sampInfo.maxAnisotropy = 1.0f;
+    if (vkCreateSampler(g_Device, &sampInfo, g_Allocator, &tex.sampler) != VK_SUCCESS) {
+        DestroyVulkanTextureImmediate(tex);
+        return false;
+    }
+
+    VkBuffer stagingBuf = VK_NULL_HANDLE;
+    VkDeviceMemory stagingMem = VK_NULL_HANDLE;
+    VkBufferCreateInfo bufInfo = {};
+    bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufInfo.size = uploadSize;
+    bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (vkCreateBuffer(g_Device, &bufInfo, g_Allocator, &stagingBuf) != VK_SUCCESS) {
+        DestroyVulkanTextureImmediate(tex);
+        return false;
+    }
+
+    VkMemoryRequirements bufReq;
+    vkGetBufferMemoryRequirements(g_Device, stagingBuf, &bufReq);
+    uint32_t bufMemIdx = FindMemoryType(bufReq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (bufMemIdx == UINT32_MAX) {
+        vkDestroyBuffer(g_Device, stagingBuf, g_Allocator);
+        DestroyVulkanTextureImmediate(tex);
+        return false;
+    }
+    allocInfo.allocationSize = bufReq.size;
+    allocInfo.memoryTypeIndex = bufMemIdx;
+    if (vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &stagingMem) != VK_SUCCESS) {
+        vkDestroyBuffer(g_Device, stagingBuf, g_Allocator);
+        DestroyVulkanTextureImmediate(tex);
+        return false;
+    }
+    vkBindBufferMemory(g_Device, stagingBuf, stagingMem, 0);
+
+    void* mapped = nullptr;
+    vkMapMemory(g_Device, stagingMem, 0, uploadSize, 0, &mapped);
+    std::memcpy(mapped, rgba.data(), uploadSize);
+    vkUnmapMemory(g_Device, stagingMem);
+
+    vkResetFences(g_Device, 1, &g_UploadFence);
+    vkResetCommandPool(g_Device, g_UploadPool, 0);
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(g_UploadCmd, &beginInfo);
+
+    VkImageMemoryBarrier barrier = {};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.srcAccessMask = 0;
+    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.image = tex.image;
+    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    vkCmdPipelineBarrier(g_UploadCmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    VkBufferImageCopy region = {};
+    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    region.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
+    vkCmdCopyBufferToImage(g_UploadCmd, stagingBuf, tex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    vkCmdPipelineBarrier(g_UploadCmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    vkEndCommandBuffer(g_UploadCmd);
+    VkSubmitInfo submit = {};
+    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submit.commandBufferCount = 1;
+    submit.pCommandBuffers = &g_UploadCmd;
+    vkQueueSubmit(g_Queue, 1, &submit, g_UploadFence);
+    vkWaitForFences(g_Device, 1, &g_UploadFence, VK_TRUE, UINT64_MAX);
+
+    vkDestroyBuffer(g_Device, stagingBuf, g_Allocator);
+    vkFreeMemory(g_Device, stagingMem, g_Allocator);
+
+    tex.desc = ImGui_ImplVulkan_AddTexture(tex.sampler, tex.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    tex.width = w;
+    tex.height = h;
+    outTex = tex;
+    return true;
+}
+
+static bool LoadVulkanTextureFromFile(const std::string& path, VulkanTexture& outTex, int maxDim = 4096) {
     auto loaded = upix::Image::load(path);
     if (!loaded || !loaded->valid()) return false;
     const upix::Image& srcImg = *loaded;
@@ -405,126 +638,197 @@ static bool LoadVulkanTextureFromFile(ImGui_ImplVulkanH_Window* wd, const std::s
             rgba[i * 4 + 0] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = src[i];
         }
     }
-
-    DestroyVulkanTexture(outTex);
-    VkDeviceSize uploadSize = static_cast<VkDeviceSize>(w) * h * 4;
-
-    VkImageCreateInfo imgInfo = {};
-    imgInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imgInfo.imageType = VK_IMAGE_TYPE_2D;
-    imgInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
-    imgInfo.extent = {(uint32_t)w, (uint32_t)h, 1};
-    imgInfo.mipLevels = 1;
-    imgInfo.arrayLayers = 1;
-    imgInfo.samples = VK_SAMPLE_COUNT_1_BIT;
-    imgInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    imgInfo.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    imgInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    imgInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    check_vk_result(vkCreateImage(g_Device, &imgInfo, g_Allocator, &outTex.image));
-
-    VkMemoryRequirements imgReq;
-    vkGetImageMemoryRequirements(g_Device, outTex.image, &imgReq);
-    VkMemoryAllocateInfo allocInfo = {};
-    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
-    allocInfo.allocationSize = imgReq.size;
-    allocInfo.memoryTypeIndex = FindMemoryType(imgReq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    check_vk_result(vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &outTex.memory));
-    check_vk_result(vkBindImageMemory(g_Device, outTex.image, outTex.memory, 0));
-
-    VkImageViewCreateInfo viewInfo = {};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = outTex.image;
-    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    viewInfo.format = VK_FORMAT_R8G8B8A8_UNORM;
-    viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    check_vk_result(vkCreateImageView(g_Device, &viewInfo, g_Allocator, &outTex.view));
-
-    VkSamplerCreateInfo sampInfo = {};
-    sampInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-    sampInfo.magFilter = VK_FILTER_LINEAR;
-    sampInfo.minFilter = VK_FILTER_LINEAR;
-    sampInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-    sampInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sampInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sampInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    sampInfo.maxAnisotropy = 1.0f;
-    check_vk_result(vkCreateSampler(g_Device, &sampInfo, g_Allocator, &outTex.sampler));
-
-    VkBuffer stagingBuf = VK_NULL_HANDLE;
-    VkDeviceMemory stagingMem = VK_NULL_HANDLE;
-    VkBufferCreateInfo bufInfo = {};
-    bufInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufInfo.size = uploadSize;
-    bufInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bufInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    check_vk_result(vkCreateBuffer(g_Device, &bufInfo, g_Allocator, &stagingBuf));
-
-    VkMemoryRequirements bufReq;
-    vkGetBufferMemoryRequirements(g_Device, stagingBuf, &bufReq);
-    allocInfo.allocationSize = bufReq.size;
-    allocInfo.memoryTypeIndex = FindMemoryType(bufReq.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    check_vk_result(vkAllocateMemory(g_Device, &allocInfo, g_Allocator, &stagingMem));
-    check_vk_result(vkBindBufferMemory(g_Device, stagingBuf, stagingMem, 0));
-
-    void* mapped = nullptr;
-    vkMapMemory(g_Device, stagingMem, 0, uploadSize, 0, &mapped);
-    std::memcpy(mapped, rgba.data(), uploadSize);
-    vkUnmapMemory(g_Device, stagingMem);
-
-    ImGui_ImplVulkanH_Frame* fd = &wd->Frames[0];
-    vkResetCommandPool(g_Device, fd->CommandPool, 0);
-    VkCommandBufferBeginInfo beginInfo = {};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    vkBeginCommandBuffer(fd->CommandBuffer, &beginInfo);
-
-    VkImageMemoryBarrier barrier = {};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.srcAccessMask = 0;
-    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.image = outTex.image;
-    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    vkCmdPipelineBarrier(fd->CommandBuffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-    VkBufferImageCopy region = {};
-    region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-    region.imageExtent = {(uint32_t)w, (uint32_t)h, 1};
-    vkCmdCopyBufferToImage(fd->CommandBuffer, stagingBuf, outTex.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    vkCmdPipelineBarrier(fd->CommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-
-    vkEndCommandBuffer(fd->CommandBuffer);
-    VkSubmitInfo submit = {};
-    submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &fd->CommandBuffer;
-    vkQueueSubmit(g_Queue, 1, &submit, VK_NULL_HANDLE);
-    vkQueueWaitIdle(g_Queue);
-
-    vkDestroyBuffer(g_Device, stagingBuf, g_Allocator);
-    vkFreeMemory(g_Device, stagingMem, g_Allocator);
-
-    outTex.desc = ImGui_ImplVulkan_AddTexture(outTex.sampler, outTex.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    outTex.width = w;
-    outTex.height = h;
-    return true;
+    DownscaleRgbaIfNeeded(rgba, w, h, maxDim);
+    return UploadVulkanTextureFromRgba(rgba, w, h, outTex);
 }
 
-// ---------------------------------------------------------------------------
+// Synthetic high-contrast test pattern so Before/After split is unmistakably distinct in --state done.
+static void UploadSyntheticStageTexture(bool highRes, VulkanTexture& outTex) {
+    constexpr int W = 640;
+    constexpr int H = 427;
+    std::vector<uint8_t> px(static_cast<size_t>(W) * H * 4, 255);
+    const int block = highRes ? 1 : 6;
+    for (int y = 0; y < H; ++y) {
+        const int sy = (y / block) * block;
+        for (int x = 0; x < W; ++x) {
+            const int sx = (x / block) * block;
+            float u = static_cast<float>(sx) / static_cast<float>(W);
+            float v = static_cast<float>(sy) / static_cast<float>(H);
+            // Architectural dark slate + glowing teal/blue wave + crisp grid lines in highRes
+            float wave = std::sin(u * 9.0f) * 0.12f + 0.52f;
+            float ridge = std::exp(-std::pow((v - wave) * 14.0f, 2.0f));
+            float r = 18.0f + 26.0f * u + 40.0f * ridge;
+            float g = 24.0f + 46.0f * (1.0f - v) + 125.0f * ridge;
+            float b = 34.0f + 85.0f * u + 195.0f * ridge;
+            if (highRes) {
+                bool grid = (x % 32 == 0) || (y % 32 == 0);
+                float dx = static_cast<float>(x) - W * 0.55f;
+                float dy = static_cast<float>(y) - H * 0.44f;
+                float dist = std::sqrt(dx * dx + dy * dy);
+                float ring = std::exp(-std::pow(dist - 92.0f, 2.0f) * 0.18f);
+                if (grid) { r += 26.0f; g += 36.0f; b += 48.0f; }
+                r += 160.0f * ring;
+                g += 190.0f * ring;
+                b += 255.0f * ring;
+            } else {
+                // Deliberately soft / muted before state
+                r *= 0.78f;
+                g *= 0.78f;
+                b *= 0.80f;
+            }
+            size_t idx = (static_cast<size_t>(y) * W + x) * 4;
+            px[idx + 0] = static_cast<uint8_t>(std::clamp(r, 0.0f, 255.0f));
+            px[idx + 1] = static_cast<uint8_t>(std::clamp(g, 0.0f, 255.0f));
+            px[idx + 2] = static_cast<uint8_t>(std::clamp(b, 0.0f, 255.0f));
+            px[idx + 3] = 255;
+        }
+    }
+    UploadVulkanTextureFromRgba(px, W, H, outTex);
+}
+
+static void EnsureStageTextures(UiViewState& ui, const upix::gui::Snapshot& snap) {
+    if (snap.inputs.empty() && snap.job.phase == upix::gui::JobPhase::Idle) {
+        if (ui.beforeTex.valid()) {
+            QueueDestroyVulkanTexture(ui.beforeTex);
+            ui.beforeTexPath.clear();
+        }
+        if (ui.afterTex.valid()) {
+            QueueDestroyVulkanTexture(ui.afterTex);
+            ui.afterTexPath.clear();
+        }
+        return;
+    }
+
+    std::string targetBefore;
+    std::string targetAfter;
+    if (!snap.inputs.empty()) {
+        int active = std::clamp(snap.active_input, 0, static_cast<int>(snap.inputs.size()) - 1);
+        const auto& inp = snap.inputs[active];
+        if (inp.path == "__fixture_before__") {
+            targetBefore = "__fixture_before__";
+        } else if (!inp.is_dir && fs::exists(inp.path)) {
+            targetBefore = inp.path;
+        }
+        if (!inp.output_path.empty()) {
+            if (inp.output_path == "__fixture_after__" || fs::exists(inp.output_path)) {
+                targetAfter = inp.output_path;
+            }
+        }
+    }
+    if (targetAfter.empty() && !snap.job.outputs.empty()) {
+        const auto& out = snap.job.outputs.back();
+        if (out == "__fixture_after__" || fs::exists(out)) {
+            targetAfter = out;
+        }
+    }
+    if (targetBefore.empty()) targetBefore = "__fixture_before__";
+
+    if (targetBefore != ui.beforeTexPath) {
+        if (targetBefore == "__fixture_before__") {
+            UploadSyntheticStageTexture(false, ui.beforeTex);
+            ui.beforeTexPath = targetBefore;
+        } else if (LoadVulkanTextureFromFile(targetBefore, ui.beforeTex)) {
+            ui.beforeTexPath = targetBefore;
+        }
+    }
+    if (targetAfter.empty()) {
+        if (ui.afterTex.valid()) {
+            QueueDestroyVulkanTexture(ui.afterTex);
+            ui.afterTexPath.clear();
+        }
+    } else if (targetAfter != ui.afterTexPath) {
+        if (targetAfter == "__fixture_after__") {
+            UploadSyntheticStageTexture(true, ui.afterTex);
+            ui.afterTexPath = targetAfter;
+        } else if (LoadVulkanTextureFromFile(targetAfter, ui.afterTex)) {
+            ui.afterTexPath = targetAfter;
+        }
+    }
+
+    // Populate bounded LRU filmstrip cache (up to 24 mini thumbnails)
+    for (const auto& inp : snap.inputs) {
+        if (inp.is_dir || inp.path.empty() || inp.path.rfind("__", 0) == 0) continue;
+        if (ui.thumbCache.find(inp.path) != ui.thumbCache.end()) continue;
+        if (!fs::exists(inp.path)) continue;
+        VulkanTexture thumb;
+        if (LoadVulkanTextureFromFile(inp.path, thumb, 128)) {
+            if (ui.thumbLru.size() >= 24) {
+                std::string evict = ui.thumbLru.front();
+                ui.thumbLru.erase(ui.thumbLru.begin());
+                auto it = ui.thumbCache.find(evict);
+                if (it != ui.thumbCache.end()) {
+                    QueueDestroyVulkanTexture(it->second);
+                    ui.thumbCache.erase(it);
+                }
+            }
+            ui.thumbCache[inp.path] = thumb;
+            ui.thumbLru.push_back(inp.path);
+        }
+    }
+}
+
+static bool RunAuditMotion(ImGui_ImplVulkanH_Window* wd, upix::gui::AppState& app, UiViewState& ui) {
+    using namespace upix::ui;
+    const char* states[] = {"empty", "default", "running", "done", "error", "models", "host", "pairing", "settings", "guide"};
+    bool ok = true;
+    for (const char* st : states) {
+        motion::resetMotionState();
+        app.applyFixture(st);
+        if (std::strcmp(st, "models") == 0) ui.activeTab = 1;
+        else if (std::strcmp(st, "host") == 0 || std::strcmp(st, "pairing") == 0) ui.activeTab = 2;
+        else if (std::strcmp(st, "guide") == 0) ui.activeTab = 3;
+        else if (std::strcmp(st, "settings") == 0) ui.activeTab = 4;
+        else ui.activeTab = 0;
+
+        float pillY0 = 0.0f;
+        for (int f = 0; f < 5; ++f) {
+            SDL_PumpEvents();
+            ImGui_ImplVulkan_NewFrame();
+            ImGui_ImplSDL3_NewFrame();
+            ImGui::NewFrame();
+            ImVec2 winSize = ImGui::GetIO().DisplaySize;
+            ImGui::SetNextWindowPos(ImVec2(0, 0));
+            ImGui::SetNextWindowSize(winSize);
+            ImGui::Begin("##audit_root", nullptr,
+                         ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                         ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBackground);
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            auto snap = app.snapshot();
+            renderNavRail(dl, winSize, ui, snap);
+            const float targetY = (ui.activeTab < 3)
+                ? (16.0f + ui.activeTab * 62.0f)
+                : (winSize.y - 16.0f - (snap.version.empty() ? 0.0f : (calcText(ui.fontSans, 10.0f, snap.version.c_str()).y + 10.0f)) - 122.0f + (ui.activeTab - 3) * 62.0f);
+            const float curPillY = ctl::selectionSpring(ImGui::GetID("audit-nav-check"), targetY);
+            if (f == 0) pillY0 = curPillY;
+            else if (std::fabs(curPillY - pillY0) > 0.05f) {
+                std::fprintf(stderr, "[audit-motion] FAIL state=%s frame=%d pill drifted %.2f -> %.2f\n",
+                             st, f, pillY0, curPillY);
+                ok = false;
+            }
+            ImGui::End();
+            ImGui::Render();
+            FrameRender(wd, ImGui::GetDrawData());
+            FramePresent(wd);
+            ++g_FrameCounter;
+        }
+    }
+    // Check reduceMotion instantaneous convergence using deterministic headless ID
+    motion::reduceMotion() = true;
+    const float r = ctl::selectionSpring(0xA0D17001u, 240.0f);
+    if (std::fabs(r - 240.0f) > 0.001f) ok = false;
+    motion::reduceMotion() = false;
+    std::fprintf(stdout, "[audit-motion] %s (checked %zu fixture states)\n", ok ? "PASS" : "FAIL", std::size(states));
+    std::fflush(stdout);
+    return ok;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
-    // 1. Subprocess mode: warm daemon (`upix --serve-daemon`) runs headless without GUI init
     std::string fixtureState;
     std::string shotPath;
     int benchFrames = 0;
+    bool auditMotion = false;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--serve-daemon") == 0) {
             upix::ServeDaemonOptions opts;
@@ -542,22 +846,26 @@ int main(int argc, char** argv) {
             shotPath = argv[++i];
         } else if (std::strcmp(argv[i], "--bench") == 0 && i + 1 < argc) {
             benchFrames = std::max(1, std::atoi(argv[++i]));
+        } else if (std::strcmp(argv[i], "--audit-motion") == 0) {
+            auditMotion = true;
         }
     }
 
-    // 2. Keep Vulkan loader ultra-lean for the 2D GUI:
-    //    - Disable implicit 3rd-party Vulkan layers (e.g. MangoHud/LSFG) unless user set it.
-    //    - On hybrid Linux laptops, avoid loading unused Mesa LLVM / dGPU shader compiler ICDs (~95MB RSS!)
-    //      into the 2D GUI window process when an Intel/AMD iGPU ICD is present.
+    // Temporarily scope VK_LOADER_DRIVERS_SELECT ONLY during GUI Vulkan device init so
+    // in-process ncnn discrete-GPU compute inference still sees all Vulkan drivers!
 #ifndef _WIN32
+    const char* prevDriversEnv = std::getenv("VK_LOADER_DRIVERS_SELECT");
+    std::optional<std::string> savedDrivers = prevDriversEnv ? std::optional<std::string>(prevDriversEnv) : std::nullopt;
     setenv("VK_LOADER_LAYERS_DISABLE", "~all~", 0);
-    if (fs::exists("/usr/share/vulkan/icd.d/intel_icd.x86_64.json") ||
-        fs::exists("/usr/share/vulkan/icd.d/intel_icd.json")) {
-        setenv("VK_LOADER_DRIVERS_SELECT", "intel*", 0);
+    bool scopedIntel = false;
+    if (!savedDrivers.has_value() &&
+        (fs::exists("/usr/share/vulkan/icd.d/intel_icd.x86_64.json") ||
+         fs::exists("/usr/share/vulkan/icd.d/intel_icd.json"))) {
+        setenv("VK_LOADER_DRIVERS_SELECT", "intel*", 1);
+        scopedIntel = true;
     }
 #endif
 
-    // 3. Prefer native Wayland on Linux with fallback to X11
     SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
     SDL_SetHint(SDL_HINT_IME_IMPLEMENTED_UI, "0");
 
@@ -574,7 +882,6 @@ int main(int argc, char** argv) {
     }
     SDL_SetWindowMinimumSize(window, 1040, 680);
 
-    // 4. Setup Vulkan
     uint32_t sdl_ext_count = 0;
     const char* const* sdl_exts = SDL_Vulkan_GetInstanceExtensions(&sdl_ext_count);
     std::vector<const char*> extensions(sdl_exts, sdl_exts + sdl_ext_count);
@@ -589,10 +896,16 @@ int main(int argc, char** argv) {
     int w = 0, h = 0;
     SDL_GetWindowSizeInPixels(window, &w, &h);
     ImGui_ImplVulkanH_Window* wd = &g_MainWindowData;
-    VkImageUsageFlags extra_usage = shotPath.empty() ? 0 : VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+    VkImageUsageFlags extra_usage = (shotPath.empty() && !auditMotion) ? 0 : VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     SetupVulkanWindow(wd, surface, w, h, extra_usage);
 
-    // 5. Setup Dear ImGui 1.92 (with zero-copy mmap + LightHinting + HiDPI RasterizerDensity)
+#ifndef _WIN32
+    if (scopedIntel) {
+        if (savedDrivers.has_value()) setenv("VK_LOADER_DRIVERS_SELECT", savedDrivers->c_str(), 1);
+        else unsetenv("VK_LOADER_DRIVERS_SELECT");
+    }
+#endif
+
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
@@ -604,6 +917,8 @@ int main(int argc, char** argv) {
         cfg.MergeMode = merge;
         cfg.FontNo = fontNo;
         cfg.PixelSnapH = true;
+        cfg.OversampleH = 2;
+        cfg.OversampleV = 1;
         cfg.FontLoaderFlags = ImGuiFreeTypeLoaderFlags_LightHinting;
 #ifndef _WIN32
         int fd = ::open(path, O_RDONLY);
@@ -626,7 +941,6 @@ int main(int argc, char** argv) {
         return io.Fonts->AddFontFromFileTTF(path, size, &cfg);
     };
 
-    // Prefer NotoSansCJK-Medium.ttc (FontNo=2 for Simplified Chinese) matching Figma's font-weight: 500!
     struct CjkCandidate {
         const char* path;
         int fontNo;
@@ -680,7 +994,7 @@ int main(int argc, char** argv) {
     init_info.QueueFamily = g_QueueFamily;
     init_info.Queue = g_Queue;
     init_info.PipelineCache = g_PipelineCache;
-    init_info.DescriptorPoolSize = 64;
+    init_info.DescriptorPoolSize = 96;
     init_info.MinImageCount = g_MinImageCount;
     init_info.ImageCount = wd->ImageCount;
     init_info.Allocator = g_Allocator;
@@ -690,24 +1004,48 @@ int main(int argc, char** argv) {
     init_info.CheckVkResultFn = check_vk_result;
     ImGui_ImplVulkan_Init(&init_info);
 
-    // 6. Initialize Upix application controller
     upix::gui::AppState app;
+    {
+        auto initSnap = app.snapshot();
+        upix::ui::geist::mode() = initSnap.dark_mode ? upix::ui::geist::Mode::Dark : upix::ui::geist::Mode::Light;
+        upix::ui::motion::reduceMotion() = initSnap.reduce_motion;
+    }
+
     if (!fixtureState.empty()) {
         app.applyFixture(fixtureState);
         if (fixtureState == "models") ui.activeTab = 1;
         else if (fixtureState == "host" || fixtureState == "host-idle" || fixtureState == "pairing") ui.activeTab = 2;
+        else if (fixtureState == "guide") ui.activeTab = 3;
+        else if (fixtureState == "settings") ui.activeTab = 4;
         else if (fixtureState == "picker") ui.showModelPicker = true;
     }
 
-    DialogBridge dlgFiles{&app, 0};
-    DialogBridge dlgFolder{&app, 1};
-    DialogBridge dlgOutDir{&app, 2};
-    DialogBridge dlgImport{&app, 3};
+    if (auditMotion) {
+        bool pass = RunAuditMotion(wd, app, ui);
+        vkDeviceWaitIdle(g_Device);
+        FlushDestroyQueue(true);
+        ImGui_ImplVulkan_Shutdown();
+        ImGui_ImplSDL3_Shutdown();
+        ImGui::DestroyContext();
+        CleanupVulkanWindow();
+        CleanupVulkan();
+        SDL_DestroyWindow(window);
+        SDL_Quit();
+#ifndef _WIN32
+        for (const auto& mf : ui.mappedFonts) ::munmap(mf.ptr, mf.size);
+#endif
+        return pass ? 0 : 1;
+    }
+
+    auto dlgAlive = std::make_shared<std::atomic<bool>>(true);
+    DialogBridge dlgFiles{&app, 0, dlgAlive, false};
+    DialogBridge dlgFolder{&app, 1, dlgAlive, false};
+    DialogBridge dlgOutDir{&app, 2, dlgAlive, false};
+    DialogBridge dlgImport{&app, 3, dlgAlive, false};
 
     std::fprintf(stdout, "[upix] SDL3 driver: %s | Vulkan device initialized\n", SDL_GetCurrentVideoDriver());
     std::fflush(stdout);
 
-    // 7. Event-driven main loop
     bool done = false;
     int redrawFrames = 4;
     int renderedCount = 0;
@@ -716,7 +1054,7 @@ int main(int argc, char** argv) {
     std::chrono::steady_clock::time_point benchT0;
     double benchCpuMs0 = 0.0;
     double benchPrevMs = 0.0;
-    if (benchFrames > 0) redrawFrames = 1 << 30; // render continuously
+    if (benchFrames > 0) redrawFrames = 1 << 30;
 
     while (!done) {
         bool stateChanged = app.pollEvents();
@@ -742,18 +1080,69 @@ int main(int argc, char** argv) {
                 app.addPaths({event.drop.data});
             }
             if (event.type == SDL_EVENT_KEY_DOWN) {
-                bool ctrl = (event.key.mod & SDL_KMOD_CTRL) != 0;
+                const bool ctrl = (event.key.mod & SDL_KMOD_CTRL) != 0;
                 if (ctrl && event.key.key == SDLK_PERIOD) {
                     app.cancelJob();
+                } else if (ctrl && event.key.key == SDLK_V && !io.WantTextInput) {
+                    bool pasted = false;
+                    if (SDL_HasClipboardText()) {
+                        char* clip = SDL_GetClipboardText();
+                        if (clip) {
+                            pasted = app.addFromClipboardText(clip);
+                            SDL_free(clip);
+                        }
+                    }
+                    if (!pasted && SDL_HasClipboardData("image/png")) {
+                        size_t sz = 0;
+                        void* raw = SDL_GetClipboardData("image/png", &sz);
+                        if (raw && sz > 0) {
+                            std::vector<uint8_t> bytes(static_cast<const uint8_t*>(raw),
+                                                       static_cast<const uint8_t*>(raw) + sz);
+                            SDL_free(raw);
+                            if (auto img = upix::Image::load_from_memory("png", bytes); img && img->valid()) {
+                                int wImg = img->width(), hImg = img->height(), ch = img->channels();
+                                std::vector<uint8_t> rgba(static_cast<size_t>(wImg) * hImg * 4, 255);
+                                const uint8_t* src = img->data();
+                                for (int i = 0; i < wImg * hImg; ++i) {
+                                    if (ch >= 3) {
+                                        rgba[i * 4 + 0] = src[i * ch + 0];
+                                        rgba[i * 4 + 1] = src[i * ch + 1];
+                                        rgba[i * 4 + 2] = src[i * ch + 2];
+                                        rgba[i * 4 + 3] = (ch == 4) ? src[i * ch + 3] : 255;
+                                    } else {
+                                        rgba[i * 4 + 0] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = src[i];
+                                    }
+                                }
+                                pasted = app.addFromClipboardRgba(wImg, hImg, rgba.data(), rgba.size());
+                            }
+                        }
+                    }
+                    if (!pasted) {
+                        app.setNotice("剪贴板里没有图片或有效文件路径");
+                    }
                 } else if (event.key.key == SDLK_ESCAPE) {
-                    app.hostDecide(false);
-                    ui.showModelPicker = false;
+                    auto cur = app.snapshot();
+                    if (!cur.host.pending_device.empty()) {
+                        app.hostDecide(false);
+                    } else if (ui.showModelPicker) {
+                        ui.showModelPicker = false;
+                    } else if (ui.showIpPicker) {
+                        ui.showIpPicker = false;
+                    } else if (!cur.notice.empty()) {
+                        app.clearNotice();
+                    } else if (cur.job.phase == upix::gui::JobPhase::Running) {
+                        app.cancelJob();
+                    }
                 } else if (ctrl && event.key.key == SDLK_1) {
                     ui.activeTab = 0;
                 } else if (ctrl && event.key.key == SDLK_2) {
                     ui.activeTab = 1;
                 } else if (ctrl && event.key.key == SDLK_3) {
                     ui.activeTab = 2;
+                } else if (ctrl && event.key.key == SDLK_4) {
+                    ui.activeTab = 3;
+                } else if (ctrl && event.key.key == SDLK_5) {
+                    ui.activeTab = 4;
                 }
             }
             gotEvent = SDL_PollEvent(&event);
@@ -775,6 +1164,8 @@ int main(int argc, char** argv) {
             g_SwapChainRebuild = false;
         }
 
+        FlushDestroyQueue(false);
+
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
 
@@ -788,11 +1179,15 @@ int main(int argc, char** argv) {
 #endif
         }
 
-        // Update Wayland HiDPI rasterizer density & physical pixel snap grid every frame!
         float dpiScale = (io.DisplayFramebufferScale.x > 0.0f) ? io.DisplayFramebufferScale.x : 1.0f;
         upix::ui::currentDpiScale() = dpiScale;
         if (ui.fontSans) ui.fontSans->CurrentRasterizerDensity = dpiScale;
         if (ui.fontMono) ui.fontMono->CurrentRasterizerDensity = dpiScale;
+
+        auto snap = app.snapshot();
+        upix::ui::geist::mode() = snap.dark_mode ? upix::ui::geist::Mode::Dark : upix::ui::geist::Mode::Light;
+        upix::ui::motion::reduceMotion() = snap.reduce_motion;
+        dlgFolder.recursive = snap.recursive;
 
         ImGui::NewFrame();
 
@@ -807,36 +1202,14 @@ int main(int argc, char** argv) {
                      ImGuiWindowFlags_NoBackground);
 
         ImDrawList* dl = ImGui::GetWindowDrawList();
-        dl->AddRectFilled(ImVec2(0, 0), winSize, ui.pal.bg());
+        const auto& gt = upix::ui::geist::tokens();
+        dl->AddRectFilled(ImVec2(0, 0), winSize, gt.bg);
 
-        auto snap = app.snapshot();
-        if (snap.job.phase == upix::gui::JobPhase::Running) {
+        if (snap.job.phase == upix::gui::JobPhase::Running || snap.job.phase == upix::gui::JobPhase::Cancelling) {
             redrawFrames = std::max(redrawFrames, 2);
         }
 
-        // Lazy-load stage texture only when inputs exist
-        if (snap.inputs.empty() && snap.job.phase == upix::gui::JobPhase::Idle) {
-            if (ui.stageTex.valid()) {
-                DestroyVulkanTexture(ui.stageTex);
-                ui.stageTexPath.clear();
-            }
-        } else {
-            std::string targetImg;
-            if (!snap.inputs.empty() && !snap.inputs.front().is_dir && fs::exists(snap.inputs.front().path)) {
-                targetImg = snap.inputs.front().path;
-            }
-#ifdef FIXTURE_DIR
-            if (targetImg.empty()) {
-                std::string demo = std::string(FIXTURE_DIR) + "/demo_stage.png";
-                if (fs::exists(demo)) targetImg = demo;
-            }
-#endif
-            if (!targetImg.empty() && targetImg != ui.stageTexPath) {
-                if (LoadVulkanTextureFromFile(wd, targetImg, ui.stageTex)) {
-                    ui.stageTexPath = targetImg;
-                }
-            }
-        }
+        EnsureStageTextures(ui, snap);
 
         renderNavRail(dl, winSize, ui, snap);
         if (ui.activeTab == 0) {
@@ -845,6 +1218,10 @@ int main(int argc, char** argv) {
             renderModelsPage(dl, winSize, ui, app, snap, window, &dlgImport);
         } else if (ui.activeTab == 2) {
             renderRemotePage(dl, winSize, ui, app, snap);
+        } else if (ui.activeTab == 3) {
+            renderGuidePage(dl, winSize, ui, snap);
+        } else if (ui.activeTab == 4) {
+            renderSettingsPage(dl, winSize, ui, app, snap);
         }
         renderPairingModal(dl, winSize, ui, app, snap);
 
@@ -853,16 +1230,16 @@ int main(int argc, char** argv) {
 
         ImGui::Render();
         ImDrawData* draw_data = ImGui::GetDrawData();
-        wd->ClearValue.color.float32[0] = 0.075f;
-        wd->ClearValue.color.float32[1] = 0.075f;
-        wd->ClearValue.color.float32[2] = 0.086f;
+        const ImVec4 clearVec = ImGui::ColorConvertU32ToFloat4(gt.bg);
+        wd->ClearValue.color.float32[0] = clearVec.x;
+        wd->ClearValue.color.float32[1] = clearVec.y;
+        wd->ClearValue.color.float32[2] = clearVec.z;
         wd->ClearValue.color.float32[3] = 1.0f;
 
         FrameRender(wd, draw_data);
+        ++g_FrameCounter;
 
 #ifndef _WIN32
-        // Evict file-backed CJK font pages after FreeType rasterizes initial glyphs
-        // so the 19MB TTC file doesn't sit in RSS needlessly.
         if (renderedCount == 2) {
             for (const auto& mf : ui.mappedFonts) {
                 ::madvise(mf.ptr, mf.size, MADV_DONTNEED);
@@ -884,7 +1261,6 @@ int main(int argc, char** argv) {
             benchFrameMs.push_back(totalMs - benchPrevMs);
             benchPrevMs = totalMs;
             if ((int)benchFrameMs.size() >= benchFrames) {
-                // Drop clock-glitch / compositor-stall outliers (v < 0 or > 1 s)
                 std::vector<double> kept;
                 kept.reserve(benchFrameMs.size());
                 size_t dropped = 0;
@@ -895,8 +1271,8 @@ int main(int argc, char** argv) {
                 std::sort(kept.begin(), kept.end());
                 double sum = 0.0;
                 for (double v : kept) sum += v;
-                const size_t n = kept.size();
-                auto pct = [&](double q) { return kept[std::min((size_t)(q * (n - 1)), n - 1)]; };
+                const size_t n = std::max<size_t>(1, kept.size());
+                auto pct = [&](double q) { return kept.empty() ? 0.0 : kept[std::min((size_t)(q * (n - 1)), n - 1)]; };
                 double cpuMs = 0.0;
 #ifndef _WIN32
                 struct rusage ru{};
@@ -907,8 +1283,9 @@ int main(int argc, char** argv) {
 #endif
                 std::fprintf(stdout,
                              "[bench] frames=%zu (dropped %zu) wall ms min/avg/p95/max = %.2f/%.2f/%.2f/%.2f | total %.1f s | cpu %.2f ms/frame | fps %.1f\n",
-                             benchFrameMs.size(), dropped, kept.front(), sum / static_cast<double>(kept.size()), pct(0.95), kept.back(),
-                             totalMs / 1000.0, cpuMs, 1000.0 / (sum / static_cast<double>(n)));
+                             benchFrameMs.size(), dropped, kept.empty() ? 0.0 : kept.front(),
+                             sum / static_cast<double>(n), pct(0.95), kept.empty() ? 0.0 : kept.back(),
+                             totalMs / 1000.0, cpuMs, 1000.0 / std::max(0.001, sum / static_cast<double>(n)));
                 std::fflush(stdout);
                 done = true;
             }
@@ -916,8 +1293,16 @@ int main(int argc, char** argv) {
         if (redrawFrames > 0) --redrawFrames;
     }
 
+    dlgAlive->store(false, std::memory_order_release);
     vkDeviceWaitIdle(g_Device);
-    DestroyVulkanTexture(ui.stageTex);
+    DestroyVulkanTextureImmediate(ui.beforeTex);
+    DestroyVulkanTextureImmediate(ui.afterTex);
+    for (auto& [_, t] : ui.thumbCache) {
+        DestroyVulkanTextureImmediate(t);
+    }
+    ui.thumbCache.clear();
+    FlushDestroyQueue(true);
+
     ImGui_ImplVulkan_Shutdown();
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
@@ -926,5 +1311,12 @@ int main(int argc, char** argv) {
     CleanupVulkan();
     SDL_DestroyWindow(window);
     SDL_Quit();
+
+#ifndef _WIN32
+    for (const auto& mf : ui.mappedFonts) {
+        ::munmap(mf.ptr, mf.size);
+    }
+    ui.mappedFonts.clear();
+#endif
     return 0;
 }

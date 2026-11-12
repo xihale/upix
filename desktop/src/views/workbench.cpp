@@ -14,49 +14,6 @@
 namespace upix::views {
 namespace {
 
-// Same workaround as shell.cpp: motion::springTo's Spring1D boots at 1.0f and
-// only honors defaultValue after 120 dormant frames, so a pill or a progress
-// bar would animate in from the wrong place (an entrance). Seed at `target`.
-// Params match ctl::selectionSpring {360,30}, ctl::progressSpring {180,26},
-// and motion::PLACE for the switch knob.
-float followSpring(ImGuiID id, float target, upix::ui::motion::SpringParams params) {
-    struct Slot {
-        upix::ui::motion::Spring1D s;
-        int frame = -1;
-        bool live = false;
-    };
-    static std::unordered_map<ImGuiID, Slot> store;
-    Slot& slot = store[id];
-    const int frame = ImGui::GetFrameCount();
-    if (!slot.live || slot.frame + 120 < frame) {
-        slot.s.value = target;
-        slot.s.velocity = 0.0f;
-        slot.live = true;
-    }
-    slot.frame = frame;
-    return upix::ui::motion::advance(slot.s, target, params, ImGui::GetIO().DeltaTime);
-}
-
-float easeTo(ImGuiID id, float target, float durMs) {
-    struct Slot {
-        float v = 0.0f;
-        int frame = -1;
-        bool live = false;
-    };
-    static std::unordered_map<ImGuiID, Slot> store;
-    Slot& slot = store[id];
-    const int frame = ImGui::GetFrameCount();
-    if (!slot.live || slot.frame + 120 < frame) {
-        slot.v = target;
-        slot.live = true;
-    }
-    slot.frame = frame;
-    const float step = ImGui::GetIO().DeltaTime / (durMs / 1000.0f);
-    if (slot.v < target) slot.v = std::min(target, slot.v + step);
-    else slot.v = std::max(target, slot.v - step);
-    return slot.v;
-}
-
 // Finish::Inset strokes its inner shadow and then fills the same rect, so the
 // shadow never shows. Fill wellBg, then a 1px black rim inside the clip, then
 // the hairline the spec asks for.
@@ -100,7 +57,7 @@ bool segmented(ImDrawList* dl, const char* id, ImFont* font, ImVec2 pos, ImVec2 
 
     ImGui::PushID(id);
     const float targetX = pos.x + pad + static_cast<float>(active) * segW;
-    const float pillX = followSpring(ImGui::GetID("pill"), targetX, motion::SpringParams{360.0f, 30.0f});
+    const float pillX = motion::followSpring(ImGui::GetID("pill"), targetX, motion::SpringParams{360.0f, 30.0f});
     ctl::finish(dl, snapPt(pillX, pos.y + pad), snapPt(pillX + segW, pos.y + pad + segH), ctl::Finish::Pill, 6.0f);
 
     bool changed = false;
@@ -125,7 +82,7 @@ bool segmented(ImDrawList* dl, const char* id, ImFont* font, ImVec2 pos, ImVec2 
         float sc = motion::pressScale(ImGui::GetID("press"), held, motion::PRESS_SCALE);
         if (std::fabs(sc - 1.0f) < 0.001f) sc = 1.0f;
         if (hov || held) dl->AddRectFilled(s0, s1, hex(0xFFFFFF, 0x0F), 6.0f);
-        const float promo = easeTo(ImGui::GetID("ink"), (i == active) ? 1.0f : 0.0f, motion::FAST);
+        const float promo = motion::approach(ImGui::GetID("ink"), (i == active) ? 1.0f : 0.0f, motion::FAST, (i == active) ? 1.0f : 0.0f);
         const ImU32 col = motion::mix(t.mute, t.ink, promo);
         const ImVec2 c((s0.x + s1.x) * 0.5f, (s0.y + s1.y) * 0.5f);
         const ImVec2 q0(c.x + (s0.x - c.x) * sc, c.y + (s0.y - c.y) * sc);
@@ -203,8 +160,8 @@ bool inkSwitch(ImDrawList* dl, const char* id, ImVec2 pos, bool& on, bool modal)
         if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     }
     ImGui::PushID(id);
-    const float k = followSpring(ImGui::GetID("knob"), on ? 1.0f : 0.0f, motion::PLACE);
-    const float c = easeTo(ImGui::GetID("col"), on ? 1.0f : 0.0f, motion::BASE);
+    const float k = motion::followSpring(ImGui::GetID("knob"), on ? 1.0f : 0.0f, motion::PLACE);
+    const float c = motion::approach(ImGui::GetID("col"), on ? 1.0f : 0.0f, motion::BASE, on ? 1.0f : 0.0f);
     ImGui::PopID();
 
     const ImU32 track = motion::mix(t.recessed, t.ink, c);
@@ -434,7 +391,7 @@ void renderWorkbench(ImDrawList* dl, ImVec2 winSize, UiViewState& ui, upix::gui:
             if (iconPlate(dl, "##close_stage_done", close0, 28.0f, "x", 13.0f, modal, false)) app.clearInputs();
         } else {
             drawStageArtwork(dl, viewMin, viewMax, false, ui);
-            if (snap.job.phase == upix::gui::JobPhase::Running) {
+            if (snap.job.phase == upix::gui::JobPhase::Running || snap.job.phase == upix::gui::JobPhase::Cancelling) {
                 const float scanY = snapPx(viewMin.y + (viewMax.y - viewMin.y) * (snap.job.percent / 100.0f));
                 dl->AddRectFilled(ImVec2(viewMin.x, scanY), ImVec2(viewMax.x, scanY + hairlinePx()), t.accent);
             }
@@ -449,7 +406,7 @@ void renderWorkbench(ImDrawList* dl, ImVec2 winSize, UiViewState& ui, upix::gui:
         dl->AddRectFilled(ImVec2(bar0.x, bar0.y), ImVec2(bar1.x, bar0.y + hairlinePx()), t.outline);
         const float cy = snapPx((bar0.y + bar1.y) * 0.5f);
 
-        if (snap.job.phase == upix::gui::JobPhase::Running) {
+        if (snap.job.phase == upix::gui::JobPhase::Running || snap.job.phase == upix::gui::JobPhase::Cancelling) {
             dl->AddCircleFilled(ImVec2(bar0.x + 16.0f, cy), 3.0f, t.accent);
             const float textX = bar0.x + 28.0f;
             drawText(dl, ui.fontMono, 12.0f, ImVec2(textX, cy - 7.5f), t.ink, snap.job.current_file.c_str());
@@ -473,7 +430,7 @@ void renderWorkbench(ImDrawList* dl, ImVec2 winSize, UiViewState& ui, upix::gui:
             const float trkW = 148.0f;
             const float trkX = snapPx(pctX - 10.0f - trkW);
             const float frac = std::clamp(snap.job.percent / 100.0f, 0.0f, 1.0f);
-            const float fillW = followSpring(ImGui::GetID("job-progress"), frac * trkW, motion::SpringParams{180.0f, 26.0f});
+            const float fillW = motion::followSpring(ImGui::GetID("job-progress"), frac * trkW, motion::SpringParams{180.0f, 26.0f});
             dl->AddRectFilled(ImVec2(trkX, cy - 2.0f), ImVec2(trkX + trkW, cy + 2.0f), t.recessed, 2.0f);
             dl->AddRectFilled(ImVec2(trkX, cy - 2.0f), ImVec2(trkX + std::clamp(fillW, 0.0f, trkW), cy + 2.0f), t.accent, 2.0f);
         } else if (snap.job.phase == upix::gui::JobPhase::Done) {
@@ -731,7 +688,7 @@ void renderWorkbench(ImDrawList* dl, ImVec2 winSize, UiViewState& ui, upix::gui:
     dl->AddRectFilled(ImVec2(card0.x, seam), ImVec2(card1.x, seam + hairlinePx()), t.outline);
     const ImVec2 cta0 = snapPt(ix, seam + geist::space::MD);
     const ImVec2 cta1 = snapPt(ix + iw, cta0.y + 44.0f);
-    if (snap.job.phase == upix::gui::JobPhase::Running) {
+    if (snap.job.phase == upix::gui::JobPhase::Running || snap.job.phase == upix::gui::JobPhase::Cancelling) {
         bool fired = false;
         bool hov = false;
         if (!modal) {

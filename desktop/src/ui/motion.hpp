@@ -1,28 +1,25 @@
 // ui/motion.hpp — spring & easing primitives for the Geist motion system.
 // Ported from rust-rewrite crates/upix-gui (theme::motion + nsh AnimatedValue).
 //
-// HARD RULE (docs/gui/DESIGN.md §1.3, user ruling 2026-11-10): no entrance
-// animations. Page switches, overlays, list appearance are INSTANT. The only
-// motion allowed is direct-manipulation feedback with physical cause:
-// press rebound, hover wash, selection slide, switch knob travel, progress.
-// If a motion cannot name the gesture that caused it, delete it.
+// HARD RULE (docs/gui/DESIGN.md §1.3): no entrance animations. Page switches,
+// overlays, and newly mounted controls start at their target on frame 1.
 #pragma once
 
 #include "imgui.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <unordered_map>
 
 namespace upix::ui {
 namespace motion {
 
-// Duration tokens (ms). Never write raw numbers at call sites.
-inline constexpr float INSTANT = 120.0f; // hover wash, color changes
-inline constexpr float FAST = 180.0f;    // presses, control state
-inline constexpr float BASE = 240.0f;    // selection settle, state-color moves
-// Hint overlay delay (nsh tooltip). Keyboard focus shows it at once.
+// Duration tokens (ms).
+inline constexpr float INSTANT = 120.0f;
+inline constexpr float FAST = 180.0f;
+inline constexpr float BASE = 240.0f;
 inline constexpr float TOOLTIP_DELAY = 500.0f;
 
 // Damped-spring parameter pairs (stiffness / damping).
@@ -38,32 +35,109 @@ inline constexpr SpringParams PLACE{320.0f, 30.0f}; // switch knob home
 inline constexpr float PRESS_SCALE = 0.97f;
 inline constexpr float PRESS_SCALE_ICON = 0.94f;
 
+inline bool& reduceMotion() {
+    static bool r = false;
+    return r;
+}
+
+// Deterministic headless clock override for unit tests and --audit-motion.
+// When headlessMode() is false (default), currentFrame() and currentDt() query ImGui.
+namespace detail {
+
+inline bool& headlessMode() {
+    static bool h = false;
+    return h;
+}
+inline int& headlessFrame() {
+    static int f = 0;
+    return f;
+}
+inline float& headlessDt() {
+    static float dt = 1.0f / 60.0f;
+    return dt;
+}
+inline std::uint64_t& epoch() {
+    static std::uint64_t e = 1;
+    return e;
+}
+
+inline int currentFrame() {
+    if (headlessMode()) return headlessFrame();
+    return ImGui::GetCurrentContext() ? ImGui::GetFrameCount() : headlessFrame();
+}
+
+inline float currentDt() {
+    if (headlessMode()) return headlessDt();
+    return ImGui::GetCurrentContext() ? ImGui::GetIO().DeltaTime : headlessDt();
+}
+
+template <typename Map>
+inline void pruneStore(Map& store, int frame, int& lastPruneFrame, std::uint64_t& storeEpoch) {
+    const std::uint64_t curEpoch = epoch();
+    if (storeEpoch != curEpoch) {
+        store.clear();
+        storeEpoch = curEpoch;
+        lastPruneFrame = frame;
+        return;
+    }
+    if (frame - lastPruneFrame < 120) return;
+    lastPruneFrame = frame;
+    for (auto it = store.begin(); it != store.end();) {
+        if (it->second.lastFrame + 600 < frame) {
+            it = store.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+} // namespace detail
+
+inline void beginHeadlessMotion(int startFrame = 0) {
+    detail::headlessMode() = true;
+    detail::headlessFrame() = startFrame;
+    detail::headlessDt() = 1.0f / 60.0f;
+    ++detail::epoch();
+}
+
+inline void endHeadlessMotion() {
+    detail::headlessMode() = false;
+}
+
+inline void stepMotionFrame(float dt = 1.0f / 60.0f) {
+    ++detail::headlessFrame();
+    detail::headlessDt() = dt;
+}
+
+inline void resetMotionState() {
+    ++detail::epoch();
+}
+
 // Soft landing curve for press release: cubic-bezier(.22, 1, .36, 1).
 inline float settle(float t) {
     t = t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t;
-    // Bezier(.22,1,.36,1) solved by Newton iterations on x.
     const float cx = 3.0f * 0.22f, bx = 3.0f * (0.36f - 0.22f) - cx, ax = 1.0f - cx - bx;
     const float cy = 3.0f * 1.0f, by = 3.0f * (1.0f - 1.0f) - cy, ay = 1.0f - cy - by;
     float x = t;
     for (int i = 0; i < 6; ++i) {
         const float xf = ((ax * x + bx) * x + cx) * x;
-        const float dx = 1.0f / ((3.0f * ax * x + 2.0f * bx) * x + cx);
-        x = (x - (xf - t) * dx) * (x >= 0.0f && x <= 1.0f ? 1.0f : 1.0f);
+        const float deriv = (3.0f * ax * x + 2.0f * bx) * x + cx;
+        if (std::fabs(deriv) < 1.0e-5f) break;
+        x = std::clamp(x - (xf - t) / deriv, 0.0f, 1.0f);
     }
     return ((ay * x + by) * x + cy) * x;
 }
 
 // One-dimensional damped spring with per-ID storage for immediate mode.
 struct Spring1D {
-    float value = 1.0f;
+    float value = 0.0f;
     float velocity = 0.0f;
     int lastFrame = -1;
 };
 
-// Closed-form step of x'' = -k x - c v (mass 1). Semi-implicit Euler rings
-// on large dt; the analytic under/critical/over-damped step settles cleanly.
+// Closed-form step of x'' = -k x - c v (mass 1).
 inline float advance(Spring1D& s, float target, const SpringParams& p, float dt) {
-    if (!(dt > 0.0f) || !(p.stiffness > 0.0f)) {
+    if (reduceMotion() || !(dt > 0.0f) || !(p.stiffness > 0.0f)) {
         s.value = target;
         s.velocity = 0.0f;
         return s.value;
@@ -112,9 +186,6 @@ inline float advance(Spring1D& s, float target, const SpringParams& p, float dt)
     return s.value;
 }
 
-// Duration-fitted spring: settles to ~1/1000 by `responseMs` at damping ratio
-// `zeta` (UIKit / nsh `Spring::new(ms).damping_ratio`). Mass 1.
-// layout follower: fitted(260, 0.9). Selection pill: fitted(ms, 0.86).
 inline SpringParams fitted(float responseMs, float zeta) {
     const float dur = responseMs < 1.0f ? 0.001f : responseMs / 1000.0f;
     const float z = zeta < 0.05f ? 0.05f : zeta > 1.0f ? 1.0f : zeta;
@@ -126,23 +197,42 @@ inline SpringParams fitted(float responseMs, float zeta) {
 inline SpringParams layoutSpring() { return fitted(260.0f, 0.9f); }
 inline SpringParams selectionParams(float responseMs = 250.0f) { return fitted(responseMs, 0.86f); }
 
-// Duration ease (color, divider fade). Not a spring — springs are press & knob.
-// Reaches ~95% of the way in `durationMs`. First sight uses `defaultValue`
-// (pass the target to avoid an entrance).
-inline float approach(ImGuiID id, float target, float durationMs, float defaultValue) {
+namespace detail {
+
+inline auto& approachStore() {
     static std::unordered_map<ImGuiID, Spring1D> store;
+    return store;
+}
+inline auto& springStore() {
+    static std::unordered_map<ImGuiID, Spring1D> store;
+    return store;
+}
+
+} // namespace detail
+
+inline size_t activeMotionSlots() {
+    return detail::approachStore().size() + detail::springStore().size();
+}
+
+// Duration ease (color, divider fade). First sight uses `defaultValue`.
+inline float approach(ImGuiID id, float target, float durationMs, float defaultValue) {
+    static int lastPrune = -1;
+    static std::uint64_t storeEpoch = 0;
+    const int frame = detail::currentFrame();
+    auto& store = detail::approachStore();
+    detail::pruneStore(store, frame, lastPrune, storeEpoch);
+
     Spring1D& s = store[id];
-    const int frame = ImGui::GetFrameCount();
     if (s.lastFrame < 0 || s.lastFrame + 120 < frame) {
         s.value = defaultValue;
         s.velocity = 0.0f;
     }
     s.lastFrame = frame;
-    if (!(durationMs > 0.0f)) {
+    if (reduceMotion() || !(durationMs > 0.0f)) {
         s.value = target;
         return s.value;
     }
-    float dt = ImGui::GetIO().DeltaTime;
+    float dt = detail::currentDt();
     if (dt < 0.0f) dt = 0.0f;
     if (dt > 0.05f) dt = 0.05f;
     const float tau = (durationMs / 1000.0f) / 3.0f;
@@ -152,35 +242,39 @@ inline float approach(ImGuiID id, float target, float durationMs, float defaultV
     return s.value;
 }
 
-// Generic per-ID spring toward `target`. Keep the SAME id for the SAME role;
-// the spring remembers its state across frames.
+// Generic per-ID spring toward `target`. First sight seeds at `defaultValue`
+// (always pass `target` when zero entrance motion is required).
 inline float springTo(ImGuiID id, float target, const SpringParams& p, float defaultValue) {
-    static std::unordered_map<ImGuiID, Spring1D> store;
+    static int lastPrune = -1;
+    static std::uint64_t storeEpoch = 0;
+    const int frame = detail::currentFrame();
+    auto& store = detail::springStore();
+    detail::pruneStore(store, frame, lastPrune, storeEpoch);
+
     Spring1D& s = store[id];
-    const int frame = ImGui::GetFrameCount();
-    // First sight and anything dormant ~2s snaps to defaultValue so a newly
-    // mounted control does not travel in from Spring1D's 1.0f seed.
     if (s.lastFrame < 0 || s.lastFrame + 120 < frame) {
         s.value = defaultValue;
         s.velocity = 0.0f;
     }
     s.lastFrame = frame;
-    advance(s, target, p, ImGui::GetIO().DeltaTime);
+    advance(s, target, p, detail::currentDt());
     return s.value;
 }
 
-// Press rebound for a control. `pressed` = active this frame. Returns the
-// scale to draw with. Give each control its own id (ImGui::GetID).
+// Target-seeded spring helper convenience (never animates on mount).
+inline float followSpring(ImGuiID id, float target, const SpringParams& p) {
+    return springTo(id, target, p, target);
+}
+
+// Press rebound for a control. `pressed` = active this frame.
 inline float pressScale(ImGuiID id, bool pressed, float amount = PRESS_SCALE) {
     return springTo(id, pressed ? amount : 1.0f, PRESS, 1.0f);
 }
 
-// Hover wash with an INSTANT color move (§2 tables: hover is a wash, not a slide).
 inline ImU32 wash(ImU32 base, ImU32 over, bool hovered) {
     return hovered ? over : base;
 }
 
-// Linear color mix (for BASE-length state-color transitions).
 inline ImU32 mix(ImU32 a, ImU32 b, float t) {
     t = t < 0.0f ? 0.0f : t > 1.0f ? 1.0f : t;
     const auto ca = ImGui::ColorConvertU32ToFloat4(a);

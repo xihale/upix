@@ -1,30 +1,69 @@
-// ui/geist.hpp — Geist design tokens (Vercel), ported from rust-rewrite
-// crates/upix-gui/src/theme.rs + docs/gui/DESIGN.md + web/vercel/DESIGN.md.
-//
-// Light: near-white canvas #fafafa carrying near-black ink #171717 — headings,
-// primary buttons and hairlines all walk one ink ladder (ink → body → mute →
-// faint). Cards are white with a 1px #ebebeb hairline. The only chroma is
-// Vercel blue #0070f3, reserved for selection, focus, progress and live
-// signals. Dark: pure-black canvas, same ladder inverted.
+// ui/geist.hpp — Geist design tokens (Vercel) + DPI pixel-snapping helpers.
+// Ported from rust-rewrite crates/upix-gui/src/theme.rs + docs/gui/DESIGN.md.
 #pragma once
 
 #include "imgui.h"
 
+#include <cmath>
 #include <cstdint>
 
 namespace upix::ui {
-namespace geist {
 
-namespace detail {
-inline constexpr ImU32 hx(uint32_t rgb, uint8_t a = 255) {
+inline constexpr ImU32 rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
+    return IM_COL32(r, g, b, a);
+}
+
+inline constexpr ImU32 hex(uint32_t rgb, uint8_t a = 255) {
     return IM_COL32((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF, a);
 }
-} // namespace detail
 
+inline ImU32 withAlpha(ImU32 col, float alpha) {
+    int a = static_cast<int>(static_cast<float>((col >> IM_COL32_A_SHIFT) & 0xFF) * alpha + 0.5f);
+    if (a < 0) a = 0;
+    if (a > 255) a = 255;
+    return (col & ~IM_COL32_A_MASK) | (static_cast<ImU32>(a) << IM_COL32_A_SHIFT);
+}
+
+// Physical pixel grid snapping helper for Wayland fractional scaling (e.g. 1.25x, 1.5x)
+inline float& currentDpiScale() {
+    static float s = 1.0f;
+    return s;
+}
+
+inline float snapPx(float v) {
+    float s = currentDpiScale();
+    if (s <= 0.0f) return std::round(v);
+    return std::round(v * s) / s;
+}
+
+inline ImVec2 snapPt(float x, float y) {
+    return ImVec2(snapPx(x), snapPx(y));
+}
+
+inline ImVec2 snapPt(ImVec2 p) {
+    return ImVec2(snapPx(p.x), snapPx(p.y));
+}
+
+// 1 physical pixel thickness in logical coordinates (prevents blurry 1.25x hairlines).
+inline float hairlinePx() {
+    float s = currentDpiScale();
+    return (s > 0.0f) ? (1.0f / s) : 1.0f;
+}
+
+inline float easeOutExpo(float t) {
+    if (t <= 0.0f) return 0.0f;
+    if (t >= 1.0f) return 1.0f;
+    return 1.0f - std::pow(2.0f, -10.0f * t);
+}
+
+namespace geist {
 
 enum class Mode { Light, Dark };
 
-inline Mode& mode() { static Mode m = Mode::Dark; return m; }
+inline Mode& mode() {
+    static Mode m = Mode::Dark;
+    return m;
+}
 
 // Geist radius ladder: 4px chips, 6px functional chrome, 12px cards, 16px panels.
 namespace radius {
@@ -34,8 +73,7 @@ inline constexpr float LG = 12.0f;
 inline constexpr float XL = 16.0f;
 } // namespace radius
 
-// Spacing scale — 4px base grid. Keep whitespace generous: sections breathe at
-// 24px, cards pad 16px, related controls sit 8px apart, labels 4px from content.
+// Spacing scale — 4px base grid.
 namespace space {
 inline constexpr float XS = 4.0f;
 inline constexpr float SM = 8.0f;
@@ -44,21 +82,20 @@ inline constexpr float LG = 16.0f;
 inline constexpr float XL = 20.0f;
 inline constexpr float XXL = 24.0f;
 inline constexpr float XXXL = 32.0f;
-inline constexpr float SECTION = 24.0f; // section gap (breathing room)
-inline constexpr float CARD = 16.0f;    // card inner padding
+inline constexpr float SECTION = 24.0f;
+inline constexpr float CARD = 16.0f;
 } // namespace space
 
-// Type scale (px). Desktop UI mostly speaks body/label; display sizes exist
-// for empty states and page headers.
+// Type scale (px).
 namespace type {
 inline constexpr float DISPLAY = 48.0f;
 inline constexpr float HEADING = 32.0f;
 inline constexpr float SUBHEADING = 20.0f;
 inline constexpr float BODY = 13.0f;
 inline constexpr float BODY_SMALL = 12.0f;
-inline constexpr float LABEL = 11.0f;   // eyebrows, meta, kbd
+inline constexpr float LABEL = 11.0f;
 inline constexpr float MONO = 12.0f;
-inline constexpr float TRACKING_HEADING = -0.4f; // px, apply sparingly
+inline constexpr float TRACKING_HEADING = -0.4f;
 } // namespace type
 
 struct Tokens {
@@ -105,92 +142,111 @@ struct Tokens {
     ImU32 wellBg;
     ImU32 qrPaper;
     ImU32 qrInk;
-    // extras from palette (theme.rs) — same ladder, named so views don't hex them
-    ImU32 segBorder;      // segmented track rim
-    ImU32 errorHover;     // destructive wash, one step deeper than errorSoft
-    ImU32 errorBadgeFg;   // badge ink (dark lifts to #ff6169)
+    // extras
+    ImU32 segBorder;
+    ImU32 errorHover;
+    ImU32 errorBadgeFg;
+    // stage / hud / tags / registration marks
+    ImU32 regMark;
+    ImU32 checkerA;
+    ImU32 checkerB;
+    ImU32 hudBg;
+    ImU32 hudBorder;
+    ImU32 tagBg;
 };
 
 inline const Tokens& tokens() {
     static const Tokens dark = {
-        /*bg*/            detail::hx(0x000000),
-        /*recessed*/      detail::hx(0x111113),
-        /*lowest*/        detail::hx(0x0A0A0A),
-        /*surface*/       detail::hx(0x0A0A0A),
-        /*container*/     detail::hx(0x141414),
-        /*high*/          detail::hx(0x1C1C1C),
-        /*highest*/       detail::hx(0x242424),
-        /*segThumb*/      detail::hx(0x27272A),
-        /*outline*/       detail::hx(0x262626),
-        /*outlineInput*/  detail::hx(0x404040),
-        /*ink*/           detail::hx(0xEDEDED),
-        /*body*/          detail::hx(0xA1A1A1),
-        /*mute*/          detail::hx(0x8F8F8F),
-        /*faint*/         detail::hx(0x6F6F6F),
-        /*primary*/       detail::hx(0xEDEDED),
-        /*primaryHover*/  detail::hx(0xC7C7C7),
-        /*primaryPress*/  detail::hx(0x999999),
-        /*onPrimary*/     detail::hx(0x000000),
-        /*accent*/        detail::hx(0x3291FF),
-        /*accentHover*/   detail::hx(0x66B2FF),
-        /*accentSoft*/    detail::hx(0x3291FF, 0x38),
-        /*accentBorder*/  detail::hx(0x3291FF, 0x59),
-        /*error*/         detail::hx(0xE5484D),
-        /*errorSoft*/     detail::hx(0xE5484D, 0x24),
-        /*errorBorder*/   detail::hx(0xE5484D, 0x61),
-        /*warning*/       detail::hx(0xF5A623),
-        /*sceneAnime*/    detail::hx(0xA579E8),
-        /*scenePhoto*/    detail::hx(0xF7B955),
-        /*sceneGeneral*/  detail::hx(0x3291FF),
-        /*sceneRestore*/  detail::hx(0xF06FA3),
-        /*scrim*/         detail::hx(0x000000),
-        /*popupBg*/       detail::hx(0x141414),
-        /*wellBg*/        detail::hx(0x050505),
-        /*qrPaper*/       detail::hx(0xFFFFFF),
-        /*qrInk*/         detail::hx(0x171717),
-        /*segBorder*/     detail::hx(0x1F1F22),
-        /*errorHover*/    detail::hx(0xE5484D, 0x33),
-        /*errorBadgeFg*/  detail::hx(0xFF6169),
+        /*bg*/            hex(0x000000),
+        /*recessed*/      hex(0x111113),
+        /*lowest*/        hex(0x0A0A0A),
+        /*surface*/       hex(0x0A0A0A),
+        /*container*/     hex(0x141414),
+        /*high*/          hex(0x1C1C1C),
+        /*highest*/       hex(0x242424),
+        /*segThumb*/      hex(0x27272A),
+        /*outline*/       hex(0x262626),
+        /*outlineInput*/  hex(0x404040),
+        /*ink*/           hex(0xEDEDED),
+        /*body*/          hex(0xA1A1A1),
+        /*mute*/          hex(0x8F8F8F),
+        /*faint*/         hex(0x6F6F6F),
+        /*primary*/       hex(0xEDEDED),
+        /*primaryHover*/  hex(0xC7C7C7),
+        /*primaryPress*/  hex(0x999999),
+        /*onPrimary*/     hex(0x000000),
+        /*accent*/        hex(0x3291FF),
+        /*accentHover*/   hex(0x66B2FF),
+        /*accentSoft*/    hex(0x3291FF, 0x38),
+        /*accentBorder*/  hex(0x3291FF, 0x59),
+        /*error*/         hex(0xE5484D),
+        /*errorSoft*/     hex(0xE5484D, 0x24),
+        /*errorBorder*/   hex(0xE5484D, 0x61),
+        /*warning*/       hex(0xF5A623),
+        /*sceneAnime*/    hex(0xA579E8),
+        /*scenePhoto*/    hex(0xF7B955),
+        /*sceneGeneral*/  hex(0x3291FF),
+        /*sceneRestore*/  hex(0xF06FA3),
+        /*scrim*/         hex(0x000000),
+        /*popupBg*/       hex(0x141414),
+        /*wellBg*/        hex(0x050505),
+        /*qrPaper*/       hex(0xFFFFFF),
+        /*qrInk*/         hex(0x171717),
+        /*segBorder*/     hex(0x1F1F22),
+        /*errorHover*/    hex(0xE5484D, 0x33),
+        /*errorBadgeFg*/  hex(0xFF6169),
+        /*regMark*/       hex(0x343440),
+        /*checkerA*/      hex(0x161618),
+        /*checkerB*/      hex(0x1E1E21),
+        /*hudBg*/         hex(0x141414, 0xEB),
+        /*hudBorder*/     hex(0x2E2E32),
+        /*tagBg*/         hex(0x1E1E22),
     };
     static const Tokens light = {
-        /*bg*/            detail::hx(0xFAFAFA),
-        /*recessed*/      detail::hx(0xECECEC),
-        /*lowest*/        detail::hx(0xF2F2F2),
-        /*surface*/       detail::hx(0xFFFFFF),
-        /*container*/     detail::hx(0xF2F2F2),
-        /*high*/          detail::hx(0xEBEBEB),
-        /*highest*/       detail::hx(0xE0E0E0),
-        /*segThumb*/      detail::hx(0xFFFFFF),
-        /*outline*/       detail::hx(0xEBEBEB),
-        /*outlineInput*/  detail::hx(0xD4D4D4),
-        /*ink*/           detail::hx(0x171717),
-        /*body*/          detail::hx(0x4D4D4D),
-        /*mute*/          detail::hx(0x8F8F8F),
-        /*faint*/         detail::hx(0xA1A1A1),
-        /*primary*/       detail::hx(0x171717),
-        /*primaryHover*/  detail::hx(0x383838),
-        /*primaryPress*/  detail::hx(0x666666),
-        /*onPrimary*/     detail::hx(0xFFFFFF),
-        /*accent*/        detail::hx(0x0070F3),
-        /*accentHover*/   detail::hx(0x0761D1),
-        /*accentSoft*/    detail::hx(0xD3E5FF),
-        /*accentBorder*/  detail::hx(0x0070F3, 0x59),
-        /*error*/         detail::hx(0xEE0000),
-        /*errorSoft*/     detail::hx(0xEE0000, 0x0F),
-        /*errorBorder*/   detail::hx(0xEE0000, 0x4D),
-        /*warning*/       detail::hx(0xF5A623),
-        /*sceneAnime*/    detail::hx(0x7928CA),
-        /*scenePhoto*/    detail::hx(0xF5A623),
-        /*sceneGeneral*/  detail::hx(0x0070F3),
-        /*sceneRestore*/  detail::hx(0xEB367F),
-        /*scrim*/         detail::hx(0x000000),
-        /*popupBg*/       detail::hx(0xFFFFFF),
-        /*wellBg*/        detail::hx(0xF2F2F2),
-        /*qrPaper*/       detail::hx(0xFFFFFF),
-        /*qrInk*/         detail::hx(0x171717),
-        /*segBorder*/     detail::hx(0x000000, 0x0F),
-        /*errorHover*/    detail::hx(0xEE0000, 0x1A),
-        /*errorBadgeFg*/  detail::hx(0xEE0000),
+        /*bg*/            hex(0xFAFAFA),
+        /*recessed*/      hex(0xECECEC),
+        /*lowest*/        hex(0xF2F2F2),
+        /*surface*/       hex(0xFFFFFF),
+        /*container*/     hex(0xF2F2F2),
+        /*high*/          hex(0xEBEBEB),
+        /*highest*/       hex(0xE0E0E0),
+        /*segThumb*/      hex(0xFFFFFF),
+        /*outline*/       hex(0xEBEBEB),
+        /*outlineInput*/  hex(0xD4D4D4),
+        /*ink*/           hex(0x171717),
+        /*body*/          hex(0x4D4D4D),
+        /*mute*/          hex(0x8F8F8F),
+        /*faint*/         hex(0xA1A1A1),
+        /*primary*/       hex(0x171717),
+        /*primaryHover*/  hex(0x383838),
+        /*primaryPress*/  hex(0x666666),
+        /*onPrimary*/     hex(0xFFFFFF),
+        /*accent*/        hex(0x0070F3),
+        /*accentHover*/   hex(0x0761D1),
+        /*accentSoft*/    hex(0xD3E5FF),
+        /*accentBorder*/  hex(0x0070F3, 0x59),
+        /*error*/         hex(0xEE0000),
+        /*errorSoft*/     hex(0xEE0000, 0x0F),
+        /*errorBorder*/   hex(0xEE0000, 0x4D),
+        /*warning*/       hex(0xF5A623),
+        /*sceneAnime*/    hex(0x7928CA),
+        /*scenePhoto*/    hex(0xF5A623),
+        /*sceneGeneral*/  hex(0x0070F3),
+        /*sceneRestore*/  hex(0xEB367F),
+        /*scrim*/         hex(0x000000),
+        /*popupBg*/       hex(0xFFFFFF),
+        /*wellBg*/        hex(0xF2F2F2),
+        /*qrPaper*/       hex(0xFFFFFF),
+        /*qrInk*/         hex(0x171717),
+        /*segBorder*/     hex(0x000000, 0x0F),
+        /*errorHover*/    hex(0xEE0000, 0x1A),
+        /*errorBadgeFg*/  hex(0xEE0000),
+        /*regMark*/       hex(0xCCCCCC),
+        /*checkerA*/      hex(0xEAEAEA),
+        /*checkerB*/      hex(0xF6F6F6),
+        /*hudBg*/         hex(0xFFFFFF, 0xEB),
+        /*hudBorder*/     hex(0xD4D4D4),
+        /*tagBg*/         hex(0xEBEBEB),
     };
     return mode() == Mode::Dark ? dark : light;
 }

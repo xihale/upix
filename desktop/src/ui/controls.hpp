@@ -8,8 +8,8 @@
 #pragma once
 
 #include "ui/geist.hpp"
+#include "ui/icons.hpp"
 #include "ui/motion.hpp"
-#include "ui_widgets.hpp"
 
 #include "imgui.h"
 
@@ -18,9 +18,99 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 #include <unordered_map>
 
 namespace upix::ui {
+
+inline void drawBox(ImDrawList* dl, ImVec2 p0, ImVec2 p1, ImU32 fill, ImU32 border,
+                    float radius = 8.0f, ImDrawFlags flags = 0) {
+    p0 = snapPt(p0);
+    p1 = snapPt(p1);
+    if ((fill >> IM_COL32_A_SHIFT) > 0) {
+        dl->AddRectFilled(p0, p1, fill, radius, flags);
+    }
+    if ((border >> IM_COL32_A_SHIFT) > 0) {
+        dl->AddRect(p0, p1, border, radius, flags, hairlinePx());
+    }
+}
+
+inline void drawRegistrationMarks(ImDrawList* dl, ImVec2 boxMin, ImVec2 boxMax,
+                                  float inset, float armLen, float thickness, ImU32 color) {
+    boxMin = snapPt(boxMin);
+    boxMax = snapPt(boxMax);
+    inset = snapPx(inset);
+    armLen = snapPx(armLen);
+    thickness = std::max(hairlinePx(), snapPx(thickness));
+    dl->AddRectFilled(ImVec2(boxMin.x + inset, boxMin.y + inset),
+                      ImVec2(boxMin.x + inset + armLen, boxMin.y + inset + thickness), color);
+    dl->AddRectFilled(ImVec2(boxMin.x + inset, boxMin.y + inset),
+                      ImVec2(boxMin.x + inset + thickness, boxMin.y + inset + armLen), color);
+    dl->AddRectFilled(ImVec2(boxMax.x - inset - armLen, boxMin.y + inset),
+                      ImVec2(boxMax.x - inset, boxMin.y + inset + thickness), color);
+    dl->AddRectFilled(ImVec2(boxMax.x - inset - thickness, boxMin.y + inset),
+                      ImVec2(boxMax.x - inset, boxMin.y + inset + armLen), color);
+    dl->AddRectFilled(ImVec2(boxMin.x + inset, boxMax.y - inset - thickness),
+                      ImVec2(boxMin.x + inset + armLen, boxMax.y - inset), color);
+    dl->AddRectFilled(ImVec2(boxMin.x + inset, boxMax.y - inset - armLen),
+                      ImVec2(boxMin.x + inset + thickness, boxMax.y - inset), color);
+    dl->AddRectFilled(ImVec2(boxMax.x - inset - armLen, boxMax.y - inset - thickness),
+                      ImVec2(boxMax.x - inset, boxMax.y - inset), color);
+    dl->AddRectFilled(ImVec2(boxMax.x - inset - thickness, boxMax.y - inset - armLen),
+                      ImVec2(boxMax.x - inset, boxMax.y - inset), color);
+}
+
+inline ImVec2 calcText(ImFont* font, float size, const char* text) {
+    if (!font || !text) return ImVec2(0, 0);
+    return font->CalcTextSizeA(size, FLT_MAX, 0.0f, text);
+}
+
+inline void drawText(ImDrawList* dl, ImFont* font, float size, ImVec2 pos, ImU32 col, const char* text) {
+    if (!dl || !font || !text) return;
+    dl->AddText(font, size, snapPt(pos), col, text);
+}
+
+inline void drawTextCentered(ImDrawList* dl, ImFont* font, float size,
+                             ImVec2 rectMin, ImVec2 rectMax, ImU32 col, const char* text) {
+    if (!dl || !font || !text) return;
+    ImVec2 sz = calcText(font, size, text);
+    ImVec2 pos = snapPt(rectMin.x + (rectMax.x - rectMin.x - sz.x) * 0.5f,
+                        rectMin.y + (rectMax.y - rectMin.y - sz.y) * 0.5f);
+    dl->AddText(font, size, pos, col, text);
+}
+
+// Clip text gracefully with "..." when width exceeds `maxWidth`.
+inline std::string fitTextEllipsis(ImFont* font, float size, const char* text, float maxWidth) {
+    if (!text || !text[0]) return {};
+    std::string s(text);
+    if (!font || maxWidth <= 8.0f) return s;
+    if (calcText(font, size, s.c_str()).x <= maxWidth) return s;
+    const float dotsW = calcText(font, size, "...").x;
+    if (dotsW >= maxWidth) return "...";
+    // Step back by UTF-8 codepoint boundaries.
+    while (!s.empty()) {
+        while (!s.empty() && (static_cast<unsigned char>(s.back()) & 0xC0) == 0x80) {
+            s.pop_back();
+        }
+        if (!s.empty()) s.pop_back();
+        if (s.empty()) break;
+        std::string cand = s + "...";
+        if (calcText(font, size, cand.c_str()).x <= maxWidth) return cand;
+    }
+    return "...";
+}
+
+inline void ellipsisText(ImDrawList* dl, ImFont* font, float size, ImVec2 pos,
+                         float maxWidth, ImU32 col, const char* text) {
+    std::string fitted = fitTextEllipsis(font, size, text, maxWidth);
+    drawText(dl, font, size, pos, col, fitted.c_str());
+}
+
+struct SegmentOption {
+    const char* label;
+    const char* value;
+};
+
 namespace ctl {
 
 // Geometry from ui.rs. Draw hairlines with hairlinePx(), not the literal 1.
@@ -554,11 +644,53 @@ inline bool primaryCta(ImDrawList* dl, ImGuiID id, const char* label, ImFont* fo
         constexpr float gap = 8.0f;
         const float total = iconW + gap + ts.x;
         const float x = q0.x + ((q1.x - q0.x) - total) * 0.5f;
-        const float cy = (q0.y + q1.y) * 0.5f + 1.0f;
+        const float cy = cjkIconCenterY(q0, q1);
         drawIcon(dl, icon, ImVec2(x + iconW * 0.5f, cy), iconW, ink);
         drawText(dl, font, 14.0f, ImVec2(x + iconW + gap, q0.y + ((q1.y - q0.y) - ts.y) * 0.5f), ink, label);
     } else {
         drawTextCentered(dl, font, 14.0f, q0, q1, ink, label);
+    }
+    detail::focusRing(dl, p0, p1, geist::radius::MD, h.focused);
+    return h.clicked;
+}
+
+// Secondary / destructive action button (press scale 0.97).
+inline bool secondaryButton(ImDrawList* dl, ImGuiID id, const char* label, ImFont* font,
+                            ImVec2 p0, ImVec2 p1, const char* icon = nullptr,
+                            bool enabled = true, bool destructive = false) {
+    const auto& t = geist::tokens();
+    p0 = snapPt(p0);
+    p1 = snapPt(p1);
+    const detail::Hit h = detail::hit(id, p0, p1, enabled);
+    const float press = motion::pressScale(detail::salt(id, 7), h.held, motion::PRESS_SCALE);
+    ImVec2 q0, q1;
+    detail::scaled(p0, p1, enabled ? press : 1.0f, q0, q1);
+
+    ImU32 ink = t.ink;
+    if (destructive) {
+        const ImU32 bg = !enabled ? t.container : (h.hovered ? t.errorHover : t.errorSoft);
+        const ImU32 bd = !enabled ? t.outline : t.errorBorder;
+        dl->AddRectFilled(q0, q1, bg, geist::radius::MD);
+        dl->AddRect(q0, q1, bd, geist::radius::MD, 0, hairlinePx());
+        ink = enabled ? t.error : t.mute;
+    } else {
+        finish(dl, q0, q1, (enabled && h.hovered) ? Finish::RaisedHover : Finish::Raised, geist::radius::MD);
+        dl->AddRect(q0, q1, (enabled && h.hovered) ? t.outlineInput : t.outline,
+                    geist::radius::MD, 0, hairlinePx());
+        ink = enabled ? t.ink : t.mute;
+    }
+
+    if (icon && icon[0]) {
+        const ImVec2 ts = calcText(font, geist::type::BODY, label);
+        constexpr float iconW = 14.0f;
+        constexpr float gap = 8.0f;
+        const float total = iconW + gap + ts.x;
+        const float x = q0.x + ((q1.x - q0.x) - total) * 0.5f;
+        drawIcon(dl, icon, ImVec2(x + iconW * 0.5f, cjkIconCenterY(q0, q1)), iconW, ink);
+        drawText(dl, font, geist::type::BODY,
+                 ImVec2(x + iconW + gap, q0.y + ((q1.y - q0.y) - ts.y) * 0.5f), ink, label);
+    } else {
+        drawTextCentered(dl, font, geist::type::BODY, q0, q1, ink, label);
     }
     detail::focusRing(dl, p0, p1, geist::radius::MD, h.focused);
     return h.clicked;
@@ -616,11 +748,12 @@ inline float switchKnob(ImGuiID id, bool checked) {
     return motion::springTo(id, checked ? 1.0f : 0.0f, motion::PLACE, checked ? 1.0f : 0.0f);
 }
 
-// Progress width follower: 260ms response, damping 0.9. Starts at 0 so the
-// first real value eases in; later changes ease from where they are.
+// Progress width follower: 260ms response, damping 0.9. Seeded at target so
+// fixture states / already-running jobs never enter from 0 on first mount.
 inline float progressSpring(ImGuiID id, float fraction01, float width) {
     fraction01 = std::clamp(fraction01, 0.0f, 1.0f);
-    return motion::springTo(id, fraction01 * width, motion::layoutSpring(), 0.0f);
+    const float target = fraction01 * width;
+    return motion::springTo(id, target, motion::layoutSpring(), target);
 }
 
 // Thin bar: 4px track (hairline ink), Vercel-blue fill, width on the layout spring.
@@ -710,6 +843,29 @@ inline bool segmented(ImDrawList* dl, ImGuiID id, ImVec2 pos, ImVec2 size,
     return changed;
 }
 
+// Locked segmented variant (dim, non-interactive).
+inline bool segmentedLocked(ImDrawList* dl, ImGuiID id, ImVec2 pos, ImVec2 size,
+                            const char* const* labels, int count, int& current, ImFont* font,
+                            float fontPx = 12.0f) {
+    return segmented(dl, id, pos, size, labels, count, current, font, fontPx, true);
+}
+
+// Pure quality slider snapping helper (unit-testable headless).
+inline float snapSliderFrac(float rawFrac, float snapFrac = geom::SNAP_FRAC) {
+    rawFrac = std::clamp(rawFrac, 0.0f, 1.0f);
+    static constexpr float qs[5] = {0.0f, 0.25f, 0.50f, 0.75f, 1.0f};
+    for (float q : qs) {
+        if (std::fabs(rawFrac - q) <= snapFrac) return q;
+    }
+    return rawFrac;
+}
+
+inline int quantizeSliderValue(float rawFrac, int minVal, int maxVal, float snapFrac = geom::SNAP_FRAC) {
+    if (maxVal <= minVal) return minVal;
+    const float tpos = snapSliderFrac(rawFrac, snapFrac);
+    return std::clamp(static_cast<int>(std::lround(minVal + tpos * (maxVal - minVal))), minVal, maxVal);
+}
+
 // ---------------------------------------------------------------------------
 // Quality slider. Thumb and fill track the pointer 1:1 (no spring). Release
 // does not fling. Quantiles 0/25/50/75/100% magnetize within 2.2% of the track.
@@ -723,17 +879,9 @@ inline bool qualitySlider(ImDrawList* dl, ImGuiID id, ImVec2 pos, float width,
     const ImVec2 sz(width, geom::SLIDER_H);
     const detail::Hit h = detail::hit(id, pos, ImVec2(pos.x + sz.x, pos.y + sz.y), true);
     bool changed = false;
-    auto magnet = [&](float frac) {
-        static constexpr float qs[5] = {0.0f, 0.25f, 0.50f, 0.75f, 1.0f};
-        for (float q : qs) {
-            if (std::fabs(frac - q) <= geom::SNAP_FRAC) return q;
-        }
-        return frac;
-    };
     if (h.held) {
-        float tpos = (ImGui::GetIO().MousePos.x - pos.x) / width;
-        tpos = magnet(std::clamp(tpos, 0.0f, 1.0f));
-        const int next = std::clamp(static_cast<int>(std::lround(minVal + tpos * (maxVal - minVal))), minVal, maxVal);
+        const float tpos = (ImGui::GetIO().MousePos.x - pos.x) / width;
+        const int next = quantizeSliderValue(tpos, minVal, maxVal, geom::SNAP_FRAC);
         if (next != value) {
             value = next;
             changed = true;
@@ -909,6 +1057,131 @@ inline const char* sceneLabel(const char* scene, char* out, int cap) {
         return out;
     }
     return scene;
+}
+
+// Aliases matching DESIGN / blueprint names.
+inline bool qualityInput(ImDrawList* dl, ImGuiID id, ImVec2 pos, int& value, int minVal, int maxVal, ImFont* font) {
+    return qualityField(dl, id, pos, value, minVal, maxVal, font);
+}
+
+inline bool toggleSwitch(ImDrawList* dl, ImGuiID id, ImVec2 pos, bool& checked, bool enabled = true) {
+    return toggle(dl, id, pos, checked, enabled);
+}
+
+// Horizontal hairline divider inside a card with optional horizontal inset.
+inline void cardDivider(ImDrawList* dl, float x0, float x1, float y, float inset = geom::ROW_PX) {
+    hHairline(dl, x0 + inset, x1 - inset, y);
+}
+
+// Row chrome inside a groupCard (44px+ min height, title + optional subtitle).
+// Returns {rowBottomY, clicked} via CardRowResult.
+struct CardRowResult {
+    float bottomY = 0.0f;
+    float rightAnchorX = 0.0f;
+    float centerY = 0.0f;
+    bool hovered = false;
+    bool clicked = false;
+};
+
+inline CardRowResult cardRow(ImDrawList* dl, ImGuiID id, ImVec2 p0, float width,
+                             const char* title, const char* subtitle, ImFont* font,
+                             bool interactive = false, float rightReserveW = 0.0f) {
+    const auto& t = geist::tokens();
+    p0 = snapPt(p0);
+    const ImVec2 tsz = calcText(font, geist::type::BODY, title ? title : "");
+    const bool hasSub = subtitle && subtitle[0];
+    const ImVec2 ssz = hasSub ? calcText(font, geom::ROW_SUB, subtitle) : ImVec2(0.0f, 0.0f);
+    const float contentH = hasSub ? (tsz.y + 3.0f + ssz.y) : tsz.y;
+    const float h = std::max(geom::ROW_MIN_H, contentH + geom::ROW_PY * 2.0f);
+    const ImVec2 p1 = snapPt(p0.x + width, p0.y + h);
+
+    CardRowResult res;
+    res.bottomY = p1.y;
+    res.rightAnchorX = p1.x - geom::ROW_PX;
+    res.centerY = (p0.y + p1.y) * 0.5f;
+
+    if (interactive) {
+        const detail::Hit hitRes = detail::hit(id, p0, p1, true);
+        res.hovered = hitRes.hovered;
+        res.clicked = hitRes.clicked;
+        if (hitRes.hovered) {
+            hoverWash(dl, ImVec2(p0.x + 2.0f, p0.y + 2.0f), ImVec2(p1.x - 2.0f, p1.y - 2.0f),
+                      geist::radius::MD, true, geom::HOVER_WASH);
+        }
+        detail::focusRing(dl, p0, p1, geist::radius::MD, hitRes.focused);
+    }
+
+    const float textMaxW = std::max(40.0f, width - geom::ROW_PX * 2.0f - rightReserveW);
+    const float textY = p0.y + (h - contentH) * 0.5f;
+    ellipsisText(dl, font, geist::type::BODY, ImVec2(p0.x + geom::ROW_PX, textY), textMaxW, t.ink, title ? title : "");
+    if (hasSub) {
+        ellipsisText(dl, font, geom::ROW_SUB, ImVec2(p0.x + geom::ROW_PX, textY + tsz.y + 3.0f),
+                     textMaxW, t.mute, subtitle);
+    }
+    return res;
+}
+
+// Recessed search field with leading magnifying glass and clickable clear "x" when non-empty.
+inline bool searchBox(ImDrawList* dl, ImGuiID id, ImVec2 pos, float width, float height,
+                      char* buf, size_t bufCap, const char* placeholder, ImFont* font) {
+    if (!buf || bufCap == 0 || width <= 40.0f) return false;
+    pos = snapPt(pos);
+    const ImVec2 p1 = snapPt(pos.x + width, pos.y + height);
+    const auto& t = geist::tokens();
+
+    dl->AddRectFilled(pos, p1, t.recessed, geist::radius::MD);
+    const bool hasText = buf[0] != '\0';
+
+    drawIcon(dl, "search", ImVec2(pos.x + 14.0f, cjkIconCenterY(pos, p1)), 13.0f, t.mute, 1.5f);
+
+    const float clearBtnW = hasText ? 22.0f : 0.0f;
+    const float inputX = pos.x + 28.0f;
+    const float inputW = std::max(16.0f, width - 34.0f - clearBtnW);
+
+    bool changed = false;
+    ImGui::PushID(static_cast<int>(id & 0x7fffffff));
+    ImGui::SetCursorScreenPos(ImVec2(inputX, pos.y + (height - 20.0f) * 0.5f));
+    if (font) ImGui::PushFont(font, geist::type::BODY_SMALL);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_Text, t.ink);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 2.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    ImGui::SetNextItemWidth(inputW);
+    char item[24];
+    std::snprintf(item, sizeof(item), "##srch%08x", static_cast<unsigned>(id));
+    if (ImGui::InputText(item, buf, bufCap)) {
+        changed = true;
+    }
+    const bool focused = ImGui::IsItemFocused() || ImGui::IsItemActive();
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(3);
+    if (font) ImGui::PopFont();
+    ImGui::PopID();
+
+    if (!hasText && placeholder && placeholder[0]) {
+        const ImVec2 psz = calcText(font, geist::type::BODY_SMALL, placeholder);
+        drawText(dl, font, geist::type::BODY_SMALL,
+                 ImVec2(inputX, pos.y + (height - psz.y) * 0.5f), t.faint, placeholder);
+    }
+
+    dl->AddRect(pos, p1, focused ? t.accent : t.outlineInput, geist::radius::MD, 0, hairlinePx());
+
+    if (hasText) {
+        const ImVec2 c0 = snapPt(p1.x - 24.0f, pos.y + (height - 20.0f) * 0.5f);
+        const ImVec2 c1 = snapPt(c0.x + 20.0f, c0.y + 20.0f);
+        const detail::Hit clrHit = detail::hit(detail::salt(id, 9), c0, c1, true);
+        if (clrHit.hovered) {
+            dl->AddRectFilled(c0, c1, detail::washOverlay(0.08f), geist::radius::SM);
+        }
+        drawIcon(dl, "x", ImVec2((c0.x + c1.x) * 0.5f, (c0.y + c1.y) * 0.5f), 11.0f,
+                 clrHit.hovered ? t.ink : t.mute, 1.5f);
+        if (clrHit.clicked) {
+            buf[0] = '\0';
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 } // namespace ctl

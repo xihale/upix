@@ -1,6 +1,6 @@
 # Upix
 
-跨平台图像超分辨率工具，提供 **CLI**、**Desktop（Dear ImGui + SDL3 + Vulkan）** 与 **Android** 三端，共享同一套 C++ 核心（`share/`），并支持手机与 PC 局域网端到端加密协同算力卸载。
+跨平台图像超分辨率工具，提供 **CLI**、**Desktop（Qt 6 Quick）** 与 **Android** 三端，共享同一套 C++ 核心（`share/`），并支持手机与 PC 局域网端到端加密协同算力卸载。
 
 ## 核心特性
 
