@@ -1,4 +1,5 @@
 #include "app_state.hpp"
+#include "core/serve/daemon_control.hpp"
 #include "views/common.hpp"
 
 #include "imgui.h"
@@ -696,14 +697,21 @@ static void EnsureStageTextures(UiViewState& ui, const upix::gui::Snapshot& snap
             QueueDestroyVulkanTexture(ui.afterTex);
             ui.afterTexPath.clear();
         }
+        for (auto& [_, tex] : ui.thumbCache) {
+            QueueDestroyVulkanTexture(tex);
+        }
+        ui.thumbCache.clear();
+        ui.thumbLru.clear();
         return;
     }
 
     std::string targetBefore;
     std::string targetAfter;
+    bool allowLastOutputFallback = snap.inputs.empty() || snap.inputs.size() == 1;
     if (!snap.inputs.empty()) {
         int active = std::clamp(snap.active_input, 0, static_cast<int>(snap.inputs.size()) - 1);
         const auto& inp = snap.inputs[active];
+        if (inp.is_dir) allowLastOutputFallback = true;
         if (inp.path == "__fixture_before__") {
             targetBefore = "__fixture_before__";
         } else if (!inp.is_dir && fs::exists(inp.path)) {
@@ -715,7 +723,7 @@ static void EnsureStageTextures(UiViewState& ui, const upix::gui::Snapshot& snap
             }
         }
     }
-    if (targetAfter.empty() && !snap.job.outputs.empty()) {
+    if (targetAfter.empty() && allowLastOutputFallback && !snap.job.outputs.empty()) {
         const auto& out = snap.job.outputs.back();
         if (out == "__fixture_after__" || fs::exists(out)) {
             targetAfter = out;
@@ -825,6 +833,9 @@ static bool RunAuditMotion(ImGui_ImplVulkanH_Window* wd, upix::gui::AppState& ap
 } // namespace
 
 int main(int argc, char** argv) {
+    if (auto rc = upix::maybe_run_internal_serve_daemon(argc, argv)) {
+        return *rc;
+    }
     std::string fixtureState;
     std::string shotPath;
     int benchFrames = 0;
@@ -1187,7 +1198,7 @@ int main(int argc, char** argv) {
         auto snap = app.snapshot();
         upix::ui::geist::mode() = snap.dark_mode ? upix::ui::geist::Mode::Dark : upix::ui::geist::Mode::Light;
         upix::ui::motion::reduceMotion() = snap.reduce_motion;
-        dlgFolder.recursive = snap.recursive;
+        dlgFolder.recursive.store(snap.recursive, std::memory_order_release);
 
         ImGui::NewFrame();
 

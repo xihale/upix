@@ -45,7 +45,7 @@ struct DialogBridge {
     upix::gui::AppState* app = nullptr;
     int mode = 0; // 0 = input files, 1 = input folder, 2 = output folder, 3 = import models
     std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>>(true);
-    bool recursive = false;
+    std::atomic<bool> recursive{false};
 };
 
 inline void SDLCALL onFileDialog(void* userdata, const char* const* filelist, int /*filter*/) {
@@ -60,8 +60,9 @@ inline void SDLCALL onFileDialog(void* userdata, const char* const* filelist, in
     if (bridge->mode == 0) {
         bridge->app->addPaths(paths);
     } else if (bridge->mode == 1) {
+        const bool rec = bridge->recursive.load(std::memory_order_acquire);
         for (const auto& p : paths) {
-            bridge->app->addFolder(p, bridge->recursive);
+            bridge->app->addFolder(p, rec);
         }
     } else if (bridge->mode == 2) {
         bridge->app->setCustomOutDir(paths[0]);

@@ -156,18 +156,23 @@ inline void drawIcon(ImDrawList* dl, const char* kind, ImVec2 center, float size
         dl->AddRectFilled(pt(14.5f, 14.5f), pt(17.5f, 17.5f), col);
         dl->AddRectFilled(pt(18.0f, 18.0f), pt(21.0f, 21.0f), col);
     } else if (std::strcmp(kind, "star") == 0) {
-        ImVec2 outer[5], inner[5];
-        float rOut = size * 0.44f, rIn = size * 0.19f;
+        constexpr double kPi = 3.14159265358979323846;
+        // Exact pentagram inner/outer ratio (cos 72° / cos 36°) keeps upper arms collinear,
+        // and vertical bbox offset centers the star visually between top and bottom tips.
+        const double rOut = static_cast<double>(size) * 0.44;
+        const double rIn  = rOut * 0.38196601125010515;
+        const double cx   = static_cast<double>(center.x);
+        const double cy   = static_cast<double>(center.y) + rOut * 0.0954915028125263;
+        ImVec2 poly[10];
         for (int i = 0; i < 5; ++i) {
-            float aOut = -1.570796f + i * 1.256637f;
-            float aIn = aOut + 0.628318f;
-            outer[i] = ImVec2(center.x + std::cos(aOut) * rOut, center.y + std::sin(aOut) * rOut);
-            inner[i] = ImVec2(center.x + std::cos(aIn) * rIn, center.y + std::sin(aIn) * rIn);
+            const double aOut = -kPi * 0.5 + static_cast<double>(i) * (2.0 * kPi / 5.0);
+            const double aIn  = aOut + (kPi / 5.0);
+            poly[2 * i] = ImVec2(static_cast<float>(cx + std::cos(aOut) * rOut),
+                                 static_cast<float>(cy + std::sin(aOut) * rOut));
+            poly[2 * i + 1] = ImVec2(static_cast<float>(cx + std::cos(aIn) * rIn),
+                                     static_cast<float>(cy + std::sin(aIn) * rIn));
         }
-        for (int i = 0; i < 5; ++i) {
-            dl->AddTriangleFilled(center, outer[i], inner[i], col);
-            dl->AddTriangleFilled(center, inner[i], outer[(i + 1) % 5], col);
-        }
+        dl->AddConcavePolyFilled(poly, 10, col);
     } else if (std::strcmp(kind, "zap") == 0) {
         ImVec2 p1[3] = {pt(13.5f, 2.5f), pt(4.5f, 13.5f), pt(12.0f, 13.5f)};
         ImVec2 p2[3] = {pt(10.5f, 21.5f), pt(19.5f, 10.5f), pt(12.0f, 10.5f)};

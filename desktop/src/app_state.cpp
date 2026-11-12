@@ -14,10 +14,6 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#ifndef _WIN32
-#include <unistd.h>
-#endif
-
 namespace upix::gui {
 
 namespace fs = std::filesystem;
@@ -119,56 +115,31 @@ std::string uniqueOutputPath(const std::string& candidate, std::unordered_set<st
     return candidate;
 }
 
-std::vector<TrustedDeviceItem> loadTrustedDevicesFromDisk() {
+std::vector<TrustedDeviceItem> trustedItemsFromInfos(
+    const std::vector<upix::TrustedDeviceInfo>& infos, bool online) {
     std::vector<TrustedDeviceItem> out;
-    const fs::path tp = upix::default_trust_path();
-    std::ifstream in(tp);
-    if (!in.is_open()) return out;
-    std::string line;
+    out.reserve(infos.size());
     int idx = 1;
-    while (std::getline(in, line)) {
-        while (!line.empty() && (line.back() == '\r' || line.back() == '\n' || line.back() == ' ')) {
-            line.pop_back();
-        }
-        if (line.empty() || line[0] == '#') continue;
-        auto decoded = upix::base64_decode(line);
-        if (!decoded || decoded->size() != 32) continue;
-        std::array<uint8_t, 32> pub{};
-        std::copy(decoded->begin(), decoded->end(), pub.begin());
-        out.push_back(TrustedDeviceItem{"已授权设备 #" + std::to_string(idx++), upix::fingerprint(pub), false});
+    for (const auto& info : infos) {
+        std::string name = info.label.empty()
+            ? ("已授权设备 #" + std::to_string(idx))
+            : info.label;
+        ++idx;
+        out.push_back(TrustedDeviceItem{std::move(name), info.fingerprint, online});
     }
     return out;
 }
 
-void removeTrustedFingerprintOnDisk(const std::string& fp) {
-    const fs::path tp = upix::default_trust_path();
-    std::ifstream in(tp);
-    if (!in.is_open()) return;
-    std::vector<std::string> keep;
-    std::string line;
-    while (std::getline(in, line)) {
-        std::string trimmed = line;
-        while (!trimmed.empty() && (trimmed.back() == '\r' || trimmed.back() == '\n' || trimmed.back() == ' ')) {
-            trimmed.pop_back();
-        }
-        if (trimmed.empty() || trimmed[0] == '#') continue;
-        auto decoded = upix::base64_decode(trimmed);
-        if (decoded && decoded->size() == 32) {
-            std::array<uint8_t, 32> pub{};
-            std::copy(decoded->begin(), decoded->end(), pub.begin());
-            if (upix::fingerprint(pub) == fp) continue;
-        }
-        keep.push_back(trimmed);
-    }
-    in.close();
-    std::ofstream out(tp, std::ios::trunc);
-    for (const auto& k : keep) out << k << '\n';
+std::vector<TrustedDeviceItem> loadTrustedDevicesFromDisk() {
+    auto ts = upix::TrustStore::load(upix::default_trust_path());
+    return trustedItemsFromInfos(ts.trusted_devices(), false);
 }
 
 } // namespace
 
 struct AppState::HostWorker {
     std::jthread thread;
+    std::shared_ptr<std::atomic<bool>> alive = std::make_shared<std::atomic<bool>>(true);
     std::atomic<bool> stopping{false};
     std::atomic<int> task_pct{-1};
     std::mutex pending_mtx;
@@ -176,7 +147,8 @@ struct AppState::HostWorker {
     upix::Coordinator coordinator;
 
     ~HostWorker() {
-        stopping.store(true);
+        stopping.store(true, std::memory_order_release);
+        alive->store(false, std::memory_order_release);
         {
             std::lock_guard<std::mutex> lk(pending_mtx);
             for (const auto& p : pending_queue) {
@@ -879,6 +851,9 @@ void AppState::startJob() {
         req.model_name = runSnap.model;
         req.use_gpu = runSnap.gpu;
         req.force = runSnap.force;
+        req.overwrite_original = runSnap.overwrite_original;
+        req.backup_original = runSnap.backup_original;
+        req.recommend_tile_size = (runSnap.tile_size <= 0);
         req.config.use_gpu = runSnap.gpu;
         req.config.auto_tile_size = (runSnap.tile_size <= 0);
         req.config.tile_size = (runSnap.tile_size > 0) ? runSnap.tile_size : 256;
@@ -895,20 +870,25 @@ void AppState::startJob() {
 
         std::unordered_set<std::string> reservedOutputs;
         std::unordered_map<std::string, size_t> pathToInputIdx;
-        struct OverwriteStage {
-            std::string original;
-            std::string stage;
+        std::unordered_map<std::string, size_t> outPathToInputIdx;
+        std::unordered_map<std::string, size_t> outStemToInputIdx;
+
+        auto registerTask = [&](std::string inPath, std::string outPath, size_t idx) {
+            pathToInputIdx[inPath] = idx;
+            outPathToInputIdx[outPath] = idx;
+            fs::path op(outPath);
+            outStemToInputIdx[(op.parent_path() / op.stem()).string()] = idx;
+            req.tasks.emplace_back(std::move(inPath), std::move(outPath));
         };
-        std::unordered_map<std::string, OverwriteStage> overwriteStages;
 
         for (size_t idx = 0; idx < runSnap.inputs.size(); ++idx) {
             const auto& inp = runSnap.inputs[idx];
             if (inp.is_dir) {
                 std::string err;
-                std::string outDir = runSnap.custom_out_dir.empty()
+                std::string outDir = (runSnap.overwrite_original || runSnap.custom_out_dir.empty())
                     ? upix::derive_default_output(inp.path, req.model_name, true)
                     : runSnap.custom_out_dir;
-                auto tasks = upix::gather_directory_tasks(inp.path, outDir, err);
+                auto tasks = upix::gather_directory_tasks(inp.path, outDir, err, runSnap.recursive);
                 if (!tasks) {
                     post([this, idx, err]() {
                         snap_.job.phase = JobPhase::Error;
@@ -922,27 +902,19 @@ void AppState::startJob() {
                     return;
                 }
                 for (auto& pair : *tasks) {
-                    pair.second = uniqueOutputPath(pair.second, reservedOutputs);
-                    pathToInputIdx[pair.first] = idx;
-                    req.tasks.push_back(std::move(pair));
+                    if (!runSnap.overwrite_original) {
+                        pair.second = uniqueOutputPath(pair.second, reservedOutputs);
+                    }
+                    registerTask(std::move(pair.first), std::move(pair.second), idx);
                 }
             } else {
-                std::string outPath;
-                if (runSnap.overwrite_original) {
-                    fs::path p(inp.path);
-                    std::string stage = (p.parent_path() / (".upix_stage_" + std::to_string(idx) + "_" + p.filename().string())).string();
-                    outPath = uniqueOutputPath(stage, reservedOutputs);
-                    overwriteStages[outPath] = OverwriteStage{inp.path, outPath};
-                } else {
-                    outPath = upix::derive_default_output(inp.path, req.model_name, false);
-                    if (!runSnap.custom_out_dir.empty()) {
-                        fs::path fn = fs::path(outPath).filename();
-                        outPath = (fs::path(runSnap.custom_out_dir) / fn).string();
-                    }
+                std::string outPath = upix::compute_batch_output_path(
+                    upix::BatchInput{inp.path, ""}, req.model_name, req.config,
+                    runSnap.custom_out_dir, runSnap.overwrite_original).string();
+                if (!runSnap.overwrite_original) {
                     outPath = uniqueOutputPath(outPath, reservedOutputs);
                 }
-                pathToInputIdx[inp.path] = idx;
-                req.tasks.emplace_back(inp.path, outPath);
+                registerTask(inp.path, std::move(outPath), idx);
             }
         }
 
@@ -951,17 +923,23 @@ void AppState::startJob() {
             snap_.job.total = std::max(1, totalTasks);
         });
 
+        std::mutex cbMtx;
         int completedTasks = 0;
-        size_t activeIdx = 0;
-        auto itemStart = std::chrono::steady_clock::now();
+        size_t lastActiveIdx = 0;
+        std::unordered_map<size_t, std::chrono::steady_clock::time_point> startByInput;
 
         upix::BatchCallbacks cb;
-        cb.on_current = [this, &pathToInputIdx, &completedTasks, &activeIdx, &itemStart](const std::string& file) {
-            itemStart = std::chrono::steady_clock::now();
-            auto it = pathToInputIdx.find(file);
-            if (it != pathToInputIdx.end()) activeIdx = it->second;
-            const int curNum = completedTasks + 1;
-            const size_t idxCopy = activeIdx;
+        cb.on_current = [this, &cbMtx, &pathToInputIdx, &completedTasks, &lastActiveIdx, &startByInput](const std::string& file) {
+            size_t idxCopy = 0;
+            int curNum = 1;
+            {
+                std::lock_guard<std::mutex> lk(cbMtx);
+                auto it = pathToInputIdx.find(file);
+                if (it != pathToInputIdx.end()) lastActiveIdx = it->second;
+                idxCopy = lastActiveIdx;
+                startByInput.try_emplace(idxCopy, std::chrono::steady_clock::now());
+                curNum = completedTasks + 1;
+            }
             post([this, file, curNum, idxCopy]() {
                 snap_.job.index = curNum;
                 snap_.job.current_file = fs::path(file).filename().string();
@@ -983,27 +961,31 @@ void AppState::startJob() {
                 snap_.job.eta_sec = std::max(0, eta);
             });
         };
-        cb.on_saved = [this, &completedTasks, &activeIdx, &itemStart, &overwriteStages, runSnap](const std::string& outRaw) {
-            ++completedTasks;
-            std::string finalOut = outRaw;
-            auto owIt = overwriteStages.find(outRaw);
-            if (owIt != overwriteStages.end()) {
-                std::error_code ec;
-                fs::path orig(owIt->second.original);
-                fs::path stage(owIt->second.stage);
-                if (runSnap.backup_original) {
-                    fs::path bak = orig.parent_path() / (orig.stem().string() + ".bak" + orig.extension().string());
-                    fs::rename(orig, bak, ec);
+        cb.on_saved = [this, &cbMtx, &completedTasks, &lastActiveIdx, &outPathToInputIdx, &outStemToInputIdx, &startByInput](const std::string& finalOut) {
+            size_t idxCopy = 0;
+            double itemSec = 0.0;
+            {
+                std::lock_guard<std::mutex> lk(cbMtx);
+                ++completedTasks;
+                if (auto it = outPathToInputIdx.find(finalOut); it != outPathToInputIdx.end()) {
+                    idxCopy = it->second;
+                } else {
+                    fs::path fp(finalOut);
+                    std::string stemKey = (fp.parent_path() / fp.stem()).string();
+                    if (auto sit = outStemToInputIdx.find(stemKey); sit != outStemToInputIdx.end()) {
+                        idxCopy = sit->second;
+                    } else {
+                        idxCopy = lastActiveIdx;
+                    }
                 }
-                fs::rename(stage, orig, ec);
-                if (!ec) finalOut = orig.string();
+                auto now = std::chrono::steady_clock::now();
+                if (auto stIt = startByInput.find(idxCopy); stIt != startByInput.end()) {
+                    itemSec = std::chrono::duration<double>(now - stIt->second).count();
+                }
             }
-
             std::error_code ec;
             auto fsz = fs::file_size(finalOut, ec);
             std::string szStr = ec ? "" : formatBytes(fsz);
-            double itemSec = std::chrono::duration<double>(std::chrono::steady_clock::now() - itemStart).count();
-            const size_t idxCopy = activeIdx;
             post([this, finalOut, szStr, idxCopy, itemSec]() {
                 snap_.job.outputs.push_back(finalOut);
                 if (!szStr.empty()) snap_.job.out_size_str = szStr;
@@ -1021,13 +1003,39 @@ void AppState::startJob() {
                 }
             });
         };
+        cb.on_skipped = [this, &cbMtx, &completedTasks, &pathToInputIdx, &lastActiveIdx](const std::string& file) {
+            size_t idxCopy = 0;
+            {
+                std::lock_guard<std::mutex> lk(cbMtx);
+                ++completedTasks;
+                auto it = pathToInputIdx.find(file);
+                idxCopy = (it != pathToInputIdx.end()) ? it->second : lastActiveIdx;
+            }
+            post([this, idxCopy]() {
+                if (idxCopy < snap_.inputs.size() && !snap_.inputs[idxCopy].is_dir) {
+                    snap_.inputs[idxCopy].status_kind = 2;
+                    snap_.inputs[idxCopy].status_text = "已跳过";
+                }
+            });
+        };
+        cb.on_error = [this, &cbMtx, &pathToInputIdx, &lastActiveIdx](const std::string& file, const std::string& reason) {
+            size_t idxCopy = 0;
+            {
+                std::lock_guard<std::mutex> lk(cbMtx);
+                auto it = pathToInputIdx.find(file);
+                idxCopy = (it != pathToInputIdx.end()) ? it->second : lastActiveIdx;
+            }
+            post([this, idxCopy, reason]() {
+                if (idxCopy < snap_.inputs.size()) {
+                    snap_.inputs[idxCopy].status_kind = 3;
+                    snap_.inputs[idxCopy].status_text = "失败";
+                }
+                if (!reason.empty()) snap_.job.diag_detail = reason;
+            });
+        };
 
         auto stats = upix::run_batch(req, cb, job_cancel_);
         if (job_cancel_.load(std::memory_order_acquire)) {
-            for (const auto& [_, st] : overwriteStages) {
-                std::error_code ec;
-                fs::remove(st.stage, ec);
-            }
             post([this]() {
                 snap_.job.phase = JobPhase::Cancelled;
                 snap_.job.message = "已取消";
@@ -1041,19 +1049,26 @@ void AppState::startJob() {
             return;
         }
         if (!stats || (stats->succeeded + stats->skipped < stats->total)) {
-            post([this, activeIdx]() {
+            size_t failIdx = 0;
+            {
+                std::lock_guard<std::mutex> lk(cbMtx);
+                failIdx = lastActiveIdx;
+            }
+            post([this, failIdx]() {
                 snap_.job.phase = JobPhase::Error;
                 snap_.job.message = "推理执行失败";
-                snap_.job.diag_detail = "请检查模型文件或计算设备状态";
+                if (snap_.job.diag_detail.empty()) {
+                    snap_.job.diag_detail = "请检查模型文件或计算设备状态";
+                }
                 for (auto& inp : snap_.inputs) {
                     if (inp.status_kind == 1) {
                         inp.status_kind = 3;
                         inp.status_text = "失败";
                     }
                 }
-                if (activeIdx < snap_.inputs.size() && snap_.inputs[activeIdx].status_kind == 0) {
-                    snap_.inputs[activeIdx].status_kind = 3;
-                    snap_.inputs[activeIdx].status_text = "失败";
+                if (failIdx < snap_.inputs.size() && snap_.inputs[failIdx].status_kind == 0) {
+                    snap_.inputs[failIdx].status_kind = 3;
+                    snap_.inputs[failIdx].status_text = "失败";
                 }
             });
             return;
@@ -1111,20 +1126,20 @@ void AppState::refreshModels() {
             rebuildModelGroups();
         });
 
-        std::string err;
+        auto cat = upix::fetch_remote_models_or_catalog("");
+        std::string err = cat.fallback_error.value_or("");
         std::vector<ModelItem> rem;
-        if (auto r = upix::fetch_remote_models("", err)) {
-            for (const auto& m : *r) {
-                auto meta = upix::classify_model_scene(m.name);
-                rem.push_back(ModelItem{
-                    m.name, m.name, m.scale,
-                    formatBytes(m.size_bytes),
-                    std::string(meta.scene), meta.recommended, true
-                });
-            }
+        rem.reserve(cat.models.size());
+        for (const auto& m : cat.models) {
+            auto meta = upix::classify_model_scene(m.name);
+            rem.push_back(ModelItem{
+                m.name, m.name, m.scale,
+                m.size_bytes > 0 ? formatBytes(m.size_bytes) : std::string("目录"),
+                std::string(meta.scene), meta.recommended, true
+            });
         }
-        post([this, rem = std::move(rem), err]() mutable {
-            snap_.remote_error = err;
+        post([this, rem = std::move(rem), err = std::move(err)]() mutable {
+            snap_.remote_error = std::move(err);
             snap_.remote = std::move(rem);
             rebuildModelGroups();
         });
@@ -1227,11 +1242,12 @@ void AppState::removeModel(const std::string& name) {
 void AppState::refreshDaemonStatus() {
     std::string sock = upix::default_serve_socket_path();
     auto st = upix::serve_daemon_status(sock);
+    const bool ready = st.running && (!st.socket_missing || upix::daemon_endpoint_present(sock));
     std::lock_guard<std::mutex> lk(mtx_);
-    snap_.daemon.running = st.running;
+    snap_.daemon.running = ready;
     snap_.daemon.loading = false;
     snap_.daemon.pid = static_cast<int>(st.pid);
-    snap_.daemon.label = st.running ? "热引擎已就绪" : "热引擎未启动";
+    snap_.daemon.label = ready ? "热引擎已就绪" : "热引擎未启动";
     dirty_.store(true);
 }
 
@@ -1243,8 +1259,11 @@ void AppState::setDaemonIdleSecs(int secs) {
 }
 
 void AppState::toggleDaemon() {
-    bool running = snapshot().daemon.running;
-    int idleSecs = snapshot().daemon.idle_secs;
+    const auto snap = snapshot();
+    const bool running = snap.daemon.running;
+    const int idleSecs = snap.daemon.idle_secs;
+    const std::string modelName = snap.model;
+    const bool forceCpu = !snap.gpu;
     std::string sock = upix::default_serve_socket_path();
     if (running) {
         {
@@ -1264,29 +1283,17 @@ void AppState::toggleDaemon() {
             snap_.daemon.label = "正在启动热引擎…";
             dirty_.store(true);
         }
-        spawnWorker([this, sock, idleSecs](std::shared_ptr<std::atomic<bool>>) {
-            // Spawn detached background self-invocation if executable path is known
-#ifndef _WIN32
-            char exe[4096] = {};
-            ssize_t n = ::readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-            if (n > 0) {
-                exe[n] = '\0';
-                pid_t pid = ::fork();
-                if (pid == 0) {
-                    ::setsid();
-                    std::string idleFlag = "--idle-seconds=" + std::to_string(std::max(1, idleSecs));
-                    const char* args[] = {exe, "--serve-daemon", idleFlag.c_str(), nullptr};
-                    ::execv(exe, const_cast<char* const*>(args));
-                    ::_exit(127);
+        spawnWorker([this, sock, idleSecs, modelName, forceCpu](std::shared_ptr<std::atomic<bool>>) {
+            std::string err;
+            bool ok = upix::ensure_serve_daemon_running(
+                upix::default_models_dir(), idleSecs, err, sock, modelName, forceCpu);
+            post([this, ok, err = std::move(err)]() {
+                refreshDaemonStatus();
+                if (!ok && !err.empty()) {
+                    snap_.notice = "热引擎启动失败: " + err;
+                    snap_.notice_seq++;
                 }
-            }
-#endif
-            for (int i = 0; i < 20; ++i) {
-                auto st = upix::serve_daemon_status(sock);
-                if (st.running) break;
-                std::this_thread::sleep_for(std::chrono::milliseconds(100));
-            }
-            post([this]() { refreshDaemonStatus(); });
+            });
         });
     }
 }
@@ -1305,8 +1312,10 @@ void AppState::hostStart() {
     }
 
     auto aliveFlag = alive_;
-    w->thread = std::jthread([this, aliveFlag, w, port](std::stop_token) {
-        if (!aliveFlag->load(std::memory_order_acquire)) return;
+    auto hostAlive = w->alive;
+    w->thread = std::jthread([this, aliveFlag, hostAlive, w, port](std::stop_token) {
+        if (!aliveFlag->load(std::memory_order_acquire) ||
+            w->stopping.load(std::memory_order_acquire)) return;
         try {
             auto id = upix::IdentityKey::load_or_create(upix::default_identity_path());
             w->coordinator.set_models_directory(upix::default_models_dir());
@@ -1314,21 +1323,25 @@ void AppState::hostStart() {
             w->coordinator.on_task_progress() = [w](float prog) {
                 w->task_pct.store(prog < 0 ? -1 : static_cast<int>(prog * 100));
             };
+            if (w->stopping.load(std::memory_order_acquire) ||
+                !aliveFlag->load(std::memory_order_acquire)) return;
             auto started = w->coordinator.start(static_cast<uint16_t>(port), id);
             if (!started) {
-                post([this, w, msg = started.error().message]() {
+                post([this, hostAlive, msg = started.error().message]() {
+                    if (!hostAlive->load(std::memory_order_acquire)) return;
                     snap_.host.running = false;
                     snap_.host.qr_payload.clear();
                     snap_.notice = "服务启动失败: " + msg;
                     snap_.notice_seq++;
                     snap_.host.logs.push_back("[ERR] " + msg);
-                    if (host_worker_.get() == w) host_worker_.reset();
+                    host_worker_.reset();
                 });
                 return;
             }
             auto card = upix::build_connection_card(static_cast<uint16_t>(port), id.public_key());
-            auto trusted = loadTrustedDevicesFromDisk();
-            post([this, card, trusted = std::move(trusted)]() mutable {
+            auto trusted = trustedItemsFromInfos(w->coordinator.trusted_devices(), false);
+            post([this, hostAlive, card, trusted = std::move(trusted)]() mutable {
+                if (!hostAlive->load(std::memory_order_acquire)) return;
                 snap_.host.running = true;
                 snap_.host.fingerprint = card.fingerprint;
                 snap_.host.ips = card.addresses;
@@ -1351,7 +1364,8 @@ void AppState::hostStart() {
                         showNow = w->pending_queue.empty();
                         w->pending_queue.push_back(*pend);
                     }
-                    post([this, dev = pend->device_name, fp = pend->fingerprint, showNow]() {
+                    post([this, hostAlive, dev = pend->device_name, fp = pend->fingerprint, showNow]() {
+                        if (!hostAlive->load(std::memory_order_acquire)) return;
                         snap_.host.logs.push_back("[PAIR] Pairing request from " + dev);
                         if (showNow || snap_.host.pending_device.empty()) {
                             snap_.host.pending_device = dev;
@@ -1362,30 +1376,36 @@ void AppState::hostStart() {
                 int pct = w->task_pct.load(std::memory_order_acquire);
                 if (pct != lastPct) {
                     lastPct = pct;
-                    post([this, pct]() { snap_.host.task_percent = pct; });
+                    post([this, hostAlive, pct]() {
+                        if (!hostAlive->load(std::memory_order_acquire)) return;
+                        snap_.host.task_percent = pct;
+                    });
                 }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
-            post([this]() {
+            post([this, hostAlive]() {
+                if (!hostAlive->load(std::memory_order_acquire)) return;
                 snap_.host.running = false;
                 snap_.host.qr_payload.clear();
             });
         } catch (const std::exception& e) {
-            post([this, w, msg = std::string(e.what())]() {
+            post([this, hostAlive, msg = std::string(e.what())]() {
+                if (!hostAlive->load(std::memory_order_acquire)) return;
                 snap_.host.running = false;
                 snap_.host.qr_payload.clear();
                 snap_.notice = "服务异常: " + msg;
                 snap_.notice_seq++;
                 snap_.host.logs.push_back("[ERR] " + msg);
-                if (host_worker_.get() == w) host_worker_.reset();
+                host_worker_.reset();
             });
         } catch (...) {
-            post([this, w]() {
+            post([this, hostAlive]() {
+                if (!hostAlive->load(std::memory_order_acquire)) return;
                 snap_.host.running = false;
                 snap_.host.qr_payload.clear();
                 snap_.notice = "服务启动异常";
                 snap_.notice_seq++;
-                if (host_worker_.get() == w) host_worker_.reset();
+                host_worker_.reset();
             });
         }
     });
@@ -1393,6 +1413,7 @@ void AppState::hostStart() {
 
 void AppState::hostStop() {
     if (!host_worker_) return;
+    host_worker_->stopping.store(true, std::memory_order_release);
     host_worker_.reset();
     std::lock_guard<std::mutex> lk(mtx_);
     snap_.host.running = false;
@@ -1456,7 +1477,15 @@ void AppState::hostDecide(bool allow) {
 }
 
 void AppState::removeTrustedDevice(const std::string& fingerprint) {
-    removeTrustedFingerprintOnDisk(fingerprint);
+    if (host_worker_) {
+        host_worker_->coordinator.remove_trusted_device(fingerprint);
+    } else {
+        auto ts = upix::TrustStore::load(upix::default_trust_path());
+        if (ts.remove_by_fingerprint(fingerprint)) {
+            std::error_code ec;
+            ts.save(ec);
+        }
+    }
     std::lock_guard<std::mutex> lk(mtx_);
     snap_.host.trusted_devices.erase(
         std::remove_if(snap_.host.trusted_devices.begin(), snap_.host.trusted_devices.end(),
@@ -1466,8 +1495,14 @@ void AppState::removeTrustedDevice(const std::string& fingerprint) {
 }
 
 void AppState::clearTrustedDevices() {
-    std::error_code ec;
-    fs::remove(upix::default_trust_path(), ec);
+    if (host_worker_) {
+        host_worker_->coordinator.clear_trusted_devices();
+    } else {
+        auto ts = upix::TrustStore::load(upix::default_trust_path());
+        ts.clear();
+        std::error_code ec;
+        ts.save(ec);
+    }
     std::lock_guard<std::mutex> lk(mtx_);
     snap_.host.trusted_devices.clear();
     dirty_.store(true);
