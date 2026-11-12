@@ -2,6 +2,7 @@
 #include "utils/crypto.hpp"  // sha256_hex
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cerrno>
 #include <cstring>
@@ -9,13 +10,44 @@
 #include <sodium.h>
 #include <stdexcept>
 
+#ifdef _WIN32
+#include <windows.h>
+#include <process.h>
+#else
 #include <fcntl.h>
 #include <unistd.h>
+#endif
 
 namespace upix {
 
 namespace {
 constexpr size_t ED_PUBKEY_LEN = 32;
+std::atomic<uint64_t> g_tmp_seq{0};
+
+auto current_pid_u64() -> uint64_t {
+#ifdef _WIN32
+    return static_cast<uint64_t>(::GetCurrentProcessId());
+#else
+    return static_cast<uint64_t>(::getpid());
+#endif
+}
+
+auto sibling_tmp_path(const std::filesystem::path& target) -> std::filesystem::path {
+    const uint64_t seq = g_tmp_seq.fetch_add(1, std::memory_order_relaxed);
+    std::filesystem::path p = target;
+    p += "." + std::to_string(current_pid_u64()) + "." + std::to_string(seq) + ".tmp";
+    return p;
+}
+
+auto normalize_fp(std::string_view fp) -> std::string {
+    std::string out;
+    out.reserve(fp.size());
+    for (unsigned char c : fp) {
+        if (std::isspace(c) || c == '-' || c == ':') continue;
+        out.push_back(static_cast<char>(std::toupper(c)));
+    }
+    return out;
+}
 
 void ensure_0600(const std::filesystem::path& file) {
     namespace fs = std::filesystem;
@@ -25,15 +57,70 @@ void ensure_0600(const std::filesystem::path& file) {
                     fs::perm_options::replace, ec);
     // 权限设置失败不致命(如 Windows),忽略。
 }
+} // namespace
 
-// Create/truncate `file` with mode 0600 *in the open call*, so the contents
-// never exist even briefly with the process umask's permissions — a plain
-// ofstream creates the file 0644 first and only gets chmod'ed afterwards,
-// leaving a window where another local user can read the Ed25519 secret key.
-auto write_private_file(const std::filesystem::path& file, const void* data,
-                        size_t size) -> bool {
-    const int fd = ::open(file.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0600);
+auto write_private_file_atomic(const std::filesystem::path& file,
+                               const void* data, size_t size,
+                               std::error_code& ec) -> bool {
+    ec.clear();
+    if (file.empty()) {
+        ec = std::make_error_code(std::errc::invalid_argument);
+        return false;
+    }
+    if (file.has_parent_path()) {
+        std::filesystem::create_directories(file.parent_path(), ec);
+        if (ec) {
+            return false;
+        }
+    }
+
+    const std::filesystem::path tmp = sibling_tmp_path(file);
+#ifdef _WIN32
+    HANDLE h = ::CreateFileW(tmp.c_str(), GENERIC_WRITE, 0, nullptr,
+                             CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (h == INVALID_HANDLE_VALUE) {
+        ec = std::error_code(static_cast<int>(::GetLastError()),
+                             std::system_category());
+        return false;
+    }
+    const uint8_t* ptr = static_cast<const uint8_t*>(data);
+    size_t written = 0;
+    while (written < size) {
+        const DWORD chunk = static_cast<DWORD>(
+            std::min<size_t>(size - written, 1024u * 1024u));
+        DWORD wrote = 0;
+        if (!::WriteFile(h, ptr + written, chunk, &wrote, nullptr) || wrote == 0) {
+            ec = std::error_code(static_cast<int>(::GetLastError()),
+                                 std::system_category());
+            ::CloseHandle(h);
+            ::DeleteFileW(tmp.c_str());
+            return false;
+        }
+        written += static_cast<size_t>(wrote);
+    }
+    if (!::FlushFileBuffers(h)) {
+        ec = std::error_code(static_cast<int>(::GetLastError()),
+                             std::system_category());
+        ::CloseHandle(h);
+        ::DeleteFileW(tmp.c_str());
+        return false;
+    }
+    ::CloseHandle(h);
+    ensure_0600(tmp);
+    if (!::MoveFileExW(tmp.c_str(), file.c_str(),
+                       MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+        ec = std::error_code(static_cast<int>(::GetLastError()),
+                             std::system_category());
+        ::DeleteFileW(tmp.c_str());
+        return false;
+    }
+    return true;
+#else
+    // Create with 0600 *at open time* so secrets never exist with wider mode,
+    // then fsync + rename atomically so partial writes never truncate target.
+    const int fd = ::open(tmp.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
     if (fd < 0) {
+        ec = std::error_code(errno, std::generic_category());
         return false;
     }
     const char* ptr = static_cast<const char*>(data);
@@ -42,15 +129,38 @@ auto write_private_file(const std::filesystem::path& file, const void* data,
         const ssize_t n = ::write(fd, ptr + written, size - written);
         if (n < 0) {
             if (errno == EINTR) continue;
+            ec = std::error_code(errno, std::generic_category());
             ::close(fd);
+            std::error_code rm_ec;
+            std::filesystem::remove(tmp, rm_ec);
             return false;
         }
         written += static_cast<size_t>(n);
     }
-    ::close(fd);
+    if (::fsync(fd) < 0 && errno != EINVAL && errno != ENOTSUP) {
+        ec = std::error_code(errno, std::generic_category());
+        ::close(fd);
+        std::error_code rm_ec;
+        std::filesystem::remove(tmp, rm_ec);
+        return false;
+    }
+    if (::close(fd) < 0) {
+        ec = std::error_code(errno, std::generic_category());
+        std::error_code rm_ec;
+        std::filesystem::remove(tmp, rm_ec);
+        return false;
+    }
+    ensure_0600(tmp);
+    std::filesystem::rename(tmp, file, ec);
+    if (ec) {
+        std::error_code rm_ec;
+        std::filesystem::remove(tmp, rm_ec);
+        return false;
+    }
+    ensure_0600(file);
     return true;
+#endif
 }
-} // namespace
 
 auto IdentityKey::load_or_create(const std::filesystem::path& file)
     -> IdentityKey {
@@ -84,11 +194,12 @@ auto IdentityKey::load_or_create(const std::filesystem::path& file)
     }
 
     auto kp = sodium::ed25519_keygen();
-    if (!write_private_file(file, kp.private_key.data(), 64)) {
+    std::error_code write_ec;
+    if (!write_private_file_atomic(file, kp.private_key.data(), 64, write_ec)) {
         throw std::runtime_error("Failed to create identity file: " +
-                                 file.string());
+                                 file.string() +
+                                 (write_ec ? " (" + write_ec.message() + ")" : ""));
     }
-    ensure_0600(file);
     return IdentityKey(kp);
 }
 
@@ -130,28 +241,67 @@ auto TrustStore::contains(const std::array<uint8_t, 32>& pubkey) const -> bool {
                        });
 }
 
-void TrustStore::add(const std::array<uint8_t, 32>& pubkey) {
+void TrustStore::add(const std::array<uint8_t, 32>& pubkey,
+                     std::string label,
+                     std::string added_at) {
     if (!contains(pubkey)) entries_.push_back(pubkey);
+    if (!label.empty() || !added_at.empty()) {
+        const std::string fp = fingerprint(pubkey);
+        auto& slot = meta_by_fp_[fp];
+        if (!label.empty()) slot.first = std::move(label);
+        if (!added_at.empty()) slot.second = std::move(added_at);
+    }
 }
 
-void TrustStore::save() const {
-    if (file_.empty()) return;
-    if (file_.has_parent_path()) {
-        std::error_code ec;
-        std::filesystem::create_directories(file_.parent_path(), ec);
-        // 目录已存在时 ec 清空;真错误忽略(best-effort,与历史行为一致)。
+auto TrustStore::remove_by_fingerprint(std::string_view fp) -> bool {
+    const std::string needle = normalize_fp(fp);
+    if (needle.empty()) return false;
+    const size_t before = entries_.size();
+    entries_.erase(
+        std::remove_if(entries_.begin(), entries_.end(),
+                       [&](const std::array<uint8_t, 32>& pk) {
+                           return fingerprint(pk) == needle;
+                       }),
+        entries_.end());
+    meta_by_fp_.erase(needle);
+    return entries_.size() != before;
+}
+
+void TrustStore::clear() {
+    entries_.clear();
+    meta_by_fp_.clear();
+}
+
+auto TrustStore::trusted_devices() const -> std::vector<TrustedDeviceInfo> {
+    std::vector<TrustedDeviceInfo> out;
+    out.reserve(entries_.size());
+    for (const auto& pk : entries_) {
+        TrustedDeviceInfo info;
+        info.fingerprint = fingerprint(pk);
+        if (const auto it = meta_by_fp_.find(info.fingerprint);
+            it != meta_by_fp_.end()) {
+            info.label = it->second.first;
+            info.added_at = it->second.second;
+        }
+        out.push_back(std::move(info));
     }
+    return out;
+}
+
+auto TrustStore::save(std::error_code& ec) const -> bool {
+    ec.clear();
+    if (file_.empty()) return true;
     std::string body;
     for (const auto& pk : entries_) {
         body += base64_encode(pk.data(), ED_PUBKEY_LEN);
         body += '\n';
     }
-    // Same 0600-at-creation rule as the identity key: never expose the file
-    // (or a rewritten one) with the umask's permissions first.
-    if (!write_private_file(file_, body.data(), body.size())) {
-        return;  // best-effort, as before: callers only log
-    }
-    ensure_0600(file_);
+    return write_private_file_atomic(file_, body.data(), body.size(), ec);
+}
+
+void TrustStore::save() const {
+    std::error_code ec;
+    (void)save(ec);
 }
 
 auto fingerprint(const std::array<uint8_t, 32>& pubkey) -> std::string {

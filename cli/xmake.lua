@@ -66,6 +66,7 @@ local HOST_TEST_SPECS = {
     test_crypto = {deps = {"upix-core"}, packages = {"libsodium"}},
     test_protocol = {deps = {"upix-core"}},
     test_distributed_session = {deps = {"upix-core"}, packages = TEST_ENGINE_PKGS, syslinks = {"dl"}},
+    test_serve_daemon_control = {deps = {"upix-core"}, packages = TEST_ENGINE_PKGS, syslinks = {"dl"}, includedirs = {"$(projectdir)/share"}},
     test_sr_marker = {deps = {"upix-core"}, packages = TEST_CODEC_PKGS, avif = true, syslinks = {"dl"}},
     test_exif = {deps = {"upix-core"}, packages = TEST_CODEC_PKGS, avif = true, syslinks = {"dl"}},
     test_gpu_precision = {packages = {"ncnn~runtime"}, includedirs = {"$(projectdir)/share"}},

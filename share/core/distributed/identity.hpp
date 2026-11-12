@@ -8,9 +8,27 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <system_error>
+#include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace upix {
+
+struct TrustedDeviceInfo {
+    std::string fingerprint;
+    std::string label;
+    std::string added_at;
+};
+
+// Write `size` bytes atomically into `file` with restrictive 0600 permissions
+// at file creation time (POSIX open(..., O_CREAT|O_EXCL, 0600) + fsync +
+// rename; Win32 CreateFileW + FlushFileBuffers + MoveFileExW). On failure,
+// sets `ec` and removes any temporary sibling without disturbing `file`.
+auto write_private_file_atomic(const std::filesystem::path& file,
+                               const void* data, size_t size,
+                               std::error_code& ec) -> bool;
 
 // 持久 Ed25519 身份。加载或新建并落盘。
 class IdentityKey {
@@ -37,9 +55,18 @@ class TrustStore {
 public:
     static auto load(const std::filesystem::path& file) -> TrustStore;
     auto contains(const std::array<uint8_t, 32>& pubkey) const -> bool;
-    void add(const std::array<uint8_t, 32>& pubkey);  // 加到内存
+    void add(const std::array<uint8_t, 32>& pubkey,
+             std::string label = {},
+             std::string added_at = {});  // 加到内存
+    auto remove_by_fingerprint(std::string_view fp) -> bool;
+    void clear();
+    auto trusted_devices() const -> std::vector<TrustedDeviceInfo>;
+    auto save(std::error_code& ec) const -> bool;
     void save() const;  // 落盘(若 file 非空)
     auto size() const -> size_t { return entries_.size(); }
+    auto entries() const -> const std::vector<std::array<uint8_t, 32>>& {
+        return entries_;
+    }
 
 private:
     TrustStore(std::filesystem::path file,
@@ -47,6 +74,7 @@ private:
         : file_(std::move(file)), entries_(std::move(entries)) {}
     std::filesystem::path file_;
     std::vector<std::array<uint8_t, 32>> entries_;
+    std::unordered_map<std::string, std::pair<std::string, std::string>> meta_by_fp_;
 };
 
 // sha256(pubkey) 前 8 字节 hex 大写,如 "ABCD1234EF567890"

@@ -18,11 +18,18 @@
 
 #include <cstdio>
 #include <cerrno>
+#include <csignal>
+#ifdef _WIN32
+#include <windows.h>
+#include <iostream>
+#include <thread>
+#else
 #include <poll.h>
 #include <signal.h>
 #include <unistd.h>
 #ifdef __APPLE__
 #include <libproc.h>
+#endif
 #endif
 
 #include "qrcodegen.hpp"
@@ -150,6 +157,50 @@ void emit_json_line(const std::string& json) {
 auto read_line_interruptible(std::string& line,
                              const std::function<bool()>& still_waiting) -> bool {
     line.clear();
+#ifdef _WIN32
+    HANDLE h = ::GetStdHandle(STD_INPUT_HANDLE);
+    if (h == nullptr || h == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    const DWORD type = ::GetFileType(h);
+    for (;;) {
+        if (!still_waiting()) return false;
+        bool ready = (type == FILE_TYPE_DISK);
+        if (type == FILE_TYPE_PIPE) {
+            DWORD avail = 0;
+            if (!::PeekNamedPipe(h, nullptr, 0, nullptr, &avail, nullptr)) {
+                return !line.empty();  // broken pipe / EOF
+            }
+            ready = avail > 0;
+        } else if (type == FILE_TYPE_CHAR) {
+            ready = ::WaitForSingleObject(h, 200) == WAIT_OBJECT_0;
+            if (ready) {
+                INPUT_RECORD rec{};
+                DWORD nread = 0;
+                if (::PeekConsoleInputA(h, &rec, 1, &nread) && nread > 0 &&
+                    rec.EventType != KEY_EVENT) {
+                    ::ReadConsoleInputA(h, &rec, 1, &nread);
+                    ready = false;
+                }
+            }
+        }
+        if (!ready) {
+            if (type == FILE_TYPE_PIPE) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            }
+            continue;
+        }
+        char ch = 0;
+        DWORD nread = 0;
+        if (!::ReadFile(h, &ch, 1, &nread, nullptr) || nread == 0) {
+            return !line.empty();
+        }
+        if (ch == '\r') continue;
+        if (ch == '\n') return true;
+        line.push_back(ch);
+        if (line.size() >= kMaxPromptLineBytes) return true;
+    }
+#else
     for (;;) {
         if (!still_waiting()) {
             return false;  // shutting down: the caller answers the request
@@ -193,6 +244,7 @@ auto read_line_interruptible(std::string& line,
             return true;
         }
     }
+#endif
 }
 
 // Shared ETA estimate: 0 until a full second of throughput is observable and

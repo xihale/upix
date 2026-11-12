@@ -46,8 +46,10 @@ int run_batch(const args::Process& a, EffectiveProcessingConfig effective) {
         return 1;
     }
     if (tasks->empty()) {
-        LOG_WARNING("CLI", "No image files found in input directory");
-        return 0;
+        LOG_ERROR("CLI",
+                  "No image files (.png/.jpg/.jpeg/.webp/.avif) found in {}",
+                  input_path);
+        return 1;
     }
 
     upix::BatchRequest request;
@@ -62,14 +64,26 @@ int run_batch(const args::Process& a, EffectiveProcessingConfig effective) {
     request.jobs_explicit = a.jobs_explicit;
 
     // Machine events key the GUI/script consumers; human mode renders the
-    // stderr progress line (identical numbers, identical wording).
+    // stderr progress line + `[n/total] <file>` / `Saved: <path>` transcript.
     const bool machine = machine_output_enabled();
+    const size_t total_count = request.tasks.size();
+    std::atomic<size_t> started_count{0};
     upix::BatchCallbacks callbacks;
-    callbacks.on_current = [machine](const std::string& file) {
-        if (machine) emit_json_line(current_event(file));
+    callbacks.on_current = [machine, total_count, &started_count](const std::string& file) {
+        if (machine) {
+            emit_json_line(current_event(file));
+        } else {
+            const size_t n = started_count.fetch_add(1, std::memory_order_relaxed) + 1;
+            const std::string name = fs::path(file).filename().string();
+            LOG_INFO("Engine", "[{}/{}] {}", n, total_count, name.empty() ? file : name);
+        }
     };
     callbacks.on_saved = [machine](const std::string& path) {
-        if (machine) emit_json_line(saved_event(path));
+        if (machine) {
+            emit_json_line(saved_event(path));
+        } else {
+            LOG_INFO("Engine", "Saved: {}", path);
+        }
     };
     callbacks.on_skipped = {};  // CLI keeps the historical log-only summary
     // The original batch path passed ONE batch-start clock to every progress
@@ -80,6 +94,11 @@ int run_batch(const args::Process& a, EffectiveProcessingConfig effective) {
     };
 
     auto stats = upix::run_batch(request, callbacks, g_cancel_requested);
-    if (!stats.has_value()) return 1;  // fatal setup problem, already logged
+    if (!stats.has_value()) {
+        LOG_ERROR("Engine",
+                  "Install a model with `upix model download <name>` "
+                  "(see `upix model list-remote` or `upix model list`)");
+        return 1;  // fatal setup problem, already logged
+    }
     return stats->succeeded + stats->skipped == stats->total ? 0 : 1;
 }

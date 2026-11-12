@@ -29,7 +29,9 @@
 #include <optional>
 #include <random>
 #include <string>
+#include <system_error>
 #include <thread>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
 using namespace upix;  // NOLINT
@@ -706,11 +708,23 @@ int main() {
         auto approved_response = recv_connect_response(approved_sock, *approved_session);
         CHECK(approved_response.has_value());
         CHECK(approved_response->approved == 1);
+        // Trust store must be durably persisted on disk BEFORE CONNECT_RESPONSE
+        // reaches the client, with strict owner-only permissions.
+        CHECK(TrustStore::load(pairing_trust_path).contains(
+            client_identity.public_key()));
+        {
+            struct stat st{};
+            CHECK(::stat(pairing_trust_path.c_str(), &st) == 0);
+            CHECK((st.st_mode & 0777) == 0600);
+        }
+        auto devs = pairing.trusted_devices();
+        CHECK(devs.size() == 1);
+        CHECK(!devs[0].fingerprint.empty());
+        CHECK(!devs[0].label.empty());
+        CHECK(!devs[0].added_at.empty());
         auto approved_task = submit_and_await(approved_sock, *approved_session,
                                                png_bytes, "no-such-model");
         CHECK(approved_task.has_value());
-        CHECK(TrustStore::load(pairing_trust_path).contains(
-            client_identity.public_key()));
         approved_sock.close();
 
         TCPSocket reconnect_sock;
@@ -723,8 +737,69 @@ int main() {
         CHECK(reconnect_response->trusted == 1);
         CHECK(!pairing.pop_pending_approval().has_value());
         reconnect_sock.close();
+
+        // Revoke via remove_trusted_device -> persisted and forces re-pairing.
+        const std::string saved_fp = devs[0].fingerprint;
+        CHECK(pairing.remove_trusted_device(saved_fp));
+        CHECK(!pairing.remove_trusted_device(saved_fp));
+        CHECK(pairing.trusted_devices().empty());
+        CHECK(!TrustStore::load(pairing_trust_path).contains(
+            client_identity.public_key()));
+
+        TCPSocket revoked_sock;
+        auto revoked_session = request_pairing(revoked_sock, pairing_port,
+                                               server_identity, client_identity);
+        CHECK(revoked_session.has_value());
+        auto revoked_req = await_approval(pairing);
+        CHECK(revoked_req.has_value());
+        pairing.resolve_approval(revoked_req->id, false);
+        auto revoked_resp = recv_connect_response(revoked_sock, *revoked_session);
+        CHECK(revoked_resp.has_value());
+        CHECK(revoked_resp->approved == 0);
+        revoked_sock.close();
+
+        // Re-trust and verify clear_trusted_devices().
+        {
+            TCPSocket re_sock;
+            auto re_sess = request_pairing(re_sock, pairing_port,
+                                           server_identity, client_identity);
+            CHECK(re_sess.has_value());
+            auto re_req = await_approval(pairing);
+            CHECK(re_req.has_value());
+            pairing.resolve_approval(re_req->id, true);
+            auto re_resp = recv_connect_response(re_sock, *re_sess);
+            CHECK(re_resp.has_value());
+            CHECK(re_resp->approved == 1);
+            re_sock.close();
+            CHECK(pairing.trusted_devices().size() == 1);
+            pairing.clear_trusted_devices();
+            CHECK(pairing.trusted_devices().empty());
+            CHECK(!TrustStore::load(pairing_trust_path).contains(
+                client_identity.public_key()));
+        }
+
+        // Atomic save preserves existing file / refuses colliding dir without leaks.
+        {
+            const auto atomic_target = dir / "atomic_test_file";
+            std::error_code ec;
+            CHECK(write_private_file_atomic(atomic_target, "first", 5, ec));
+            CHECK(!ec);
+            struct stat st{};
+            CHECK(::stat(atomic_target.c_str(), &st) == 0);
+            CHECK((st.st_mode & 0777) == 0600);
+
+            const auto collision_dir = dir / "atomic_dir_collision";
+            std::filesystem::create_directories(collision_dir / "nested");
+            CHECK(!write_private_file_atomic(collision_dir, "bad", 3, ec));
+            CHECK(ec);
+            // Verify no leftover .tmp files in dir.
+            for (const auto& entry : std::filesystem::directory_iterator(dir)) {
+                CHECK(entry.path().extension() != ".tmp");
+            }
+        }
+
         pairing.stop();
-        std::printf("OK denied reconnect prompts again; approved identity reconnects trusted\n");
+        std::printf("OK denied/revoked reconnect prompts again; approved identity persisted before response & 0600\n");
     }
 
     // ── Model upload installs a PAIR and must never damage the installed one.

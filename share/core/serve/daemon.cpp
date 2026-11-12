@@ -49,9 +49,12 @@ constexpr uint32_t MAX_SERVE_PAYLOAD_BYTES =
 
 // Fixed-width wire fields are not guaranteed NUL-terminated; std::string
 // construction from a bare char* would read past the struct. Copy with an
-// explicit bound instead.
+// explicit bound instead (portable across glibc/macOS/Windows without ::strnlen).
 auto bounded_string(const char* src, size_t capacity) -> std::string {
-    return {src, ::strnlen(src, capacity)};  // POSIX: not in std:: on glibc
+    const void* nul = std::memchr(src, '\0', capacity);
+    const size_t len = nul ? static_cast<size_t>(static_cast<const char*>(nul) - src)
+                           : capacity;
+    return {src, len};
 }
 
 // Write a framed message (header + payload) over a LocalSocket. serialize()
@@ -111,7 +114,7 @@ struct ConnGuard {
 class ConnSock : public LocalSocket {
 public:
     explicit ConnSock(LocalSocket&& s) : LocalSocket(std::move(s)) {}
-    [[nodiscard]] auto handle() const -> intptr_t { return sock_; }
+    [[nodiscard]] auto handle() const -> intptr_t { return LocalSocket::handle(); }
 };
 
 } // namespace
@@ -282,6 +285,7 @@ auto ServeDaemon::handle_client_inner(std::unique_ptr<LocalSocket>& sock,
         }
     }
 
+#ifndef _WIN32
     // FIFOs (and sockets) as input would block a connection thread inside
     // file I/O with no deadline — request_stop/::shutdown in teardown cannot
     // unblock it, so a single request could hang `daemon stop` forever.
@@ -296,6 +300,7 @@ auto ServeDaemon::handle_client_inner(std::unique_ptr<LocalSocket>& sock,
             return;
         }
     }
+#endif
 
     // ── 3. Full hot-path pipeline: read → decode → upscale → encode → write.
     // The client never touches image bytes; its own footprint stays near zero.

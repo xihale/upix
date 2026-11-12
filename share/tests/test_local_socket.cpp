@@ -90,7 +90,12 @@ int main() {
               "connect to a missing endpoint fails");
     }
 
-    // 4. shutdown_wake must interrupt a peer thread blocked in receive_all.
+    // 4. shutdown_wake must interrupt BOTH:
+    //    (a) peer's blocked receive_all via EOF when client wakes its socket
+    //    (b) the blocked receiver socket itself when shutdown_wake() is called
+    //        directly from another thread (must not deadlock on rx_mutex_)
+    //    (c) truncated-frame EOF in receive_all() (must fail with ECONNRESET,
+    //        never spin at 100% CPU).
     {
         const std::string ep = endpoint_for("wake");
         LocalServer server;
@@ -116,7 +121,58 @@ int main() {
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
         sock.shutdown_wake();  // peer's blocked receive must fail now
         srv.join();
-        check(interrupted.load(), "shutdown_wake interrupts a blocked receive");
+        check(interrupted.load(), "peer shutdown_wake interrupts a blocked receive");
+        server.stop();
+    }
+    {
+        const std::string ep = endpoint_for("wake-self");
+        LocalServer server;
+        check(server.listen(ep).has_value(), "listen for self shutdown_wake test");
+        std::atomic<bool> interrupted{false};
+        std::atomic<LocalSocket*> conn_ptr{nullptr};
+
+        std::thread srv([&] {
+            auto client = server.accept();
+            if (!client) return;
+            conn_ptr.store(client->get());
+            uint8_t one = 0;
+            auto r = (*client)->receive_all(&one, 1);  // blocks holding rx_mutex_
+            interrupted = !r.has_value();
+        });
+
+        LocalSocket sock;
+        check(sock.connect(ep).has_value(), "client connects for self wake test");
+        for (int i = 0; i < 200 && conn_ptr.load() == nullptr; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // Call shutdown_wake() directly on the blocked receiver socket itself!
+        conn_ptr.load()->shutdown_wake();
+        srv.join();
+        check(interrupted.load(), "direct shutdown_wake on blocked receiver does not deadlock");
+        server.stop();
+    }
+    {
+        const std::string ep = endpoint_for("trunc-eof");
+        LocalServer server;
+        check(server.listen(ep).has_value(), "listen for truncated-frame EOF test");
+        std::atomic<bool> eof_failed{false};
+
+        std::thread srv([&] {
+            auto client = server.accept();
+            if (!client) return;
+            uint8_t buf[64]{};
+            auto r = (*client)->receive_all(buf, sizeof(buf));
+            eof_failed = !r.has_value() && r.error().code == ECONNRESET;
+        });
+
+        LocalSocket sock;
+        check(sock.connect(ep).has_value(), "client connects for truncated-frame test");
+        const uint8_t partial[4] = {1, 2, 3, 4};
+        check(sock.send_all(partial, sizeof(partial)).has_value(), "send 4 partial bytes");
+        sock.close();
+        srv.join();
+        check(eof_failed.load(), "receive_all returns ECONNRESET on truncated-frame EOF");
         server.stop();
     }
 

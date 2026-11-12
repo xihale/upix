@@ -144,6 +144,7 @@ auto Coordinator::start(uint16_t port, IdentityKey& identity)
     // Load explicitly approved peers. Missing stores leave every identity
     // unapproved until the user accepts a CONNECT_REQUEST.
     if (!trust_store_path_.empty()) {
+        std::lock_guard<std::mutex> lock(trust_store_mtx_);
         trust_store_ = TrustStore::load(trust_store_path_);
         LOG_INFO("Coordinator", "TrustStore loaded ({} known peers) from {}",
                  trust_store_->size(), trust_store_path_.string());
@@ -166,7 +167,49 @@ auto Coordinator::start(uint16_t port, IdentityKey& identity)
 }
 
 void Coordinator::set_trust_store_path(const std::filesystem::path& path) {
+    std::lock_guard<std::mutex> lock(trust_store_mtx_);
     trust_store_path_ = path;
+    trust_store_.reset();
+}
+
+auto Coordinator::trusted_devices() const -> std::vector<TrustedDeviceInfo> {
+    std::lock_guard<std::mutex> lock(trust_store_mtx_);
+    if (!trust_store_ && !trust_store_path_.empty()) {
+        trust_store_ = TrustStore::load(trust_store_path_);
+    }
+    if (!trust_store_) return {};
+    return trust_store_->trusted_devices();
+}
+
+auto Coordinator::remove_trusted_device(const std::string& fingerprint) -> bool {
+    std::lock_guard<std::mutex> lock(trust_store_mtx_);
+    if (!trust_store_ && !trust_store_path_.empty()) {
+        trust_store_ = TrustStore::load(trust_store_path_);
+    }
+    if (!trust_store_) return false;
+    if (!trust_store_->remove_by_fingerprint(fingerprint)) {
+        return false;
+    }
+    std::error_code ec;
+    if (!trust_store_->save(ec)) {
+        LOG_WARNING("Coordinator", "Failed to save TrustStore after remove: {}",
+                    ec.message());
+    }
+    return true;
+}
+
+void Coordinator::clear_trusted_devices() {
+    std::lock_guard<std::mutex> lock(trust_store_mtx_);
+    if (!trust_store_ && !trust_store_path_.empty()) {
+        trust_store_ = TrustStore::load(trust_store_path_);
+    }
+    if (!trust_store_) return;
+    trust_store_->clear();
+    std::error_code ec;
+    if (!trust_store_->save(ec)) {
+        LOG_WARNING("Coordinator", "Failed to save TrustStore after clear: {}",
+                    ec.message());
+    }
 }
 
 void Coordinator::stop() {
@@ -1568,6 +1611,38 @@ void Coordinator::handle_client(std::stop_token st,
                     return;
                 }
 
+                // Persist an affirmative approval BEFORE replying CONNECT_RESPONSE
+                // so an immediate reconnect (or post-response assertion) never
+                // races TrustStore persistence. Serialize with stop() so
+                // shutdown cannot turn a canceled prompt into trust.
+                if (approved && !conn.peer_trusted) {
+                    std::lock_guard<std::mutex> approval_lock(approval_mtx_);
+                    if (!running_ || st.stop_requested()) {
+                        return;
+                    }
+                    std::lock_guard<std::mutex> trust_lock(trust_store_mtx_);
+                    if (trust_store_) {
+                        const auto now = std::time(nullptr);
+                        std::tm tm_utc{};
+#ifdef _WIN32
+                        gmtime_s(&tm_utc, &now);
+#else
+                        gmtime_r(&now, &tm_utc);
+#endif
+                        char ts_buf[32]{};
+                        std::strftime(ts_buf, sizeof(ts_buf), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
+                        trust_store_->add(conn.peer_id_pub, req_device_name, ts_buf);
+                        std::error_code save_ec;
+                        if (!trust_store_->save(save_ec)) {
+                            LOG_WARNING("Coordinator",
+                                        "Failed to persist TrustStore {}: {}",
+                                        trust_store_path_.string(), save_ec.message());
+                        } else {
+                            LOG_INFO("Coordinator", "Peer added to TrustStore: " + req_fingerprint);
+                        }
+                    }
+                }
+
                 ClientConnectResponse cresp{};
                 cresp.approved = approved ? 1 : 0;
                 cresp.trusted = conn.peer_trusted ? 1 : 0;
@@ -1590,20 +1665,6 @@ void Coordinator::handle_client(std::stop_token st,
                 if (!approved) {
                     LOG_WARNING("Coordinator", "Pairing denied for " + req_device_name);
                     return;
-                }
-                // Persist only an affirmative, delivered approval. Serialize with
-                // stop() so shutdown cannot turn a canceled prompt into trust.
-                if (!conn.peer_trusted) {
-                    std::lock_guard<std::mutex> approval_lock(approval_mtx_);
-                    if (!running_ || st.stop_requested()) {
-                        return;
-                    }
-                    std::lock_guard<std::mutex> trust_lock(trust_store_mtx_);
-                    if (trust_store_) {
-                        trust_store_->add(conn.peer_id_pub);
-                        trust_store_->save();
-                        LOG_INFO("Coordinator", "Peer added to TrustStore: " + req_fingerprint);
-                    }
                 }
 
                 // Now read the first session frame (third frame after the

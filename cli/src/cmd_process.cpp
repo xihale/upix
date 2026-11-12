@@ -16,22 +16,14 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
-#include <deque>
 #include <filesystem>
-#include <fcntl.h>
-#include <fstream>
-#include <future>
+#include <format>
 #include <limits>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <print>
 #include <string>
-#include <thread>
 #include <vector>
-
-#include <sys/wait.h>
-#include <unistd.h>
 
 #include "args.hpp"
 #include "cli_app.hpp"
@@ -40,14 +32,12 @@
 #include "utils/exif.hpp"
 #include "utils/logger.hpp"
 #include "utils/sr_marker.hpp"
-#include "utils/local_socket.hpp"
 #include "core/config.hpp"
-#include "core/serve/daemon.hpp"  // default_serve_socket_path, ServeRequest/Response
+#include "core/serve/daemon.hpp"  // default_serve_socket_path
+#include "core/serve/daemon_control.hpp"
 #include "core/engine.hpp"
-#include "core/engine_pool.hpp"
 #include "core/engine_setup.hpp"
 #include "core/model_manager.hpp"
-#include "core/distributed/protocol.hpp"
 #include "core/tile_optimizer.hpp"
 #include "core/tile_processor.hpp"
 #include "process_batch.hpp"  // run_batch (directory path, Layer 2 Task 4)
@@ -55,82 +45,6 @@
 namespace fs = std::filesystem;
 
 namespace {
-
-// Probe the daemon socket. Returns true when a daemon accepts connections.
-// Never removes the file on failure: a refused/unconnectable socket may be a
-// live daemon still starting up (between bind and listen), and deleting it
-// would orphan that daemon from its path (split-brain). Stale-file cleanup is
-// the daemon-side listener's job — it probes and only ever unlinks paths that
-// really are socket files.
-auto try_connect_daemon(const std::string& sock_path) -> bool {
-    std::error_code ec;
-    if (!std::filesystem::exists(sock_path, ec)) return false;
-    upix::LocalSocket sock;
-    return sock.connect(sock_path).has_value();
-}
-
-// Is a daemon alive per its pid file? Race guard: a concurrent process that
-// already spawned a daemon gets to finish; we only wait below. The pid must
-// actually be an upix daemon — zombies and recycled pids pass kill(0) and
-// would cost every invocation the full spawn-wait before the inline fallback.
-auto daemon_pid_alive(const std::string& sock_path) -> bool {
-    std::ifstream pf(sock_path + ".pid");
-    if (!pf) return false;
-    pid_t pid = 0;
-    pf >> pid;
-    return pid_is_upix_daemon(pid);
-}
-
-// Re-exec ourselves as `upix daemon` in the background, then wait until
-// the socket accepts connections. Readiness == connect success: the daemon
-// binds only after engine init + model load, so a few seconds is normal
-// (30 s cap for big models on slow disks). Returns false if it never comes
-// up; the caller silently falls back to inline processing.
-auto spawn_daemon_and_wait(const std::string& sock_path,
-                           const std::string& models_dir,
-                           const std::string& model_name) -> bool {
-    if (!daemon_pid_alive(sock_path)) {
-        LOG_INFO("Engine", "starting warm engine daemon...");
-        pid_t pid = ::fork();
-        if (pid == 0) {
-            // Child: detach from the CLI's stdio, exec the daemon command.
-            // `upix daemon` daemonizes itself (fork + setsid + close
-            // stdio), so this process exits almost immediately.
-            int devnull = ::open("/dev/null", O_RDWR);
-            if (devnull >= 0) {
-                ::dup2(devnull, STDIN_FILENO);
-                ::dup2(devnull, STDOUT_FILENO);
-                ::dup2(devnull, STDERR_FILENO);
-                if (devnull > STDERR_FILENO) ::close(devnull);
-            }
-            const std::string idle = std::format("{}", args::Daemon{}.idle_timeout_s);
-            std::vector<char> self(4096, '\0');
-            ssize_t n = ::readlink("/proc/self/exe", self.data(), self.size() - 1);
-            const char* exe = n > 0 ? self.data() : "upix";
-            if (!model_name.empty()) {
-                ::execl(exe, "upix", "daemon",
-                        "--models-dir", models_dir.c_str(),
-                        "--model", model_name.c_str(),
-                        "--idle-timeout", idle.c_str(),
-                        static_cast<char*>(nullptr));
-            } else {
-                ::execl(exe, "upix", "daemon",
-                        "--models-dir", models_dir.c_str(),
-                        "--idle-timeout", idle.c_str(),
-                        static_cast<char*>(nullptr));
-            }
-            ::_exit(127);  // exec failed
-        }
-        if (pid > 0) {
-            ::waitpid(pid, nullptr, 0);  // reap the short-lived launcher
-        }
-    }
-    for (int i = 0; i < 300; ++i) {  // 30 s @ 100 ms
-        if (try_connect_daemon(sock_path)) return true;
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    return false;
-}
 
 // Model used to tag a derived default output when the user named none: the
 // first model the manager finds in models_dir — the same "first available"
@@ -142,6 +56,12 @@ auto first_model_name(const std::string& models_dir) -> std::string {
         return manager.available_models().front().name;
     }
     return "model";
+}
+
+void log_missing_model_hint() {
+    LOG_ERROR("Engine",
+              "Install a model with `upix model download <name>` "
+              "(see `upix model list-remote` or `upix model list`)");
 }
 
 }  // namespace
@@ -191,195 +111,114 @@ int cmd_process(const args::Process& a) {
 
     // Check if input is a directory for batch processing
     bool is_dir = fs::is_directory(input_path);
-    LOG_INFO("Debug", "Input path: {} is_dir: {:d}", input_path, is_dir);
-
-    // ── Already-super-resolved guard (single-file only) ────────────────────
-    // Read the file once here: the marker check needs the raw bytes, and the
-    // inline path below reuses them for decoding (identical to Image::load,
-    // which is read_file + load_from_memory by extension).
-    std::vector<uint8_t> input_bytes;
-    if (!is_dir) {
-        auto raw = upix::Image::load_raw(input_path);
-        if (!raw.has_value()) {
-            LOG_ERROR("Engine", "Failed to load image: {}", raw.error().message);
-            return 1;
-        }
-        input_bytes = std::move(raw.value());
-        if (!a.force) {
-            if (auto marker = upix::sr_marker::probe(input_bytes.data(),
-                                                     input_bytes.size())) {
-                LOG_INFO("Engine",
-                         "Skipped (already super-resolved by this tool): {} "
-                         "[model={} scale={}x ts={}]; re-run with --force to process anyway",
-                         input_path, marker->model, marker->scale, marker->ts);
-                return 0;
-            }
-        }
-    }
 
     // ── Daemon delegation (single-file only) ────────────────────────────────
-    // If a local daemon is running, send it the image and let the warm engine
-    // do inference — skipping the ~490 ms init+load fixed cost. If none is
-    // running, spawn one in the background and wait for it (it idle-exits on
-    // its own later). Falls back silently (returns nullopt) if the daemon
-    // never comes up or the connection fails; on a real daemon-side error
-    // returns 1. Auto-tile and nondefault batching stay inline: ServeRequest
-    // cannot carry optimizer settings or batch size. Bounds on an unpinned
-    // recommended size also require the inline engine to apply them.
+    // Try the warm daemon BEFORE reading input_bytes into CLI memory: the
+    // daemon reads the file, checks the SR marker (`force`), runs inference,
+    // and writes the output itself, keeping the CLI's memory near zero.
     const bool daemon_supports_config =
         !config.auto_tile_size && config.batch_size == upix::kDefaultBatchSize &&
         (!effective.recommend_tile_size ||
          (config.min_tile_size == upix::kDefaultMinTileSize &&
           config.max_tile_size == upix::kDefaultMaxTileSize));
     if (!is_dir && !a.no_daemon && !force_cpu && daemon_supports_config) {
-        auto delegate = [&]() -> std::optional<int> {
-            namespace fs = std::filesystem;
-
-            // Empty → daemon derives: keeps the input's extension when it maps
-            // to a known encoder, else .png (same rule as derive_default_output).
+        std::error_code ex_ec;
+        if (fs::exists(input_path, ex_ec)) {
             const std::string out_fmt = !config.output_format.empty()
                 ? config.output_format
                 : (!output_path.empty() ? infer_format_from_extension(output_path)
                                         : std::string());
 
-            // The daemon runs on this host but may have a different cwd, so
-            // hand it absolute paths only.
-            const fs::path in_abs = fs::absolute(input_path).lexically_normal();
-            if (!fs::exists(in_abs)) return std::nullopt;  // inline reports the error
-            const std::string out_abs = output_path.empty()
-                ? std::string()
-                : fs::absolute(output_path).lexically_normal().string();
+            upix::ServeRequestArgs req_args;
+            req_args.input_path = input_path;
+            req_args.output_path = output_path;
+            req_args.model_name = model_name;
+            req_args.output_format = out_fmt;
+            req_args.quality = config.output_quality;
+            req_args.png_level = config.encoder.png_level;
+            req_args.webp_method = config.encoder.webp_method;
+            req_args.avif_speed = config.encoder.avif_speed;
+            req_args.chroma = config.encoder.jpeg_subsampling;
+            req_args.avif_subsampling = config.encoder.avif_subsampling;
+            req_args.avif_threads = config.encoder.avif_threads;
+            req_args.webp_lossless = config.encoder.webp_lossless;
+            req_args.use_gpu = !force_cpu;
+            req_args.force = a.force;
+            req_args.tile_size = effective.recommend_tile_size
+                ? 0u
+                : static_cast<uint32_t>(config.tile_size);
+            req_args.tile_overlap = config.tile_overlap;
 
-            // 1. Probe: no daemon accepting → try to start one (30 s cap);
-            //    give up silently on failure and let the inline path run.
-            std::string sock_path = upix::default_serve_socket_path();
-            if (sock_path.empty()) return std::nullopt;
-            if (!try_connect_daemon(sock_path) &&
-                !spawn_daemon_and_wait(sock_path, models_dir, model_name)) {
-                return std::nullopt;
-            }
-            // (Re)connect: the probe's socket was a throwaway.
-            upix::LocalSocket sock;
-            auto conn = sock.connect(sock_path);
-            if (!conn) return std::nullopt;  // lost a race with daemon shutdown
-            const auto delegate_start_time = std::chrono::steady_clock::now();
-            LOG_INFO("Engine", "delegating to warm engine daemon...");
-
-            // 2. Request = struct + [input path][output path]. No image bytes
-            //    ever cross the socket — the daemon reads and writes the files.
-            upix::ServeRequest req{};
-            model_name.copy(req.model_name, sizeof(req.model_name) - 1);
-            out_fmt.copy(req.output_format, sizeof(req.output_format) - 1);
-            // Only the no-config, unpinned case delegates engine recommendation.
-            req.tile_size = effective.recommend_tile_size ? 0 : config.tile_size;
-            req.tile_overlap = config.tile_overlap;
-            req.output_quality = static_cast<int32_t>(config.output_quality);
-            req.encoder = upix::to_wire(config.encoder);
-            req.input_path_length = static_cast<uint32_t>(in_abs.string().size());
-            req.output_path_length = static_cast<uint32_t>(out_abs.size());
-
-            std::vector<uint8_t> payload(sizeof(req) + req.input_path_length +
-                                         req.output_path_length);
-            std::memcpy(payload.data(), &req, sizeof(req));
-            std::memcpy(payload.data() + sizeof(req), in_abs.string().data(),
-                        req.input_path_length);
-            if (!out_abs.empty()) {
-                std::memcpy(payload.data() + sizeof(req) + req.input_path_length,
-                            out_abs.data(), req.output_path_length);
-            }
-
-            upix::MessageHeader h{};
-            h.magic = upix::Protocol::MAGIC;
-            h.type = upix::MessageType::MSG_SERVE_REQUEST;
-            h.payload_length = static_cast<uint32_t>(payload.size());
-            h.checksum = 0;  // filled by serialize
-            auto frame = upix::Protocol::serialize(h, payload.data());
-            if (!sock.send_all(frame.data(), frame.size())) return std::nullopt;
-
-            // 3. Drain frames until the response: MSG_SERVE_PROGRESS stage 0
-            //    renders the same live line as the inline path; stage 1 marks
-            //    the encode phase; MSG_SERVE_RESPONSE carries the output path.
-            std::vector<uint8_t> rhdr(upix::Protocol::HEADER_SIZE);
-            std::optional<upix::MessageHeader> rparsed;
-            while (true) {
-                if (!sock.receive_all(rhdr.data(), rhdr.size())) {
-                    LOG_ERROR("Engine", "daemon connection lost mid-request");
-                    return 1;
-                }
-                rparsed = upix::Protocol::parse_header(rhdr);
-                if (!rparsed) {
-                    LOG_ERROR("Engine", "malformed daemon response");
-                    return 1;
-                }
-                if (rparsed->type == upix::MessageType::MSG_SERVE_PROGRESS &&
-                    rparsed->payload_length == sizeof(upix::ServeProgress)) {
-                    std::vector<uint8_t> pbuf(rparsed->payload_length);
-                    if (!sock.receive_all(pbuf.data(), pbuf.size())) {
-                        LOG_ERROR("Engine", "daemon connection lost mid-progress");
-                        return 1;
-                    }
-                    if (!upix::Protocol::verify_frame(rhdr.data(), pbuf.data(),
-                                                      pbuf.size())) {
-                        LOG_ERROR("Engine", "daemon progress frame failed checksum");
-                        return 1;
-                    }
-                    upix::ServeProgress sp{};
-                    std::memcpy(&sp, pbuf.data(), sizeof(sp));
-                    if (sp.stage == 0) {
+            const auto try_delegate = [&]() -> std::optional<int> {
+                const auto delegate_start = std::chrono::steady_clock::now();
+                auto progress_cb = [&](uint32_t completed, uint32_t total,
+                                       uint32_t stage) {
+                    if (stage == 0) {
                         upix::ProcessingProgress prog;
-                        prog.total_tiles = static_cast<int>(sp.total_tiles);
-                        prog.completed_tiles = static_cast<int>(sp.completed_tiles);
-                        report_progress(prog, delegate_start_time);
+                        prog.total_tiles = static_cast<int>(total);
+                        prog.completed_tiles = static_cast<int>(completed);
+                        report_progress(prog, delegate_start);
                     } else if (!machine_output_enabled()) {
                         std::print(stderr, "\n");
                         std::fflush(stderr);
                         LOG_INFO("Engine", "Inference done, encoding output...");
                     }
-                    continue;
+                };
+                auto outcome = upix::serve_request(
+                    req_args, {}, &g_cancel_requested, progress_cb);
+                if (outcome.transport_fallback) {
+                    return std::nullopt;
                 }
-                if (rparsed->type != upix::MessageType::MSG_SERVE_RESPONSE ||
-                    rparsed->payload_length < sizeof(upix::ServeResponse)) {
-                    LOG_ERROR("Engine", "malformed daemon response");
+                if (outcome.cancelled) {
+                    LOG_WARNING("Engine", "Processing cancelled");
                     return 1;
                 }
-                break;  // response header frame is in rhdr/rparsed
-            }
-            std::vector<uint8_t> rhead(rparsed->payload_length);
-            if (!sock.receive_all(rhead.data(), rhead.size())) {
-                LOG_ERROR("Engine", "truncated daemon response");
-                return 1;
-            }
-            if (!upix::Protocol::verify_frame(rhdr.data(), rhead.data(),
-                                              rhead.size())) {
-                LOG_ERROR("Engine", "daemon response failed checksum");
-                return 1;
-            }
-            upix::ServeResponse resp{};
-            std::memcpy(&resp, rhead.data(), sizeof(resp));
-            if (!resp.ok) {
-                LOG_ERROR("Engine", "daemon error: {}", std::string(resp.error));
-                return 1;
-            }
-            const size_t path_len =
-                std::min<size_t>(resp.out_path_length,
-                                 rhead.size() - sizeof(resp));
-            const std::string saved_path(
-                reinterpret_cast<const char*>(rhead.data()) + sizeof(resp), path_len);
+                if (!outcome.ok) {
+                    LOG_ERROR("Engine", "daemon error: {}", outcome.message);
+                    if (outcome.message.find("model") != std::string::npos) {
+                        log_missing_model_hint();
+                    }
+                    return 1;
+                }
+                if (outcome.skipped) {
+                    LOG_INFO("Engine",
+                             "Skipped (already super-resolved by this tool): {}; "
+                             "re-run with --force to process anyway",
+                             input_path);
+                    return 0;
+                }
+                if (machine_output_enabled()) {
+                    emit_json_line(std::format(
+                        R"({{"t":"saved","path":"{}"}})",
+                        json_escape(outcome.out_path)));
+                    emit_json_line(std::format(
+                        R"({{"t":"note","message":"{}x{}"}})",
+                        outcome.width, outcome.height));
+                }
+                LOG_INFO("Engine", "Output saved (via warm daemon): {}",
+                         outcome.out_path);
+                LOG_INFO("Engine", "Processing complete: {}x{}",
+                         outcome.width, outcome.height);
+                return 0;
+            };
 
-            if (machine_output_enabled()) {
-                emit_json_line(std::format(
-                    R"({{"t":"saved","path":"{}"}})", json_escape(saved_path)));
-                emit_json_line(std::format(
-                    R"({{"t":"note","message":"{}x{}"}})", resp.width, resp.height));
+            if (upix::daemon_endpoint_present()) {
+                LOG_INFO("Engine", "delegating to warm engine daemon...");
+                if (auto rc = try_delegate()) {
+                    return *rc;
+                }
             }
-            LOG_INFO("Engine", "Output saved (via warm daemon): {}", saved_path);
-            LOG_INFO("Engine", "Processing complete: {}x{}", resp.width, resp.height);
-            return 0;
-        };
-
-        auto delegated = delegate();
-        if (delegated.has_value()) return delegated.value();
-        // else: no daemon / spawn failed → fall through to inline path
+            std::string spawn_err;
+            LOG_INFO("Engine", "starting warm engine daemon...");
+            if (upix::ensure_serve_daemon_running(
+                    models_dir, args::Daemon{}.idle_timeout_s, spawn_err, {},
+                    model_name, false)) {
+                LOG_INFO("Engine", "delegating to warm engine daemon...");
+                if (auto rc = try_delegate()) {
+                    return *rc;
+                }
+            }
+        }
     }
 
     if (is_dir) {
@@ -395,6 +234,28 @@ int cmd_process(const args::Process& a) {
             LOG_INFO("Engine", "Output directory: {}", batch.output_path);
         }
         return run_batch(batch, std::move(effective));
+    }
+
+    // ── Inline single-file fallback: read bytes + SR-marker check ───────────
+    std::vector<uint8_t> input_bytes;
+    {
+        auto raw = upix::Image::load_raw(input_path);
+        if (!raw.has_value()) {
+            LOG_ERROR("Engine", "Failed to load image {}: {}",
+                      input_path, raw.error().message);
+            return 1;
+        }
+        input_bytes = std::move(raw.value());
+        if (!a.force) {
+            if (auto marker = upix::sr_marker::probe(input_bytes.data(),
+                                                     input_bytes.size())) {
+                LOG_INFO("Engine",
+                         "Skipped (already super-resolved by this tool): {} "
+                         "[model={} scale={}x ts={}]; re-run with --force to process anyway",
+                         input_path, marker->model, marker->scale, marker->ts);
+                return 0;
+            }
+        }
     }
 
     // Single file processing continues...
@@ -437,7 +298,8 @@ int cmd_process(const args::Process& a) {
         model_name
     );
     if (!setup) {
-        LOG_ERROR("Engine", setup.error());
+        LOG_ERROR("Engine", "{}", setup.error());
+        log_missing_model_hint();
         return 1;
     }
     const auto* selected_model = setup->selected;  // capture pointer before moves
@@ -557,7 +419,6 @@ int cmd_process(const args::Process& a) {
     LOG_INFO("Engine", "Processing image with tile_size={} overlap={} batch_size={}...",
              config.tile_size, config.tile_overlap, config.batch_size);
 
-    std::atomic<bool> cancel_flag{false};
     bool enable_progress_log_single = false;
     if (const char* progress_env = std::getenv("UPIX_PROGRESS")) {
         enable_progress_log_single = std::string(progress_env) == "1";
@@ -581,7 +442,7 @@ int cmd_process(const args::Process& a) {
                 }
             }
         },
-        cancel_flag
+        g_cancel_requested
     );
 
     if (!process_result.has_value()) {
@@ -601,7 +462,8 @@ int cmd_process(const args::Process& a) {
         model_name_resolved, scale, static_cast<int64_t>(std::time(nullptr)));
     auto save_result = output_image.save(final_output_path, config.output_quality, sr_xmp, config.encoder);
     if (!save_result.has_value()) {
-        LOG_ERROR("Engine", "Failed to save output: {}", save_result.error().message);
+        LOG_ERROR("Engine", "Failed to save output {}: {}",
+                  final_output_path.string(), save_result.error().message);
         return 1;
     }
 
