@@ -913,8 +913,8 @@ void renderPairingModal(ImDrawList* dl, ImVec2 winSize, UiViewState& ui,
 
     const float btnH = 38.0f;
     const float btnY = m1.y - 20.0f - btnH;
-    const float denyW = 132.0f;
-    const float allowW = 132.0f;
+    const float denyW = 100.0f;
+    const float allowW = 116.0f;
     const ImVec2 a0 = snapPt(innerR - allowW, btnY);
     const ImVec2 a1 = snapPt(innerR, btnY + btnH);
     const ImVec2 d1 = snapPt(a0.x - geist::space::SM, btnY + btnH);

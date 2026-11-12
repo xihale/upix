@@ -325,7 +325,8 @@ void drawModelRow(ImDrawList* dl, ImFont* sans, ImFont* mono, ImVec2 c0, ImVec2 
         }
     } else if (downloading) {
         float x = sizeRight + 12.0f;
-        const ImVec2 spinC(x + 7.0f, cy);
+        const ImVec2 spinC = snapPt(x + 7.0f, cy);
+        dl->AddCircle(spinC, 5.5f, withAlpha(t.outlineInput, 0.55f), 20, 1.5f);
         if (motion::reduceMotion()) {
             dl->PathClear();
             dl->PathArcTo(spinC, 5.5f, 0.0f, 1.9f, 16);
@@ -385,6 +386,73 @@ float drawGroups(ImDrawList* dl, ImFont* sans, ImFont* mono, float x, float y, f
     return y;
 }
 
+bool modelsSearchBox(ImDrawList* dl, ImGuiID id, ImVec2 pos, float width, float height,
+                     char* buf, size_t bufCap, const char* placeholder, ImFont* font) {
+    using namespace upix::ui;
+    if (!buf || bufCap == 0 || width <= 40.0f) return false;
+    pos = snapPt(pos);
+    const ImVec2 p1 = snapPt(pos.x + width, pos.y + height);
+    const auto& t = geist::tokens();
+
+    dl->AddRectFilled(pos, p1, t.recessed, geist::radius::MD);
+    const bool hasText = buf[0] != '\0';
+
+    drawIcon(dl, "search", ImVec2(pos.x + 14.0f, cjkIconCenterY(pos, p1)), 13.0f, t.mute, 1.5f);
+
+    const float clearBtnW = hasText ? 22.0f : 0.0f;
+    const float inputX = pos.x + 28.0f;
+    const float inputW = std::max(16.0f, width - 34.0f - clearBtnW);
+
+    bool changed = false;
+    ImGui::PushID(static_cast<int>(id & 0x7fffffff));
+    ImGui::SetCursorScreenPos(ImVec2(inputX, pos.y + (height - 20.0f) * 0.5f));
+    if (font) ImGui::PushFont(font, geist::type::BODY_SMALL);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_Text, t.ink);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 2.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    ImGui::SetNextItemWidth(inputW);
+    char item[24];
+    std::snprintf(item, sizeof(item), "##srch%08x", static_cast<unsigned>(id));
+    if (ImGui::InputText(item, buf, bufCap)) {
+        changed = true;
+    }
+    const bool active = ImGui::IsItemActive();
+    const bool focused = active || (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(3);
+    if (font) ImGui::PopFont();
+    ImGui::PopID();
+
+    if (!hasText && placeholder && placeholder[0]) {
+        const ImVec2 psz = calcText(font, geist::type::BODY_SMALL, placeholder);
+        drawText(dl, font, geist::type::BODY_SMALL,
+                 ImVec2(inputX, pos.y + (height - psz.y) * 0.5f), t.faint, placeholder);
+    }
+
+    dl->AddRect(pos, p1, focused ? t.accent : t.outlineInput, geist::radius::MD, 0, hairlinePx());
+
+    if (hasText) {
+        const ImVec2 c0 = snapPt(p1.x - 24.0f, pos.y + (height - 20.0f) * 0.5f);
+        const ImVec2 c1 = snapPt(c0.x + 20.0f, c0.y + 20.0f);
+        ImGui::SetCursorScreenPos(c0);
+        const bool clrClicked = ImGui::InvisibleButton("##srch_clr", ImVec2(20.0f, 20.0f));
+        const bool clrHov = ImGui::IsItemHovered();
+        if (clrHov) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            dl->AddRectFilled(c0, c1, t.high, geist::radius::SM);
+        }
+        drawIcon(dl, "x", ImVec2((c0.x + c1.x) * 0.5f, (c0.y + c1.y) * 0.5f), 11.0f,
+                 clrHov ? t.ink : t.mute, 1.5f);
+        if (clrClicked) {
+            buf[0] = '\0';
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 } // namespace
 
 void renderModelsPage(ImDrawList* dl, ImVec2 winSize, UiViewState& ui,
@@ -420,8 +488,8 @@ void renderModelsPage(ImDrawList* dl, ImVec2 winSize, UiViewState& ui,
         const float segW = 220.0f;
         const float searchW = std::clamp(colW - segW - rightW - 24.0f, 140.0f, 248.0f);
 
-        ctl::searchBox(dl, ImGui::GetID("models.search"), ImVec2(colX, y), searchW, kToolbarH,
-                       ui.modelsSearch, sizeof(ui.modelsSearch), "搜索模型名称或场景…", ui.fontSans);
+        modelsSearchBox(dl, ImGui::GetID("models.search"), ImVec2(colX, y), searchW, kToolbarH,
+                        ui.modelsSearch, sizeof(ui.modelsSearch), "搜索模型名称或场景…", ui.fontSans);
 
         const char* sceneLabels[5] = {"全部", "动漫", "照片", "综合", "修复"};
         const char* sceneValues[5] = {"all", "动漫", "照片", "综合", "修复"};
@@ -561,6 +629,73 @@ void renderModelsPage(ImDrawList* dl, ImVec2 winSize, UiViewState& ui,
         dl->AddRectFilled(snapPt(winSize.x - 6.0f, thumbY), snapPt(winSize.x - 2.0f, thumbY + thumbH),
                           withAlpha(t.faint, 0.45f), 2.0f);
     }
+}
+
+bool modelsSearchBox(ImDrawList* dl, ImGuiID id, ImVec2 pos, float width, float height,
+                     char* buf, size_t bufCap, const char* placeholder, ImFont* font) {
+    using namespace upix::ui;
+    if (!buf || bufCap == 0 || width <= 40.0f) return false;
+    pos = snapPt(pos);
+    const ImVec2 p1 = snapPt(pos.x + width, pos.y + height);
+    const auto& t = geist::tokens();
+
+    dl->AddRectFilled(pos, p1, t.recessed, geist::radius::MD);
+    const bool hasText = buf[0] != '\0';
+
+    drawIcon(dl, "search", ImVec2(pos.x + 14.0f, cjkIconCenterY(pos, p1)), 13.0f, t.mute, 1.5f);
+
+    const float clearBtnW = hasText ? 22.0f : 0.0f;
+    const float inputX = pos.x + 28.0f;
+    const float inputW = std::max(16.0f, width - 34.0f - clearBtnW);
+
+    bool changed = false;
+    ImGui::PushID(static_cast<int>(id & 0x7fffffff));
+    ImGui::SetCursorScreenPos(ImVec2(inputX, pos.y + (height - 20.0f) * 0.5f));
+    if (font) ImGui::PushFont(font, geist::type::BODY_SMALL);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_Text, t.ink);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 2.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
+    ImGui::SetNextItemWidth(inputW);
+    char item[24];
+    std::snprintf(item, sizeof(item), "##srch%08x", static_cast<unsigned>(id));
+    if (ImGui::InputText(item, buf, bufCap)) {
+        changed = true;
+    }
+    const bool active = ImGui::IsItemActive();
+    const bool focused = active || (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
+    ImGui::PopStyleVar(2);
+    ImGui::PopStyleColor(3);
+    if (font) ImGui::PopFont();
+    ImGui::PopID();
+
+    if (!hasText && placeholder && placeholder[0]) {
+        const ImVec2 psz = calcText(font, geist::type::BODY_SMALL, placeholder);
+        drawText(dl, font, geist::type::BODY_SMALL,
+                 ImVec2(inputX, pos.y + (height - psz.y) * 0.5f), t.faint, placeholder);
+    }
+
+    dl->AddRect(pos, p1, focused ? t.accent : t.outlineInput, geist::radius::MD, 0, hairlinePx());
+
+    if (hasText) {
+        const ImVec2 c0 = snapPt(p1.x - 24.0f, pos.y + (height - 20.0f) * 0.5f);
+        const ImVec2 c1 = snapPt(c0.x + 20.0f, c0.y + 20.0f);
+        ImGui::SetCursorScreenPos(c0);
+        const bool clrClicked = ImGui::InvisibleButton("##srch_clr", ImVec2(20.0f, 20.0f));
+        const bool clrHov = ImGui::IsItemHovered();
+        if (clrHov) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            dl->AddRectFilled(c0, c1, t.high, geist::radius::SM);
+        }
+        drawIcon(dl, "x", ImVec2((c0.x + c1.x) * 0.5f, (c0.y + c1.y) * 0.5f), 11.0f,
+                 clrHov ? t.ink : t.mute, 1.5f);
+        if (clrClicked) {
+            buf[0] = '\0';
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 } // namespace upix::views
