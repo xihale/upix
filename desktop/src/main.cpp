@@ -14,11 +14,13 @@
 #ifndef _WIN32
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -1607,6 +1609,7 @@ int main(int argc, char** argv) {
     // 1. Subprocess mode: warm daemon (`upix --serve-daemon`) runs headless without GUI init
     std::string fixtureState;
     std::string shotPath;
+    int benchFrames = 0;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--serve-daemon") == 0) {
             upix::ServeDaemonOptions opts;
@@ -1622,6 +1625,8 @@ int main(int argc, char** argv) {
             fixtureState = argv[++i];
         } else if (std::strcmp(argv[i], "--shot") == 0 && i + 1 < argc) {
             shotPath = argv[++i];
+        } else if (std::strcmp(argv[i], "--bench") == 0 && i + 1 < argc) {
+            benchFrames = std::max(1, std::atoi(argv[++i]));
         }
     }
 
@@ -1791,6 +1796,12 @@ int main(int argc, char** argv) {
     bool done = false;
     int redrawFrames = 4;
     int renderedCount = 0;
+    const int benchWarmup = 10;
+    std::vector<double> benchFrameMs;
+    std::chrono::steady_clock::time_point benchT0;
+    double benchCpuMs0 = 0.0;
+    double benchPrevMs = 0.0;
+    if (benchFrames > 0) redrawFrames = 1 << 30; // render continuously
 
     while (!done) {
         bool stateChanged = app.pollEvents();
@@ -1851,6 +1862,16 @@ int main(int argc, char** argv) {
 
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplSDL3_NewFrame();
+
+        if (benchFrames > 0 && renderedCount == benchWarmup) {
+            benchT0 = std::chrono::steady_clock::now();
+#ifndef _WIN32
+            struct rusage ru{};
+            getrusage(RUSAGE_SELF, &ru);
+            benchCpuMs0 = (ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) * 1000.0 +
+                          (ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) / 1000.0;
+#endif
+        }
 
         // Update Wayland HiDPI rasterizer density & physical pixel snap grid every frame!
         float dpiScale = (io.DisplayFramebufferScale.x > 0.0f) ? io.DisplayFramebufferScale.x : 1.0f;
@@ -1942,6 +1963,41 @@ int main(int argc, char** argv) {
         }
 
         FramePresent(wd);
+        if (benchFrames > 0 && renderedCount >= benchWarmup) {
+            double totalMs = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - benchT0).count();
+            benchFrameMs.push_back(totalMs - benchPrevMs);
+            benchPrevMs = totalMs;
+            if ((int)benchFrameMs.size() >= benchFrames) {
+                // Drop clock-glitch / compositor-stall outliers (v < 0 or > 1 s)
+                std::vector<double> kept;
+                kept.reserve(benchFrameMs.size());
+                size_t dropped = 0;
+                for (double v : benchFrameMs) {
+                    if (v < 0.0 || v > 1000.0) ++dropped;
+                    else kept.push_back(v);
+                }
+                std::sort(kept.begin(), kept.end());
+                double sum = 0.0;
+                for (double v : kept) sum += v;
+                const size_t n = kept.size();
+                auto pct = [&](double q) { return kept[std::min((size_t)(q * (n - 1)), n - 1)]; };
+                double cpuMs = 0.0;
+#ifndef _WIN32
+                struct rusage ru{};
+                getrusage(RUSAGE_SELF, &ru);
+                double cpuMs1 = (ru.ru_utime.tv_sec + ru.ru_stime.tv_sec) * 1000.0 +
+                                (ru.ru_utime.tv_usec + ru.ru_stime.tv_usec) / 1000.0;
+                cpuMs = (cpuMs1 - benchCpuMs0) / static_cast<double>(n);
+#endif
+                std::fprintf(stdout,
+                             "[bench] frames=%zu (dropped %zu) wall ms min/avg/p95/max = %.2f/%.2f/%.2f/%.2f | total %.1f s | cpu %.2f ms/frame | fps %.1f\n",
+                             benchFrameMs.size(), dropped, kept.front(), sum / static_cast<double>(kept.size()), pct(0.95), kept.back(),
+                             totalMs / 1000.0, cpuMs, 1000.0 / (sum / static_cast<double>(n)));
+                std::fflush(stdout);
+                done = true;
+            }
+        }
         if (redrawFrames > 0) --redrawFrames;
     }
 

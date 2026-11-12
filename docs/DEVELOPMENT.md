@@ -2,9 +2,9 @@
 
 ## 1. 环境依赖
 
-- **构建工具**：`xmake >= 3.0`（CLI / Android Native）、`CMake + Ninja`（Desktop）
+- **构建工具**：`xmake >= 3.0`（CLI / Desktop / Android Native）
 - **C++ 编译器**：GCC 14+ / Clang 18+ / MSVC 2022+（支持 C++20/23）
-- **Desktop 依赖**：Qt 6.5+（`Quick`、`QuickControls2`、`Svg`、`Widgets`）
+- **Desktop 依赖**：SDL3、Dear ImGui（含 freetype 字体后端）、Vulkan SDK
 - **Android 依赖**：JDK 17+、Android SDK & NDK（版本见 `apps/app/build.gradle.kts`）
 
 ## 2. 构建命令
@@ -36,7 +36,4 @@ scripts/build_host_tests.sh && scripts/run_host_tests.sh
 
 # 常驻热引擎 E2E 测试
 scripts/run_serve_tests.sh
-
-# Desktop 组件与交互回归测试
-ctest --test-dir desktop/build --output-on-failure
 ```
