@@ -10,7 +10,7 @@ upix/
 │   ├── core/       # 引擎封装 (ncnn/Vulkan)、分块调度、批量管线、serve daemon、distributed
 │   └── utils/      # 图像编解码、XMP 超分标记、加密握手、本地与网络套接字
 ├── cli/            # 命令行前端 (C++23)
-├── desktop/        # 桌面端 GUI (Qt 6 Quick + C++)，进程内直链 share/
+├── desktop/        # 桌面端 GUI (SDL3 + Vulkan + Dear ImGui)，进程内直链 share/
 ├── apps/           # Android 客户端 (Kotlin Compose + JNI 直链 share/)
 └── models/         # 模型说明与转换规范（模型权重按需从 GitHub Release 下载）
 ```

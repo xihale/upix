@@ -1,6 +1,6 @@
 # Upix
 
-跨平台图像超分辨率工具，提供 **CLI**、**Desktop（Qt 6 Quick）** 与 **Android** 三端，共享同一套 C++ 核心（`share/`），并支持手机与 PC 局域网端到端加密协同算力卸载。
+跨平台图像超分辨率工具，提供 **CLI**、**Desktop（SDL3 + Vulkan + Dear ImGui）** 与 **Android** 三端，共享同一套 C++ 核心（`share/`），并支持手机与 PC 局域网端到端加密协同算力卸载。
 
 ## 核心特性
 
@@ -12,10 +12,12 @@
 
 ## 快速构建
 
+所有构建与测试统一通过根目录 `xmake` 自定义任务触发（Host 与 Android 分别隔离在 `.xmake/host` 与 `.xmake/android`，互不覆盖）：
+
 ### 1. PC CLI (`cli/`)
 
 ```bash
-scripts/build_cli.sh release
+xmake cli
 # 产物: build/linux/x86_64/release/upix-cli
 ```
 
@@ -24,16 +26,15 @@ scripts/build_cli.sh release
 直接链接 `share/` 共享核心，无需外部 CLI 进程：
 
 ```bash
-cd desktop
-./build.sh
-./build/upix
+xmake gui            # 编译并启动 desktop/build/upix
+xmake gui --build    # 仅编译
 ```
 
 ### 3. Android (`apps/`)
 
 ```bash
-cd apps
-./gradlew assembleDebug
+xmake apk            # 调用 Gradle 并自动编译 libupix-native.so
+xmake native         # 仅编译 JNI 动态库到 apps/app/src/main/jniLibs/
 ```
 
 ## 常用 CLI 命令

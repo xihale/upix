@@ -124,7 +124,7 @@ rule_end()
 
 -- Optional AVIF codecs, opt in with: xmake f --avif-encoder=y --avif-decoder=y
 -- (Android: ./gradlew -Pupix.avifEncoder=true -Pupix.avifDecoder=true, or
--- UPIX_AVIF_ENCODER=1/UPIX_AVIF_DECODER=1 for scripts/build_native.sh).
+-- `xmake apk --avif` / `xmake native --avif`).
 -- Encoder (libavif+aom) enables standalone/on-device AVIF output
 -- (+~4.9 MB arm64 .so / +~2.4 MB compressed APK, measured 2026-08-26);
 -- decoder (libavif+dav1d) enables native AVIF input decode — e.g. AVIF
@@ -212,6 +212,8 @@ end
 -- declares dump-spirv and the host-side hook on upix-core. Each hook is scoped
 -- to its own platform, so this order is not load-bearing — but keep share/
 -- first: upix-core must exist before anything depends on it.
+add_moduledirs("xmake")
+includes("xmake/tasks.lua")
 includes("share")
 if is_plat("android") then
     includes("apps")

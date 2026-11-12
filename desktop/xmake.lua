@@ -41,6 +41,7 @@ target("upix")
 -- Headless AppState & job lifecycle test
 target("test_app_state_jobs")
     set_kind("binary")
+    add_tests("default", {rundir = "$(projectdir)"})
     add_deps("upix-core")
     add_packages("ncnn~runtime", "libwebp", "libpng", "libjpeg", "libdeflate",
                  "glaze", "qr-code-generator-cpp", "libsodium", "libcurl", "libzip")
@@ -54,6 +55,7 @@ target("test_app_state_jobs")
 -- Headless Geist math, slider magnet, DPI snap & motion spring test
 target("test_gui_math_and_motion")
     set_kind("binary")
+    add_tests("default", {rundir = "$(projectdir)"})
     add_packages("imgui")
     add_includedirs("src")
     add_files("tests/test_gui_math_and_motion.cpp")

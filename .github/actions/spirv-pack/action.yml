@@ -16,4 +16,4 @@ runs:
       shell: bash
       run: |
         sudo apt-get update -qq && sudo apt-get install -y -qq mesa-vulkan-drivers
-        scripts/gen_spirv_pack.sh --force
+        xmake spirv --force

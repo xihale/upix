@@ -22,7 +22,8 @@ jobs:
         with:
           install-ndk: "false"
       - name: Compile unit-test sources
-        run: scripts/compile_android_unit.sh
+        working-directory: apps
+        run: ./gradlew compileDebugUnitTestSources bundleDebugClassesToRuntimeJar -x xmakeNative --no-daemon
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4 (v4.6.2)
         with:
           name: android-unit-build
@@ -45,4 +46,14 @@ jobs:
           name: android-unit-build
           path: apps/app/build
       - name: Run unit tests (no compile)
-        run: scripts/run_android_unit.sh
+        working-directory: apps
+        run: |
+          ./gradlew testDebugUnitTest -x xmakeNative \
+            -x compileDebugUnitTestSources \
+            -x compileDebugKotlin \
+            -x compileDebugJavaWithJavac \
+            -x compileDebugUnitTestKotlin \
+            -x compileDebugUnitTestJavaWithJavac \
+            -x bundleDebugClassesToRuntimeJar \
+            -x bundleDebugClassesToCompileJar \
+            --no-daemon

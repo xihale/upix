@@ -76,15 +76,15 @@ target("upix-core")
         local asm = path.join(os.scriptdir(), "core", "spirv_pack.S")
         if not os.isfile(spirv_pack) then
             print("generating " .. spirv_pack)
-            local cfgdir = path.join(os.projectdir(), "build", "host-dump-config")
+            local cfgdir = path.join(os.projectdir(), ".xmake", "host")
             os.mkdir(cfgdir)
             local envs = {XMAKE_CONFIGDIR = cfgdir}
             os.execv(os.programfile(), {
-                "-P", os.projectdir(), "config", "-p", os.host(), "-a", os.arch(),
+                "config", "-P", os.projectdir(), "-p", os.host(), "-a", os.arch(),
                 "-m", "release", "--yes"
             }, {envs = envs})
             os.execv(os.programfile(), {
-                "-P", os.projectdir(), "build", "dump-spirv"
+                "build", "-P", os.projectdir(), "dump-spirv"
             }, {envs = envs})
             local bin = path.join(os.projectdir(), "build", os.host(), os.arch(), "release", "dump-spirv")
             assert(os.isfile(bin), "dump-spirv missing: " .. bin)
@@ -102,6 +102,7 @@ target("upix-core")
 target("test_local_socket")
     set_kind("binary")
     set_default(false)
+    add_tests("default", {rundir = "$(projectdir)"})
     add_includedirs(".", {public = true})
     add_files(
         "tests/test_local_socket.cpp",

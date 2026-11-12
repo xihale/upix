@@ -23,15 +23,16 @@ jobs:
           cache-kind: host
       - uses: ./.github/actions/spirv-pack
       - name: Build CLI
-        run: scripts/build_cli.sh release --cc=gcc-14 --cxx=g++-14
+        run: xmake cli --cc=gcc-14 --cxx=g++-14
       - name: Build host tests
-        run: scripts/build_host_tests.sh
+        run: xmake tests --build --cc=gcc-14 --cxx=g++-14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4 (v4.6.2)
         with:
           name: host-bins
           path: |
             build/linux/x86_64/release/upix-cli
             cli/build/test_*
+            desktop/build/tests/test_*
           if-no-files-found: error
           retention-days: 3
       - name: ccache stats
@@ -56,9 +57,13 @@ jobs:
             libcurl4-openssl-dev libzip-dev libomp-dev \
             mesa-vulkan-drivers
       - name: Make binaries executable
-        run: chmod +x build/linux/x86_64/release/upix-cli cli/build/test_*
+        run: chmod +x build/linux/x86_64/release/upix-cli cli/build/test_* desktop/build/tests/test_*
       - name: Run host tests
-        run: scripts/run_host_tests.sh
+        run: |
+          set -euo pipefail
+          for t in cli/build/test_* desktop/build/tests/test_*; do
+            [[ -x "$t" ]] && "$t"
+          done
       - name: Fetch test models (serve E2E + model oracle)
         run: build/linux/x86_64/release/upix-cli model download \
           NomosUni-SPAN-x2 HFA2k-LUDVAE-SPAN-x2 \
@@ -68,6 +73,6 @@ jobs:
       - name: Serve E2E suite (CPU)
         run: |
           sudo apt-get install -y -qq python3-numpy python3-pil
-          scripts/run_serve_tests.sh --device cpu
+          python3 tests/serve/run.py --device cpu
       - name: Model-effect oracle (CPU, golden images)
-        run: scripts/run_model_oracle.sh --require-models
+        run: python3 tests/model_oracle/run.py --require-models

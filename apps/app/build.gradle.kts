@@ -129,10 +129,8 @@ android {
 }
 
 val repoRoot = rootProject.projectDir.parentFile
-val buildNativeScript = rootProject.projectDir.resolve("scripts/build_native.sh")
 
-// Native is always xmake -m release (-O3 / stripped), matching the old CMake
-// flags. Debug APKs still load this .so; JNI debugging is not the debug build.
+// Native is always xmake -m release (-O3 / stripped).
 // Optional AVIF codecs: -Pupix.avifEncoder=true (+~5 MB .so, on-device AVIF
 // output) / -Pupix.avifDecoder=true (+~1 MB, native AVIF input decode). Both
 // flags are passed explicitly (y/n) so the properties are the single source
@@ -141,19 +139,20 @@ tasks.register<Exec>("xmakeNative") {
     group = "build"
     description = "Build libupix-native.so with xmake"
     workingDir = repoRoot
-    val nativeArgs = mutableListOf(
-        buildNativeScript.absolutePath,
-        "release",
-        "arm64-v8a",
-        "--avif-encoder=" + if (findProperty("upix.avifEncoder")?.toString()?.equals("true", ignoreCase = true) == true) "y" else "n",
-        "--avif-decoder=" + if (findProperty("upix.avifDecoder")?.toString()?.equals("true", ignoreCase = true) == true) "y" else "n"
+    val avifEnc = if (findProperty("upix.avifEncoder")?.toString()?.equals("true", ignoreCase = true) == true) "y" else "n"
+    val avifDec = if (findProperty("upix.avifDecoder")?.toString()?.equals("true", ignoreCase = true) == true) "y" else "n"
+    commandLine(
+        "xmake", "native",
+        "-m", "release",
+        "-a", "arm64-v8a",
+        "--avif-encoder=$avifEnc",
+        "--avif-decoder=$avifDec"
     )
-    commandLine(nativeArgs)
     inputs.files(
         repoRoot.resolve("xmake.lua"),
+        repoRoot.resolve("xmake/tasks.lua"),
+        repoRoot.resolve("xmake/upix_tasks.lua"),
         repoRoot.resolve("apps/xmake.lua"),
-        repoRoot.resolve("scripts/build_native.sh"),
-        buildNativeScript,
     )
     inputs.dir(repoRoot.resolve("share"))
     inputs.dir(repoRoot.resolve("packages"))

@@ -47,11 +47,8 @@ target("upix-cli")
 -- ── Host test binaries ───────────────────────────────────────────────────────
 -- Single source of truth: one standalone test = one cli/tests/test_*.cpp (own
 -- main, plain CHECK/abort, no framework). The target list is discovered on the
--- filesystem here AND by scripts/lib/host_tests.sh (globs the same files), so
--- there is no list to keep in sync: adding a test file adds it to every
--- consumer. Per-target differences live in HOST_TEST_SPECS; the after_load
--- check below makes a missing/extra spec entry (or an empty file set) a
--- configure-time error.
+-- filesystem here (declaring one target per file, plus its HOST_TEST_SPECS
+-- entry) — adding a test file registers it for `xmake tests` / `xmake test`.
 local host_test_targets = {}
 for _, file in ipairs(os.files(path.join(os.projectdir(), "cli/tests/test_*.cpp"))) do
     table.insert(host_test_targets, path.basename(file))
@@ -125,6 +122,7 @@ for _, name in ipairs(host_test_targets) do
                 add_files(spec.extra_files)
             end
             set_targetdir("$(projectdir)/cli/build")
+            add_tests("default", {rundir = "$(projectdir)"})
         target_end()
     end
 end

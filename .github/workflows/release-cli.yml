@@ -79,12 +79,12 @@ jobs:
             plat: linux
             arch: x86_64
             artifact: linux-x86_64
-            extra: --cc=gcc-14 --cxx=g++-14 --native_isa=n
+            extra: --cc=gcc-14 --cxx=g++-14
           - os: macos-latest
             plat: macosx
             arch: arm64
             artifact: macos-arm64
-            extra: --native_isa=n
+            extra: ""
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (v4.4.0)
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4 (v4.3.0)
@@ -95,10 +95,7 @@ jobs:
         with:
           cache-kind: host-${{ matrix.artifact }}
       - name: Build CLI
-        env:
-          UPIX_PLAT: ${{ matrix.plat }}
-          UPIX_ARCH: ${{ matrix.arch }}
-        run: scripts/build_cli.sh release ${{ matrix.extra }}
+        run: xmake cli -p "${{ matrix.plat }}" -a "${{ matrix.arch }}" --native-isa=n ${{ matrix.extra }}
       - name: Pack
         env:
           VER: ${{ needs.meta.outputs.version }}
