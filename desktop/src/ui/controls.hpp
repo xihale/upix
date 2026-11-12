@@ -894,11 +894,11 @@ inline void busyArc(ImDrawList* dl, ImVec2 center, float radius, ImU32 col, floa
 // 动漫 → blue (scene general), 照片 → amber, 修复 → magenta, else violet.
 inline ImU32 sceneDotColor(const char* scene) {
     const auto& t = geist::tokens();
-    if (!scene || !scene[0]) return t.sceneAnime;
-    if (std::strstr(scene, "动漫")) return t.sceneGeneral;
+    if (!scene || !scene[0]) return t.sceneGeneral; // empty / 通用 reads as 综合
+    if (std::strstr(scene, "动漫")) return t.sceneAnime;
     if (std::strstr(scene, "照片") && !std::strstr(scene, "修复")) return t.scenePhoto;
     if (std::strstr(scene, "修复")) return t.sceneRestore;
-    return t.sceneAnime;
+    return t.sceneGeneral;
 }
 
 // Empty / 通用 reads as 综合. Writes into `out` (NUL-terminated, cap includes NUL).
