@@ -5,6 +5,9 @@
 #include "app_state.hpp"
 #include "ui_theme.hpp"
 #include "ui_widgets.hpp"
+#include "ui/geist.hpp"
+#include "ui/motion.hpp"
+#include "ui/controls.hpp"
 
 #include "imgui.h"
 
