@@ -17,8 +17,6 @@
 #include <print>
 #include <string>
 
-#include <unistd.h>
-
 #include "args.hpp"
 #include "cli_app.hpp"
 #include "common.hpp"
@@ -79,19 +77,19 @@ int cmd_daemon(const args::Daemon& a) {
     }
 
     // ── start ────────────────────────────────────────────────────────────────
-    // Background via single fork + setsid (detaches controlling terminal);
-    // the child runs share's run_serve_daemon body, which owns the pid file
-    // and the signal wiring.
+    // Background via share's cross-platform detached daemon launcher
+    // (double-fork + setsid on POSIX, CreateProcessW DETACHED_PROCESS on
+    // Windows); the child runs run_serve_daemon() via --upix-internal-daemon.
+    const upix::ServeDaemonOptions opts{
+        socket_path, a.models_dir, a.model_name, a.force_cpu, a.idle_timeout_s};
     if (!a.foreground) {
-        pid_t pid = ::fork();
-        if (pid < 0) { LOG_ERROR("Daemon", "fork failed"); return 1; }
-        if (pid > 0) return 0;  // parent exits
-        ::setsid();
-        ::close(STDIN_FILENO);
-        ::close(STDOUT_FILENO);
-        ::close(STDERR_FILENO);
+        std::string err;
+        if (!upix::spawn_serve_daemon(opts, err)) {
+            LOG_ERROR("Daemon", "{}", err);
+            return 1;
+        }
+        return 0;
     }
 
-    return upix::run_serve_daemon({socket_path, a.models_dir, a.model_name,
-                                   a.force_cpu, a.idle_timeout_s});
+    return upix::run_serve_daemon(opts);
 }

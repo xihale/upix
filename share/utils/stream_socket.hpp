@@ -85,10 +85,15 @@ protected:
     virtual void raw_close() = 0;
 
     // fd (POSIX) or HANDLE (Windows). -1 = closed. `intptr_t` keeps both
-    // worlds in one member.
+    // worlds in one member (and lets local_socket_win.cpp cast via
+    // reinterpret_cast<HANDLE>(sock_)). Writers (close_fd) hold tx_mutex_,
+    // rx_mutex_, and wake_mutex_, so shutdown_wake() can safely inspect sock_
+    // and call raw_wake() under wake_mutex_ alone without deadlocking on a
+    // blocked reader holding rx_mutex_.
     intptr_t sock_ = -1;
     mutable std::recursive_mutex tx_mutex_;
     mutable std::recursive_mutex rx_mutex_;
+    mutable std::mutex wake_mutex_;
 };
 
 // One ::send()/::recv() syscall with EINTR retry — shared by the POSIX

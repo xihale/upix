@@ -55,6 +55,9 @@ auto StreamSocket::send(const void* data, size_t size)
 auto StreamSocket::send_all(const void* data, size_t size)
     -> expected<void, NetworkError> {
     std::lock_guard<std::recursive_mutex> lock(tx_mutex_);
+    if (sock_ < 0) {
+        return std::unexpected(NetworkError{EBADF, "Socket not connected"});
+    }
     size_t total_sent = 0;
     const uint8_t* ptr = static_cast<const uint8_t*>(data);
 
@@ -92,6 +95,9 @@ auto StreamSocket::receive(void* buffer, size_t max_size)
 auto StreamSocket::receive_all(void* buffer, size_t size)
     -> expected<void, NetworkError> {
     std::lock_guard<std::recursive_mutex> lock(rx_mutex_);
+    if (sock_ < 0) {
+        return std::unexpected(NetworkError{EBADF, "Socket not connected"});
+    }
     size_t total_received = 0;
     uint8_t* ptr = static_cast<uint8_t*>(buffer);
 
@@ -101,17 +107,23 @@ auto StreamSocket::receive_all(void* buffer, size_t size)
                                         size - total_received, received)) {
             return std::unexpected(*err);
         }
+        if (received == 0) {
+            // Peer closed before delivering the remaining bytes; spinning here
+            // would burn 100% CPU forever on truncated frames or clean EOF.
+            return std::unexpected(NetworkError{ECONNRESET, "Connection closed"});
+        }
         total_received += received;
     }
     return {};
 }
 
 void StreamSocket::close_fd() {
-    // Both direction locks: a concurrent send/recv must observe a stable
-    // sock_ either side of the close (it then fails with EBADF — same as
-    // closing mid-transfer before the split).
+    // Take both direction locks plus wake_mutex_: a concurrent send/recv must
+    // finish or observe EBADF, and a concurrent shutdown_wake() cannot act on a
+    // descriptor after raw_close() has freed it for OS reuse.
     std::lock_guard<std::recursive_mutex> tx_lock(tx_mutex_);
     std::lock_guard<std::recursive_mutex> rx_lock(rx_mutex_);
+    std::lock_guard<std::mutex> wake_lock(wake_mutex_);
     if (sock_ >= 0) {
         raw_close();
         sock_ = -1;
@@ -119,9 +131,11 @@ void StreamSocket::close_fd() {
 }
 
 void StreamSocket::shutdown_wake() {
-    // Only the rx side matters (the blocked reader); taking both locks like
-    // close_fd() would convoy with the very recv we are waking.
-    std::lock_guard<std::recursive_mutex> rx_lock(rx_mutex_);
+    // Do NOT take rx_mutex_/tx_mutex_: a blocked receive_all()/send_all() holds
+    // those across the blocking syscall, so acquiring rx_mutex_ here would
+    // deadlock instead of waking it. wake_mutex_ never spans blocking I/O and
+    // serializes raw_wake() with close_fd().
+    std::lock_guard<std::mutex> wake_lock(wake_mutex_);
     if (sock_ >= 0) {
         raw_wake();
     }

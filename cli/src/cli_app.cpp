@@ -253,7 +253,7 @@ auto build_app() -> std::unique_ptr<CLI::App> {
         s->add_option("--socket", daemon_args.socket_path, "Unix socket path");
         s->add_flag("--cpu", daemon_args.force_cpu, "Force CPU");
         s->add_flag("--fg", daemon_args.foreground, "Run in foreground");
-        s->add_option("--idle-timeout", daemon_args.idle_timeout_s,
+        s->add_option("--idle-timeout,--idle-secs", daemon_args.idle_timeout_s,
                       "Exit after N idle seconds (0 = never)")
             ->check(CLI::Range(0, 86400))->capture_default_str();
     };
@@ -285,11 +285,10 @@ auto build_app() -> std::unique_ptr<CLI::App> {
         }
     });
 
-    // ── completions (hidden from help and TAB candidates; one-off setup) ────
+    // ── completions ──────────────────────────────────────────────────────────
     static args::Completions completions_args;
     auto* comp = app->add_subcommand(
         "completions", "Print or install a shell completion script (bash/zsh/fish)");
-    comp->group("");  // hidden from help; complete_subcommands() skips it too
     comp->add_option("shell", completions_args.shell, "Target shell")
         ->required()
         ->check(CLI::IsMember({"bash", "zsh", "fish"}));
@@ -297,6 +296,13 @@ auto build_app() -> std::unique_ptr<CLI::App> {
                    "Write the script into this shell's user completion directory "
                    "instead of printing it");
     comp->callback([] { g_exit_code = cmd_completions(completions_args); });
+
+    app->footer(
+        "Environment:\n"
+        "  UPIX_LOG_LEVEL   debug|info|warn|error (default: info)\n"
+        "  UPIX_PROGRESS    =1 per-tile log lines; =json JSON events on stdout\n"
+        "  UPIX_MODELS_DIR  default model directory\n"
+        "  NO_COLOR         non-empty disables color output");
 
     return app;
 }

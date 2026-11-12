@@ -14,7 +14,9 @@
 #include <string>
 #include <vector>
 
+#ifndef _WIN32
 #include <sys/types.h>  // pid_t
+#endif
 
 #include "utils/image.hpp"
 #include "utils/network.hpp"  // MAX_NETWORK_PAYLOAD
@@ -61,7 +63,11 @@ inline auto default_models_dir() -> std::string {
 // executable (and on Linux the command line) so pid files can be trusted.
 // Lives in share now (core/serve/daemon_control.hpp) — the desktop's status
 // page and the CLI trust the same check.
+#ifdef _WIN32
+inline auto pid_is_upix_daemon(upix::pid_t pid) -> bool {
+#else
 inline auto pid_is_upix_daemon(pid_t pid) -> bool {
+#endif
     return upix::pid_is_upix_daemon(pid);
 }
 

@@ -11,6 +11,7 @@
 
 #include "cli_app.hpp"
 #include "common.hpp"  // g_running, g_cancel_requested
+#include "core/serve/daemon_control.hpp"
 
 // Defined in cli_app.cpp; carries the selected subcommand's exit code. std::nullopt
 // means no subcommand's callback has run yet (bare --help, or no verb given).
@@ -19,6 +20,12 @@ extern std::optional<int> g_exit_code;
 auto main(int argc, char* argv[]) -> int {
     g_running = true;
     g_cancel_requested = false;
+
+    // Hidden internal warm-daemon trampoline invoked when auto-spawning from
+    // `upix <image>` / `upix daemon`. Checked before CLI11 parsing.
+    if (auto daemon_rc = upix::maybe_run_internal_serve_daemon(argc, argv)) {
+        return *daemon_rc;
+    }
 
     // Hidden dynamic-completion entry (cobra-style): the emitted shell scripts
     // replay the line being completed into this and print its candidates.

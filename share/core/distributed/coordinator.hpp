@@ -112,6 +112,12 @@ public:
     // Must be called before start() to take effect.
     void set_trust_store_path(const std::filesystem::path& path);
 
+    // Inspect and manage trusted peers (thread-safe; persists atomically
+    // when a trust_store_path is configured).
+    auto trusted_devices() const -> std::vector<TrustedDeviceInfo>;
+    auto remove_trusted_device(const std::string& fingerprint) -> bool;
+    void clear_trusted_devices();
+
     // ── Phone pairing approval (request/allow flow) ─────────────────────────
     // Called by the PC main loop. Returns a pending first-time pairing request
     // if one is waiting (FIFO), or nullopt. Resolve returned requests with
@@ -412,10 +418,10 @@ private:
 
     IdentityKey* identity_ = nullptr;
     std::filesystem::path trust_store_path_;
-    // Lazily loaded in start(); empty until a path is set. A missing file
-    // leaves every identity untrusted until explicitly approved.
-    std::optional<TrustStore> trust_store_;
-    std::mutex trust_store_mtx_;
+    // Lazily loaded in start() or trusted_devices(); empty until a path is
+    // set. A missing file leaves every identity untrusted until approved.
+    mutable std::optional<TrustStore> trust_store_;
+    mutable std::mutex trust_store_mtx_;
 
     uint16_t port_ = 0;
     std::atomic<bool> running_{false};
