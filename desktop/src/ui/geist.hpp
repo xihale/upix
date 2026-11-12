@@ -105,6 +105,10 @@ struct Tokens {
     ImU32 wellBg;
     ImU32 qrPaper;
     ImU32 qrInk;
+    // extras from palette (theme.rs) — same ladder, named so views don't hex them
+    ImU32 segBorder;      // segmented track rim
+    ImU32 errorHover;     // destructive wash, one step deeper than errorSoft
+    ImU32 errorBadgeFg;   // badge ink (dark lifts to #ff6169)
 };
 
 inline const Tokens& tokens() {
@@ -144,6 +148,9 @@ inline const Tokens& tokens() {
         /*wellBg*/        detail::hx(0x050505),
         /*qrPaper*/       detail::hx(0xFFFFFF),
         /*qrInk*/         detail::hx(0x171717),
+        /*segBorder*/     detail::hx(0x1F1F22),
+        /*errorHover*/    detail::hx(0xE5484D, 0x33),
+        /*errorBadgeFg*/  detail::hx(0xFF6169),
     };
     static const Tokens light = {
         /*bg*/            detail::hx(0xFAFAFA),
@@ -181,6 +188,9 @@ inline const Tokens& tokens() {
         /*wellBg*/        detail::hx(0xF2F2F2),
         /*qrPaper*/       detail::hx(0xFFFFFF),
         /*qrInk*/         detail::hx(0x171717),
+        /*segBorder*/     detail::hx(0x000000, 0x0F),
+        /*errorHover*/    detail::hx(0xEE0000, 0x1A),
+        /*errorBadgeFg*/  detail::hx(0xEE0000),
     };
     return mode() == Mode::Dark ? dark : light;
 }

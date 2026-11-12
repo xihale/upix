@@ -10,6 +10,7 @@
 
 #include "imgui.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <unordered_map>
@@ -21,6 +22,8 @@ namespace motion {
 inline constexpr float INSTANT = 120.0f; // hover wash, color changes
 inline constexpr float FAST = 180.0f;    // presses, control state
 inline constexpr float BASE = 240.0f;    // selection settle, state-color moves
+// Hint overlay delay (nsh tooltip). Keyboard focus shows it at once.
+inline constexpr float TOOLTIP_DELAY = 500.0f;
 
 // Damped-spring parameter pairs (stiffness / damping).
 struct SpringParams {
@@ -57,14 +60,95 @@ struct Spring1D {
     int lastFrame = -1;
 };
 
-// Advance `spring` toward `target` by dt; frame-rate independent semi-implicit Euler.
+// Closed-form step of x'' = -k x - c v (mass 1). Semi-implicit Euler rings
+// on large dt; the analytic under/critical/over-damped step settles cleanly.
 inline float advance(Spring1D& s, float target, const SpringParams& p, float dt) {
-    if (dt <= 0.0f) { s.value = target; return s.value; }
-    // clamp large frame gaps (pause, resize stalls) so springs don't explode
+    if (!(dt > 0.0f) || !(p.stiffness > 0.0f)) {
+        s.value = target;
+        s.velocity = 0.0f;
+        return s.value;
+    }
     dt = dt > 0.05f ? 0.05f : dt;
-    const float a = p.stiffness * (target - s.value) - p.damping * s.velocity;
-    s.velocity += a * dt;
-    s.value += s.velocity * dt;
+    const float omega = std::sqrt(p.stiffness);
+    const float zeta = p.damping / (2.0f * omega);
+    float x = s.value - target;
+    float v = s.velocity;
+    if (zeta > 0.999f && zeta < 1.001f) {
+        const float e = std::exp(-omega * dt);
+        const float A = x;
+        const float B = v + omega * x;
+        const float xt = (A + B * dt) * e;
+        v = (B - omega * (A + B * dt)) * e;
+        x = xt;
+    } else if (zeta < 1.0f) {
+        const float beta = zeta * omega;
+        const float wd = omega * std::sqrt(std::max(0.0f, 1.0f - zeta * zeta));
+        const float e = std::exp(-beta * dt);
+        const float A = x;
+        const float B = (wd > 1.0e-4f) ? (v + beta * x) / wd : 0.0f;
+        const float c = std::cos(wd * dt);
+        const float sn = std::sin(wd * dt);
+        x = e * (A * c + B * sn);
+        v = -beta * x + e * (-A * wd * sn + B * wd * c);
+    } else {
+        const float disc = std::sqrt(std::max(0.0f, zeta * zeta - 1.0f));
+        const float r1 = -omega * (zeta - disc);
+        const float r2 = -omega * (zeta + disc);
+        const float denom = r1 - r2;
+        const float C1 = std::fabs(denom) > 1.0e-6f ? (v - r2 * x) / denom : x;
+        const float C2 = x - C1;
+        const float e1 = std::exp(r1 * dt);
+        const float e2 = std::exp(r2 * dt);
+        x = C1 * e1 + C2 * e2;
+        v = C1 * r1 * e1 + C2 * r2 * e2;
+    }
+    if (!std::isfinite(x) || !std::isfinite(v) || (std::fabs(x) < 1.0e-3f && std::fabs(v) < 1.0e-2f)) {
+        s.value = target;
+        s.velocity = 0.0f;
+        return s.value;
+    }
+    s.value = target + x;
+    s.velocity = v;
+    return s.value;
+}
+
+// Duration-fitted spring: settles to ~1/1000 by `responseMs` at damping ratio
+// `zeta` (UIKit / nsh `Spring::new(ms).damping_ratio`). Mass 1.
+// layout follower: fitted(260, 0.9). Selection pill: fitted(ms, 0.86).
+inline SpringParams fitted(float responseMs, float zeta) {
+    const float dur = responseMs < 1.0f ? 0.001f : responseMs / 1000.0f;
+    const float z = zeta < 0.05f ? 0.05f : zeta > 1.0f ? 1.0f : zeta;
+    constexpr float kSettle = 6.907755f; // ln(1000)
+    const float omega = kSettle / (z * dur);
+    return SpringParams{omega * omega, 2.0f * z * omega};
+}
+
+inline SpringParams layoutSpring() { return fitted(260.0f, 0.9f); }
+inline SpringParams selectionParams(float responseMs = 250.0f) { return fitted(responseMs, 0.86f); }
+
+// Duration ease (color, divider fade). Not a spring — springs are press & knob.
+// Reaches ~95% of the way in `durationMs`. First sight uses `defaultValue`
+// (pass the target to avoid an entrance).
+inline float approach(ImGuiID id, float target, float durationMs, float defaultValue) {
+    static std::unordered_map<ImGuiID, Spring1D> store;
+    Spring1D& s = store[id];
+    const int frame = ImGui::GetFrameCount();
+    if (s.lastFrame < 0 || s.lastFrame + 120 < frame) {
+        s.value = defaultValue;
+        s.velocity = 0.0f;
+    }
+    s.lastFrame = frame;
+    if (!(durationMs > 0.0f)) {
+        s.value = target;
+        return s.value;
+    }
+    float dt = ImGui::GetIO().DeltaTime;
+    if (dt < 0.0f) dt = 0.0f;
+    if (dt > 0.05f) dt = 0.05f;
+    const float tau = (durationMs / 1000.0f) / 3.0f;
+    const float k = 1.0f - std::exp(-dt / tau);
+    s.value += (target - s.value) * k;
+    if (std::fabs(s.value - target) < 1.0e-3f) s.value = target;
     return s.value;
 }
 
@@ -74,7 +158,9 @@ inline float springTo(ImGuiID id, float target, const SpringParams& p, float def
     static std::unordered_map<ImGuiID, Spring1D> store;
     Spring1D& s = store[id];
     const int frame = ImGui::GetFrameCount();
-    if (s.lastFrame + 120 < frame) { // dormant for 2s: reset
+    // First sight and anything dormant ~2s snaps to defaultValue so a newly
+    // mounted control does not travel in from Spring1D's 1.0f seed.
+    if (s.lastFrame < 0 || s.lastFrame + 120 < frame) {
         s.value = defaultValue;
         s.velocity = 0.0f;
     }
