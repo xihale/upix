@@ -29,7 +29,9 @@ void renderSettingsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
     const auto& t = geist::tokens();
 
     constexpr float kRailW = 76.0f;
-    constexpr float kPadY = 36.0f;
+    constexpr float kPadY = 32.0f;
+    constexpr float kSectionGap = 20.0f;
+    constexpr float kHeadH = 18.0f;
     const float paneX = kRailW;
     const float paneW = std::max(0.0f, winSize.x - kRailW);
     const float colW = std::min(660.0f, std::max(320.0f, paneW - 64.0f));
@@ -60,12 +62,12 @@ void renderSettingsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
                                     "推理引擎、默认编码与批处理策略会自动保存。");
         drawText(cdl, ui.fontSans, geist::type::BODY_SMALL, snapPt(colX, y), t.mute,
                  "推理引擎、默认编码与批处理策略会自动保存。");
-        y += ssz.y + geist::space::XL;
+        y += ssz.y + 16.0f;
     }
 
     // 1. 推理引擎
     ctl::sectionHeader(cdl, ui.fontSans, snapPt(colX, y), "推理引擎");
-    y += 20.0f;
+    y += kHeadH;
     {
         const char* gpuTitle = "计算设备";
         const char* gpuSub = "GPU 更快，CPU 更稳";
@@ -184,12 +186,12 @@ void renderSettingsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
             }
         }
 
-        y = card1.y + geist::space::SECTION;
+        y = card1.y + kSectionGap;
     }
 
     // 2. 默认编码与批处理
     ctl::sectionHeader(cdl, ui.fontSans, snapPt(colX, y), "默认编码与批处理");
-    y += 20.0f;
+    y += kHeadH;
     {
         const bool isPng = (snap.format == "png");
         const bool isAvif = (snap.format == "avif");
@@ -213,7 +215,7 @@ void renderSettingsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
         const char* forceSub = "重新处理已包含 Upix 超分标记的图片";
 
         const float hFmt = calcRowH(ui.fontSans, fmtTitle, fmtSub);
-        const float hQ = showQuality ? (calcRowH(ui.fontSans, qTitle, qSub) + ctl::geom::SLIDER_H + 12.0f) : 0.0f;
+        const float hQ = showQuality ? (calcRowH(ui.fontSans, qTitle, qSub) + ctl::geom::SLIDER_H + 8.0f) : 0.0f;
         const float hChroma = showChroma ? calcRowH(ui.fontSans, chromaTitle, chromaSub) : 0.0f;
         const float hSpeed = showSpeed ? calcRowH(ui.fontSans, speedTitle, speedSub) : 0.0f;
         const float hPng = isPng ? calcRowH(ui.fontSans, pngTitle, pngSub) : 0.0f;
@@ -341,12 +343,12 @@ void renderSettingsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
             curY = r.bottomY;
         }
 
-        y = card1.y + geist::space::SECTION;
+        y = card1.y + kSectionGap;
     }
 
     // 3. 交互与辅助
     ctl::sectionHeader(cdl, ui.fontSans, snapPt(colX, y), "交互与辅助");
-    y += 20.0f;
+    y += kHeadH;
     {
         const char* rmTitle = "减少动态效果";
         const char* rmSub = "禁用弹簧缓动与滑块过渡，仅保留瞬时状态切换";
@@ -365,22 +367,22 @@ void renderSettingsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
             app.setReduceMotion(rm);
             motion::reduceMotion() = rm;
         }
-        y = card1.y + geist::space::SECTION;
+        y = card1.y + kSectionGap;
     }
 
     // 4. 目录与关于
     ctl::sectionHeader(cdl, ui.fontSans, snapPt(colX, y), "目录与关于");
-    y += 20.0f;
+    y += kHeadH;
     {
         const char* dirTitle = "模型存储目录";
         const char* dirSub = "超分模型（.param / .bin）存放位置";
-        const char* aboutTitle = "关于";
+        const char* aboutTitle = "Upix";
 
         const float hDirTop = calcRowH(ui.fontSans, dirTitle, dirSub);
         constexpr float kWellH = 30.0f;
-        constexpr float kWellPadBottom = 14.0f;
+        constexpr float kWellPadBottom = 12.0f;
         const float hDir = hDirTop + kWellH + kWellPadBottom;
-        const float hAbout = calcRowH(ui.fontSans, aboutTitle, nullptr);
+        const float hAbout = std::max(44.0f, calcRowH(ui.fontSans, aboutTitle, nullptr));
 
         const ImVec2 card0 = snapPt(colX, y);
         const ImVec2 card1 = snapPt(colX + colW, y + hDir + hAbout);
