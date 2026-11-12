@@ -936,6 +936,7 @@ inline bool qualityField(ImDrawList* dl, ImGuiID id, ImVec2 pos, int& value, int
         char text[16] = {};
         int synced = 0x7fffffff;
         bool init = false;
+        bool wasActive = false;
     };
     static std::unordered_map<ImGuiID, Buf> bufs;
     Buf& b = bufs[id];
@@ -946,15 +947,16 @@ inline bool qualityField(ImDrawList* dl, ImGuiID id, ImVec2 pos, int& value, int
         b.init = true;
     }
 
-    ImGui::SetCursorScreenPos(ImVec2(pos.x + 6.0f, pos.y + 2.0f));
+    const bool drewNative = b.wasActive;
+    ImGui::SetCursorScreenPos(ImVec2(pos.x + 8.0f, pos.y + 2.0f));
     ImGui::PushID(static_cast<int>(id & 0x7fffffff));
     if (font) ImGui::PushFont(font, 12.0f);
     ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(0, 0, 0, 0));
+    ImGui::PushStyleColor(ImGuiCol_Text, drewNative ? t.ink : IM_COL32(0, 0, 0, 0));
     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 2.0f));
     ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-    ImGui::SetNextItemWidth(40.0f);
+    ImGui::SetNextItemWidth(36.0f);
     char item[24];
     std::snprintf(item, sizeof(item), "##qf%08x", static_cast<unsigned>(id));
     const bool edited = ImGui::InputText(item, b.text, sizeof(b.text), ImGuiInputTextFlags_CharsDecimal);
@@ -995,8 +997,9 @@ inline bool qualityField(ImDrawList* dl, ImGuiID id, ImVec2 pos, int& value, int
         b.synced = value;
     }
     const bool active = ImGui::IsItemActive();
+    b.wasActive = active;
     const bool focused = active || (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
-    if (!active) {
+    if (!drewNative) {
         const ImVec2 tsz = calcText(font, 12.0f, b.text);
         drawText(dl, font, 12.0f,
                  snapPt(pos.x + (52.0f - tsz.x) * 0.5f, pos.y + (22.0f - tsz.y) * 0.5f),

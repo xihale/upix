@@ -8,13 +8,13 @@ namespace upix::views {
 namespace {
 
 float calcGuideRowH(ImFont* titleFont, float titlePx, const char* title,
-                    ImFont* subFont, float subPx, const char* sub, float minH = 44.0f) {
+                    ImFont* subFont, float subPx, const char* sub, float minH = 42.0f) {
     using namespace upix::ui;
     const ImVec2 tsz = calcText(titleFont, titlePx, title ? title : "");
     const bool hasSub = sub && sub[0];
     const ImVec2 ssz = hasSub ? calcText(subFont, subPx, sub) : ImVec2(0.0f, 0.0f);
-    const float contentH = hasSub ? (tsz.y + 4.0f + ssz.y) : tsz.y;
-    return std::max(minH, contentH + ctl::geom::ROW_PY * 2.0f);
+    const float contentH = hasSub ? (tsz.y + 3.0f + ssz.y) : tsz.y;
+    return std::max(minH, contentH + 14.0f);
 }
 
 } // namespace
@@ -26,7 +26,9 @@ void renderGuidePage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
     (void)snap;
 
     constexpr float kRailW = 76.0f;
-    constexpr float kPadY = 36.0f;
+    constexpr float kPadY = 24.0f;
+    constexpr float kSectionGap = 16.0f;
+    constexpr float kHeadGap = 18.0f;
     const float paneX = kRailW;
     const float paneW = std::max(0.0f, winSize.x - kRailW);
     const float colW = std::min(660.0f, std::max(320.0f, paneW - 64.0f));
@@ -57,12 +59,12 @@ void renderGuidePage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
                                     "Upix 本地超分辨率工作流、模型选型与快捷键参考。");
         drawText(cdl, ui.fontSans, geist::type::BODY_SMALL, snapPt(colX, y), t.mute,
                  "Upix 本地超分辨率工作流、模型选型与快捷键参考。");
-        y += ssz.y + geist::space::XL;
+        y += ssz.y + 18.0f;
     }
 
     // 1. 三步上手
     ctl::sectionHeader(cdl, ui.fontSans, snapPt(colX, y), "三步上手");
-    y += 20.0f;
+    y += kHeadGap;
     {
         struct StepRow {
             const char* num;
@@ -78,7 +80,7 @@ void renderGuidePage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
         float totalH = 0.0f;
         for (int i = 0; i < 3; ++i) {
             rowHeights[i] = calcGuideRowH(ui.fontSans, geist::type::BODY, steps[i].title,
-                                          ui.fontSans, ctl::geom::ROW_SUB, steps[i].sub, 48.0f);
+                                          ui.fontSans, ctl::geom::ROW_SUB, steps[i].sub, 42.0f);
             totalH += rowHeights[i];
         }
 
@@ -92,7 +94,7 @@ void renderGuidePage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
             const float rh = rowHeights[i];
             const ImVec2 tsz = calcText(ui.fontSans, geist::type::BODY, steps[i].title);
             const ImVec2 ssz = calcText(ui.fontSans, ctl::geom::ROW_SUB, steps[i].sub);
-            const float contentH = tsz.y + 4.0f + ssz.y;
+            const float contentH = tsz.y + 3.0f + ssz.y;
             const float textY = snapPx(ry + (rh - contentH) * 0.5f);
             const float titleMidY = textY + tsz.y * 0.5f;
 
@@ -107,17 +109,17 @@ void renderGuidePage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
             const float textX = b1.x + 12.0f;
             const float maxTextW = std::max(40.0f, card1.x - ctl::geom::ROW_PX - textX);
             ellipsisText(cdl, ui.fontSans, geist::type::BODY, ImVec2(textX, textY), maxTextW, t.ink, steps[i].title);
-            ellipsisText(cdl, ui.fontSans, ctl::geom::ROW_SUB, ImVec2(textX, textY + tsz.y + 4.0f),
+            ellipsisText(cdl, ui.fontSans, ctl::geom::ROW_SUB, ImVec2(textX, textY + tsz.y + 3.0f),
                          maxTextW, t.mute, steps[i].sub);
 
             ry += rh;
         }
-        y = card1.y + geist::space::SECTION;
+        y = card1.y + kSectionGap;
     }
 
     // 2. 模型场景对照
     ctl::sectionHeader(cdl, ui.fontSans, snapPt(colX, y), "模型场景对照");
-    y += 20.0f;
+    y += kHeadGap;
     {
         struct ModelGuideRow {
             const char* name;
@@ -135,7 +137,7 @@ void renderGuidePage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
         float totalH = 0.0f;
         for (int i = 0; i < 4; ++i) {
             rowHeights[i] = calcGuideRowH(ui.fontMono, geist::type::BODY, rows[i].name,
-                                          ui.fontSans, ctl::geom::ROW_SUB, rows[i].note, 48.0f);
+                                          ui.fontSans, ctl::geom::ROW_SUB, rows[i].note, 42.0f);
             totalH += rowHeights[i];
         }
 
@@ -150,9 +152,9 @@ void renderGuidePage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
 
             const ImVec2 nsz = calcText(ui.fontMono, geist::type::BODY, rows[i].name);
             const ImVec2 dsz = calcText(ui.fontSans, ctl::geom::ROW_SUB, rows[i].note);
-            const float contentH = nsz.y + 4.0f + dsz.y;
+            const float contentH = nsz.y + 3.0f + dsz.y;
             const float titleY = snapPx(ry + (rh - contentH) * 0.5f);
-            const float noteY = snapPx(titleY + nsz.y + 4.0f);
+            const float noteY = snapPx(titleY + nsz.y + 3.0f);
 
             // Right-aligned scene badge chip
             const ImVec2 chipTs = calcText(ui.fontSans, ctl::geom::LABEL, rows[i].scene);
@@ -177,12 +179,12 @@ void renderGuidePage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
 
             ry += rh;
         }
-        y = card1.y + geist::space::SECTION;
+        y = card1.y + kSectionGap;
     }
 
     // 3. 快捷键
     ctl::sectionHeader(cdl, ui.fontSans, snapPt(colX, y), "快捷键");
-    y += 20.0f;
+    y += kHeadGap;
     {
         struct KeyRow {
             const char* desc;
@@ -197,7 +199,7 @@ void renderGuidePage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
             {"关闭弹层或拒绝配对请求", {"Esc", nullptr}, 1, false},
             {"舞台图像缩放（配合拖拽平移）", {"滚轮", nullptr}, 1, true},
         };
-        constexpr float rowH = 44.0f;
+        constexpr float rowH = 38.0f;
         const ImVec2 card0 = snapPt(colX, y);
         const ImVec2 card1 = snapPt(colX + colW, y + rowH * 5.0f);
         ctl::groupCard(cdl, card0, card1);
@@ -206,10 +208,15 @@ void renderGuidePage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
         float ry = card0.y;
         for (int i = 0; i < 5; ++i) {
             if (i > 0) ctl::cardDivider(cdl, card0.x, card1.x, ry);
-            auto r = ctl::cardRow(cdl, ImGui::GetID(1000 + i), ImVec2(card0.x, ry), colW,
-                                  krows[i].desc, nullptr, ui.fontSans, false, 148.0f);
-            float kx = r.rightAnchorX;
-            const float ky = r.centerY - ctl::geom::KBD_H * 0.5f;
+            const float centerY = ry + rowH * 0.5f;
+            const float textMaxW = std::max(40.0f, colW - ctl::geom::ROW_PX * 2.0f - 148.0f);
+            const ImVec2 dsz = calcText(ui.fontSans, geist::type::BODY, krows[i].desc);
+            ellipsisText(cdl, ui.fontSans, geist::type::BODY,
+                         snapPt(card0.x + ctl::geom::ROW_PX, centerY - dsz.y * 0.5f),
+                         textMaxW, t.ink, krows[i].desc);
+
+            float kx = card1.x - ctl::geom::ROW_PX;
+            const float ky = centerY - ctl::geom::KBD_H * 0.5f;
             for (int k = krows[i].count - 1; k >= 0; --k) {
                 ImFont* kFont = krows[i].sansKey ? ui.fontSans : ui.fontMono;
                 const ImVec2 ksz = calcText(kFont, ctl::geom::LABEL, krows[i].keys[k]);
@@ -219,34 +226,43 @@ void renderGuidePage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
                 if (k > 0) {
                     kx -= 4.0f + plusSz.x;
                     drawText(cdl, ui.fontMono, ctl::geom::LABEL,
-                             snapPt(kx, r.centerY - plusSz.y * 0.5f), t.faint, "+");
+                             snapPt(kx, centerY - plusSz.y * 0.5f), t.faint, "+");
                     kx -= 4.0f;
                 }
             }
             ry += rowH;
         }
-        y = card1.y + geist::space::SECTION;
+        y = card1.y + kSectionGap;
     }
 
     // 4. 还没有模型？
     ctl::sectionHeader(cdl, ui.fontSans, snapPt(colX, y), "还没有模型？");
-    y += 20.0f;
+    y += kHeadGap;
     {
         const char* title = "前往模型页挑选或导入";
         const char* sub = "首次使用可前往模型页在线下载推荐模型，或导入本地 ncnn 权重文件";
-        const float rh = calcGuideRowH(ui.fontSans, geist::type::BODY, title,
-                                       ui.fontSans, ctl::geom::ROW_SUB, sub, 56.0f);
+        const float rh = std::max(48.0f, calcGuideRowH(ui.fontSans, geist::type::BODY, title,
+                                                       ui.fontSans, ctl::geom::ROW_SUB, sub, 48.0f));
         const ImVec2 card0 = snapPt(colX, y);
         const ImVec2 card1 = snapPt(colX + colW, y + rh);
         ctl::groupCard(cdl, card0, card1);
 
         constexpr float btnW = 100.0f;
         constexpr float btnH = 30.0f;
-        auto r = ctl::cardRow(cdl, ImGui::GetID("guide-models"), card0, colW,
-                              title, sub, ui.fontSans, false, btnW + 16.0f);
+        const float centerY = (card0.y + card1.y) * 0.5f;
+        const float rightAnchorX = card1.x - ctl::geom::ROW_PX;
+        const ImVec2 tsz = calcText(ui.fontSans, geist::type::BODY, title);
+        const ImVec2 ssz = calcText(ui.fontSans, ctl::geom::ROW_SUB, sub);
+        const float contentH = tsz.y + 3.0f + ssz.y;
+        const float textY = snapPx(card0.y + (rh - contentH) * 0.5f);
+        const float textMaxW = std::max(40.0f, colW - ctl::geom::ROW_PX * 2.0f - (btnW + 16.0f));
+        ellipsisText(cdl, ui.fontSans, geist::type::BODY,
+                     snapPt(card0.x + ctl::geom::ROW_PX, textY), textMaxW, t.ink, title);
+        ellipsisText(cdl, ui.fontSans, ctl::geom::ROW_SUB,
+                     snapPt(card0.x + ctl::geom::ROW_PX, textY + tsz.y + 3.0f), textMaxW, t.mute, sub);
         if (ctl::secondaryButton(cdl, ImGui::GetID("guide-open-models"), "打开模型页", ui.fontSans,
-                                 snapPt(r.rightAnchorX - btnW, r.centerY - btnH * 0.5f),
-                                 snapPt(r.rightAnchorX, r.centerY + btnH * 0.5f))) {
+                                 snapPt(rightAnchorX - btnW, centerY - btnH * 0.5f),
+                                 snapPt(rightAnchorX, centerY + btnH * 0.5f))) {
             ui.activeTab = 1;
         }
 
