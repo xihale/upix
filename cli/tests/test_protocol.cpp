@@ -181,7 +181,8 @@ int main() {
         // Appended layouts keep natural 4-byte alignment on arm64 and x86_64.
         CHECK(sizeof(EncoderOptionsWire) == 28);
         CHECK(sizeof(ClientTaskSubmit) == 140);
-        CHECK(sizeof(ServeRequest) == 128);
+        // 128-byte base + 8-byte force/reserved tail (daemon legacy floor: sizeof - 8).
+        CHECK(sizeof(ServeRequest) == 136);
     }
     {
         ClientConnectRequest r{};
