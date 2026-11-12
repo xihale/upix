@@ -28,6 +28,10 @@ target("upix")
     add_files(
         "src/main.cpp",
         "src/app_state.cpp",
-        "src/qrcodegen.cpp"
+        "src/qrcodegen.cpp",
+        "src/views/shell.cpp",
+        "src/views/workbench.cpp",
+        "src/views/models.cpp",
+        "src/views/host.cpp"
     )
     set_targetdir("$(projectdir)/desktop/build")
