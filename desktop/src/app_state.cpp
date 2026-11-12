@@ -52,6 +52,31 @@ bool shouldSkipUpixDir(const fs::path& p) {
     return name.rfind("upix_", 0) == 0;
 }
 
+std::vector<std::string> gatherSupportedImagesInDir(const fs::path& root, bool recursive) {
+    std::vector<std::string> out;
+    std::error_code ec;
+    for (fs::recursive_directory_iterator it(
+             root, fs::directory_options::skip_permission_denied, ec),
+         end;
+         it != end; it.increment(ec)) {
+        if (ec) {
+            ec.clear();
+            continue;
+        }
+        std::error_code stEc;
+        if (it->is_directory(stEc)) {
+            if (!recursive || shouldSkipUpixDir(it->path())) {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+        if (!stEc && it->is_regular_file(stEc) && !stEc && isSupportedImage(it->path())) {
+            out.push_back(it->path().string());
+        }
+    }
+    return out;
+}
+
 std::string formatBytes(uint64_t bytes) {
     char buf[64];
     double mb = static_cast<double>(bytes) / 1048576.0;
@@ -533,22 +558,7 @@ void AppState::addPaths(const std::vector<std::string>& paths) {
         item.is_dir = is_dir;
         if (is_dir) {
             item.batch_root = clean;
-            int cnt = 0;
-            if (rec) {
-                for (auto it = fs::recursive_directory_iterator(p, ec); it != fs::recursive_directory_iterator(); it.increment(ec)) {
-                    if (ec) { ec.clear(); continue; }
-                    if (it->is_directory(ec) && shouldSkipUpixDir(it->path())) {
-                        it.disable_recursion_pending();
-                        continue;
-                    }
-                    if (it->is_regular_file(ec) && isSupportedImage(it->path())) ++cnt;
-                }
-            } else {
-                for (auto it = fs::directory_iterator(p, ec); it != fs::directory_iterator(); it.increment(ec)) {
-                    if (ec) { ec.clear(); continue; }
-                    if (it->is_regular_file(ec) && isSupportedImage(it->path())) ++cnt;
-                }
-            }
+            const int cnt = static_cast<int>(gatherSupportedImagesInDir(p, rec).size());
             if (cnt == 0) {
                 snap_.notice = "文件夹里没有受支持的图片";
                 snap_.notice_seq++;
@@ -884,28 +894,34 @@ void AppState::startJob() {
         for (size_t idx = 0; idx < runSnap.inputs.size(); ++idx) {
             const auto& inp = runSnap.inputs[idx];
             if (inp.is_dir) {
-                std::string err;
-                std::string outDir = (runSnap.overwrite_original || runSnap.custom_out_dir.empty())
-                    ? upix::derive_default_output(inp.path, req.model_name, true)
-                    : runSnap.custom_out_dir;
-                auto tasks = upix::gather_directory_tasks(inp.path, outDir, err, runSnap.recursive);
-                if (!tasks) {
-                    post([this, idx, err]() {
-                        snap_.job.phase = JobPhase::Error;
-                        snap_.job.message = "目录读取失败";
-                        snap_.job.diag_detail = err;
-                        if (idx < snap_.inputs.size()) {
-                            snap_.inputs[idx].status_kind = 3;
-                            snap_.inputs[idx].status_text = "异常";
-                        }
-                    });
-                    return;
-                }
-                for (auto& pair : *tasks) {
-                    if (!runSnap.overwrite_original) {
-                        pair.second = uniqueOutputPath(pair.second, reservedOutputs);
+                if (runSnap.overwrite_original) {
+                    auto files = gatherSupportedImagesInDir(inp.path, runSnap.recursive);
+                    for (auto& f : files) {
+                        std::string outCopy = f;
+                        registerTask(std::move(f), std::move(outCopy), idx);
                     }
-                    registerTask(std::move(pair.first), std::move(pair.second), idx);
+                } else {
+                    std::string err;
+                    std::string outDir = runSnap.custom_out_dir.empty()
+                        ? upix::derive_default_output(inp.path, req.model_name, true)
+                        : runSnap.custom_out_dir;
+                    auto tasks = upix::gather_directory_tasks(inp.path, outDir, err, runSnap.recursive);
+                    if (!tasks) {
+                        post([this, idx, err]() {
+                            snap_.job.phase = JobPhase::Error;
+                            snap_.job.message = "目录读取失败";
+                            snap_.job.diag_detail = err;
+                            if (idx < snap_.inputs.size()) {
+                                snap_.inputs[idx].status_kind = 3;
+                                snap_.inputs[idx].status_text = "异常";
+                            }
+                        });
+                        return;
+                    }
+                    for (auto& pair : *tasks) {
+                        pair.second = uniqueOutputPath(pair.second, reservedOutputs);
+                        registerTask(std::move(pair.first), std::move(pair.second), idx);
+                    }
                 }
             } else {
                 std::string outPath = upix::compute_batch_output_path(
@@ -961,14 +977,16 @@ void AppState::startJob() {
                 snap_.job.eta_sec = std::max(0, eta);
             });
         };
-        cb.on_saved = [this, &cbMtx, &completedTasks, &lastActiveIdx, &outPathToInputIdx, &outStemToInputIdx, &startByInput](const std::string& finalOut) {
+        cb.on_saved = [this, &cbMtx, &completedTasks, &lastActiveIdx, &pathToInputIdx, &outPathToInputIdx, &outStemToInputIdx, &startByInput](const std::string& finalOut) {
             size_t idxCopy = 0;
             double itemSec = 0.0;
             {
                 std::lock_guard<std::mutex> lk(cbMtx);
                 ++completedTasks;
-                if (auto it = outPathToInputIdx.find(finalOut); it != outPathToInputIdx.end()) {
+                if (auto it = pathToInputIdx.find(finalOut); it != pathToInputIdx.end()) {
                     idxCopy = it->second;
+                } else if (auto oit = outPathToInputIdx.find(finalOut); oit != outPathToInputIdx.end()) {
+                    idxCopy = oit->second;
                 } else {
                     fs::path fp(finalOut);
                     std::string stemKey = (fp.parent_path() / fp.stem()).string();
