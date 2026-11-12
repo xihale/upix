@@ -1,6 +1,7 @@
 #include "core/serve/daemon_control.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
@@ -464,6 +465,26 @@ auto spawn_serve_daemon(const ServeDaemonOptions& options,
     ::CloseHandle(pi.hProcess);
     return true;
 #else
+    // Pre-build all strings and argv BEFORE fork(): post-fork child/grandchild
+    // may only invoke async-signal-safe syscalls in multi-threaded processes.
+    std::string exe_str = exe->string();
+    std::string flag = "--upix-internal-daemon";
+    std::string sock_arg = sock;
+    std::string dir_arg = models_dir;
+    std::string model_arg = options.model_name;
+    std::string dev_arg = device;
+    std::string idle_arg = idle;
+    char* const child_argv[] = {
+        exe_str.data(),
+        flag.data(),
+        sock_arg.data(),
+        dir_arg.data(),
+        model_arg.data(),
+        dev_arg.data(),
+        idle_arg.data(),
+        nullptr,
+    };
+
     // Double-fork so the intermediate trampoline exits immediately and can be
     // reaped without leaving zombies in long-lived parents (Desktop GUI).
     const ::pid_t mid = ::fork();
@@ -484,23 +505,6 @@ auto spawn_serve_daemon(const ServeDaemonOptions& options,
             ::dup2(devnull, STDERR_FILENO);
             if (devnull > STDERR_FILENO) ::close(devnull);
         }
-        std::string exe_str = exe->string();
-        std::string flag = "--upix-internal-daemon";
-        std::string sock_arg = sock;
-        std::string dir_arg = models_dir;
-        std::string model_arg = options.model_name;
-        std::string dev_arg = device;
-        std::string idle_arg = idle;
-        char* const child_argv[] = {
-            exe_str.data(),
-            flag.data(),
-            sock_arg.data(),
-            dir_arg.data(),
-            model_arg.data(),
-            dev_arg.data(),
-            idle_arg.data(),
-            nullptr,
-        };
         ::execv(exe_str.c_str(), child_argv);
         ::_exit(127);
     }
@@ -518,6 +522,16 @@ auto maybe_run_internal_serve_daemon(int argc, char* argv[])
     ServeDaemonOptions opts;
     opts.models_dir = default_models_dir();
 
+    auto parse_idle = [](std::string_view sv, int& out_val) {
+        int parsed = 0;
+        const char* const begin = sv.data();
+        const char* const end = begin + sv.size();
+        auto [ptr, ec] = std::from_chars(begin, end, parsed);
+        if (ec == std::errc{} && ptr == end && parsed >= 0) {
+            out_val = parsed;
+        }
+    };
+
     // Positional contract:
     //   argv[2] = socket_path
     //   argv[3] = models_dir
@@ -529,15 +543,15 @@ auto maybe_run_internal_serve_daemon(int argc, char* argv[])
     for (int i = 2; i < argc; ++i) {
         const std::string_view arg(argv[i]);
         if (arg.starts_with("--idle-secs=")) {
-            opts.idle_timeout_s = std::max(0, std::atoi(std::string(arg.substr(12)).c_str()));
+            parse_idle(arg.substr(12), opts.idle_timeout_s);
             continue;
         }
         if (arg.starts_with("--idle-seconds=")) {
-            opts.idle_timeout_s = std::max(0, std::atoi(std::string(arg.substr(15)).c_str()));
+            parse_idle(arg.substr(15), opts.idle_timeout_s);
             continue;
         }
         if (arg.starts_with("--idle-timeout=")) {
-            opts.idle_timeout_s = std::max(0, std::atoi(std::string(arg.substr(15)).c_str()));
+            parse_idle(arg.substr(15), opts.idle_timeout_s);
             continue;
         }
         switch (pos++) {
@@ -554,7 +568,7 @@ auto maybe_run_internal_serve_daemon(int argc, char* argv[])
                 opts.force_cpu = (arg == "cpu" || arg == "CPU" || arg == "1");
                 break;
             case 4:
-                if (!arg.empty()) opts.idle_timeout_s = std::max(0, std::atoi(std::string(arg).c_str()));
+                if (!arg.empty()) parse_idle(arg, opts.idle_timeout_s);
                 break;
             default:
                 break;
