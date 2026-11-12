@@ -11,6 +11,7 @@
 #include <cstring>
 #include <filesystem>
 #include <format>
+#include <limits>
 #include <new>
 #include <stdexcept>
 #include <memory>
@@ -21,7 +22,11 @@
 #include <fstream>
 #include <string_view>
 
+#ifdef _WIN32
+#include <process.h>
+#else
 #include <unistd.h>
+#endif
 
 extern "C" {
 #include <png.h>
@@ -115,8 +120,13 @@ namespace {
     // writers — even two threads of one daemon process — off each other's
     // staging file.
     auto staging_path_for(const std::filesystem::path& path) -> std::filesystem::path {
+#ifdef _WIN32
+        const long pid = static_cast<long>(::_getpid());
+#else
+        const long pid = static_cast<long>(::getpid());
+#endif
         auto tmp = path;
-        tmp += std::format(".upix-tmp-{}-{}", static_cast<long>(::getpid()),
+        tmp += std::format(".upix-tmp-{}-{}", pid,
                            std::hash<std::thread::id>{}(std::this_thread::get_id()));
         return tmp;
     }
@@ -967,6 +977,165 @@ auto Image::save_to_memory(const std::string& format, int quality,
 }
 
 // ── Channel planar conversion (shared: CLI inputs + coordinator tasks) ──────
+auto Image::probe_header_dimensions(const uint8_t* data, size_t size)
+    -> std::optional<std::pair<int, int>> {
+    if (data == nullptr || size < 12) {
+        return std::nullopt;
+    }
+
+    const auto be32 = [](const uint8_t* p) -> uint32_t {
+        return (static_cast<uint32_t>(p[0]) << 24) |
+               (static_cast<uint32_t>(p[1]) << 16) |
+               (static_cast<uint32_t>(p[2]) << 8) |
+               static_cast<uint32_t>(p[3]);
+    };
+    const auto le16 = [](const uint8_t* p) -> uint16_t {
+        return static_cast<uint16_t>(p[0]) |
+               (static_cast<uint16_t>(p[1]) << 8);
+    };
+    const auto be16 = [](const uint8_t* p) -> uint16_t {
+        return (static_cast<uint16_t>(p[0]) << 8) |
+               static_cast<uint16_t>(p[1]);
+    };
+
+    // PNG IHDR
+    static constexpr std::array<uint8_t, 8> kPngSig = {
+        0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    if (size >= 24 && std::memcmp(data, kPngSig.data(), 8) == 0) {
+        const uint32_t w = be32(data + 16);
+        const uint32_t h = be32(data + 20);
+        if (w > 0 && h > 0 &&
+            w <= static_cast<uint32_t>(std::numeric_limits<int>::max()) &&
+            h <= static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+            return std::pair<int, int>{static_cast<int>(w), static_cast<int>(h)};
+        }
+        return std::nullopt;
+    }
+
+    // WebP RIFF (VP8 / VP8L / VP8X)
+    if (size >= 25 && std::memcmp(data, "RIFF", 4) == 0 &&
+        std::memcmp(data + 8, "WEBP", 4) == 0) {
+        if (size >= 30 && std::memcmp(data + 12, "VP8 ", 4) == 0 &&
+            data[23] == 0x9D && data[24] == 0x01 && data[25] == 0x2A) {
+            const int w = static_cast<int>(le16(data + 26) & 0x3FFFu);
+            const int h = static_cast<int>(le16(data + 28) & 0x3FFFu);
+            if (w > 0 && h > 0) return std::pair<int, int>{w, h};
+        } else if (std::memcmp(data + 12, "VP8L", 4) == 0 && data[20] == 0x2F) {
+            const uint32_t bits = static_cast<uint32_t>(data[21]) |
+                                  (static_cast<uint32_t>(data[22]) << 8) |
+                                  (static_cast<uint32_t>(data[23]) << 16) |
+                                  (static_cast<uint32_t>(data[24]) << 24);
+            const int w = static_cast<int>((bits & 0x3FFFu) + 1u);
+            const int h = static_cast<int>(((bits >> 14) & 0x3FFFu) + 1u);
+            return std::pair<int, int>{w, h};
+        } else if (size >= 30 && std::memcmp(data + 12, "VP8X", 4) == 0) {
+            const int w = static_cast<int>(
+                (static_cast<uint32_t>(data[24]) |
+                 (static_cast<uint32_t>(data[25]) << 8) |
+                 (static_cast<uint32_t>(data[26]) << 16)) + 1u);
+            const int h = static_cast<int>(
+                (static_cast<uint32_t>(data[27]) |
+                 (static_cast<uint32_t>(data[28]) << 8) |
+                 (static_cast<uint32_t>(data[29]) << 16)) + 1u);
+            if (w > 0 && h > 0) return std::pair<int, int>{w, h};
+        }
+        return std::nullopt;
+    }
+
+    // JPEG SOF0..SOF15 (safe against seg_len < 2, 0xFF fill, standalone markers)
+    if (data[0] == 0xFF && data[1] == 0xD8) {
+        size_t pos = 2;
+        while (pos < size) {
+            if (data[pos] != 0xFF) {
+                break;
+            }
+            size_t m = pos + 1;
+            while (m < size && data[m] == 0xFF) {
+                ++m;
+            }
+            if (m >= size) {
+                break;
+            }
+            const uint8_t marker = data[m];
+            // Byte-stuffed 0x00 and standalone lengthless markers (TEM, RSTn, SOI).
+            if (marker == 0x00 || marker == 0x01 ||
+                (marker >= 0xD0 && marker <= 0xD8)) {
+                pos = m + 1;
+                continue;
+            }
+            if (marker == 0xD9 || marker == 0xDA) {
+                break;  // EOI or SOS
+            }
+            if (size - m < 3) {
+                break;  // truncated length field
+            }
+            const size_t seg_len = be16(data + m + 1);
+            if (seg_len < 2) {
+                break;  // malformed length — never seek/advance backwards
+            }
+            const size_t seg_start = m + 3;
+            const size_t payload = seg_len - 2;
+            if (payload > size - seg_start) {
+                break;  // truncated segment
+            }
+            const bool is_sof = marker >= 0xC0 && marker <= 0xCF &&
+                                marker != 0xC4 && marker != 0xC8 && marker != 0xCC;
+            if (is_sof) {
+                if (payload < 5) {
+                    break;
+                }
+                const int h = static_cast<int>(be16(data + seg_start + 1));
+                const int w = static_cast<int>(be16(data + seg_start + 3));
+                if (w > 0 && h > 0) {
+                    return std::pair<int, int>{w, h};
+                }
+                break;
+            }
+            pos = seg_start + payload;
+        }
+    }
+
+    return std::nullopt;
+}
+
+auto Image::probe_dimensions(const std::filesystem::path& path)
+    -> std::optional<std::pair<int, int>> {
+    constexpr size_t kProbeHeaderBytes = 64u * 1024u;
+    constexpr size_t kAvifHeaderBytes = 256u * 1024u;
+
+    std::ifstream f(path, std::ios::binary);
+    if (f.is_open()) {
+        std::vector<uint8_t> head(kProbeHeaderBytes);
+        f.read(reinterpret_cast<char*>(head.data()),
+               static_cast<std::streamsize>(head.size()));
+        const auto got = static_cast<size_t>(f.gcount());
+        if (auto dims = probe_header_dimensions(head.data(), got)) {
+            return dims;
+        }
+        if (got >= 12 && head[4] == 'f' && head[5] == 't' &&
+            head[6] == 'y' && head[7] == 'p') {
+            std::vector<uint8_t> avif_head(kAvifHeaderBytes);
+            f.clear();
+            f.seekg(0);
+            f.read(reinterpret_cast<char*>(avif_head.data()),
+                   static_cast<std::streamsize>(avif_head.size()));
+            const auto n = static_cast<size_t>(f.gcount());
+            const auto [w, h] = avif_codec::sniff_dimensions(avif_head.data(), n);
+            if (w > 0 && h > 0 &&
+                w <= static_cast<uint32_t>(std::numeric_limits<int>::max()) &&
+                h <= static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+                return std::pair<int, int>{static_cast<int>(w), static_cast<int>(h)};
+            }
+        }
+    }
+
+    auto decoded = Image::load(path);
+    if (decoded.has_value() && decoded->width() > 0 && decoded->height() > 0) {
+        return std::pair<int, int>{decoded->width(), decoded->height()};
+    }
+    return std::nullopt;
+}
+
 auto convert_image_channels(const Image& source, int target_channels)
     -> expected<Image, ImageError> {
     const int src_channels = source.channels();

@@ -46,6 +46,11 @@ auto mb(double bytes) -> std::string {
     return std::format("{:.1f} MB", bytes / 1024.0 / 1024.0);
 }
 
+auto size_label(std::uint64_t bytes) -> std::string {
+    if (bytes == 0) return "—";
+    return mb(static_cast<double>(bytes));
+}
+
 // "[动漫] ★" style annotation for catalog models; empty for user imports.
 auto scene_suffix(const std::string& name) -> std::string {
     const auto meta = upix::classify_model_scene(name);
@@ -120,38 +125,48 @@ int cmd_model_list(const args::Model& a) {
 
 int cmd_model_list_remote(const args::Model& a) {
     if (a.json) enable_machine_output();
-    std::string error;
-    auto remote = upix::fetch_remote_models(a.repo, error);
-    if (!remote) {
-        LOG_ERROR("Model", "Failed to fetch remote models: {}", error);
-        return 1;
-    }
+    const auto res = upix::fetch_remote_models_or_catalog(a.repo);
+    const bool from_catalog = res.fallback_error.has_value();
 
     if (a.json) {
-        std::string json = std::format("{{\"manifestUrl\":\"{}\",\"remote\":[",
-                                       json_escape(upix::manifest_url(a.repo)));
+        std::string json = std::format(
+            R"({{"manifestUrl":"{}","source":"{}","remote":[)",
+            json_escape(upix::manifest_url(a.repo)),
+            from_catalog ? "catalog" : "release");
         bool first = true;
-        for (const auto& m : *remote) {
+        for (const auto& m : res.models) {
             if (!first) json += ",";
             first = false;
             const auto meta = upix::classify_model_scene(m.name);
             json += std::format(
                 R"({{"name":"{}","scale":{},"size":"{}","scene":"{}","recommended":{}}})",
-                json_escape(m.name), m.scale, mb(m.size_bytes),
+                json_escape(m.name), m.scale, size_label(m.size_bytes),
                 json_escape(meta.scene), meta.recommended ? "true" : "false");
         }
         json += "]}";
         emit_json_line(json);
+        if (res.fallback_error) {
+            LOG_WARNING("Model",
+                        "Release manifest unavailable, listing the built-in catalog: {}",
+                        *res.fallback_error);
+        }
         return 0;
     }
 
+    if (res.fallback_error) {
+        LOG_WARNING("Model",
+                    "Release manifest unavailable, listing the built-in catalog: {}",
+                    *res.fallback_error);
+        LOG_WARNING("Model",
+                    "Sizes/URLs need the release; `model download` will fail until the network is back");
+    }
     std::println("Models available in the release ({}):",
                  upix::manifest_url(a.repo));
-    if (remote->empty()) {
+    if (res.models.empty()) {
         std::println("  (manifest is empty)");
     }
-    for (const auto& m : *remote) {
-        std::println("  {} ({}x, {}){}", m.name, m.scale, mb(m.size_bytes),
+    for (const auto& m : res.models) {
+        std::println("  {} ({}x, {}){}", m.name, m.scale, size_label(m.size_bytes),
                      scene_suffix(m.name));
     }
     print_scene_legend();
@@ -169,7 +184,10 @@ int cmd_model_download(const args::Model& a) {
     std::string error;
     auto remote = upix::fetch_remote_models(a.repo, error);
     if (!remote) {
-        LOG_ERROR("Model", "Failed to fetch remote models: {}", error);
+        LOG_ERROR("Model", "Cannot reach the model release: {}", error);
+        LOG_ERROR("Model",
+                  "Check the network/proxy, or install files you already have with "
+                  "`upix model import <file.param> <file.bin>`");
         return 1;
     }
 

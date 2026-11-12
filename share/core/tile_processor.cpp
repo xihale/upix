@@ -3,6 +3,7 @@
 #include "utils/logger.hpp"
 #include <cmath>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <format>
 #include <functional>
@@ -863,47 +864,132 @@ static inline float bicubic_kernel(float t) {
     return 0.0f;
 }
 
-// Bicubic scale for a single channel (u8 in, u8 out) - class method
+// Separable Catmull-Rom bicubic scale for a single channel (u8 in, u8 out) —
+// 2-pass horizontal-then-vertical with a per-band 4-row ring cache.
 void TileProcessor::bicubic_scale_u8(
     const uint8_t* src, uint32_t src_w, uint32_t src_h,
     uint8_t* dst, uint32_t dst_w, uint32_t dst_h)
 {
-    float scale_x = static_cast<float>(src_w) / dst_w;
-    float scale_y = static_cast<float>(src_h) / dst_h;
+    if (src == nullptr || dst == nullptr ||
+        src_w == 0 || src_h == 0 || dst_w == 0 || dst_h == 0) {
+        return;
+    }
 
-    for (uint32_t dy = 0; dy < dst_h; ++dy) {
-        float sy = (dy + 0.5f) * scale_y - 0.5f;
-        int sy0 = static_cast<int>(std::floor(sy));
+    const size_t dst_needed = static_cast<size_t>(dst_w) * static_cast<size_t>(dst_h);
+    const float scale_x = static_cast<float>(src_w) / static_cast<float>(dst_w);
+    const float scale_y = static_cast<float>(src_h) / static_cast<float>(dst_h);
+    const int max_sx = static_cast<int>(src_w) - 1;
+    const int max_sy = static_cast<int>(src_h) - 1;
+    const size_t dst_w_sz = static_cast<size_t>(dst_w);
+    const size_t src_w_sz = static_cast<size_t>(src_w);
 
-        for (uint32_t dx = 0; dx < dst_w; ++dx) {
-            float sx = (dx + 0.5f) * scale_x - 0.5f;
-            int sx0 = static_cast<int>(std::floor(sx));
+    struct HTap {
+        size_t c0, c1, c2, c3;
+        float w0, w1, w2, w3;
+    };
+    std::vector<HTap> h_taps(dst_w_sz);
+    for (uint32_t dx = 0; dx < dst_w; ++dx) {
+        const float sx = (static_cast<float>(dx) + 0.5f) * scale_x - 0.5f;
+        const int sx0 = static_cast<int>(std::floor(sx));
+        const float w0 = bicubic_kernel(sx - static_cast<float>(sx0 - 1));
+        const float w1 = bicubic_kernel(sx - static_cast<float>(sx0));
+        const float w2 = bicubic_kernel(sx - static_cast<float>(sx0 + 1));
+        const float w3 = bicubic_kernel(sx - static_cast<float>(sx0 + 2));
+        const float wsum = w0 + w1 + w2 + w3;
+        const float inv = std::abs(wsum) > 1e-6f ? (1.0f / wsum) : 0.0f;
+        h_taps[dx] = HTap{
+            static_cast<size_t>(std::clamp(sx0 - 1, 0, max_sx)),
+            static_cast<size_t>(std::clamp(sx0,     0, max_sx)),
+            static_cast<size_t>(std::clamp(sx0 + 1, 0, max_sx)),
+            static_cast<size_t>(std::clamp(sx0 + 2, 0, max_sx)),
+            w0 * inv, w1 * inv, w2 * inv, w3 * inv,
+        };
+    }
 
-            float sum = 0.0f;
-            float weight_sum = 0.0f;
+    auto process_band = [&](uint32_t y_begin, uint32_t row_count) {
+        std::array<int, 4> cached_cy{-1, -1, -1, -1};
+        std::vector<float> row_cache(dst_w_sz * 4, 0.0f);
 
-            for (int m = -1; m <= 2; ++m) {
-                int cy = std::clamp(sy0 + m, 0, static_cast<int>(src_h - 1));
-                float wy = bicubic_kernel(sy - (sy0 + m));
+        for (uint32_t local_y = 0; local_y < row_count; ++local_y) {
+            const uint32_t dy = y_begin + local_y;
+            uint8_t* drow = dst + static_cast<size_t>(dy) * dst_w_sz;
 
-                for (int n = -1; n <= 2; ++n) {
-                    int cx = std::clamp(sx0 + n, 0, static_cast<int>(src_w - 1));
-                    float wx = bicubic_kernel(sx - (sx0 + n));
+            const float sy = (static_cast<float>(dy) + 0.5f) * scale_y - 0.5f;
+            const int sy0 = static_cast<int>(std::floor(sy));
+            const std::array<int, 4> cys{
+                std::clamp(sy0 - 1, 0, max_sy),
+                std::clamp(sy0,     0, max_sy),
+                std::clamp(sy0 + 1, 0, max_sy),
+                std::clamp(sy0 + 2, 0, max_sy),
+            };
 
-                    float w = wx * wy;
-                    sum += src[static_cast<size_t>(cy) * src_w + static_cast<size_t>(cx)] * w;
-                    weight_sum += w;
+            float wy0 = bicubic_kernel(sy - static_cast<float>(sy0 - 1));
+            float wy1 = bicubic_kernel(sy - static_cast<float>(sy0));
+            float wy2 = bicubic_kernel(sy - static_cast<float>(sy0 + 1));
+            float wy3 = bicubic_kernel(sy - static_cast<float>(sy0 + 2));
+            const float wysum = wy0 + wy1 + wy2 + wy3;
+            // The kernel has negative lobes, so weight_sum can collapse to
+            // (near) zero on degenerate size pairs; clamp to black instead of NaN/inf.
+            if (std::abs(wysum) <= 1e-6f) {
+                std::memset(drow, 0, dst_w_sz);
+                continue;
+            }
+            const float inv_wy = 1.0f / wysum;
+            wy0 *= inv_wy;
+            wy1 *= inv_wy;
+            wy2 *= inv_wy;
+            wy3 *= inv_wy;
+
+            for (const int cy : cys) {
+                const size_t slot = static_cast<size_t>(cy) & 3u;
+                if (cached_cy[slot] != cy) {
+                    const uint8_t* srow = src + static_cast<size_t>(cy) * src_w_sz;
+                    float* cbuf = row_cache.data() + slot * dst_w_sz;
+                    for (size_t dx = 0; dx < dst_w_sz; ++dx) {
+                        const HTap& t = h_taps[dx];
+                        cbuf[dx] = static_cast<float>(srow[t.c0]) * t.w0 +
+                                   static_cast<float>(srow[t.c1]) * t.w1 +
+                                   static_cast<float>(srow[t.c2]) * t.w2 +
+                                   static_cast<float>(srow[t.c3]) * t.w3;
+                    }
+                    cached_cy[slot] = cy;
                 }
             }
 
-            // The kernel has negative lobes, so weight_sum can collapse to
-            // (near) zero on degenerate size pairs; the division then yields
-            // inf/NaN, whose cast to uint8_t is undefined. Bounded resize
-            // ratios never reach it — clamp to black when it happens.
-            const float value = std::abs(weight_sum) > 1e-6f ? sum / weight_sum : 0.0f;
-            dst[static_cast<size_t>(dy) * dst_w + static_cast<size_t>(dx)] = static_cast<uint8_t>(
-                std::clamp(value, 0.0f, 255.0f));
+            const float* r0 = row_cache.data() + (static_cast<size_t>(cys[0]) & 3u) * dst_w_sz;
+            const float* r1 = row_cache.data() + (static_cast<size_t>(cys[1]) & 3u) * dst_w_sz;
+            const float* r2 = row_cache.data() + (static_cast<size_t>(cys[2]) & 3u) * dst_w_sz;
+            const float* r3 = row_cache.data() + (static_cast<size_t>(cys[3]) & 3u) * dst_w_sz;
+
+            for (size_t dx = 0; dx < dst_w_sz; ++dx) {
+                const float val = r0[dx] * wy0 + r1[dx] * wy1 + r2[dx] * wy2 + r3[dx] * wy3;
+                drow[dx] = static_cast<uint8_t>(std::clamp(val, 0.0f, 255.0f));
+            }
         }
+    };
+
+    const size_t hw = std::thread::hardware_concurrency();
+    if (hw > 1 && dst_needed >= (256u * 1024u) && dst_h >= 16) {
+        const size_t threads = std::min({hw, size_t{8}, static_cast<size_t>(dst_h)});
+        const uint32_t rows_per_thread =
+            static_cast<uint32_t>((static_cast<size_t>(dst_h) + threads - 1) / threads);
+        std::vector<std::thread> workers;
+        workers.reserve(threads - 1);
+        uint32_t y0 = 0;
+        for (size_t i = 0; i < threads && y0 < dst_h; ++i) {
+            const uint32_t rows = std::min(rows_per_thread, dst_h - y0);
+            if (i + 1 < threads && y0 + rows < dst_h) {
+                workers.emplace_back([&, y0, rows]() { process_band(y0, rows); });
+            } else {
+                process_band(y0, rows);
+            }
+            y0 += rows;
+        }
+        for (auto& w : workers) {
+            w.join();
+        }
+    } else {
+        process_band(0, dst_h);
     }
 }
 

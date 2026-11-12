@@ -184,10 +184,25 @@ private:
         return console_colors::WHITE;
     }
 
+    static constexpr bool ascii_iequals(std::string_view a, std::string_view b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i) {
+            auto ca = static_cast<unsigned char>(a[i]);
+            auto cb = static_cast<unsigned char>(b[i]);
+            if (ca >= 'A' && ca <= 'Z') ca = static_cast<unsigned char>(ca - 'A' + 'a');
+            if (cb >= 'A' && cb <= 'Z') cb = static_cast<unsigned char>(cb - 'A' + 'a');
+            if (ca != cb) return false;
+        }
+        return true;
+    }
+
     LogLevel min_level_ = [] {
-        // UPIX_LOG_LEVEL=debug enables DEBUG output (default INFO).
+        // UPIX_LOG_LEVEL=debug|info|warn|warning|error (default INFO).
         if (const char* lvl = std::getenv("UPIX_LOG_LEVEL")) {
-            if (std::string_view(lvl) == "debug") return LogLevel::DEBUG;
+            const std::string_view s(lvl);
+            if (ascii_iequals(s, "debug")) return LogLevel::DEBUG;
+            if (ascii_iequals(s, "warn") || ascii_iequals(s, "warning")) return LogLevel::WARNING;
+            if (ascii_iequals(s, "error") || ascii_iequals(s, "err")) return LogLevel::ERROR;
         }
         return LogLevel::INFO;
     }();

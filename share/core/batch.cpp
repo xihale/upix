@@ -36,56 +36,10 @@ namespace fs = std::filesystem;
 namespace upix {
 namespace {
 
-// Header-only dimension sniff (PNG IHDR / JPEG SOF) for the VRAM admission
-// control in the GPU directory path. Returns {0,0} when the format is
-// unknown — callers treat that as "no estimate" and rely on the runtime OOM
-// ladder instead.
 std::pair<uint32_t, uint32_t> sniff_image_dimensions(const fs::path& path) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return {0, 0};
-    std::array<unsigned char, 24> sig{};
-    f.read(reinterpret_cast<char*>(sig.data()), static_cast<std::streamsize>(sig.size()));
-    const auto got = static_cast<size_t>(f.gcount());
-    const auto sig_bytes = std::span(sig).first(got);
-
-    static constexpr std::array<unsigned char, 8> kPngSig = {
-        0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a};
-    if (got >= 24 && std::ranges::equal(sig_bytes.first(8), kPngSig)) {
-        const auto be32 = [&](int o) {
-            return (static_cast<uint32_t>(sig[o]) << 24) |
-                   (static_cast<uint32_t>(sig[o + 1]) << 16) |
-                   (static_cast<uint32_t>(sig[o + 2]) << 8) | sig[o + 3];
-        };
-        return {be32(16), be32(20)};
-    }
-
-    if (got >= 2 && sig[0] == 0xFF && sig[1] == 0xD8) {
-        f.seekg(2);
-        while (f) {
-            unsigned char m[4];
-            f.read(reinterpret_cast<char*>(m), 4);  // FF marker len_hi len_lo
-            if (f.gcount() < 4 || m[0] != 0xFF) break;
-            const bool is_sof = m[1] >= 0xC0 && m[1] <= 0xCF &&
-                                m[1] != 0xC4 && m[1] != 0xC8 && m[1] != 0xCC;
-            const size_t seg_len = (static_cast<size_t>(m[2]) << 8) | m[3];
-            if (is_sof) {
-                unsigned char sof[5];  // precision + height + width
-                f.read(reinterpret_cast<char*>(sof), 5);
-                if (f.gcount() < 5) break;
-                const uint32_t h = (static_cast<uint32_t>(sof[1]) << 8) | sof[2];
-                const uint32_t w = (static_cast<uint32_t>(sof[3]) << 8) | sof[4];
-                return {w, h};
-            }
-            f.seekg(static_cast<std::streamoff>(seg_len) - 2, std::ios::cur);
-        }
-    }
-
-    if (got >= 12 && sig[4] == 'f' && sig[5] == 't' && sig[6] == 'y' && sig[7] == 'p') {
-        f.seekg(0);
-        std::vector<unsigned char> header(256 * 1024);
-        f.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
-        const auto n = static_cast<size_t>(f.gcount());
-        return upix::avif_codec::sniff_dimensions(header.data(), n);
+    if (auto dims = Image::probe_dimensions(path)) {
+        return {static_cast<uint32_t>(dims->first),
+                static_cast<uint32_t>(dims->second)};
     }
     return {0, 0};
 }
@@ -94,7 +48,8 @@ std::pair<uint32_t, uint32_t> sniff_image_dimensions(const fs::path& path) {
 
 auto gather_directory_tasks(const std::string& input_dir,
                             const std::string& output_dir,
-                            std::string& error)
+                            std::string& error,
+                            bool recursive)
     -> std::optional<std::vector<std::pair<std::string, std::string>>> {
     if (fs::exists(output_dir) && !fs::is_directory(output_dir)) {
         error = "output path must be a directory when the input is a directory";
@@ -115,23 +70,11 @@ auto gather_directory_tasks(const std::string& input_dir,
             return std::nullopt;
         }
     }
-    {
-        std::error_code mkdir_ec;
-        fs::create_directories(output_dir, mkdir_ec);
-        if (mkdir_ec) {
-            error = std::format("cannot create output directory {}: {}",
-                                output_dir, mkdir_ec.message());
-            return std::nullopt;
-        }
-    }
 
-    // Gather image files recursively. Must mirror the decoders Image::load
-    // actually ships (share/utils/image.cpp): .bmp/.tiff used to be
-    // enumerated here but always failed at load with "Unsupported image
-    // format", so they are not tasks at all. Filesystem errors are
-    // collected rather than thrown: an unreadable subdirectory must skip
-    // that entry, not abort the whole batch.
-    std::vector<std::string> extensions = {
+    // Gather image files. Must mirror the decoders Image::load actually ships
+    // (share/utils/image.cpp). Skip `upix_*` output and `upix_orig/` backup
+    // directories so re-running a folder never re-ingests prior results or backups.
+    static constexpr std::array<std::string_view, 5> kExtensions = {
         ".png", ".jpg", ".jpeg", ".webp", ".avif"
     };
     std::vector<std::pair<std::string, std::string>> tasks;
@@ -148,10 +91,18 @@ auto gather_directory_tasks(const std::string& input_dir,
         }
         const fs::directory_entry& entry = *it;
         std::error_code st_ec;
-        if (!entry.is_regular_file(st_ec) || st_ec) continue;
+        if (entry.is_directory(st_ec)) {
+            if (!recursive ||
+                entry.path().filename().string().starts_with("upix_")) {
+                it.disable_recursion_pending();
+            }
+            continue;
+        }
+        if (st_ec || !entry.is_regular_file(st_ec) || st_ec) continue;
         std::string ext = entry.path().extension().string();
-        std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-        if (!std::ranges::contains(extensions, ext)) continue;
+        std::transform(ext.begin(), ext.end(), ext.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (!std::ranges::contains(kExtensions, std::string_view(ext))) continue;
         // Lexical, not fs::relative(): that one canonicalizes both sides,
         // so a symlinked input pointing outside the tree would produce a
         // ".."-laden relative path and the result would be written outside
@@ -166,7 +117,122 @@ auto gather_directory_tasks(const std::string& input_dir,
         std::string out_file = (fs::path(output_dir) / rel_path).string();
         tasks.emplace_back(entry.path().string(), out_file);
     }
+
+    if (!tasks.empty()) {
+        std::error_code mkdir_ec;
+        fs::create_directories(output_dir, mkdir_ec);
+        if (mkdir_ec) {
+            error = std::format("cannot create output directory {}: {}",
+                                output_dir, mkdir_ec.message());
+            return std::nullopt;
+        }
+    }
     return tasks;
+}
+
+auto batch_out_dir(const BatchInput& in,
+                   const std::string& model_name,
+                   const std::string& custom_out_dir)
+    -> std::optional<std::filesystem::path> {
+    if (in.batch_root.empty()) {
+        return std::nullopt;
+    }
+    const fs::path in_path(in.path);
+    const fs::path root_path(in.batch_root);
+    const fs::path parent = in_path.parent_path();
+    fs::path rel = parent.lexically_relative(root_path);
+    if (rel.empty() || rel == "." || *rel.begin() == "..") {
+        rel.clear();
+    }
+    const std::string tag = model_name.empty()
+                                ? "upix"
+                                : "upix_" + sanitize_model_for_filename(model_name);
+    fs::path base = custom_out_dir.empty()
+                        ? (root_path / tag)
+                        : fs::path(custom_out_dir);
+    return rel.empty() ? base : (base / rel);
+}
+
+auto compute_batch_output_path(const BatchInput& in,
+                               const std::string& model_name,
+                               const ProcessingConfig& cfg,
+                               const std::string& custom_out_dir,
+                               bool overwrite_original) -> std::filesystem::path {
+    const fs::path in_path(in.path);
+    if (overwrite_original) {
+        return in_path;
+    }
+
+    const std::string stem = in_path.stem().empty()
+                                 ? std::string("output")
+                                 : in_path.stem().string();
+    std::string ext;
+    const std::string norm_fmt = normalize_output_format(cfg.output_format);
+    if (!norm_fmt.empty()) {
+        ext = "." + (norm_fmt == "jpeg" ? std::string("jpg") : norm_fmt);
+    } else {
+        std::string raw_ext = in_path.extension().string();
+        std::transform(raw_ext.begin(), raw_ext.end(), raw_ext.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (raw_ext == ".png" || raw_ext == ".jpg" || raw_ext == ".jpeg" ||
+            raw_ext == ".webp" || raw_ext == ".avif") {
+            ext = raw_ext;
+        } else {
+            ext = ".png";
+        }
+    }
+
+    if (auto dir = batch_out_dir(in, model_name, custom_out_dir)) {
+        return *dir / (stem + ext);
+    }
+    const std::string suffix = model_name.empty()
+                                   ? std::string("upix")
+                                   : sanitize_model_for_filename(model_name);
+    const std::string filename = stem + "_" + suffix + ext;
+    if (!custom_out_dir.empty()) {
+        return fs::path(custom_out_dir) / filename;
+    }
+    return in_path.parent_path() / filename;
+}
+
+auto backup_original_once(const std::filesystem::path& src,
+                          std::string& err) -> bool {
+    err.clear();
+    std::error_code ec;
+    if (!fs::is_regular_file(src, ec) || ec) {
+        err = std::format("cannot backup missing original {}: {}",
+                          src.string(), ec ? ec.message() : "not a regular file");
+        return false;
+    }
+    const fs::path orig_dir = src.parent_path() / "upix_orig";
+    const fs::path dst = orig_dir / src.filename();
+    if (fs::exists(dst, ec)) {
+        // Backup already present from an earlier run — keep the true original untouched.
+        return true;
+    }
+    fs::create_directories(orig_dir, ec);
+    if (ec) {
+        err = std::format("cannot create backup directory {}: {}",
+                          orig_dir.string(), ec.message());
+        return false;
+    }
+    const auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
+    const fs::path tmp = orig_dir / std::format(".{}.{}.tmp", src.filename().string(), tick);
+    fs::copy_file(src, tmp, fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        std::error_code rm_ec;
+        fs::remove(tmp, rm_ec);
+        err = std::format("cannot copy original to {}: {}", dst.string(), ec.message());
+        return false;
+    }
+    fs::rename(tmp, dst, ec);
+    if (ec) {
+        std::error_code rm_ec;
+        fs::remove(tmp, rm_ec);
+        err = std::format("cannot finalize backup {}: {}", dst.string(), ec.message());
+        return false;
+    }
+    return true;
 }
 
 auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
@@ -177,13 +243,23 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
     const bool jobs_explicit = request.jobs_explicit;
     const bool use_gpu = request.use_gpu;
     const bool force = request.force;
+    const bool overwrite_original = request.overwrite_original;
+    const bool backup_original = request.backup_original;
     std::vector<std::pair<std::string, std::string>> tasks = request.tasks;
 
     if (tasks.empty()) {
         LOG_WARNING("CLI", "No image files found in input directory");
-        return BatchStats{};
+        BatchStats empty_stats;
+        empty_stats.cancelled = cancel.load();
+        return empty_stats;
     }
     LOG_INFO("CLI", "Found {} images to process", tasks.size());
+
+    // Overwriting originals requires matching each file's own container format;
+    // switching formats would create a sibling instead of overwriting.
+    if (overwrite_original) {
+        config.output_format.clear();
+    }
 
     // Largest-first (LPT) scheduling: the biggest image dominates the
     // critical path, so it must start first when workers run in
@@ -232,8 +308,8 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
              selected_model->scale_factor);
 
     // Preserve a configured output format; infer from the first target only
-    // when neither the config file nor CLI selected one.
-    if (config.output_format.empty() && !tasks.empty()) {
+    // when neither the config file, CLI, nor overwrite_original selected one.
+    if (!overwrite_original && config.output_format.empty() && !tasks.empty()) {
         std::string inferred = infer_format_from_extension(tasks[0].second);
         if (!inferred.empty()) {
             config.output_format = upix::normalize_output_format(inferred);
@@ -304,6 +380,7 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
         auto raw = upix::Image::load_raw(in_path);
         if (!raw.has_value()) {
             LOG_ERROR("Task", "Failed to load image: {}", in_path);
+            if (callbacks.on_error) callbacks.on_error(in_path, raw.error().message);
             return {PrepareStatus::Failed, std::nullopt};
         }
         if (!force) {
@@ -322,6 +399,7 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
             fs::path(in_path).extension().string(), raw.value());
         if (!img_res.has_value()) {
             LOG_ERROR("Task", "Failed to load image: {}", in_path);
+            if (callbacks.on_error) callbacks.on_error(in_path, img_res.error().message);
             return {PrepareStatus::Failed, std::nullopt};
         }
 
@@ -342,6 +420,7 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
 
         if (!upix::normalize_image_channels(prepared.input_image,
                                             model_input_channels, in_path)) {
+            if (callbacks.on_error) callbacks.on_error(in_path, "incompatible image channels");
             return {PrepareStatus::Failed, std::nullopt};
         }
 
@@ -358,6 +437,7 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
     const auto batch_start_time = std::chrono::steady_clock::now();
 
     struct ProcessedTask {
+        std::string in_path;
         std::string out_path;
         int out_width = 0;
         int out_height = 0;
@@ -418,6 +498,7 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
             out_h64 > std::numeric_limits<int>::max() || size_overflow) {
             LOG_ERROR("Task", "Upscaled output out of range: {}x{} at {}x",
                       prepared.width, prepared.height, scale_factor);
+            if (callbacks.on_error) callbacks.on_error(prepared.in_path, "upscaled output dimensions out of range");
             return std::nullopt;
         }
         const int out_width = static_cast<int>(out_w64);
@@ -447,12 +528,15 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
         if (!result.has_value()) {
             if (cancel.load()) {
                 LOG_WARNING("Task", "Processing cancelled by signal");
+            } else if (callbacks.on_error) {
+                callbacks.on_error(prepared.in_path, result.error().message);
             }
             LOG_ERROR("Task", "Processing failed: {}", result.error().message);
             return std::nullopt;
         }
 
         ProcessedTask processed;
+        processed.in_path = prepared.in_path;
         processed.out_path = prepared.out_path;
         processed.out_width = out_width;
         processed.out_height = out_height;
@@ -464,14 +548,26 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
     };
 
     auto save_processed_task = [&](ProcessedTask&& processed) -> bool {
-        std::filesystem::path out_path_obj(processed.out_path);
-        const std::filesystem::path final_out_path = upix::resolve_output_path(out_path_obj, config);
+        const std::filesystem::path out_path_obj(processed.out_path);
+        const std::filesystem::path final_out_path = overwrite_original
+            ? fs::path(processed.in_path)
+            : upix::resolve_output_path(out_path_obj, config);
         if (!final_out_path.parent_path().empty()) {
             std::error_code mk_ec;
             std::filesystem::create_directories(final_out_path.parent_path(), mk_ec);
             if (mk_ec) {
                 LOG_ERROR("Task", "Cannot create output directory {}: {}",
                           final_out_path.parent_path().string(), mk_ec.message());
+                if (callbacks.on_error) callbacks.on_error(processed.in_path, mk_ec.message());
+                return false;
+            }
+        }
+
+        if (overwrite_original && backup_original) {
+            std::string backup_err;
+            if (!backup_original_once(processed.in_path, backup_err)) {
+                LOG_ERROR("Task", "Failed to backup original before overwrite: {}", backup_err);
+                if (callbacks.on_error) callbacks.on_error(processed.in_path, backup_err);
                 return false;
             }
         }
@@ -483,6 +579,7 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
         if (!save_res.has_value()) {
             LOG_ERROR("Task", "Failed to save output: {} -> {}",
                       save_res.error().message, final_out_path.string());
+            if (callbacks.on_error) callbacks.on_error(processed.in_path, save_res.error().message);
             return false;
         }
 
@@ -510,6 +607,18 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
 
     BatchStats stats;
     stats.total = tasks.size();
+    auto finalize_stats = [&](size_t succeeded) -> BatchStats {
+        stats.succeeded = succeeded;
+        stats.skipped = skip_count.load();
+        stats.cancelled = cancel.load();
+        LOG_INFO("CLI", "Processing summary: {}/{} succeeded{}{}",
+                 stats.succeeded, tasks.size(),
+                 stats.skipped > 0 ? std::format(", {} skipped (already super-resolved)",
+                                                 stats.skipped)
+                                   : std::string{},
+                 stats.cancelled ? " (cancelled)" : "");
+        return stats;
+    };
 
     // GPU directory mode defaults to VRAM-sized multi-engine concurrency
     // (decided inside that branch, where engine #0 reports the budget)
@@ -732,14 +841,7 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
             for (auto& save_thread : save_threads) {
                 save_thread.join();
             }
-            stats.succeeded = save_success_count.load();
-            stats.skipped = skip_count.load();
-            LOG_INFO("CLI", "Processing summary: {}/{} succeeded{}",
-                     stats.succeeded, tasks.size(),
-                     stats.skipped > 0 ? std::format(", {} skipped (already super-resolved)",
-                                                     stats.skipped)
-                                       : std::string{});
-            return stats;
+            return finalize_stats(save_success_count.load());
         }
 
         for (const auto& task : tasks) {
@@ -750,13 +852,7 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
                 stats.succeeded++;
             }
         }
-        stats.skipped = skip_count.load();
-        LOG_INFO("CLI", "Processing summary: {}/{} succeeded{}",
-                 stats.succeeded, tasks.size(),
-                 stats.skipped > 0 ? std::format(", {} skipped (already super-resolved)",
-                                                 stats.skipped)
-                                   : std::string{});
-        return stats;
+        return finalize_stats(stats.succeeded);
     }
 
     if (use_gpu) {
@@ -1044,14 +1140,7 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
             save_thread.join();
         }
 
-        stats.succeeded = save_success_count.load();
-        stats.skipped = skip_count.load();
-        LOG_INFO("CLI", "Processing summary: {}/{} succeeded{}",
-                 stats.succeeded, tasks.size(),
-                 stats.skipped > 0 ? std::format(", {} skipped (already super-resolved)",
-                                                 stats.skipped)
-                                   : std::string{});
-        return stats;
+        return finalize_stats(save_success_count.load());
     }
 
     // CPU EnginePool: fixed worker pool pulling tasks via an atomic
@@ -1108,9 +1197,11 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
                          TaskResult::Success;
                 } catch (const std::exception& e) {
                     LOG_ERROR("Engine", "Task processing exception: {}", e.what());
+                    if (callbacks.on_error) callbacks.on_error(tasks[idx].first, e.what());
                     ok = false;
                 } catch (...) {
                     LOG_ERROR("Engine", "Task processing unknown exception");
+                    if (callbacks.on_error) callbacks.on_error(tasks[idx].first, "unknown processing exception");
                     ok = false;
                 }
                 pool.release(eng);
@@ -1125,14 +1216,7 @@ auto run_batch(const BatchRequest& request, const BatchCallbacks& callbacks,
         w.join();
     }
 
-    stats.succeeded = success_count.load();
-    stats.skipped = skip_count.load();
-    LOG_INFO("CLI", "Processing summary: {}/{} succeeded{}",
-             stats.succeeded, tasks.size(),
-             stats.skipped > 0 ? std::format(", {} skipped (already super-resolved)",
-                                             stats.skipped)
-                               : std::string{});
-    return stats;
+    return finalize_stats(success_count.load());
 }
 
 }  // namespace upix

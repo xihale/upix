@@ -81,13 +81,10 @@ auto setup_engine(
 ) -> expected<EngineSetupResult, std::string> {
     EngineSetupResult result;
 
-    auto init = initialize_engine(device);
-    if (!init) {
-        return std::unexpected(init.error());
-    }
-    result.engine = std::move(*init);
-
     // ── scan_models ──────────────────────────────────────────────────────────
+    // Before engine init: a missing model directory is the common first-run
+    // state, and initializing ncnn only to fail afterwards costs a device
+    // probe plus noisy Vulkan logs the user did not ask for.
     const std::string resolved_models_dir =
         models_dir.empty() ? std::string("./models") : std::string(models_dir);
     result.models.set_models_directory(resolved_models_dir);
@@ -102,7 +99,8 @@ auto setup_engine(
     // ── select ───────────────────────────────────────────────────────────────
     // scan_models() returns a copy of its internal vector; point `selected`
     // into the manager-owned vector (available_models()) instead so the pointer
-    // stays valid for the lifetime of EngineSetupResult.models.
+    // stays valid for the lifetime of EngineSetupResult.models (a move of
+    // EngineSetupResult transfers the vector buffer untouched).
     const auto& scanned = result.models.available_models();
     if (model_name.empty()) {
         result.selected = &scanned.front();
@@ -113,7 +111,13 @@ auto setup_engine(
         }
     }
 
-    // ── load_model ───────────────────────────────────────────────────────────
+    // ── initialize & load_model ──────────────────────────────────────────────
+    auto init = initialize_engine(device);
+    if (!init) {
+        return std::unexpected(init.error());
+    }
+    result.engine = std::move(*init);
+
     auto load = result.engine->load_model(
         result.selected->param_path.string(),
         result.selected->bin_path.string()

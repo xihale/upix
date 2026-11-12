@@ -96,6 +96,7 @@ local HOST_TEST_SPECS = {
     test_model_catalog = {deps = {"upix-core"}, packages = TEST_ENGINE_PKGS, syslinks = {"dl"}, includedirs = {"$(projectdir)/share"}},
     test_model_scene = {deps = {"upix-core"}, packages = TEST_ENGINE_PKGS, syslinks = {"dl"}, includedirs = {"$(projectdir)/share"}},
     test_image_avif = {deps = {"upix-core"}, packages = TEST_CODEC_PKGS, avif = true, syslinks = {"dl"}},
+    test_batch_paths = {deps = {"upix-core"}, packages = TEST_ENGINE_PKGS, avif = true, syslinks = {"dl"}, includedirs = {"$(projectdir)/share"}},
 }
 
 for _, name in ipairs(host_test_targets) do
