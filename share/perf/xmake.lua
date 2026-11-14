@@ -13,7 +13,7 @@ target("upix-perf")
     add_packages("ncnn~runtime")
     add_includedirs(".", {public = true})
 
-    if not is_plat("android") then
+    if is_plat("linux", "bsd") then
         -- dlopen needs libdl on glibc; on modern glibc it's in libc, harmless to add.
         add_syslinks("dl")
     end

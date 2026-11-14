@@ -9,7 +9,7 @@ add_repositories("upix-local " .. os.scriptdir())
 
 add_rules("mode.debug", "mode.release")
 
-if is_mode("debug") and not is_plat("android") then
+if is_mode("debug") and is_plat("linux", "macosx") and not is_config("toolchain", "zigcc") and not is_cross() then
     add_cxflags("-fsanitize=address")
     add_ldflags("-fsanitize=address")
 end
@@ -17,10 +17,14 @@ end
 if is_mode("release") then
     set_optimize("fastest")
     set_strip("all")
-    add_cxflags("-ffunction-sections", "-fdata-sections")
+    if not is_plat("windows") then
+        add_cxflags("-ffunction-sections", "-fdata-sections")
+    end
     if is_plat("linux", "android") then
         add_cxflags("-fvisibility=hidden")
         add_ldflags("-Wl,--gc-sections", "-Wl,--exclude-libs,ALL")
+    elseif is_plat("mingw") then
+        add_ldflags("-Wl,--gc-sections")
     elseif is_plat("macosx") then
         add_ldflags("-Wl,-dead_strip")
     end
@@ -37,17 +41,32 @@ end
 -- Security hardening flags. -pie / -z relro are ELF; Mach-O PIE is the
 -- default and clang errors on unused -pie with -Werror.
 if is_plat("linux") then
-    add_cxflags("-fstack-protector-strong", "-D_FORTIFY_SOURCE=2")
+    add_cxflags("-fstack-protector-strong")
+    if is_mode("release") then
+        add_cxflags("-D_FORTIFY_SOURCE=2")
+    end
     add_cxflags("-fPIE")
     add_ldflags("-pie", "-Wl,-z,relro,-z,now")
 elseif is_plat("macosx") then
-    add_cxflags("-fstack-protector-strong", "-D_FORTIFY_SOURCE=2")
+    add_cxflags("-fstack-protector-strong")
+    if is_mode("release") then
+        add_cxflags("-D_FORTIFY_SOURCE=2")
+    end
 end
 
 -- Compiler warnings
-add_cxflags("-Wall", "-Wextra", "-Wpedantic")
-if is_mode("release") and not is_plat("android") then
-    add_cxflags("-Werror")
+if is_plat("windows") then
+    set_encodings("utf-8")
+    add_defines("_CRT_SECURE_NO_WARNINGS")
+    add_cxflags("/W4")
+    if is_mode("release") then
+        add_cxflags("/WX")
+    end
+else
+    add_cxflags("-Wall", "-Wextra", "-Wpedantic")
+    if is_mode("release") and not is_plat("android") then
+        add_cxflags("-Werror")
+    end
 end
 
 -- Native-ISA tuning (linux desktop only): detect the build host's SIMD
@@ -65,8 +84,11 @@ option_end()
 -- happens in this rule's on_load, which runs with full API access.
 rule("upix.host_isa")
     on_load(function (target)
+        if target:plat() == "macosx" and os.host() ~= "macosx" then
+            raise("cross-compiling macosx from %s is unsupported: ncnn requires moltenvk/xcodebuild and macOS SDK frameworks not shipped with zig cc", os.host())
+        end
         if not has_config("native_isa") then return end
-        if os.host() ~= "linux" or target:plat() ~= "linux" or target:arch() ~= "x86_64" then return end
+        if os.host() ~= "linux" or os.arch() ~= "x86_64" or target:plat() ~= "linux" or target:arch() ~= "x86_64" then return end
         -- try's return protocol differs between scopes; assign via closure instead.
         local flags
         try {
@@ -102,7 +124,7 @@ option_end()
 rule("upix.upx")
     after_build(function (target)
         if not has_config("upx") then return end
-        if os.host() ~= "linux" or target:plat() ~= "linux" or target:arch() ~= "x86_64" then return end
+        if os.host() ~= "linux" or os.arch() ~= "x86_64" or target:plat() ~= "linux" or target:arch() ~= "x86_64" then return end
         if get_config("mode") ~= "release" or target:kind() ~= "binary" then return end
         import("lib.detect.find_tool")
         local upx = find_tool("upx")
@@ -145,7 +167,7 @@ option_end()
 
 -- ncnn package: "auto" lets its install script probe the host CPU and skip
 -- compiling kernel variants it could never dispatch to ("all" = upstream).
-local ncnn_x86_isa = has_config("native_isa") and is_plat("linux") and "auto" or "all"
+local ncnn_x86_isa = (has_config("native_isa") and is_plat("linux") and is_arch("x86_64") and not is_cross()) and "auto" or "all"
 
 -- Pin to 20260526 (upstream's newest release). Upstream ncnn vendors glslang
 -- as a submodule; glslang-nihui (the xrepo package of that fork) has no
@@ -194,7 +216,9 @@ if is_plat("android") then
 end
 
 if not is_plat("android") then
-    add_requires("ncnn~glslang 20260526", {configs = {vulkan = true, online_spirv = true, skip_device_defines = true, x86_isa = ncnn_x86_isa, simpleomp = true}})
+    if not is_cross() then
+        add_requires("ncnn~glslang 20260526", {configs = {vulkan = true, online_spirv = true, skip_device_defines = true, x86_isa = ncnn_x86_isa, simpleomp = true}})
+    end
     add_requires("qr-code-generator-cpp")
     add_requires("cli11")
     add_requires("libcurl")

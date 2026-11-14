@@ -3,16 +3,19 @@
 -- artifact (gitignored *.bin): dump it when share/core/spirv_pack.bin is missing.
 local spirv_pack = path.join(os.projectdir(), "share/core/spirv_pack.bin")
 
-target("dump-spirv")
-    set_kind("binary")
-    set_default(false)
-    add_rules("upix.host_isa", "upix.upx")
-    add_packages("ncnn~glslang", "libdeflate")
-    add_includedirs("$(projectdir)/share")
-    add_files("dump_spirv.cpp")
-    if is_plat("linux", "bsd") then
-        add_syslinks("dl")
-    end
+if not is_cross() then
+    target("dump-spirv")
+        set_kind("binary")
+        set_default(false)
+        add_rules("upix.host_isa", "upix.upx")
+        add_packages("ncnn~glslang", "libdeflate")
+        add_includedirs("$(projectdir)/share")
+        add_files("dump_spirv.cpp")
+        if is_plat("linux", "bsd") then
+            add_syslinks("dl")
+        end
+    target_end()
+end
 
 -- Standalone performance-probe CLI. Kept out of upix-cli so the shipped CLI
 -- stays lean; probes are developer/tuning tooling. Target name differs from
@@ -41,28 +44,47 @@ target("upix-perf-tool")
 
 target("upix-core")
     on_load(function (target)
-        if not os.isfile(spirv_pack) then
+        local cross = target:plat() ~= os.host() or target:arch() ~= os.arch()
+        if not target:is_plat("android") and not cross and not os.isfile(spirv_pack) then
             target:add("deps", "dump-spirv")
         end
     end)
     -- Host counterpart of share/xmake.lua's android-scoped hook: generate the
     -- pack with the freshly built dump-spirv when it is missing, and bump
-    -- spirv_pack.S's mtime so .incbin re-reads it. Only one `before_build`
-    -- survives per target (registrations are not cumulative), hence the
-    -- symmetric platform guards in both hooks.
+    -- spirv_pack.S's mtime so .incbin re-reads it. Cross-compiled non-android
+    -- targets (e.g. mingw or linux-arm64) spawn an isolated host xmake just
+    -- like android because a cross binary cannot run on the build host.
     before_build(function (target)
-        if is_plat("android") then return end
+        if target:is_plat("android") then return end
         if not os.isfile(spirv_pack) then
-            import("core.project.project")
-            local dump = project.target("dump-spirv")
-            assert(dump, "dump-spirv target missing")
-            local bin = dump:targetfile()
-            if not os.isfile(bin) then
-                os.execv(os.programfile(), {"build", "dump-spirv"})
-                bin = dump:targetfile()
+            local cross = target:plat() ~= os.host() or target:arch() ~= os.arch()
+            if cross then
+                print("generating " .. spirv_pack)
+                local cfgdir = path.join(os.projectdir(), ".xmake", "host")
+                os.mkdir(cfgdir)
+                local envs = {XMAKE_CONFIGDIR = cfgdir}
+                os.execv(os.programfile(), {
+                    "config", "-P", os.projectdir(), "-p", os.host(), "-a", os.arch(),
+                    "-m", "release", "--yes"
+                }, {envs = envs})
+                os.execv(os.programfile(), {
+                    "build", "-P", os.projectdir(), "dump-spirv"
+                }, {envs = envs})
+                local bin = path.join(os.projectdir(), "build", os.host(), os.arch(), "release", "dump-spirv")
+                assert(os.isfile(bin), "dump-spirv missing: " .. bin)
+                os.execv(bin, {spirv_pack})
+            else
+                import("core.project.project")
+                local dump = project.target("dump-spirv")
+                assert(dump, "dump-spirv target missing")
+                local bin = dump:targetfile()
+                if not os.isfile(bin) then
+                    os.execv(os.programfile(), {"build", "dump-spirv"})
+                    bin = dump:targetfile()
+                end
+                print("generating " .. spirv_pack)
+                os.execv(bin, {spirv_pack})
             end
-            print("generating " .. spirv_pack)
-            os.execv(bin, {spirv_pack})
         end
         -- The pack reaches the binary through .incbin inside spirv_pack.S,
         -- which xmake's dependency scan cannot see: after regenerating the

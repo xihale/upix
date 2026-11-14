@@ -15,8 +15,10 @@ target("upix-core")
         add_packages("libcurl", "libzip")
     end
     -- image.cpp post-muxes XMP via libwebpmux; xmake-repo does not always
-    -- propagate that extra lib to dependents on macosx.
-    add_links("webpmux")
+    -- propagate that extra lib to dependents on macosx (MSVC builds libwebpmux.lib).
+    if not is_plat("windows") then
+        add_links("webpmux")
+    end
     -- Optional AVIF codecs (root xmake.lua options): the defines gate the
     -- static-libavif branch of utils/image_avif.cpp; the package provides
     -- avif/avif.h + the static libs for everything that links upix-core.
@@ -112,6 +114,8 @@ target("test_local_socket")
         "utils/network.cpp"
     )
     add_packages("libpng", "libjpeg", "libwebp", "libdeflate")
-    if is_plat("windows", "mingw") then
+    if is_plat("linux", "bsd") then
+        add_syslinks("pthread")
+    elseif is_plat("windows", "mingw") then
         add_syslinks("ws2_32", "iphlpapi")
     end

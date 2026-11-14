@@ -384,7 +384,8 @@ int compile_spirv_module(int shader_type_index, const Option& opt, std::vector<u
         table.insert(configs, "-DNCNN_VULKAN=" .. (package:config("vulkan") and "ON" or "OFF"))
         table.insert(configs, "-DNCNN_ONLINE_SPIRV=" .. ((package:config("vulkan") and package:config("online_spirv")) and "ON" or "OFF"))
         table.insert(configs, "-DNCNN_SKIP_DEVICE_DEFINES=" .. (package:config("skip_device_defines") and "ON" or "OFF"))
-        if package:config("x86_isa") == "auto" and os.host() == "linux" then
+        if package:config("x86_isa") == "auto" and os.host() == "linux"
+                and package:is_plat("linux") and package:is_arch("x86_64", "x64") and not package:is_cross() then
             -- try's return protocol differs between scopes; assign via closure.
             local flags
             try {
