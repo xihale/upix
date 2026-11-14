@@ -1,0 +1,179 @@
+name: Release Web
+
+# Static Web app (web.upix.xeed.ink) packaged on web-v* tags (or manual dispatch).
+# GitHub Pages is disabled: stable web-vX.Y.Z tags are deployed via VPS webhook on gx;
+# pre-releases (e.g. web-v0.2.0-beta.1) stay GitHub-only and do not trigger gx deploy.
+on:
+  push:
+    tags:
+      - "web-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without prefix (e.g. 0.2.0 or 0.2.0-beta.1). Ignored on tag push."
+        required: true
+        type: string
+        default: "0.2.0-beta.1"
+      prerelease:
+        description: "Mark GitHub release as pre-release (auto detects -beta/-alpha/-rc)."
+        required: false
+        type: choice
+        options: ["auto", "true", "false"]
+        default: "auto"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-web-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    name: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag_name: ${{ steps.v.outputs.tag_name }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/web-v* ]]; then
+            tag_name="${GITHUB_REF_NAME}"
+            version="${GITHUB_REF_NAME#web-v}"
+          else
+            version="${INPUT_VERSION#web-v}"
+            version="${version#v}"
+            tag_name="web-v${version}"
+          fi
+          [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]] || {
+            echo "invalid version: '${version}' (allowed: A-Za-z0-9._-)" >&2
+            exit 1
+          }
+          if [[ "${INPUT_PRERELEASE}" == "true" || "${INPUT_PRERELEASE}" == "false" ]]; then
+            prerelease="${INPUT_PRERELEASE}"
+          else
+            shopt -s nocasematch
+            if [[ "$version" == *-* || "$version" =~ (alpha|beta|rc|pre|dev|preview) ]]; then
+              prerelease="true"
+            else
+              prerelease="false"
+            fi
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'tag_name=%s\n' "$tag_name" >> "$GITHUB_OUTPUT"
+          printf 'prerelease=%s\n' "$prerelease" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: web (wasm + vite)
+    needs: meta
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install Zig 0.17.0
+        env:
+          ZIG_VERSION: "0.17.0"
+          ZIG_SHA256: "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026"
+        run: |
+          set -euo pipefail
+          ZIG_TARBALL="zig-x86_64-linux-${ZIG_VERSION}.tar.xz"
+          curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${ZIG_TARBALL}" -o "/tmp/${ZIG_TARBALL}"
+          echo "${ZIG_SHA256}  /tmp/${ZIG_TARBALL}" | sha256sum -c -
+          mkdir -p /tmp/zig-install
+          tar -xf "/tmp/${ZIG_TARBALL}" -C /tmp/zig-install --strip-components=1
+          rm -f "/tmp/${ZIG_TARBALL}"
+          echo "/tmp/zig-install" >> "$GITHUB_PATH"
+
+      - name: Install dependencies, lint, and build
+        working-directory: web
+        run: |
+          set -euo pipefail
+          npm ci
+          npm run lint
+          npm run build:wasm
+          npm run build
+
+      - name: Package release archive
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          PKG_NAME="upix-web-${VERSION}"
+          STAGE_DIR="/tmp/${PKG_NAME}"
+          rm -rf "$STAGE_DIR" dist-release
+          mkdir -p "$STAGE_DIR" dist-release
+          cp -a web/dist/. "$STAGE_DIR/"
+          cp LICENSE "$STAGE_DIR/LICENSE"
+          tar -C /tmp -czf "dist-release/${PKG_NAME}.tar.gz" "${PKG_NAME}"
+          (cd dist-release && sha256sum "${PKG_NAME}.tar.gz" > "${PKG_NAME}.tar.gz.sha256")
+          rm -rf "$STAGE_DIR"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: upix-web
+          path: dist-release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: release
+    needs: [meta, build]
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: upix-web
+          path: dist-release
+
+      - name: Generate SHA256SUMS and release notes
+        env:
+          VERSION: ${{ needs.meta.outputs.version }}
+          TAG_NAME: ${{ needs.meta.outputs.tag_name }}
+          PRERELEASE: ${{ needs.meta.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          cd dist-release
+          sha256sum upix-web-*.tar.gz | tee SHA256SUMS
+          {
+            echo "Upix Web \`${VERSION}\` (\`${TAG_NAME}\`)."
+            echo ""
+            if [[ "$PRERELEASE" == "true" ]]; then
+              echo "- Pre-release archive only (production \`web.upix.xeed.ink\` deploys only on stable \`web-vX.Y.Z\` tags)."
+            else
+              echo "- Stable web release (deployed to \`https://web.upix.xeed.ink\` via VPS webhook)."
+            fi
+            echo "- Static bundle containing \`index.html\`, \`assets/\`, and \`wasm/upix_wasm*.wasm\` (requires COOP \`same-origin\` + COEP \`credentialless\` when self-hosted for WASM threads)."
+            echo ""
+            echo "### Checksums"
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } > RELEASE_NOTES.md
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag_name }}
+          name: Upix Web ${{ needs.meta.outputs.version }}
+          prerelease: ${{ needs.meta.outputs.prerelease == 'true' }}
+          body_path: dist-release/RELEASE_NOTES.md
+          files: |
+            dist-release/upix-web-*.tar.gz
+            dist-release/SHA256SUMS

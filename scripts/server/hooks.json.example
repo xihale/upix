@@ -1,0 +1,49 @@
+[
+  {
+    "id": "upix-web",
+    "execute-command": "/usr/bin/sudo",
+    "pass-arguments-to-command": [
+      { "source": "string", "name": "-u" },
+      { "source": "string", "name": "upix-ci" },
+      { "source": "string", "name": "/usr/local/lib/webhook-deploy" },
+      { "source": "string", "name": "/home/upix-ci/upix/scripts/server/deploy.sh" },
+      { "source": "payload", "name": "ref" },
+      { "source": "string", "name": "upix-web" },
+      { "source": "payload", "name": "after" }
+    ],
+    "trigger-rule": {
+      "and": [
+        {
+          "match": {
+            "type": "payload-hmac-sha256",
+            "secret": "<upix-ci/.webhook-secret>",
+            "parameter": { "source": "header", "name": "X-Hub-Signature-256" }
+          }
+        },
+        {
+          "match": {
+            "type": "regex",
+            "regex": "^refs/tags/web-v[0-9]+\\.[0-9]+\\.[0-9]+$",
+            "parameter": { "source": "payload", "name": "ref" }
+          }
+        },
+        {
+          "match": {
+            "type": "regex",
+            "regex": "^[0-9a-f]{40}$",
+            "parameter": { "source": "payload", "name": "after" }
+          }
+        },
+        {
+          "not": {
+            "match": {
+              "type": "value",
+              "value": "0000000000000000000000000000000000000000",
+              "parameter": { "source": "payload", "name": "after" }
+            }
+          }
+        }
+      ]
+    }
+  }
+]
