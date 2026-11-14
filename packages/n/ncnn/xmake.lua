@@ -371,6 +371,69 @@ int compile_spirv_module(int shader_type_index, const Option& opt, std::vector<u
             io.replace("src/CMakeLists.txt", "if(NOT NCNN_SHARED_LIB AND APPLE)", "if(APPLE)", {plain = true})
             io.replace("src/CMakeLists.txt", "                if(NOT NCNN_SHARED_LIB)", "                if(1)", {plain = true})
         end
+        if package:config("simpleomp") and package:is_plat("windows", "mingw") then
+            -- ncnn's upstream simpleomp hardcodes pthread_once_t and -lpthread even
+            -- though platform.h omits <pthread.h> on _WIN32 (and zigcc ships no
+            -- winpthreads). Bridge via native Win32 InitOnceExecuteOnce instead.
+            must_replace("src/CMakeLists.txt",
+[[    if(NCNN_SIMPLEOMP OR NCNN_SIMPLESTL)
+        target_link_libraries(ncnn PUBLIC pthread)
+    endif()]],
+[[    if(NCNN_SIMPLEOMP OR NCNN_SIMPLESTL)
+        if(NOT WIN32)
+            target_link_libraries(ncnn PUBLIC pthread)
+        endif()
+    endif()]])
+            must_replace("src/simpleomp.cpp",
+[[#ifdef __cplusplus
+} // extern "C"
+#endif
+
+namespace ncnn {]],
+[[#ifdef __cplusplus
+} // extern "C"
+#endif
+
+#if defined _WIN32
+static BOOL CALLBACK ncnn_init_kmp_once(PINIT_ONCE, PVOID, PVOID*)
+{
+    init_g_kmp_global();
+    return TRUE;
+}
+#endif
+
+namespace ncnn {]])
+            must_replace("src/simpleomp.cpp",
+[[    void try_init()
+    {
+        pthread_once(&is_initialized, init_g_kmp_global);
+    }
+
+public:
+    static pthread_once_t is_initialized;]],
+[[    void try_init()
+    {
+#if defined _WIN32
+        InitOnceExecuteOnce(&is_initialized, ncnn_init_kmp_once, 0, 0);
+#else
+        pthread_once(&is_initialized, init_g_kmp_global);
+#endif
+    }
+
+public:
+#if defined _WIN32
+    static INIT_ONCE is_initialized;
+#else
+    static pthread_once_t is_initialized;
+#endif]])
+            must_replace("src/simpleomp.cpp",
+"pthread_once_t ncnn::KMPGlobal::is_initialized = PTHREAD_ONCE_INIT;",
+[[#if defined _WIN32
+INIT_ONCE ncnn::KMPGlobal::is_initialized = INIT_ONCE_STATIC_INIT;
+#else
+pthread_once_t ncnn::KMPGlobal::is_initialized = PTHREAD_ONCE_INIT;
+#endif]])
+        end
         local configs = {
             "-DNCNN_BUILD_EXAMPLES=OFF",
             "-DNCNN_BUILD_TOOLS=OFF",

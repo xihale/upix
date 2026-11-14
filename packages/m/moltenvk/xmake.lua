@@ -9,6 +9,10 @@ package("moltenvk")
     set_description("MoltenVK is a Vulkan Portability implementation.")
     set_license("Apache-2.0")
 
+    if is_plat("macosx") then
+        add_urls("https://github.com/KhronosGroup/MoltenVK/releases/download/$(version)/MoltenVK-macos.tar")
+        add_versions("v1.4.2", "f95765a29cb358446a56a4091c5f7e08f604184187c1d34f712148b61ef17276")
+    else
     add_urls("https://github.com/KhronosGroup/MoltenVK/archive/refs/tags/$(version).tar.gz",
              "https://github.com/KhronosGroup/MoltenVK.git")
 
@@ -25,6 +29,7 @@ package("moltenvk")
     add_versions("v1.1.5", "2cdcb8dbf2acdcd8cbe70b109dadc05a901038c84970afbe4863e5e23f33deae")
     add_versions("v1.1.4", "f9bba6d3bf3648e7685c247cb6d126d62508af614bc549cedd5859a7da64967e")
     add_versions("v1.1.0", "0538fa1c23ddae495c7f82ccd0db90790a90b7017a258ca7575fbae8021f3058")
+    end
 
     add_configs("vk_driver", {description = "Path to MoltenVK", default = nil, type = "string"})
 
@@ -97,6 +102,26 @@ package("moltenvk")
     end)
 
     on_install("macosx", "iphoneos", function (package)
+        local mvk_root
+        for _, candidate in ipairs({"MoltenVK", "MoltenVK/MoltenVK", "."}) do
+            if os.isdir(path.join(candidate, "include"))
+                    and (os.isdir(path.join(candidate, "static")) or os.isdir(path.join(candidate, "dynamic"))) then
+                mvk_root = candidate
+                break
+            end
+        end
+        if mvk_root then
+            os.mkdir(package:installdir("include"))
+            os.mkdir(package:installdir("lib"))
+            os.cp(path.join(mvk_root, "include", "*"), package:installdir("include"))
+            if package:config("shared") then
+                os.cp(path.join(mvk_root, "dynamic", "dylib", "macOS", "libMoltenVK.dylib"), package:installdir("lib"))
+            else
+                os.cp(path.join(mvk_root, "static", "MoltenVK.xcframework", "macos-*", "libMoltenVK.a"), package:installdir("lib"))
+            end
+            return
+        end
+
         local plat = package:is_plat("iphoneos") and "iOS" or "macOS"
         local configs = {"--" .. plat:lower()}
         if package:is_debug() then

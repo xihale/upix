@@ -165,6 +165,12 @@ option("avif-decoder")
     set_description("Link libavif+dav1d for AVIF decoding (default: dlopen/system decode)")
 option_end()
 
+option("gui")
+    set_default(true)
+    set_showmenu(true)
+    set_description("Enable Desktop GUI targets and SDL3/ImGui dependencies")
+option_end()
+
 -- ncnn package: "auto" lets its install script probe the host CPU and skip
 -- compiling kernel variants it could never dispatch to ("all" = upstream).
 local ncnn_x86_isa = (has_config("native_isa") and is_plat("linux") and is_arch("x86_64") and not is_cross()) and "auto" or "all"
@@ -228,8 +234,10 @@ if not is_plat("android") then
     -- must not add new OpenSSL includes.
     add_requires("openssl")
     add_requires("libzip")
-    add_requires("libsdl3")
-    add_requires("imgui v1.92.9+b-docking", {configs = {sdl3 = true, vulkan = true, freetype = true, wchar32 = true}})
+    if has_config("gui") then
+        add_requires("libsdl3")
+        add_requires("imgui v1.92.9+b-docking", {configs = {sdl3 = true, vulkan = true, freetype = true, wchar32 = true}})
+    end
 end
 
 -- share/ declares upix-core (and its android-side SPIR-V pack hook); tools/
@@ -242,5 +250,8 @@ includes("share")
 if is_plat("android") then
     includes("apps")
 else
-    includes("share/perf", "cli", "desktop", "tools")
+    includes("share/perf", "cli", "tools")
+    if has_config("gui") then
+        includes("desktop")
+    end
 end

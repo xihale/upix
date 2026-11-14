@@ -38,7 +38,12 @@ end
 
 local function run_xmake(cfgdir, args)
     os.mkdir(cfgdir)
-    os.execv(os.programfile(), args, {envs = {XMAKE_CONFIGDIR = cfgdir}})
+    local envs = {XMAKE_CONFIGDIR = cfgdir}
+    local bindir = path.join(cfgdir, "bin")
+    if os.isdir(bindir) then
+        envs.PATH = bindir .. path.envsep() .. (os.getenv("PATH") or "")
+    end
+    os.execv(os.programfile(), args, {envs = envs})
 end
 
 local function to_yn(val, fallback)
@@ -175,6 +180,7 @@ local function configure_host(opts)
     if opts.upx ~= nil then
         table.insert(args, "--upx=" .. (opts.upx and "y" or "n"))
     end
+    table.insert(args, "--gui=" .. to_yn(opts.gui, true))
     run_xmake(cfgdir, args)
     return cfgdir, plat, arch, cross
 end
@@ -230,6 +236,7 @@ function cli()
         plat = option.get("plat"),
         arch = option.get("arch"),
         native_isa = option.get("native-isa"),
+        gui = option.get("gui"),
         upx = option.get("upx"),
         toolchain = option.get("toolchain"),
     })

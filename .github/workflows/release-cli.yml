@@ -131,7 +131,7 @@ jobs:
       - name: Build CLI
         env:
           UPIX_VERSION: ${{ needs.meta.outputs.version }}
-        run: xmake cli -p "${{ matrix.plat }}" -a "${{ matrix.arch }}" --native-isa=n ${{ matrix.extra }}
+        run: xmake cli -p "${{ matrix.plat }}" -a "${{ matrix.arch }}" --native-isa=n --gui=n ${{ matrix.extra }}
       - name: Pack
         env:
           VER: ${{ needs.meta.outputs.version }}

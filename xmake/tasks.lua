@@ -40,6 +40,7 @@ task("cli")
             {nil, "avif-encoder", "kv", nil,       "Explicit --avif-encoder (y or n)."},
             {nil, "avif-decoder", "kv", nil,       "Explicit --avif-decoder (y or n)."},
             {nil, "native-isa",   "kv", nil,       "Tune for host CPU SIMD (y or n)."},
+            {nil, "gui",          "kv", nil,       "Include desktop GUI deps/targets (y or n)."},
             {nil, "upx",          "k",  nil,       "Pack release executable with UPX."},
             {nil, "toolchain",    "kv", nil,       "Toolchain (defaults to zigcc when cross-compiling)."},
             {nil, "cc",           "kv", nil,       "C compiler."},
