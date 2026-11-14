@@ -8,12 +8,17 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cstdlib>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <limits>
 #include <memory>
 #include <string_view>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include <curl/curl.h>
 #include <zip.h>
@@ -402,59 +407,216 @@ auto catalog_models() -> std::vector<RemoteModel> {
     return out;
 }
 
+namespace {
+
+bool contains_ci(std::string_view hay, std::string_view needle) {
+    if (needle.empty() || hay.size() < needle.size()) return false;
+    auto it = std::search(hay.begin(), hay.end(), needle.begin(), needle.end(),
+                          [](unsigned char a, unsigned char b) {
+                              return std::tolower(a) == std::tolower(b);
+                          });
+    return it != hay.end();
+}
+
+bool is_china_tz_name(std::string_view tz) {
+    return contains_ci(tz, "Asia/Shanghai") ||
+           contains_ci(tz, "Asia/Chongqing") ||
+           contains_ci(tz, "Asia/Harbin") ||
+           contains_ci(tz, "Asia/Urumqi") ||
+           contains_ci(tz, "/PRC") ||
+           tz == "PRC";
+}
+
+bool is_china_lang_tag(std::string_view tag) {
+    return contains_ci(tag, "zh_CN") ||
+           contains_ci(tag, "zh-CN") ||
+           contains_ci(tag, "zh_Hans") ||
+           contains_ci(tag, "zh-Hans");
+}
+
+bool is_official_model_url(std::string_view url) {
+    return url.empty() ||
+           url.starts_with(kHfMirrorBaseUrl) ||
+           url.starts_with(kHfBaseUrl) ||
+           url.starts_with(kGithubReleaseBaseUrl);
+}
+
+auto manifest_urls(ModelSource primary, const std::string& repo) -> std::vector<std::string> {
+    if (!repo.empty()) {
+        return {"https://github.com/" + repo + "/releases/download/models/manifest.json"};
+    }
+    std::vector<std::string> urls;
+    urls.reserve(3);
+    for (ModelSource src : model_source_chain(primary)) {
+        urls.push_back(std::string(model_source_base_url(src)) + "/manifest.json");
+    }
+    return urls;
+}
+
+}  // namespace
+
+auto is_china_locale() -> bool {
+    if (const char* tz = std::getenv("TZ"); tz && *tz) {
+        if (is_china_tz_name(tz)) return true;
+    } else {
+#ifdef _WIN32
+        TIME_ZONE_INFORMATION tzi{};
+        if (GetTimeZoneInformation(&tzi) != TIME_ZONE_ID_INVALID) {
+            std::wstring_view std_name(tzi.StandardName);
+            if (std_name.find(L"China Standard Time") != std::wstring_view::npos) return true;
+        }
+#else
+        std::error_code ec;
+        auto target = fs::read_symlink("/etc/localtime", ec);
+        if (!ec && is_china_tz_name(target.string())) return true;
+        std::ifstream tz_in("/etc/timezone");
+        std::string line;
+        if (tz_in && std::getline(tz_in, line) && is_china_tz_name(line)) return true;
+#endif
+    }
+
+    for (const char* var : {"LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"}) {
+        if (const char* val = std::getenv(var); val && *val && is_china_lang_tag(val)) {
+            return true;
+        }
+    }
+#ifdef _WIN32
+    wchar_t locale_name[85]{};
+    if (GetUserDefaultLocaleName(locale_name, 85) > 0) {
+        std::wstring_view wloc(locale_name);
+        if (wloc.starts_with(L"zh-CN") || wloc.starts_with(L"zh-Hans")) return true;
+    }
+#endif
+    return false;
+}
+
+auto default_model_source() -> ModelSource {
+    return is_china_locale() ? ModelSource::HfMirror : ModelSource::HuggingFace;
+}
+
+auto model_source_id(ModelSource src) -> std::string_view {
+    switch (src) {
+        case ModelSource::HfMirror:    return "hf-mirror";
+        case ModelSource::HuggingFace: return "hf";
+        case ModelSource::GitHub:      return "github";
+    }
+    return "hf";
+}
+
+auto parse_model_source(std::string_view id) -> std::optional<ModelSource> {
+    if (id == "hf-mirror") return ModelSource::HfMirror;
+    if (id == "hf" || id == "huggingface") return ModelSource::HuggingFace;
+    if (id == "github") return ModelSource::GitHub;
+    return std::nullopt;
+}
+
+auto model_source_base_url(ModelSource src) -> std::string_view {
+    switch (src) {
+        case ModelSource::HfMirror:    return kHfMirrorBaseUrl;
+        case ModelSource::HuggingFace: return kHfBaseUrl;
+        case ModelSource::GitHub:      return kGithubReleaseBaseUrl;
+    }
+    return kHfBaseUrl;
+}
+
+auto model_source_chain(ModelSource primary) -> std::vector<ModelSource> {
+    switch (primary) {
+        case ModelSource::HfMirror:
+            return {ModelSource::HfMirror, ModelSource::HuggingFace, ModelSource::GitHub};
+        case ModelSource::HuggingFace:
+            return {ModelSource::HuggingFace, ModelSource::GitHub};
+        case ModelSource::GitHub:
+            return {ModelSource::GitHub, ModelSource::HuggingFace};
+    }
+    return {ModelSource::HuggingFace, ModelSource::GitHub};
+}
+
 auto fetch_remote_models_or_catalog(const std::string& repo)
     -> RemoteCatalogResult {
+    return fetch_remote_models_or_catalog(repo, default_model_source());
+}
+
+auto fetch_remote_models_or_catalog(const std::string& repo,
+                                    ModelSource source)
+    -> RemoteCatalogResult {
     std::string err;
-    return fetch_remote_models_or_catalog(repo, err);
+    if (auto remote = fetch_remote_models(repo, source, err)) {
+        return {std::move(*remote), std::nullopt};
+    }
+    return {catalog_models(), err};
 }
 
 auto fetch_remote_models_or_catalog(const std::string& repo,
                                     std::string& error_out)
     -> RemoteCatalogResult {
     error_out.clear();
-    if (auto remote = fetch_remote_models(repo, error_out)) {
+    if (auto remote = fetch_remote_models(repo, default_model_source(), error_out)) {
         return {std::move(*remote), std::nullopt};
     }
     return {catalog_models(), error_out};
 }
 
 auto manifest_url(const std::string& repo) -> std::string {
-    std::string_view r = repo.empty() ? kDefaultModelRepo : repo;
-    return "https://github.com/" + std::string(r) + "/releases/download/models/manifest.json";
+    if (!repo.empty()) {
+        return "https://github.com/" + repo + "/releases/download/models/manifest.json";
+    }
+    return std::string(model_source_base_url(default_model_source())) + "/manifest.json";
 }
 
 auto fetch_remote_models(const std::string& repo, std::string& error)
     -> std::optional<std::vector<RemoteModel>> {
-    std::string body;
-    if (!http_get(manifest_url(repo), body, error)) {
-        return std::nullopt;
+    return fetch_remote_models(repo, default_model_source(), error);
+}
+
+auto fetch_remote_models(const std::string& repo, ModelSource source, std::string& error)
+    -> std::optional<std::vector<RemoteModel>> {
+    std::string last_err;
+    for (const auto& url : manifest_urls(source, repo)) {
+        std::string body;
+        std::string req_err;
+        if (!http_get(url, body, req_err)) {
+            last_err = std::move(req_err);
+            continue;
+        }
+
+        ManifestJson parsed;
+        auto err = glz::read<glz::opts{.error_on_unknown_keys = false}>(parsed, body);
+        if (err) {
+            last_err = "failed to parse manifest: " + glz::format_error(err, body);
+            continue;
+        }
+        if (parsed.version != 1) {
+            last_err = std::format(
+                "unsupported manifest version {} (this build understands version 1)",
+                parsed.version);
+            continue;
+        }
+
+        std::vector<RemoteModel> out;
+        out.reserve(parsed.models.size());
+        for (auto& m : parsed.models) {
+            out.push_back(RemoteModel{std::move(m.name), m.scale, m.size_bytes,
+                                      std::move(m.sha256), std::move(m.url)});
+        }
+        error.clear();
+        return out;
     }
 
-    ManifestJson parsed;
-    auto err = glz::read<glz::opts{.error_on_unknown_keys = false}>(parsed, body);
-    if (err) {
-        error = "failed to parse manifest: " + glz::format_error(err, body);
-        return std::nullopt;
-    }
-    if (parsed.version != 1) {
-        error = std::format(
-            "unsupported manifest version {} (this build understands version 1)",
-            parsed.version);
-        return std::nullopt;
-    }
-
-    std::vector<RemoteModel> out;
-    out.reserve(parsed.models.size());
-    for (auto& m : parsed.models) {
-        out.push_back(RemoteModel{std::move(m.name), m.scale, m.size_bytes,
-                                  std::move(m.sha256), std::move(m.url)});
-    }
-    return out;
+    error = last_err.empty() ? "failed to fetch manifest" : std::move(last_err);
+    return std::nullopt;
 }
 
 auto download_model(const RemoteModel& model,
                     const std::string& models_dir,
                     const std::function<void(const DownloadProgress&)>& on_progress,
+                    UrlPolicy policy) -> ModelDownloadResult {
+    return download_model(model, models_dir, on_progress, default_model_source(), policy);
+}
+
+auto download_model(const RemoteModel& model,
+                    const std::string& models_dir,
+                    const std::function<void(const DownloadProgress&)>& on_progress,
+                    ModelSource source,
                     UrlPolicy policy) -> ModelDownloadResult {
     ModelDownloadResult res;
     if (model.name.empty() || model.name.find_first_of("/\\") != std::string::npos) {
@@ -470,6 +632,15 @@ auto download_model(const RemoteModel& model,
         return res;
     }
 
+    std::string expected = model.sha256;
+    if (expected.empty()) {
+        res.message = "manifest entry has no sha256 — refusing to install an "
+                      "unverified download";
+        return res;
+    }
+    std::transform(expected.begin(), expected.end(), expected.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+
     std::string error;
     fs::path stage = create_stage(dir, error);
     if (stage.empty()) {
@@ -480,28 +651,43 @@ auto download_model(const RemoteModel& model,
         std::error_code ignored;
         fs::remove_all(stage, ignored);
     };
-    fs::path zip_path = stage / "download.zip";
-    if (!http_download_to_file(model.url, zip_path, model.size_bytes, on_progress, error, policy)) {
-        discard_stage();
-        res.message = error;
-        return res;
+
+    std::vector<std::string> urls;
+    if (policy == UrlPolicy::HttpsOnly && is_official_model_url(model.url)) {
+        for (ModelSource s : model_source_chain(source)) {
+            urls.push_back(std::string(model_source_base_url(s)) + "/" + model.name + ".zip");
+        }
+    } else {
+        urls.push_back(model.url);
     }
 
-    std::string expected = model.sha256;
-    if (expected.empty()) {
-        discard_stage();
-        res.message = "manifest entry has no sha256 — refusing to install an "
-                      "unverified download";
-        return res;
+    fs::path zip_path = stage / "download.zip";
+    bool downloaded_ok = false;
+    std::string last_err;
+    for (const auto& url : urls) {
+        std::string dl_err;
+        if (!http_download_to_file(url, zip_path, model.size_bytes, on_progress, dl_err, policy)) {
+            std::error_code rm_ec;
+            fs::remove(zip_path, rm_ec);
+            last_err = std::move(dl_err);
+            continue;
+        }
+        std::string hash_err;
+        std::string hash = sha256_file(zip_path, hash_err);
+        if (!hash_err.empty() || hash != expected) {
+            std::error_code rm_ec;
+            fs::remove(zip_path, rm_ec);
+            last_err = hash_err.empty()
+                ? std::format("sha256 mismatch: expected {}, got {}", expected, hash)
+                : std::move(hash_err);
+            continue;
+        }
+        downloaded_ok = true;
+        break;
     }
-    std::transform(expected.begin(), expected.end(), expected.begin(),
-                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-    std::string hash = sha256_file(zip_path, error);
-    if (!error.empty() || hash != expected) {
+    if (!downloaded_ok) {
         discard_stage();
-        res.message = error.empty()
-            ? std::format("sha256 mismatch: expected {}, got {}", expected, hash)
-            : error;
+        res.message = last_err.empty() ? "download failed" : std::move(last_err);
         return res;
     }
 

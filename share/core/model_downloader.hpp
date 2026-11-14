@@ -10,6 +10,7 @@
 // crash-atomic. All failures return a message instead of throwing.
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <optional>
@@ -39,8 +40,35 @@ struct ModelDownloadResult {
     std::string bin_path;
 };
 
+enum class ModelSource {
+    HfMirror,     // https://hf-mirror.com/xihale/upix-models/resolve/main
+    HuggingFace,  // https://huggingface.co/xihale/upix-models/resolve/main
+    GitHub,       // https://github.com/xihale/upix/releases/download/models
+};
+
 // Default release endpoint: the "models" tag of the upstream repo.
 inline constexpr std::string_view kDefaultModelRepo = "xihale/upix";
+inline constexpr std::string_view kHfModelRepo = "xihale/upix-models";
+inline constexpr std::string_view kHfMirrorBaseUrl =
+    "https://hf-mirror.com/xihale/upix-models/resolve/main";
+inline constexpr std::string_view kHfBaseUrl =
+    "https://huggingface.co/xihale/upix-models/resolve/main";
+inline constexpr std::string_view kGithubReleaseBaseUrl =
+    "https://github.com/xihale/upix/releases/download/models";
+
+// Detect whether the host uses a Mainland China locale or timezone.
+auto is_china_locale() -> bool;
+
+// Default preferred source (`HfMirror` in Mainland China, `HuggingFace` elsewhere).
+auto default_model_source() -> ModelSource;
+
+// Serialization helpers (`"hf-mirror"`, `"hf"`, `"github"`).
+auto model_source_id(ModelSource src) -> std::string_view;
+auto parse_model_source(std::string_view id) -> std::optional<ModelSource>;
+auto model_source_base_url(ModelSource src) -> std::string_view;
+
+// Ordered primary -> fallback chain for official routes.
+auto model_source_chain(ModelSource primary) -> std::vector<ModelSource>;
 
 // Upper bound for manifest HTTP GET responses (10 MiB).
 inline constexpr std::size_t kMaxManifestBytes = 10u << 20;
@@ -60,11 +88,18 @@ auto catalog_models() -> std::vector<RemoteModel>;
 auto fetch_remote_models(const std::string& repo /* "owner/name" */,
                          std::string& error)
     -> std::optional<std::vector<RemoteModel>>;
+auto fetch_remote_models(const std::string& repo,
+                         ModelSource source,
+                         std::string& error)
+    -> std::optional<std::vector<RemoteModel>>;
 
 // Same as fetch_remote_models(), falling back to catalog_models() on failure.
 // When `fallback_error` is set, the caller should warn that downloads require
 // live release metadata.
 auto fetch_remote_models_or_catalog(const std::string& repo = "")
+    -> RemoteCatalogResult;
+auto fetch_remote_models_or_catalog(const std::string& repo,
+                                    ModelSource source)
     -> RemoteCatalogResult;
 auto fetch_remote_models_or_catalog(const std::string& repo,
                                     std::string& error_out)
@@ -83,6 +118,12 @@ enum class UrlPolicy { HttpsOnly, AllowLocalFileForTests };
 auto download_model(const RemoteModel& model,
                     const std::string& models_dir,
                     const std::function<void(const DownloadProgress&)>& on_progress,
+                    UrlPolicy policy = UrlPolicy::HttpsOnly)
+    -> ModelDownloadResult;
+auto download_model(const RemoteModel& model,
+                    const std::string& models_dir,
+                    const std::function<void(const DownloadProgress&)>& on_progress,
+                    ModelSource source,
                     UrlPolicy policy = UrlPolicy::HttpsOnly)
     -> ModelDownloadResult;
 
