@@ -62,9 +62,11 @@ private:
     void raw_wake() override;
     void raw_close() override;
 
+#ifdef _WIN32
     // Deadline for raw reads (Windows pipes carry no SO_RCVTIMEO; the
     // overlapped wait uses this). POSIX sets SO_RCVTIMEO/SO_SNDTIMEO instead.
     int timeout_ms_ = 0;
+#endif
     std::string path_;
 };
 
