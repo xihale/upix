@@ -39,7 +39,7 @@ ensure_zig() {
   tmp_tar="$(mktemp /tmp/zig-XXXXXX.tar.xz)"
   tmp_dir="$(mktemp -d /tmp/zig-unpack-XXXXXX)"
   echo "installing zig ${ZIG_VERSION} into ${ZIG_DIR}..."
-  curl -fsSL "https://ziglang.org/download/${ZIG_VERSION}/${tarball}" -o "$tmp_tar"
+  curl -fsSL --connect-timeout 15 --max-time 600 "https://ziglang.org/download/${ZIG_VERSION}/${tarball}" -o "$tmp_tar"
   if [[ "$arch" == "x86_64" ]]; then
     echo "${ZIG_SHA256}  ${tmp_tar}" | sha256sum -c -
   fi

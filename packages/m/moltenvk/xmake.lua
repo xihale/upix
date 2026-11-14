@@ -11,7 +11,7 @@ package("moltenvk")
 
     if is_plat("macosx") then
         add_urls("https://github.com/KhronosGroup/MoltenVK/releases/download/$(version)/MoltenVK-macos.tar")
-        add_versions("v1.4.2", "f95765a29cb358446a56a4091c5f7e08f604184187c1d34f712148b61ef17276")
+        add_versions("v1.4.2", "f95765a6229cb7b915990a2890ce12ebe36a730b021545d3d52ae69ce4c4024e")
     else
     add_urls("https://github.com/KhronosGroup/MoltenVK/archive/refs/tags/$(version).tar.gz",
              "https://github.com/KhronosGroup/MoltenVK.git")
