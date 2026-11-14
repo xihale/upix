@@ -7,6 +7,7 @@ import {
   downloadProgress, formatBytes, groupModelsByFamily, isModelFile, matchesModelQuery, sceneKey,
 } from './format.js';
 import { confirmButton, progressBar, recBadge, scaleBadge, sceneBadge, segmented } from './controls.js';
+import { resolveWebModelSource } from '../runtime/model-store.js';
 
 const FILTERS = [
   { value: 'all', label: '全部' },
@@ -17,7 +18,16 @@ const FILTERS = [
   { value: 'restore', label: '修复' },
 ];
 
-const DEFAULT_MIRROR = 'https://github.com/xihale/upix/releases/download/models';
+const SOURCE_OPTIONS = [
+  { value: 'hf-mirror', label: 'HF-Mirror' },
+  { value: 'hf', label: 'Hugging Face' },
+  {
+    value: 'github',
+    label: 'GitHub',
+    disabled: true,
+    title: 'GitHub Release 缺少浏览器跨域 (CORS) 头，Web 端已锁定，请使用 HF-Mirror 或 Hugging Face',
+  },
+];
 
 export function mountModels({ root, store, actions }) {
   root.classList.add('page');
@@ -35,11 +45,10 @@ export function mountModels({ root, store, actions }) {
     type: 'button', class: 'btn btn-secondary btn-sm', onclick: () => importInput.click(),
   }, '导入');
   const mirrorToggle = h('button', {
-    type: 'button', class: 'btn btn-quiet btn-sm', 'aria-expanded': String(!!store.get().mirrorBaseUrl),
+    type: 'button', class: 'btn btn-quiet btn-sm', 'aria-expanded': 'false',
     onclick: () => {
       mirrorPanel.hidden = !mirrorPanel.hidden;
       mirrorToggle.setAttribute('aria-expanded', String(!mirrorPanel.hidden));
-      if (!mirrorPanel.hidden) mirrorInput.focus();
     },
   }, '镜像源');
   const clearBtn = confirmButton({
@@ -48,32 +57,21 @@ export function mountModels({ root, store, actions }) {
   });
 
   // ── Collapsible mirror bar ───────────────────────────────────────────────
-  const mirrorInput = h('input', {
-    type: 'url', class: 'input mono', id: 'mirror-input', placeholder: DEFAULT_MIRROR, spellcheck: false,
-    autocomplete: 'off', value: store.get().mirrorBaseUrl,
-    onkeydown: e => { if (e.key === 'Enter') applyMirror(); },
-    oninput: () => { mirrorInput.removeAttribute('aria-invalid'); mirrorHint.hidden = true; },
+  const initialSource = resolveWebModelSource(store.get().mirrorBaseUrl);
+  const sourceSeg = segmented({
+    label: '模型下载源',
+    size: 'sm',
+    value: initialSource,
+    options: SOURCE_OPTIONS,
+    onChange: (v) => {
+      actions.setMirror(v);
+      actions.refreshModels({ remote: true });
+    },
   });
-  const mirrorHint = h('p', { class: 'field-hint', hidden: true });
-  function applyMirror() {
-    const value = mirrorInput.value.trim();
-    if (value && !/^https?:\/\/\S+$/i.test(value)) {
-      mirrorInput.setAttribute('aria-invalid', 'true');
-      mirrorHint.hidden = false;
-      text(mirrorHint, '须以 http:// 或 https:// 开头');
-      return;
-    }
-    mirrorHint.hidden = true;
-    text(mirrorHint, '');
-    actions.setMirror(value);
-    actions.refreshModels({ remote: true });
-  }
-  const mirrorPanel = h('div', { class: 'mirror-panel', hidden: !store.get().mirrorBaseUrl },
+  const mirrorPanel = h('div', { class: 'mirror-panel', hidden: true },
     h('div', { class: 'mirror-controls' },
-      h('label', { class: 'field-label', htmlFor: 'mirror-input' }, '镜像源'),
-      mirrorInput,
-      h('button', { type: 'button', class: 'btn btn-secondary', onclick: applyMirror }, '应用')),
-    mirrorHint);
+      h('span', { class: 'field-label' }, '下载源'),
+      sourceSeg.el));
 
   // ── Filters + Search on one shared rule ──────────────────────────────────
   const filterSeg = segmented({
@@ -229,7 +227,9 @@ export function mountModels({ root, store, actions }) {
   store.subscribe(['models', 'storageUsed'], paintStorage);
   store.subscribe(['remoteError'], ({ remoteError }) => {
     remoteNote.hidden = !remoteError;
-    text(remoteNote, remoteError ? '远程目录不可用，仅显示本地目录' : '');
+    text(remoteNote, remoteError
+      ? (remoteError.includes('Hugging Face 无法连接') ? `${remoteError}，仅显示本地目录` : '远程目录不可用，仅显示本地目录')
+      : '');
   });
   refreshQuota();
 

@@ -8,7 +8,40 @@ const DB_VERSION = 1;
 const STORE_MODELS = 'models';
 const STORE_META = 'meta';
 
+export const HF_MIRROR_BASE = 'https://hf-mirror.com/xihale/upix-models/resolve/main';
+export const HF_RELEASE_BASE = 'https://huggingface.co/xihale/upix-models/resolve/main';
 export const DEFAULT_RELEASE_BASE = 'https://github.com/xihale/upix/releases/download/models';
+
+export function isMainlandChinaLocale() {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    if (tz === 'Asia/Shanghai' || tz === 'Asia/Chongqing' || tz === 'Asia/Harbin' || tz === 'Asia/Urumqi') {
+      return true;
+    }
+  } catch { /* ignore */ }
+  try {
+    const langs = navigator.languages?.length ? navigator.languages : [navigator.language];
+    return langs.some((l) => typeof l === 'string' && /^zh(?:-(?:cn|hans|hans-cn))?$/i.test(l));
+  } catch {
+    return false;
+  }
+}
+
+export function getDefaultModelSource() {
+  return isMainlandChinaLocale() ? 'hf-mirror' : 'hf';
+}
+
+export function resolveWebModelSource(pref) {
+  const v = (pref || '').trim().toLowerCase();
+  if (v === 'hf-mirror' || v === HF_MIRROR_BASE.toLowerCase()) return 'hf-mirror';
+  if (v === 'hf' || v === 'huggingface' || v === HF_RELEASE_BASE.toLowerCase()) return 'hf';
+  // GitHub Release lacks CORS headers on S3 redirects and is locked on Web.
+  return getDefaultModelSource();
+}
+
+export function getSourceBaseUrl(sourceId) {
+  return resolveWebModelSource(sourceId) === 'hf-mirror' ? HF_MIRROR_BASE : HF_RELEASE_BASE;
+}
 
 function openDb() {
   return new Promise((resolve, reject) => {
@@ -92,34 +125,22 @@ async function computeSha256Hex(bytes, wasmBridge) {
   return wasmBridge.sha256Hex(bytes);
 }
 
-function normalizeMirrorBase(mirrorBaseUrl) {
-  const trimmed = (mirrorBaseUrl || '').trim().replace(/\/+$/, '');
-  return trimmed || '';
-}
-
-function buildCandidateUrls(filename, explicitUrl, mirrorBaseUrl) {
-  const mirror = normalizeMirrorBase(mirrorBaseUrl);
+function buildCandidateUrls(filename, mirrorPref) {
   const candidates = [];
-  if (mirror) {
-    // Support both prefix-proxy mirrors (`https://ghfast.top/https://github.com/...`)
-    // and direct release base mirrors (`https://mirror.example.com/models`).
-    if (mirror.endsWith('http:') || mirror.endsWith('https:') || mirror.includes('ghfast') || mirror.includes('ghproxy')) {
-      const target = explicitUrl || `${DEFAULT_RELEASE_BASE}/${filename}`;
-      candidates.push(`${mirror}/${target}`);
-    } else {
-      candidates.push(`${mirror}/${filename}`);
-    }
+  const trimmed = (mirrorPref || '').trim().replace(/\/+$/, '');
+  const primaryId = resolveWebModelSource(trimmed);
+  // Allow optional non-GitHub custom base URL for legacy/power users, otherwise use chosen route.
+  if (/^https?:\/\//i.test(trimmed) && !/github\.com|hf-mirror\.com|huggingface\.co/i.test(trimmed)) {
+    candidates.push(`${trimmed}/${filename}`);
   }
-  // Same-origin Vite dev proxy (`/api/upix-models/...`) avoids GitHub S3 CORS issues in dev.
-  candidates.push(`/api/upix-models/${filename}`);
-  if (explicitUrl) {
-    candidates.push(explicitUrl);
+  if (import.meta.env.DEV && !trimmed) {
+    candidates.push(`/api/upix-models/${filename}`);
   }
-  candidates.push(`${DEFAULT_RELEASE_BASE}/${filename}`);
-  // Public CORS-enabled GitHub release accelerator fallback (verified by SHA-256!).
-  const ghUrl = explicitUrl || `${DEFAULT_RELEASE_BASE}/${filename}`;
-  if (ghUrl.startsWith('https://github.com/')) {
-    candidates.push(`https://ghfast.top/${ghUrl}`);
+  if (primaryId === 'hf-mirror') {
+    candidates.push(`${HF_MIRROR_BASE}/${filename}`);
+    candidates.push(`${HF_RELEASE_BASE}/${filename}`);
+  } else {
+    candidates.push(`${HF_RELEASE_BASE}/${filename}`);
   }
   return [...new Set(candidates)];
 }
@@ -197,6 +218,10 @@ export class UpixModelStore {
 
   async probeLocalDevModels() {
     if (this.localDevModels !== null) return this.localDevModels;
+    if (!import.meta.env.DEV) {
+      this.localDevModels = new Map();
+      return this.localDevModels;
+    }
     try {
       const resp = await fetch('/api/local-models/index.json', { credentials: 'omit' });
       if (resp.ok && (resp.headers.get('content-type') || '').includes('application/json')) {
@@ -226,8 +251,9 @@ export class UpixModelStore {
       }
     }
 
-    const urls = buildCandidateUrls('manifest.json', `${DEFAULT_RELEASE_BASE}/manifest.json`, mirrorBaseUrl);
-    let lastErr = '无法连接模型发布源';
+    const primaryId = resolveWebModelSource(mirrorBaseUrl);
+    const urls = buildCandidateUrls('manifest.json', mirrorBaseUrl);
+    let lastErr = primaryId === 'hf' ? 'Hugging Face 无法连接' : '无法连接模型发布源';
     for (const url of urls) {
       try {
         const resp = await fetch(url, { credentials: 'omit' });
@@ -255,14 +281,15 @@ export class UpixModelStore {
       }
     }
 
+    const finalErr = primaryId === 'hf' ? `Hugging Face 无法连接（${lastErr}）` : lastErr;
     // Fallback to stale cached manifest if available.
     if (db) {
       const stale = await idbGet(db, STORE_META, 'remote_manifest').catch(() => null);
       if (stale && Array.isArray(stale.models)) {
-        return { models: stale.models, error: lastErr };
+        return { models: stale.models, error: finalErr };
       }
     }
-    return { models: [], error: lastErr };
+    return { models: [], error: finalErr };
   }
 
   async listModels({ refreshRemote = false, mirrorBaseUrl = '' } = {}) {
@@ -308,7 +335,7 @@ export class UpixModelStore {
           || (localDev && localDev.sizeBytes)
           || 0,
         sha256: (rm && rm.sha256) || (inst && inst.sha256) || '',
-        url: (rm && rm.url) || `${DEFAULT_RELEASE_BASE}/${c.name}.zip`,
+        url: `${getSourceBaseUrl(mirrorBaseUrl)}/${c.name}.zip`,
         installed: Boolean(inst || localDev),
         cachedInIdb: Boolean(inst),
         source: inst ? (inst.source || 'remote') : (localDev ? 'builtin' : 'remote'),
@@ -429,7 +456,7 @@ export class UpixModelStore {
       recommended: record.recommended,
       sizeBytes: record.sizeBytes,
       sha256: record.sha256,
-      url: `${DEFAULT_RELEASE_BASE}/${name}.zip`,
+      url: `${HF_RELEASE_BASE}/${name}.zip`,
       installed: true,
       cachedInIdb: true,
       source: record.source,
@@ -454,9 +481,7 @@ export class UpixModelStore {
     const rm = remoteModels.find((m) => m.name === name);
     const expectedSha = rm && rm.sha256 ? rm.sha256.toLowerCase() : '';
     const expectedSize = (rm && rm.size_bytes) || 0;
-    const explicitUrl = rm && rm.url ? rm.url : `${DEFAULT_RELEASE_BASE}/${name}.zip`;
-
-    const urls = buildCandidateUrls(`${name}.zip`, explicitUrl, mirrorBaseUrl);
+    const urls = buildCandidateUrls(`${name}.zip`, mirrorBaseUrl);
     let zipBytes = null;
     let lastError = '下载失败';
 
@@ -478,7 +503,8 @@ export class UpixModelStore {
     }
 
     if (!zipBytes) {
-      throw new Error(`模型 ${name} 下载失败：${lastError}（若遇网络或 CORS 限制，可配置镜像或导入 .zip/.param+.bin）`);
+      const sourcePrefix = resolveWebModelSource(mirrorBaseUrl) === 'hf' ? 'Hugging Face 无法连接：' : '';
+      throw new Error(`模型 ${name} 下载失败：${sourcePrefix}${lastError}（可切换镜像源或导入 .zip/.param+.bin）`);
     }
 
     if (onProgress) {

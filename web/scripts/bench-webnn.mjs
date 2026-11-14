@@ -177,7 +177,7 @@ async function main() {
     await page.setRequestInterception(true);
     page.on('request', (req) => {
       const u = req.url();
-      if (u.includes('/api/upix-models/manifest.json') || u.includes('github.com') || u.includes('ghfast.top')) {
+      if (u.includes('/api/upix-models/manifest.json') || u.includes('hf-mirror.com') || u.includes('huggingface.co') || u.includes('github.com') || u.includes('ghfast.top')) {
         req.abort();
       } else {
         req.continue();
