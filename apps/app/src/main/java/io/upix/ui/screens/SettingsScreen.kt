@@ -32,21 +32,26 @@ import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
 import androidx.compose.material.icons.outlined.BatterySaver
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.Language
 import androidx.compose.material.icons.outlined.Link
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material.icons.outlined.Tune
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SheetValue
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.material3.adaptive.ExperimentalMaterial3AdaptiveApi
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.material3.adaptive.layout.ListDetailPaneScaffoldRole
@@ -59,6 +64,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -71,8 +77,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import io.upix.R
 import io.upix.data.repository.EncoderSettings
+import io.upix.ui.components.SelectSheetItem
 import io.upix.ui.components.UpixTopAppBar
 import io.upix.ui.components.SectionHeader
+import io.upix.util.AppLanguage
+import io.upix.util.AppLocale
 import io.upix.ui.theme.EnterMotionSpec
 import io.upix.ui.theme.LocalScreenMargin
 import io.upix.ui.theme.MaxContentWidth
@@ -320,6 +329,22 @@ private fun SettingsListBody(
     onOpenHelp: () -> Unit,
     onOpenEncoder: () -> Unit
 ) {
+    val context = LocalContext.current
+    var showLanguageSheet by rememberSaveable { mutableStateOf(false) }
+    var currentLanguage by remember { mutableStateOf(AppLocale.currentLanguage()) }
+    var batteryUnrestricted by remember { mutableStateOf(isBatteryUnrestricted(context)) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                currentLanguage = AppLocale.currentLanguage()
+                batteryUnrestricted = isBatteryUnrestricted(context)
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     SettingsSection(title = stringResource(R.string.settings_section_general)) {
         SettingsEntryRow(
             icon = Icons.Outlined.Memory,
@@ -331,21 +356,15 @@ private fun SettingsListBody(
             title = stringResource(R.string.common_encoder_settings),
             onClick = onOpenEncoder
         )
+        SettingsEntryRow(
+            icon = Icons.Outlined.Language,
+            title = stringResource(R.string.settings_language),
+            subtitle = stringResource(currentLanguage.labelRes),
+            onClick = { showLanguageSheet = true }
+        )
         // 电池策略入口：远程批处理靠后台 Wi-Fi 收发，屏灭后厂商电源管理
         // （HarmonyOS/MIUI）会掐断传输，须在系统设置里设为不受限。
         // 已不受限时整行不显示；状态每次回到前台重读，从系统设置页返回即生效。
-        val context = LocalContext.current
-        var batteryUnrestricted by remember { mutableStateOf(isBatteryUnrestricted(context)) }
-        val lifecycleOwner = LocalLifecycleOwner.current
-        DisposableEffect(lifecycleOwner) {
-            val observer = LifecycleEventObserver { _, event ->
-                if (event == Lifecycle.Event.ON_RESUME) {
-                    batteryUnrestricted = isBatteryUnrestricted(context)
-                }
-            }
-            lifecycleOwner.lifecycle.addObserver(observer)
-            onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
-        }
         if (!batteryUnrestricted) {
             SettingsEntryRow(
                 icon = Icons.Outlined.BatterySaver,
@@ -366,7 +385,6 @@ private fun SettingsListBody(
     }
 
     SettingsSection(title = stringResource(R.string.settings_section_about)) {
-        val context = LocalContext.current
         // getPackageInfo 是 PackageManager binder IPC：异步在 IO 线程读取，
         // 组合期不再阻塞主线程；加载中先以「-」占位。
         val versionName by produceState<String?>(initialValue = null, context) {
@@ -392,6 +410,53 @@ private fun SettingsListBody(
                 }
             }
         )
+    }
+
+    if (showLanguageSheet) {
+        LanguagePickerSheet(
+            currentLanguage = currentLanguage,
+            onSelect = { selected ->
+                showLanguageSheet = false
+                currentLanguage = selected
+                AppLocale.setLanguage(selected)
+            },
+            onDismiss = { showLanguageSheet = false }
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LanguagePickerSheet(
+    currentLanguage: AppLanguage,
+    onSelect: (AppLanguage) -> Unit,
+    onDismiss: () -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberBottomSheetState(
+            initialValue = SheetValue.Hidden,
+            enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded)
+        ),
+        shape = MaterialTheme.shapes.extraLarge,
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
+        Text(
+            text = stringResource(R.string.settings_language_sheet_title),
+            style = MaterialTheme.typography.titleMedium,
+            modifier = Modifier
+                .padding(horizontal = Spacing.xl)
+                .padding(bottom = Spacing.sm)
+        )
+        Column(modifier = Modifier.padding(bottom = Spacing.xl)) {
+            AppLanguage.entries.forEach { option ->
+                SelectSheetItem(
+                    label = stringResource(option.labelRes),
+                    selected = option == currentLanguage,
+                    onClick = { onSelect(option) }
+                )
+            }
+        }
     }
 }
 

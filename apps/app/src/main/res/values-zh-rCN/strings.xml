@@ -1,0 +1,348 @@
+<resources>
+    <string name="app_name">Upix</string>
+
+    <!-- Shared across screens -->
+    <string name="common_cancel">取消</string>
+    <string name="common_close">关闭</string>
+    <string name="common_retry">重试</string>
+    <string name="common_settings">设置</string>
+    <string name="common_help">帮助</string>
+    <string name="common_logs">日志</string>
+    <string name="common_model_management">模型管理</string>
+    <string name="common_model_directory">模型目录：%1$s</string>
+    <string name="common_overwrite_original">覆盖原图</string>
+    <string name="common_collapse">收起</string>
+    <string name="common_expand">展开</string>
+    <string name="common_details">详情</string>
+    <string name="common_status_processing">处理中</string>
+    <string name="common_status_completed">已完成</string>
+    <string name="common_status_failed">失败</string>
+    <string name="cd_back">返回</string>
+    <string name="settings_detail_empty">从左侧选择要查看的内容</string>
+
+    <!-- Bottom navigation / destinations -->
+    <string name="nav_home">主页</string>
+    <string name="nav_connection">连接</string>
+    <string name="nav_help">帮助</string>
+
+    <!-- Home screen -->
+    <string name="home_snackbar_connecting">正在连接 PC…</string>
+    <string name="home_snackbar_connected">已连接 PC，将使用 PC 处理</string>
+    <string name="home_snackbar_pc_unreachable_local">PC 不可达，本次使用本地处理</string>
+    <string name="home_model_select">选择模型</string>
+    <string name="home_backup_original">备份原图</string>
+    <string name="home_include_subdirectories">包含子目录</string>
+    <string name="home_skip_sr_marked">跳过已超分图片</string>
+    <string name="processing_progress_skipped">已跳过 %1$d（超分标记）</string>
+    <string name="home_select_model_sheet_title">选择模型</string>
+    <string name="home_restore_backup">恢复备份</string>
+    <string name="home_restore_backup_result_success">成功恢复 %1$d 个备份</string>
+    <string name="home_restore_backup_result_partial">已恢复 %1$d 个，失败 %2$d 个</string>
+    <string name="home_start_upscaling">开始超分</string>
+    <string name="home_stop_processing">停止</string>
+    <string name="home_open_queue_cd">打开队列</string>
+
+    <!-- Home hero area -->
+    <string name="hero_thumbnail_corrupted">已损坏</string>
+    <string name="hero_thumbnail_preview">预览</string>
+    <string name="hero_image_corrupted">图片损坏</string>
+    <string name="hero_no_preview">暂无预览</string>
+    <string name="hero_add_image_cd">添加图片</string>
+    <string name="hero_add_folder_cd">添加文件夹</string>
+    <string name="hero_clear_all_cd">清空已选</string>
+    <string name="hero_thumbnail_remove_cd">移除此图片</string>
+    <string name="hero_thumbnail_folder_cd">文件夹</string>
+    <string name="hero_folder_badge">文件夹</string>
+    <string name="hero_folder_badge_count">文件夹 · %1$d 张图片</string>
+
+    <!-- Home parameter card -->
+    <string name="config_mode_local">本地</string>
+    <string name="config_mode_connecting">连接中</string>
+    <string name="config_mode_remote">远程</string>
+    <string name="config_label_scale">放大倍率</string>
+    <string name="config_output_format">输出格式</string>
+    <string name="config_output_format_follow">跟随原图</string>
+    <string name="home_select_output_format_sheet_title">选择输出格式</string>
+    <string name="config_scale_value">x%1$d</string>
+    <string name="config_advanced_title">高级设置</string>
+    <string name="config_resume_last_task">恢复上次任务</string>
+
+    <!-- Queue bottom sheet -->
+    <string name="queue_sheet_title">处理队列</string>
+    <string name="queue_sheet_summary">待处理 %1$d · 失败 %2$d</string>
+    <string name="queue_close_cd">关闭队列</string>
+    <string name="queue_start">启动</string>
+    <string name="queue_pause">暂停</string>
+    <string name="queue_cancel">取消处理</string>
+    <string name="queue_clear">清空</string>
+    <string name="queue_empty">队列为空</string>
+    <string name="queue_status_pending">未开始</string>
+    <string name="queue_retry_failed_only">重试失败项</string>
+    <string name="queue_open_output">打开结果</string>
+    <string name="queue_remove">移除</string>
+    <string name="queue_no_image">无预览</string>
+    <string name="queue_allocation_label">%1$s</string>
+    <string name="queue_allocation_summary">%1$s · 共 %2$s · %3$s%4$s</string>
+    <string name="queue_mode_distributed">PC 协同</string>
+    <string name="queue_mode_standalone">本地</string>
+    <string name="queue_expected_count">共 %1$d 张</string>
+    <string name="queue_expected_pending">待统计</string>
+    <string name="queue_write_to_output">保存到输出目录</string>
+    <string name="queue_backup_suffix">（已备份）</string>
+    <string name="queue_unnamed_input">未命名文件</string>
+
+    <!-- Checkpoint resume section -->
+    <string name="checkpoint_title">断点续传</string>
+    <string name="checkpoint_summary">%1$s · 待处理 %2$d · 失败 %3$d</string>
+    <string name="checkpoint_status_resumable_with_failures">可继续（含失败项）</string>
+    <string name="checkpoint_status_resumable">可继续</string>
+    <string name="checkpoint_resume">继续</string>
+    <string name="checkpoint_retry_failed">重试失败</string>
+    <string name="checkpoint_discard">丢弃</string>
+
+    <!-- Models screen and model import feedback -->
+    <string name="models_discovered_summary">已发现 %1$d 个模型</string>
+    <string name="models_refresh">刷新模型列表</string>
+    <string name="models_import">导入模型</string>
+    <string name="models_download">下载模型</string>
+    <string name="models_import_rules">.param 与 .bin 需同名成对，支持 zip</string>
+    <string name="models_empty_hint">未发现模型</string>
+    <string name="models_action_upload">上传到电脑</string>
+    <string name="models_action_download">从电脑下载</string>
+    <string name="models_delete">删除</string>
+    <string name="models_import_result_partial">已导入 %1$d 个模型，%2$d 个无效</string>
+    <string name="models_import_result_success">已导入 %1$d 个模型</string>
+    <!-- Model import failure detail (resolved by MainViewModel / ModelRepository) -->
+    <string name="models_import_error_no_files">未选择模型文件</string>
+    <string name="models_import_error_staging_dir">导入失败：无法写入临时文件</string>
+    <string name="models_import_error_invalid_pair">%1$s：需同时提供同名 .param 与 .bin</string>
+    <string name="models_import_error_invalid_pair_generic">模型无效：需同时提供同名 .param 与 .bin</string>
+    <string name="models_import_error_import_failed">%1$s：导入失败（%2$s）</string>
+    <string name="models_import_error_no_models_found">未找到模型文件</string>
+    <string name="models_import_error_unreadable">%1$s：无法读取</string>
+    <string name="models_import_error_read_failed">%1$s：读取失败（%2$s）</string>
+    <string name="models_import_error_zip_unreadable">%1$s：无法读取 zip 文件</string>
+    <string name="models_import_error_zip_illegal_entry">%1$s：zip 内含异常路径，已跳过：%2$s</string>
+    <string name="models_import_error_unzip_failed">%1$s：解压失败（%2$s）</string>
+    <string name="models_import_error_zip_no_models">%1$s：zip 中未找到 .param/.bin 模型文件</string>
+    <string name="models_import_error_duplicate_param">%1$s：重复的 .param，已保留第一个</string>
+    <string name="models_import_error_duplicate_bin">%1$s：重复的 .bin，已保留第一个</string>
+    <string name="models_import_error_invalid_extension">%1$s：仅支持 .param/.bin/.zip</string>
+    <string name="models_import_error_mkdir_failed">无法创建模型目录：%1$s</string>
+
+    <!-- Remote model download (GitHub "models" release, see scripts/publish_models.py) -->
+    <string name="models_remote_title">下载模型</string>
+    <string name="models_remote_loading">正在获取模型列表…</string>
+    <string name="models_remote_empty">远程模型列表为空</string>
+    <string name="models_remote_error">获取模型列表失败</string>
+    <string name="models_remote_installed">已安装</string>
+    <string name="models_remote_retry">重试</string>
+
+    <!-- Model scene badges -->
+    <string name="model_scene_recommended">推荐</string>
+    <string name="model_scene_anime">动漫</string>
+    <string name="model_scene_photo">照片</string>
+    <string name="model_scene_photo_restore">照片·修复</string>
+    <string name="model_scene_video_restore">视频·修复</string>
+    <string name="model_scene_anime_restore">动漫·修复</string>
+    <string name="model_scene_game_restore">游戏·修复</string>
+    <string name="model_scene_general">综合</string>
+
+    <!-- Connection errors (resolved by DeviceViewModel) -->
+    <string name="connection_error_auto_reconnect_failed">自动重连失败，使用本地处理</string>
+    <string name="connection_error_invalid_params">连接信息无效，请重新输入</string>
+    <string name="connection_error_connect_failed">连接失败，请确认 PC 在线并已批准</string>
+    <string name="connection_error_invalid_qr">二维码无效或已过期（PC 需为最新版本）</string>
+    <string name="connection_error_invalid_address">无效的地址</string>
+
+    <!-- Connection screen -->
+    <string name="connection_title">连接 PC</string>
+    <string name="connection_ignore">忽略</string>
+    <string name="connection_fingerprint">指纹：%1$s</string>
+    <string name="connection_disconnect">断开连接</string>
+    <string name="connection_connecting_title">正在连接 PC…</string>
+    <string name="connection_status_connected">已连接 PC</string>
+    <string name="connection_status_disconnected">未连接 PC</string>
+    <string name="connection_scan_qr">扫码连接</string>
+    <string name="connection_manual_input">手动输入地址</string>
+    <string name="connection_host_label">PC IP 地址</string>
+    <string name="connection_port_label">端口</string>
+    <string name="connection_manual_hint">输入 PC 端显示的 IP 与端口。</string>
+
+    <!-- Fingerprint confirm dialog -->
+    <string name="dialog_fingerprint_title">确认 PC 指纹</string>
+    <string name="dialog_fingerprint_body">首次连接 %1$s:%2$d，请核对指纹与 PC 端显示的是否一致：</string>
+    <string name="dialog_fingerprint_trust_note">一致即可信任；不一致请取消。</string>
+    <string name="dialog_fingerprint_confirm">一致，确认</string>
+
+    <!-- Processing progress panel -->
+    <string name="progress_status_idle">未开始</string>
+    <string name="progress_status_canceled">已取消</string>
+    <string name="progress_completed_items">已处理 %1$d/%2$d</string>
+    <!-- Remote per-image phase (streamed PC TASK_PROGRESS) -->
+    <string name="processing_remote_phase_uploading">上传到 PC…</string>
+    <string name="processing_remote_phase_inference">PC 推理中 %1$d%%</string>
+    <string name="processing_remote_phase_inference_eta">PC 推理中 %1$d%% · 预计 %2$d 秒</string>
+    <string name="processing_remote_phase_encoding">PC 正在编码结果…</string>
+    <!-- Processing run messages (resolved by ProcessingRunPlanner / ProcessingRunEngine) -->
+    <string name="processing_remote_fallback">PC 处理失败，批次已中止（可用断点续跑）</string>
+    <string name="processing_error_model_not_found">未找到模型：%1$s</string>
+    <string name="processing_error_native_session">本地处理引擎启动失败：%1$s</string>
+    <string name="processing_error_save_output">保存输出文件失败</string>
+    <string name="processing_error_unknown_processing">处理时发生未知错误</string>
+    <string name="processing_error_local_avif">本地无法编码 AVIF。请连接 PC 远程处理，或改用 PNG/JPEG/WebP</string>
+    <string name="processing_error_unknown_failure">发生未知错误</string>
+    <string name="processing_error_remote_upload_failed">远程上传失败</string>
+    <string name="processing_error_pc_failed">PC 处理失败：%1$s</string>
+    <string name="processing_error_avif_native_decode_with_reason">无法解码 AVIF（native）：%1$s（%2$s）</string>
+    <string name="processing_error_avif_native_decode">无法解码 AVIF（native）：%1$s</string>
+    <string name="processing_error_avif_requires_android_12">无法解码 AVIF（需要 Android 12 及以上）：%1$s</string>
+    <string name="processing_error_avif_decode">无法解码 AVIF：%1$s</string>
+
+    <!-- Remote client errors -->
+    <string name="remote_error_not_connected">未连接 PC</string>
+    <string name="remote_error_transfer_failed">传输失败</string>
+    <string name="remote_error_canceled">已取消（PC 已停止计算）</string>
+    <string name="remote_error_avif_encode_hint">%1$s（远端 AVIF 需要 PC 安装 libavif，如 pacman -S libavif）</string>
+    <string name="remote_error_task_failed">PC 任务失败：%1$s</string>
+    <string name="remote_error_pc_unreachable_reason">PC 不可达：%1$s</string>
+    <string name="remote_error_pc_unreachable">PC 不可达</string>
+    <string name="remote_error_session_closed">远程会话已关闭</string>
+    <string name="remote_error_output_not_decodable">远程返回的输出图像无法解码</string>
+    <string name="remote_error_persist_output_failed">保存远程输出失败</string>
+    <string name="remote_error_avif_decode_unsupported">PC 端不支持 AVIF 解码：在 PC 上安装 libavif（如 pacman -S libavif）后重试</string>
+    <string name="remote_error_read_input_failed">无法读取输入图像：%1$s</string>
+    <string name="remote_error_input_not_decodable">输入文件不是可解码的图像：%1$s</string>
+    <string name="remote_error_upload_failed">上传失败</string>
+    <string name="remote_error_create_output_dir">无法创建输出目录：%1$s</string>
+
+    <!-- Settings screen -->
+    <string name="settings_section_general">通用</string>
+    <string name="settings_section_about">关于</string>
+    <string name="settings_language">语言</string>
+    <string name="settings_language_sheet_title">选择语言</string>
+    <string name="settings_language_follow_system">跟随系统</string>
+    <string name="settings_language_zh_cn">简体中文</string>
+    <string name="settings_language_en">English</string>
+    <string name="settings_about_version">版本 %1$s</string>
+    <string name="settings_about_project">项目地址</string>
+    <string name="settings_battery_policy">电池优化</string>
+    <string name="common_encoder_settings">编码设置</string>
+    <string name="settings_encoder_quality">输出质量</string>
+    <string name="settings_encoder_quality_hint">JPEG / WebP / AVIF 共用（默认 90）</string>
+    <string name="settings_encoder_png_level">PNG 压缩级别</string>
+    <string name="settings_encoder_png_level_hint">0-9；默认跟随输出质量自动推导</string>
+    <string name="settings_encoder_jpeg_subsampling">JPEG 色度子采样</string>
+    <string name="settings_encoder_webp_method">WebP 编码力度</string>
+    <string name="settings_encoder_webp_method_hint">0-6，越大体积越小但越慢；默认自动（4）</string>
+    <string name="settings_encoder_webp_lossless">WebP 无损编码</string>
+    <string name="settings_encoder_avif_group">AVIF</string>
+    <string name="settings_encoder_avif_speed">编码速度</string>
+    <string name="settings_encoder_avif_speed_hint">0-10，越大越快、体积越大（默认 6）</string>
+    <string name="settings_encoder_avif_subsampling">色度子采样</string>
+    <string name="home_output_format_avif_remote_only">本地未内置 AVIF 编码器，需连接 PC 远程处理</string>
+
+    <!-- Help screen -->
+    <string name="help_step_1">选择图片或文件夹</string>
+    <string name="help_step_2">选择模型与输出路径</string>
+    <string name="help_step_3">点「开始超分」</string>
+    <string name="help_section_steps">快速上手</string>
+    <string name="help_step_1_desc">从相册挑选图片，或导入整个文件夹批量处理</string>
+    <string name="help_step_2_desc">选择合适的超分模型，并指定结果保存位置</string>
+    <string name="help_step_3_desc">确认参数后点击开始，结果会保存到所选输出目录</string>
+
+    <!-- Help screen：模型指南（内容与 models/README.md 目录对齐） -->
+    <string name="help_section_model_pick">怎么选模型</string>
+    <string name="help_scenario_anime">动漫 / 插画 / 游戏截图</string>
+    <string name="help_scenario_anime_desc">首选 Real-ESRGANv3-anime，轻快、线条干净；压缩噪点重（老番、流媒体截图）改用 Real-CUGAN pro 的 denoise 变体；想要 4x 锐利线条选 AnimeSharp-x4，源太糙要重修复选 HFA2k-x4；HFA2k-LUDVAE-SPAN-x2 是最轻的动漫修复网，ModernSpanimation-x2 面向现代动画再升一档。</string>
+    <string name="help_scenario_photo_2x">照片 · 轻度放大（x2）</string>
+    <string name="help_scenario_photo_2x_desc">NomosUni-Compact-x2：专为聊天软件、社交媒体的压缩照片训练，手机本地批量也快；Parimg-Compact-x2 同为轻量档案、清理更重；追求参考画质选 Real-ESRGAN-x2plus（推荐连接 PC）。</string>
+    <string name="help_scenario_photo_4x">照片 · 大幅放大（x4）</string>
+    <string name="help_scenario_photo_4x_desc">求快选 Real-ESRGANv3-general-x4 或 LSDIR-Compact-v2-x4，手机轻松跑；求画质（推荐连接 PC）用 NomosWebPhoto-RealPLKSR、Nomos2-OTF、BSRGAN、Remacri、UltraSharp 或 Real-ESRGAN-x4plus。</string>
+    <string name="help_scenario_restore">原尺寸修复（1x，不放大）</string>
+    <string name="help_scenario_restore_desc">源图尺寸已经合适、只是有劣化时用：DeJPG / DeNoise / DeH264-RealPLKSR-x1 分别去 JPEG 块、噪点、视频压缩痕迹（照片向）；动漫 / 视频帧用 Archivist-Medium（均衡起步）或 Archivist-Rough（重损修复）；红白机 / 世嘉等复古主机采集画面用 NES-Composite-RGB 或 Genesis-Cleanup（解复合视频色痕）。输出与输入同尺寸，比任何放大网都快。</string>
+    <string name="help_model_tips_title">使用提示</string>
+    <string name="help_model_tip_scale">放大倍率跟随模型：名字末尾的 x1 / x2 / x3 / x4 即倍率（x1 为原尺寸修复、不放大），选模型就是选倍率；参数卡上的倍率切换只在本系列内换档。</string>
+    <string name="help_model_tip_weight">1–2 MB 的轻量模型手机本地批量无压力；31 MB 级的重量模型画质更高，连接 PC 处理更省时。</string>
+    <string name="help_model_tip_get">模型不随应用附带：在「模型管理」页或选择模型面板右上角下载，也可以导入自己的 .param / .bin。</string>
+    <string name="help_section_model_families">模型家族</string>
+    <string name="help_family_v3">Real-ESRGAN v3 · 轻量全能</string>
+    <string name="help_family_v3_desc">1–2 MB 的轻量网络，速度足够手机批量处理：anime 系列是动漫内容的默认首选，general-x4 是照片的默认首选。</string>
+    <string name="help_family_x4plus">Real-ESRGAN x4plus · 重量级参考画质</string>
+    <string name="help_family_x4plus_desc">完整 RRDB 网络，纹理重建是全目录最强，但计算量高出数十倍，适合连接 PC 卸载时使用；x4plus-anime 是动漫 4x 的参考画质；x2plus 把同配方带到 2x，2x 任务嫌轻量网不够用时选它。</string>
+    <string name="help_family_cugan">Real-CUGAN · 动漫专精</string>
+    <string name="help_family_cugan_desc">面向真实劣化的动漫源训练，重度 JPEG / 视频压缩的番剧截图常比 Real-ESRGAN 更好。三个变体：conservative 尽量少改动、denoise 强力去压缩噪点、no-denoise 不做去噪；pro 系是新一代、泛化更好，优先选 pro。</string>
+    <string name="help_family_photo">社区照片系列 · Nomos 等</string>
+    <string name="help_family_photo_desc">补齐 Real-ESRGAN 系空缺的照片专用模型：NomosUni-Compact-x2 与 Parimg-Compact-x2 是两只轻量照片 x2（后者清理更重）；SPAN-x4 最轻；LSDIR-Compact-v2-x4 同速更干净；Nomos8kSC-x4 去压缩与模糊更狠；Nomos2-OTF-x4 是更新的真实劣化配方；NomosWebPhoto-RealPLKSR-x4 是网络照片的画质/体积均衡之选。</string>
+    <string name="help_family_restore">原尺寸修复 · 1x 不放大</string>
+    <string name="help_family_restore_desc">输出与输入同尺寸的修复网，速度比任何放大网都快：照片向的 DeJPG / DeNoise / DeH264-RealPLKSR-x1（14 MB）分别治 JPEG 块、噪点、视频压缩痕；动漫 / 视频帧向的 Archivist-Medium / Rough-Compact-x1（0.6 MB，MIT）清胶片颗粒与污损；复古主机的复合视频采集用 NES-Composite-RGB / Genesis-Cleanup（4 MB，MIT）。源图尺寸合适、只是有劣化时用。</string>
+    <string name="help_family_classics">社区经典 · UltraSharp / Remacri / BSRGAN 等</string>
+    <string name="help_family_classics_desc">社区多年默认的全能老牌：UltraSharp-x4 锐利、Remacri-x4 自然、AnimeSharp-x4 动漫线条 4x、AnimeJaNai-v2-Compact-x2 动漫轻量 2x、NMKD-Siax-x4 专保纹理、BSRGAN-x4/x2 是学术界的多劣化修复经典（Apache-2.0）。注意：除 NMKD（WTFPL）与 BSRGAN（Apache-2.0）外，其余四款权重为非商用许可（CC-BY-NC-SA），个人使用不受影响。</string>
+    <string name="home_model_picker_help">不知道怎么选？查看模型指南</string>
+
+    <!-- Logs screen -->
+    <string name="logs_search_label">搜索</string>
+    <string name="logs_filter_all">全部</string>
+    <!-- 级别 chip 的本地化文案（DESIGN_LANGUAGE §9.11 2026-08-24 amendment）：
+         交互 chrome 全本地化，等宽日志正文/复制内容里的原始英文枚举不变。 -->
+    <string name="log_level_debug">调试</string>
+    <string name="log_level_info">信息</string>
+    <string name="log_level_warning">警告</string>
+    <string name="log_level_error">错误</string>
+    <string name="log_level_critical">严重</string>
+    <string name="logs_clear">清空日志</string>
+    <string name="logs_copy">复制</string>
+    <string name="logs_empty">无日志</string>
+    <string name="logs_clear_search_cd">清除搜索</string>
+
+    <!-- QR scanner -->
+    <string name="scanner_permission_required">需要相机权限才能扫码</string>
+    <string name="scanner_permission_description">相机画面仅用于实时识别二维码，不会被拍摄或存储。</string>
+    <string name="scanner_grant_permission">授予相机权限</string>
+    <string name="scanner_close">关闭</string>
+    <string name="scanner_hint">对准 PC 屏幕上的二维码</string>
+    <string name="scanner_permission_denied">未授予相机权限，无法扫码。</string>
+    <string name="scanner_scan_failed">扫码失败，请重试。</string>
+    <string name="scanner_scan_failed_detail">扫码失败（%1$s），请重试。</string>
+    <string name="scanner_camera_failed">启动相机失败。</string>
+    <string name="scanner_camera_failed_detail">启动相机失败（%1$s）。</string>
+    <string name="scanner_open_settings">前往设置</string>
+
+    <!-- Confirmations / feedback (audit contract keys) -->
+    <string name="common_confirm">确定</string>
+    <string name="start_need_image_and_model">请先选择图片与模型</string>
+    <string name="queue_no_pending_items">队列中没有待处理任务</string>
+    <string name="queue_open_output_failed">打开结果失败，文件可能已被移动或删除</string>
+    <string name="storage_write_permission_denied">未授予存储权限，队列未启动</string>
+    <string name="queue_clear_confirm_title">清空队列</string>
+    <string name="queue_clear_confirm_body">将移除全部 %1$d 个队列条目，并清空已选图片。</string>
+    <string name="logs_clear_confirm_title">清空日志</string>
+    <string name="logs_clear_confirm_body">确定清空全部日志吗？</string>
+    <string name="models_delete_confirm_title">删除模型</string>
+    <string name="models_delete_confirm_body">确定从手机删除「%1$s」吗？此操作不可恢复。</string>
+    <string name="checkpoint_discard_confirm_title">丢弃断点</string>
+    <string name="checkpoint_discard_confirm_body">确定丢弃上次任务的断点记录吗？</string>
+    <string name="checkpoint_more_items">还有 %1$d 项未展示</string>
+    <string name="logs_copied_count">已复制 %1$d 条日志</string>
+    <string name="log_entry_copied">已复制该条日志</string>
+    <string name="models_download_cancel">取消下载</string>
+    <string name="connection_port_invalid">端口无效</string>
+    <string name="download_downloaded_bytes">已下载 %1$s</string>
+    <string name="queue_item_canceled">已取消</string>
+    <string name="queue_item_failed">批次失败</string>
+    <string name="queue_cannot_start_batch">无法启动该批次</string>
+    <string name="queue_no_failed_to_retry">没有可重试的失败项</string>
+
+    <!-- 前台保活服务通知（FGS dataSync + 批次完成/失败/取消提醒） -->
+    <string name="notification_channel_processing_name">超分处理</string>
+    <string name="notification_channel_processing_description">批处理进行中的前台保活与完成提醒</string>
+    <string name="notification_processing_title">正在超分（%1$s）</string>
+    <string name="notification_processing_counts">已处理 %1$d/%2$d</string>
+    <string name="notification_processing_current">当前：%1$s</string>
+    <string name="notification_completed_title">批次已完成</string>
+    <string name="notification_completed_content">已处理 %1$d 张 · 保存到 %2$s</string>
+    <string name="notification_failed_title">批次失败</string>
+    <string name="notification_failed_content">已完成 %1$d/%2$d：%3$s</string>
+    <string name="notification_canceled_title">批次已取消</string>
+    <string name="notification_canceled_content">已完成 %1$d/%2$d，可从断点继续</string>
+</resources>

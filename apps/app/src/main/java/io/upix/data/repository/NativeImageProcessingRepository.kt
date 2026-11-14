@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import io.upix.R
 import io.upix.nativelib.NCNNEngine
 import io.upix.nativelib.NativeCapabilities
+import io.upix.util.AppLocale
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -495,10 +496,9 @@ class NativeImageProcessingRepository(
             // AVIF 本地编码仅在自带编码器的构建可用（-Pupix.avifEncoder=true）；
             // 精简构建保持旧行为——快速失败，引导改格式或连 PC。
             if (outputFormat == AVIF_OUTPUT_FORMAT && !NativeCapabilities.avifEncode) {
-                require(false) {
-                    "本地无法编码 AVIF（此构建未内置 AVIF 编码器）。" +
-                        "请连接 PC 远程处理，或改用 PNG/JPEG/WebP"
-                }
+                throw IllegalArgumentException(
+                    AppLocale.localizedContext(context).getString(R.string.processing_error_local_avif)
+                )
             }
             val settings = encoderSettings
             logRepository.info(
@@ -571,7 +571,8 @@ class NativeImageProcessingRepository(
             return decodeRgb(
                 resolver = context.contentResolver,
                 uri = input.uri,
-                displayName = input.displayName
+                displayName = input.displayName,
+                context = context
             ) { message ->
                 logRepository.error("NativeImageProcessingRepository", message)
             }

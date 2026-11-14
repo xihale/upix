@@ -62,6 +62,7 @@ import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -87,6 +88,7 @@ fun QRScannerScreen(
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
+    val resources = LocalResources.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val permissionDeniedMessage = stringResource(R.string.scanner_permission_denied)
     val scanFailedMessage = stringResource(R.string.scanner_scan_failed)
@@ -240,7 +242,7 @@ fun QRScannerScreen(
                         }
                     } catch (throwable: Throwable) {
                         val message = throwable.message
-                            ?.let { raw -> "$scanFailedMessage（$raw）" }
+                            ?.let { raw -> resources.getString(R.string.scanner_scan_failed_detail, raw) }
                             ?: scanFailedMessage
                         mainExecutor.execute { scanError = message }
                     } finally {
@@ -275,7 +277,7 @@ fun QRScannerScreen(
                 }
             } catch (throwable: Throwable) {
                 scanError = throwable.message
-                    ?.let { raw -> "$cameraFailedMessage（$raw）" }
+                    ?.let { raw -> resources.getString(R.string.scanner_camera_failed_detail, raw) }
                     ?: cameraFailedMessage
             }
         }

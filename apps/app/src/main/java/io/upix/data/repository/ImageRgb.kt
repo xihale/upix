@@ -1,14 +1,17 @@
 package io.upix.data.repository
 
 import android.content.ContentResolver
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.exifinterface.media.ExifInterface
+import io.upix.R
 import io.upix.nativelib.NCNNEngine
 import io.upix.nativelib.NativeCapabilities
+import io.upix.util.AppLocale
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
@@ -38,6 +41,7 @@ internal fun decodeRgb(
     resolver: ContentResolver,
     uri: Uri,
     displayName: String? = null,
+    context: Context? = null,
     onError: (message: String) -> Unit
 ): DecodedRgbImage? {
     val bitmap = runCatching {
@@ -51,7 +55,7 @@ internal fun decodeRgb(
         if (isAvifName(displayName) || isAvifUri(resolver, uri)) {
             // 平台解码器不认（API 26-30 或 OEM 差异）：带 native dav1d 的构建
             // 走 native 解码回退，精简构建维持错误提示。
-            return decodeAvifNative(resolver, uri, displayName ?: uri.toString(), onError)
+            return decodeAvifNative(resolver, uri, displayName ?: uri.toString(), context, onError)
         }
         return null
     }
@@ -154,10 +158,11 @@ private fun decodeAvifNative(
     resolver: ContentResolver,
     uri: Uri,
     label: String,
+    context: Context?,
     onError: (message: String) -> Unit
 ): DecodedRgbImage? {
     if (!NativeCapabilities.avifDecode) {
-        onError(avifDecodeErrorMessage(label))
+        onError(avifDecodeErrorMessage(label, context))
         return null
     }
     val bytes = runCatching {
@@ -178,11 +183,19 @@ private fun decodeAvifNative(
     if (pixels == null) {
         val nativeError = runCatching { NCNNEngine.nativeGetLastError() }
             .getOrNull().orEmpty().trim()
+        val localizedCtx = context?.let(AppLocale::localizedContext)
         onError(
             if (nativeError.isNotBlank()) {
-                "无法解码 AVIF（native）：$label（$nativeError）"
+                localizedCtx?.getString(
+                    R.string.processing_error_avif_native_decode_with_reason,
+                    label,
+                    nativeError
+                ) ?: "Failed to decode AVIF (native): $label ($nativeError)"
             } else {
-                "无法解码 AVIF（native）：$label"
+                localizedCtx?.getString(
+                    R.string.processing_error_avif_native_decode,
+                    label
+                ) ?: "Failed to decode AVIF (native): $label"
             }
         )
         return null
@@ -227,11 +240,14 @@ private fun isAvifUri(resolver: ContentResolver, uri: Uri): Boolean {
     return resolver.getType(uri)?.equals("image/avif", ignoreCase = true) == true
 }
 
-internal fun avifDecodeErrorMessage(label: String): String {
+internal fun avifDecodeErrorMessage(label: String, context: Context? = null): String {
+    val localizedCtx = context?.let(AppLocale::localizedContext)
     return if (android.os.Build.VERSION.SDK_INT < ANDROID_AVIF_DECODE_SDK) {
-        "无法解码 AVIF（需要 Android 12 及以上）：$label"
+        localizedCtx?.getString(R.string.processing_error_avif_requires_android_12, label)
+            ?: "Failed to decode AVIF (requires Android 12 or later): $label"
     } else {
-        "无法解码 AVIF：$label"
+        localizedCtx?.getString(R.string.processing_error_avif_decode, label)
+            ?: "Failed to decode AVIF: $label"
     }
 }
 

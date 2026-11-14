@@ -26,7 +26,7 @@ class AppContainer(context: Context) {
 
     val logRepository = LogRepository()
     val stringProvider = StringProvider { resId, formatArgs ->
-        appContext.getString(resId, *formatArgs)
+        io.upix.util.AppLocale.localizedContext(appContext).getString(resId, *formatArgs)
     }
     val appSettingsRepository = AppSettingsRepository(appContext)
     val modelRepository = ModelRepository(appContext, logRepository)

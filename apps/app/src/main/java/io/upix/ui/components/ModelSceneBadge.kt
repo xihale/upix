@@ -29,7 +29,7 @@ fun ModelSceneBadge(scene: ModelScene?) {
         verticalAlignment = Alignment.CenterVertically
     ) {
         SceneTag(
-            text = scene.label,
+            text = stringResource(scene.labelRes),
             contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
             outlineColor = MaterialTheme.colorScheme.outlineVariant
         )

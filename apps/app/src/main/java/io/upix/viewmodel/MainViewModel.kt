@@ -277,7 +277,7 @@ class MainViewModel(
         if (deviceRepository.connectionState.value != ConnectionState.CONNECTED) return
         if (!coordinatorClient.isConnected()) return
         if (pcHasModel(model.name)) return
-        logRepository.info("MainViewModel", "PC 模型库缺少 ${model.name}，自动上传")
+        logRepository.info("MainViewModel", "PC lacks ${model.name}, auto-uploading")
         uploadModelToPc(model)
     }
 
@@ -287,9 +287,9 @@ class MainViewModel(
             val remote = withContext(Dispatchers.IO) { coordinatorClient.listPCModels() }
             if (remote != null) {
                 _pcModels.value = remote
-                logRepository.info("MainViewModel", "PC 模型库：${remote.size} 个模型")
+                logRepository.info("MainViewModel", "PC model library: ${remote.size} model(s)")
             } else {
-                logRepository.warning("MainViewModel", "拉取 PC 模型库失败")
+                logRepository.warning("MainViewModel", "Failed to fetch PC model library")
             }
         }
     }
@@ -305,8 +305,8 @@ class MainViewModel(
         viewModelScope.launch {
             val result = withContext(Dispatchers.IO) { coordinatorClient.uploadModelToPC(model) }
             result
-                .onSuccess { logRepository.info("MainViewModel", "已上传到 PC：${model.name}") }
-                .onFailure { logRepository.error("MainViewModel", "上传 PC 失败（${model.name}）：${it.message}") }
+                .onSuccess { logRepository.info("MainViewModel", "Uploaded to PC: ${model.name}") }
+                .onFailure { logRepository.error("MainViewModel", "Upload to PC failed (${model.name}): ${it.message}") }
             _uploadingToPc.update { it - model.name }
             refreshPcModels()
         }
@@ -332,11 +332,11 @@ class MainViewModel(
             }
             result
                 .onSuccess {
-                    logRepository.info("MainViewModel", "已从 PC 下载：${entry.name}")
+                    logRepository.info("MainViewModel", "Downloaded from PC: ${entry.name}")
                     modelRepository.refreshModels()
                 }
                 .onFailure { throwable ->
-                    logRepository.error("MainViewModel", "从 PC 下载失败（${entry.name}）：${throwable.message}")
+                    logRepository.error("MainViewModel", "Download from PC failed (${entry.name}): ${throwable.message}")
                     // 清掉半成品文件，避免扫描出残缺模型。
                     directory.deleteRecursively()
                 }

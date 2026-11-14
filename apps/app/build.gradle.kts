@@ -108,6 +108,16 @@ android {
         compose = true
     }
 
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
+    }
+
+    bundle {
+        language {
+            enableSplit = false
+        }
+    }
+
     // Models are NOT bundled: they are downloaded from the GitHub "models"
     // release (Models screen) or imported from local files by the user.
 
@@ -178,6 +188,7 @@ kotlin {
 dependencies {
     // AndroidX Core
     implementation(libs.androidx.core.ktx)
+    implementation(libs.androidx.appcompat)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)
 

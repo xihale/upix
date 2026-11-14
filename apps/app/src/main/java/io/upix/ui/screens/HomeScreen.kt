@@ -30,10 +30,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -54,8 +52,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.upix.R
@@ -67,6 +63,7 @@ import io.upix.data.repository.OutputImageFormat
 import io.upix.data.repository.PersistedQueueItemStatus
 import io.upix.ui.components.UpixTopAppBar
 import io.upix.ui.components.RemoteModelsSheet
+import io.upix.ui.components.SelectSheetItem
 import io.upix.ui.components.StageProgressOverlay
 import io.upix.ui.screens.home.BottomActionDock
 import io.upix.ui.screens.home.CheckpointSection
@@ -513,38 +510,6 @@ private val BottomDockClearance = DockCtaHeight + Spacing.lg + Spacing.xxl
 
 /** Snackbar 在 Dock 之上再留 [Spacing.md] 间隙。 */
 private val SnackbarAboveDockPadding = DockCtaHeight + Spacing.lg + Spacing.md
-
-/** Sheet 内单选项：M3 官方 ListItem + RadioButton 单选列表模式。 */
-@Composable
-private fun SelectSheetItem(
-    label: String,
-    sublabel: String? = null,
-    selected: Boolean,
-    labelStyle: TextStyle? = null,
-    onClick: () -> Unit
-) {
-    ListItem(
-        supportingContent = if (sublabel != null) {
-            {
-                Text(
-                    text = sublabel,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-            }
-        } else {
-            null
-        },
-        trailingContent = { RadioButton(selected = selected, onClick = null) },
-        modifier = Modifier
-            .fillMaxWidth()
-            // clickable 自带 mergeDescendants：行内文字与 RadioButton 的选中态
-            // 合并为一个可聚焦项；role 让 TalkBack 以单选项语义播报。
-            .clickable(role = Role.RadioButton, onClick = onClick)
-    ) {
-        Text(text = label, style = labelStyle ?: MaterialTheme.typography.bodyLarge)
-    }
-}
 
 /** 舞台处理 scrim/覆盖层：出现/消失做 fade。只接收 task，避免整包 UI state 参与 overlay 重组。 */
 @Composable

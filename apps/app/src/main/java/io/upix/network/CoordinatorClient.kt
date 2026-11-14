@@ -2,7 +2,10 @@ package io.upix.network
 
 import android.content.Context
 import android.net.Uri
+import androidx.annotation.StringRes
+import io.upix.R
 import io.upix.data.model.PcModel
+import io.upix.util.AppLocale
 import io.upix.data.repository.EncoderSettings
 import io.upix.data.repository.LogRepository
 import io.upix.data.repository.NativeProcessResult
@@ -31,6 +34,9 @@ class CoordinatorClient(
     private val logRepository: LogRepository
 ) {
     private val appContext = context.applicationContext
+
+    private fun localizedGetString(@StringRes resId: Int, vararg formatArgs: Any): String =
+        AppLocale.localizedContext(appContext).getString(resId, *formatArgs)
 
     // Internal representation: carries the peer pubkey + stream flag needed to
     // re-run strict-MITM handshakes for each one-shot image submit. The public,
@@ -185,7 +191,11 @@ class CoordinatorClient(
 
     /** 上传本地模型到 PC 模型库。未连接返回失败。 */
     fun uploadModelToPC(model: io.upix.data.model.ModelInfo): kotlin.Result<Unit> = withEndpoint(
-        onMissing = { kotlin.Result.failure(IllegalStateException("未连接 PC")) }
+        onMissing = {
+            kotlin.Result.failure(
+                IllegalStateException(localizedGetString(R.string.remote_error_not_connected))
+            )
+        }
     ) { host, port, pubkey ->
         if (NativeWorker.nativeUploadModelToPC(
                 host = host,
@@ -209,7 +219,11 @@ class CoordinatorClient(
         destParamPath: String,
         destBinPath: String
     ): kotlin.Result<Unit> = withEndpoint(
-        onMissing = { kotlin.Result.failure(IllegalStateException("未连接 PC")) }
+        onMissing = {
+            kotlin.Result.failure(
+                IllegalStateException(localizedGetString(R.string.remote_error_not_connected))
+            )
+        }
     ) { host, port, pubkey ->
         if (NativeWorker.nativeDownloadModelFromPC(
                 host = host,
@@ -228,7 +242,7 @@ class CoordinatorClient(
 
     private fun lastNativeError(): String =
         runCatching { NCNNEngine.nativeGetLastError() }.getOrNull()?.trim().orEmpty()
-            .ifBlank { "传输失败" }
+            .ifBlank { localizedGetString(R.string.remote_error_transfer_failed) }
 
     // ── 远程处理：持久会话 + 深度 1 流水线 ──────────────────────────────
     // 一个批次只做一次握手/配对（nativeOpenDistributedSession），之后每张图
@@ -383,7 +397,7 @@ class CoordinatorClient(
             // error="canceled"）：不算失败、不清端点。
             if (outcome.userCanceled) {
                 closeSession()
-                throw CancellationException("已取消（PC 已停止计算）")
+                throw CancellationException(localizedGetString(R.string.remote_error_canceled))
             }
             if (outcome.bytes != null && outcome.bytes.isNotEmpty()) {
                 return Result.success(outcome.bytes)
@@ -397,12 +411,14 @@ class CoordinatorClient(
             val message = when {
                 outcome.taskRejected && pcReason.isNotBlank() ->
                     if (pcReason.contains("avif", ignoreCase = true)) {
-                        "$pcReason（远端 AVIF 需要 PC 安装 libavif，如 pacman -S libavif）"
+                        localizedGetString(R.string.remote_error_avif_encode_hint, pcReason)
                     } else {
-                        "PC 任务失败：$pcReason"
+                        localizedGetString(R.string.remote_error_task_failed, pcReason)
                     }
-                reason.isNotBlank() -> "PC 不可达：$reason"
-                else -> "PC 不可达"
+                reason.isNotBlank() ->
+                    localizedGetString(R.string.remote_error_pc_unreachable_reason, reason)
+                else ->
+                    localizedGetString(R.string.remote_error_pc_unreachable)
             }
             logRepository.error("CoordinatorClient", message)
             return Result.failure(IllegalStateException(message))
@@ -418,8 +434,12 @@ class CoordinatorClient(
             // 接收不持锁，取消/关闭不会被接收时长拖住。
             val handle = beginReceive()
             if (handle == 0L) {
-                return AwaitOutcome(null, "Distributed session is closed",
-                    taskRejected = false, userCanceled = false)
+                return AwaitOutcome(
+                    null,
+                    localizedGetString(R.string.remote_error_session_closed),
+                    taskRejected = false,
+                    userCanceled = false
+                )
             }
             val encodedOutput = try {
                 NCNNEngine.nativeReceiveDistributedResult(
@@ -448,12 +468,16 @@ class CoordinatorClient(
         /** 把 PC 返回的编码字节写盘并组装结果（纯本地 IO，可与其他事并行）。 */
         fun persist(encodedOutput: ByteArray, outputFile: File): Result<NativeProcessResult> {
             val outputBounds = decodeEncodedImageBounds(encodedOutput)
-                ?: return Result.failure(IllegalStateException("Distributed output is not decodable"))
+                ?: return Result.failure(
+                    IllegalStateException(localizedGetString(R.string.remote_error_output_not_decodable))
+                )
             val writeResult = writeOutputBytes(outputFile, encodedOutput)
             if (writeResult.isFailure) {
                 return Result.failure(
                     writeResult.exceptionOrNull()
-                        ?: IllegalStateException("Failed to persist distributed output")
+                        ?: IllegalStateException(
+                            localizedGetString(R.string.remote_error_persist_output_failed)
+                        )
                 )
             }
             logRepository.info(
@@ -511,13 +535,15 @@ class CoordinatorClient(
         recoverOnFailure: Boolean
     ): Result<RemoteTask> {
         val endpoint = connectedEndpoint
-            ?: return Result.failure(IllegalStateException("No connected coordinator endpoint"))
+            ?: return Result.failure(
+                IllegalStateException(localizedGetString(R.string.remote_error_not_connected))
+            )
 
         // Preflight: an AVIF input needs SOMEONE on the path that can decode it.
         // Remote mode ships the original bytes — only the PC's avif-decode
         // matters here. Reject before uploading instead of failing mid-task.
         if (isAvifName(input.displayName) && !PeerCapabilities.avifDecode) {
-            val message = "PC 端不支持 AVIF 解码：在 PC 上安装 libavif（如 pacman -S libavif）后重试"
+            val message = localizedGetString(R.string.remote_error_avif_decode_unsupported)
             logRepository.error("CoordinatorClient", message)
             return Result.failure(IllegalStateException(message))
         }
@@ -537,14 +563,18 @@ class CoordinatorClient(
             ) { message ->
                 logRepository.error("CoordinatorClient", message)
             } ?: return Result.failure(
-                IllegalStateException("Failed to read image input: ${input.displayName}")
+                IllegalStateException(
+                    localizedGetString(R.string.remote_error_read_input_failed, input.displayName)
+                )
             )
         }
 
         // Header-only bounds read: no full decode, keeps the phone thin.
         val inputBounds = decodeEncodedImageBounds(inputBytes)
             ?: return Result.failure(
-                IllegalStateException("Input is not a decodable image: ${input.displayName}")
+                IllegalStateException(
+                    localizedGetString(R.string.remote_error_input_not_decodable, input.displayName)
+                )
             )
 
         val settings = encoderSettings
@@ -599,10 +629,21 @@ class CoordinatorClient(
             if (nativeSessionHandle == 0L) {
                 if (!recoverOnFailure) {
                     // 发前路径禁止在这里开新会话（与 awaitResult 抢句柄）。
-                    return Result.failure(IllegalStateException("Distributed session is closed"))
+                    return Result.failure(
+                        IllegalStateException(
+                            localizedGetString(R.string.remote_error_session_closed)
+                        )
+                    )
                 }
                 if (!openSession(endpoint)) {
-                    return Result.failure(IllegalStateException("PC 不可达：${lastNativeError()}"))
+                    return Result.failure(
+                        IllegalStateException(
+                            localizedGetString(
+                                R.string.remote_error_pc_unreachable_reason,
+                                lastNativeError()
+                            )
+                        )
+                    )
                 }
             }
             send(nativeSessionHandle, useChunked)
@@ -611,7 +652,13 @@ class CoordinatorClient(
             return Result.success(task)
         }
         if (!recoverOnFailure) {
-            return Result.failure(IllegalStateException(lastNativeError().ifBlank { "upload failed" }))
+            return Result.failure(
+                IllegalStateException(
+                    lastNativeError().ifBlank {
+                        localizedGetString(R.string.remote_error_upload_failed)
+                    }
+                )
+            )
         }
         // 传输层失败：PC 可能重启（或是不支持会话循环的旧版）。重开一次再发；
         // 若首次是分块发送，则按“旧 PC 不支持分块”处理，重发强制单帧并记
@@ -625,7 +672,11 @@ class CoordinatorClient(
             val reason = lastNativeError()
             closeSession()
             clearEndpoint(endpoint)
-            val message = if (reason.isNotBlank()) "PC 不可达：$reason" else "PC 不可达"
+            val message = if (reason.isNotBlank()) {
+                localizedGetString(R.string.remote_error_pc_unreachable_reason, reason)
+            } else {
+                localizedGetString(R.string.remote_error_pc_unreachable)
+            }
             logRepository.error("CoordinatorClient", message)
             return Result.failure(IllegalStateException(message))
         }
@@ -828,7 +879,9 @@ class CoordinatorClient(
         return runCatching {
             val parent = file.parentFile
             if (parent != null && !parent.exists() && !parent.mkdirs()) {
-                throw IllegalStateException("Failed to create output directory: ${parent.absolutePath}")
+                throw IllegalStateException(
+                    localizedGetString(R.string.remote_error_create_output_dir, parent.absolutePath)
+                )
             }
             FileOutputStream(file, false).use { outputStream ->
                 outputStream.write(encodedBytes)

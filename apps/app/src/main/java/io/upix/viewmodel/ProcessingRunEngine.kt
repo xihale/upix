@@ -630,7 +630,9 @@ internal class ProcessingRunEngine(    private val viewModel: ProcessingViewMode
                             // send-ahead 已在上轮失败：按当前图失败上报并终止批次。
                             Result.failure<NativeProcessResult>(
                                 remoteSendAheadError
-                                    ?: IllegalStateException("Remote upload failed")
+                                    ?: IllegalStateException(
+                                        stringProvider.getString(R.string.processing_error_remote_upload_failed)
+                                    )
                             )
                         } else {
                     withContext(ioDispatcher) {
@@ -752,7 +754,7 @@ internal class ProcessingRunEngine(    private val viewModel: ProcessingViewMode
                     if (remoteRouting && result.isFailure) {
                         val reason = result.exceptionOrNull()?.message
                             ?: stringProvider.getString(R.string.processing_error_unknown_processing)
-                        val errText = "PC 处理失败：$reason"
+                        val errText = stringProvider.getString(R.string.processing_error_pc_failed, reason)
                         lastError = errText
                         val failedItemUri = item.uri.toString()
                         val previousAttempts = failureDetailsByUri[failedItemUri]?.attempts ?: 0

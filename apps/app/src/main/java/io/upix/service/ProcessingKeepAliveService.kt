@@ -14,11 +14,13 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
+import androidx.annotation.StringRes
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import io.upix.MainActivity
 import io.upix.R
 import io.upix.UpixApplication
+import io.upix.util.AppLocale
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -203,13 +205,16 @@ class ProcessingKeepAliveService : Service() {
 
     // ---- 通知 ----
 
+    private fun localizedGetString(@StringRes resId: Int, vararg formatArgs: Any): String =
+        AppLocale.localizedContext(this).getString(resId, *formatArgs)
+
     private fun createNotificationChannel() {
         val channel = NotificationChannel(
             CHANNEL_ID,
-            getString(R.string.notification_channel_processing_name),
+            localizedGetString(R.string.notification_channel_processing_name),
             NotificationManager.IMPORTANCE_LOW
         ).apply {
-            description = getString(R.string.notification_channel_processing_description)
+            description = localizedGetString(R.string.notification_channel_processing_description)
             setShowBadge(false)
         }
         val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -228,7 +233,7 @@ class ProcessingKeepAliveService : Service() {
     }
 
     private fun buildProgressNotification(snapshot: ForegroundProgressSnapshot): Notification {
-        val counts = getString(
+        val counts = localizedGetString(
             R.string.notification_processing_counts,
             snapshot.completedItems,
             snapshot.totalItems
@@ -237,19 +242,19 @@ class ProcessingKeepAliveService : Service() {
             append(counts)
             snapshot.currentItemName?.takeIf { it.isNotBlank() }?.let { name ->
                 append(SEPARATOR)
-                append(getString(R.string.notification_processing_current, name))
+                append(localizedGetString(R.string.notification_processing_current, name))
             }
             snapshot.remoteInferencePercent?.let { percent ->
                 append(SEPARATOR)
                 append(
                     if (snapshot.remoteEtaSeconds != null && snapshot.remoteEtaSeconds > 0) {
-                        getString(
+                        localizedGetString(
                             R.string.processing_remote_phase_inference_eta,
                             percent,
                             snapshot.remoteEtaSeconds
                         )
                     } else {
-                        getString(R.string.processing_remote_phase_inference, percent)
+                        localizedGetString(R.string.processing_remote_phase_inference, percent)
                     }
                 )
             }
@@ -257,9 +262,9 @@ class ProcessingKeepAliveService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_monochrome)
             .setContentTitle(
-                getString(
+                localizedGetString(
                     R.string.notification_processing_title,
-                    snapshot.modelName ?: getString(R.string.app_name)
+                    snapshot.modelName ?: localizedGetString(R.string.app_name)
                 )
             )
             .setContentText(contentText)
@@ -279,28 +284,28 @@ class ProcessingKeepAliveService : Service() {
             else -> R.string.notification_failed_title
         }
         val content = when {
-            completion.completed -> getString(
+            completion.completed -> localizedGetString(
                 R.string.notification_completed_content,
                 completion.completedItems,
-                completion.outputDirectory ?: getString(R.string.app_name)
+                completion.outputDirectory ?: localizedGetString(R.string.app_name)
             )
 
-            completion.canceled -> getString(
+            completion.canceled -> localizedGetString(
                 R.string.notification_canceled_content,
                 completion.completedItems,
                 completion.totalItems
             )
 
-            else -> getString(
+            else -> localizedGetString(
                 R.string.notification_failed_content,
                 completion.completedItems,
                 completion.totalItems,
-                completion.errorMessage ?: getString(R.string.processing_error_unknown_failure)
+                completion.errorMessage ?: localizedGetString(R.string.processing_error_unknown_failure)
             )
         }
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher_monochrome)
-            .setContentTitle(getString(titleRes))
+            .setContentTitle(localizedGetString(titleRes))
             .setContentText(content)
             .setStyle(NotificationCompat.BigTextStyle().bigText(content))
             .setAutoCancel(true)

@@ -244,7 +244,7 @@ class InputSourceRepository(
             } == true
         }.onFailure { throwable ->
             val avifHint = if (isAvifName(displayName)) {
-                " (${avifDecodeErrorMessage(displayName)})"
+                " (${avifDecodeErrorMessage(displayName, context)})"
             } else {
                 ""
             }

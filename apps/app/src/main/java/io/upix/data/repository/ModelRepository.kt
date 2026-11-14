@@ -5,9 +5,11 @@ import android.content.Context
 import android.net.Uri
 import android.os.Environment
 import android.provider.OpenableColumns
+import androidx.annotation.StringRes
 import io.upix.R
 import io.upix.data.model.ModelInfo
 import io.upix.data.model.ModelImportResult
+import io.upix.util.AppLocale
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.IOException
@@ -51,6 +53,9 @@ class ModelRepository(
         ?.let { directory -> File(directory, "models") }
         ?: File(context.filesDir, "models")
 
+    private fun localizedGetString(@StringRes resId: Int, vararg formatArgs: Any): String =
+        AppLocale.localizedContext(context).getString(resId, *formatArgs)
+
     private val _models = MutableStateFlow<List<ModelInfo>>(emptyList())
     override val models: StateFlow<List<ModelInfo>> = _models.asStateFlow()
 
@@ -81,7 +86,7 @@ class ModelRepository(
         if (normalizedUris.isEmpty()) {
             return@withContext ModelImportResult(
                 invalidItems = listOf(
-                    context.getString(R.string.models_import_error_no_files)
+                    localizedGetString(R.string.models_import_error_no_files)
                 )
             )
         }
@@ -97,7 +102,7 @@ class ModelRepository(
             )
             return@withContext ModelImportResult(
                 invalidItems = listOf(
-                    context.getString(R.string.models_import_error_staging_dir)
+                    localizedGetString(R.string.models_import_error_staging_dir)
                 )
             )
         }
@@ -133,7 +138,7 @@ class ModelRepository(
 
                     else -> {
                         invalidItems.add(
-                            context.getString(R.string.models_import_error_invalid_extension, sourceName)
+                            localizedGetString(R.string.models_import_error_invalid_extension, sourceName)
                         )
                     }
                 }
@@ -144,7 +149,7 @@ class ModelRepository(
                 val binFile = candidate.binFile
                 if (paramFile == null || binFile == null) {
                     invalidItems.add(
-                        context.getString(
+                        localizedGetString(
                             R.string.models_import_error_invalid_pair,
                             candidate.suggestedName
                         )
@@ -161,7 +166,7 @@ class ModelRepository(
                 }.getOrElse { throwable ->
                     val reason = throwable.message.orEmpty().ifBlank { "unknown error" }
                     invalidItems.add(
-                        context.getString(
+                        localizedGetString(
                             R.string.models_import_error_import_failed,
                             candidate.suggestedName,
                             reason
@@ -180,12 +185,12 @@ class ModelRepository(
 
         if (candidates.isEmpty()) {
             invalidItems.add(
-                context.getString(R.string.models_import_error_no_models_found)
+                localizedGetString(R.string.models_import_error_no_models_found)
             )
         }
         if (importedModelNames.isEmpty() && invalidItems.isEmpty()) {
             invalidItems.add(
-                context.getString(R.string.models_import_error_invalid_pair_generic)
+                localizedGetString(R.string.models_import_error_invalid_pair_generic)
             )
         }
 
@@ -271,7 +276,7 @@ class ModelRepository(
         val sourceInputStream = contentResolver.openInputStream(sourceUri)
         if (sourceInputStream == null) {
             invalidItems.add(
-                context.getString(R.string.models_import_error_unreadable, sourceName)
+                localizedGetString(R.string.models_import_error_unreadable, sourceName)
             )
             return
         }
@@ -300,7 +305,7 @@ class ModelRepository(
             }
         }.onFailure { throwable ->
             invalidItems.add(
-                context.getString(
+                localizedGetString(
                     R.string.models_import_error_read_failed,
                     sourceName,
                     throwable.message.orEmpty()
@@ -330,7 +335,7 @@ class ModelRepository(
         val sourceInputStream = contentResolver.openInputStream(sourceUri)
         if (sourceInputStream == null) {
             invalidItems.add(
-                context.getString(R.string.models_import_error_zip_unreadable, sourceName)
+                localizedGetString(R.string.models_import_error_zip_unreadable, sourceName)
             )
             return
         }
@@ -354,7 +359,7 @@ class ModelRepository(
                             // Reject entries with path traversal sequences ("..").
                             if (normalizedEntryPath.contains("..")) {
                                 invalidItems.add(
-                                    context.getString(
+                                    localizedGetString(
                                         R.string.models_import_error_zip_illegal_entry,
                                         sourceName,
                                         normalizedEntryPath
@@ -414,7 +419,7 @@ class ModelRepository(
             }
         }.onFailure { throwable ->
             invalidItems.add(
-                context.getString(
+                localizedGetString(
                     R.string.models_import_error_unzip_failed,
                     sourceName,
                     throwable.message.orEmpty()
@@ -425,7 +430,7 @@ class ModelRepository(
 
         if (matchedEntryCount <= 0) {
             invalidItems.add(
-                context.getString(R.string.models_import_error_zip_no_models, sourceName)
+                localizedGetString(R.string.models_import_error_zip_no_models, sourceName)
             )
         }
     }
@@ -512,7 +517,7 @@ class ModelRepository(
         if (extension == PARAM_FILE_EXTENSION) {
             if (candidate.paramFile != null) {
                 invalidItems.add(
-                    context.getString(
+                    localizedGetString(
                         R.string.models_import_error_duplicate_param,
                         candidate.suggestedName
                     )
@@ -526,7 +531,7 @@ class ModelRepository(
         if (extension == BIN_FILE_EXTENSION) {
             if (candidate.binFile != null) {
                 invalidItems.add(
-                    context.getString(
+                    localizedGetString(
                         R.string.models_import_error_duplicate_bin,
                         candidate.suggestedName
                     )
@@ -538,7 +543,7 @@ class ModelRepository(
         }
 
         invalidItems.add(
-            context.getString(R.string.models_import_error_invalid_extension, sourceLabel)
+            localizedGetString(R.string.models_import_error_invalid_extension, sourceLabel)
         )
     }
 
@@ -552,7 +557,7 @@ class ModelRepository(
         val targetDirectory = File(modelsDirectory, uniqueName)
         if (!targetDirectory.exists() && !targetDirectory.mkdirs()) {
             throw IOException(
-                context.getString(
+                localizedGetString(
                     R.string.models_import_error_mkdir_failed,
                     targetDirectory.absolutePath
                 )
