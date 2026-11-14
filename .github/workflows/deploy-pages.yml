@@ -1,12 +1,12 @@
 name: Deploy Pages
 
-# Publishes the landing page (site/) to GitHub Pages. Download links are
-# resolved at build time from the GitHub API — see site/vite.config.js.
+# Builds the Zig WASM kernels and publishes the web app (web/) to GitHub Pages.
 on:
   push:
     branches: [main]
     paths:
-      - "site/**"
+      - "web/**"
+      - "wasm/**"
       - ".github/workflows/deploy-pages.yml"
   workflow_dispatch:
 
@@ -22,7 +22,7 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -35,20 +35,28 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: site/package-lock.json
+          cache-dependency-path: web/package-lock.json
+      - name: Install Zig 0.17.0
+        run: |
+          curl -fsSL https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz -o "$RUNNER_TEMP/zig.tar.xz"
+          echo "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
+          tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
+          rm -f "$RUNNER_TEMP/zig.tar.xz"
+          echo "$RUNNER_TEMP/zig-x86_64-linux-0.17.0" >> "$GITHUB_PATH"
       - name: install
         run: npm ci
-        working-directory: site
+        working-directory: web
       - name: lint
         run: npm run lint
-        working-directory: site
+        working-directory: web
+      - name: build wasm
+        run: npm run build:wasm
+        working-directory: web
       - name: build
         run: npm run build
-        working-directory: site
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: web
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3 (v3.0.1)
         with:
-          path: site/dist
+          path: web/dist
       - id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e  # v4 (v4.0.5)

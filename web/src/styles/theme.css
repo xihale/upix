@@ -1,0 +1,268 @@
+/* Design Tokens — Vercel Geist system (per vercel/DESIGN.md).
+   Near-white canvas (#fafafa) carrying near-black ink (#171717); hierarchy is
+   typographic (Geist Sans 600, tight negative tracking) + 1px hairlines
+   (#ebebeb) + a single accent: Vercel blue (#0070f3), reserved for links,
+   focus, progress and live signals. Depth = hairline first, then a whisper
+   shadow; floating surfaces use a finely-layered low-alpha stack.
+   Dark theme: pure black canvas, near-black elevated surfaces, #262626 rules. */
+
+:root {
+  color-scheme: light;
+
+  /* Canvas & surfaces: airy Geist neutral monochrome */
+  --bg: #fafafa;
+  --bg-well: #fafafa;
+  --bg-panel: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-subtle: #f4f4f4;
+
+  /* Hairlines (1px structural borders) */
+  --rule: #eaeaea;
+  --rule-strong: #d4d4d4;
+
+  /* Ink ladder: ink → body → mute → faint */
+  --ink: #171717;
+  --ink-secondary: #525252;
+  --ink-muted: #737373;
+  --ink-disabled: #a3a3a3;
+  --on-ink: #ffffff;
+  --cta-disabled-bg: #f3f3f3;
+  --cta-disabled-fg: #999999;
+  --ink-hover: #383838;
+  --ink-active: #666666;
+
+  /* Vercel blue — links, focus, progress, live state (success per DESIGN.md) */
+  --accent: #0070f3;
+  --accent-deep: #0761d1;
+  --accent-soft: #d3e5ff;
+  --signal: var(--accent);
+
+  /* Semantic */
+  --ok: #0070f3;
+  --danger: #ee0000;
+  --danger-deep: #c50000;
+  --danger-bg: rgb(238 0 0 / .06);
+  --danger-bg-hover: rgb(238 0 0 / .12);
+  --danger-bg-active: rgb(238 0 0 / .18);
+  --warning: #f5a623;
+
+  /* Focus & overlays */
+  --focus-ring: 2px solid #0070f3;
+  --scrim: rgb(0 0 0 / .48);
+  --veil: rgb(250 250 250 / .82);
+  --curtain-halo: rgb(255 255 255 / .72);
+  --shadow-whisper: 0 1px 1px rgb(0 0 0 / .04);
+  --shadow-float:
+    inset 0 0 0 1px rgb(255 255 255 / .6),
+    0 2px 2px rgb(0 0 0 / .02),
+    0 8px 16px -4px rgb(0 0 0 / .12);
+  --shadow-btn: 0 1px 1px rgb(0 0 0 / .04);
+
+  /* Radius: 6px functional chrome, 12px cards, 16px large panels */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 12px;
+  --r-lg: 16px;
+
+  /* 4px modular grid */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 20px;
+  --s6: 24px;
+  --s8: 32px;
+  --s10: 40px;
+
+  /* System UI + CJK sans stack, paired with Geist Mono for tabular data */
+  --font: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei',
+    'Noto Sans SC', 'Source Han Sans SC', sans-serif;
+  --mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas,
+    'JetBrains Mono', 'Liberation Mono', 'PingFang SC', 'Noto Sans SC', monospace;
+
+  /* Segmented control: hairline-framed track, clean floating thumb */
+  --seg-track: #f5f5f5;
+  --seg-track-border: #e6e6e6;
+  --seg-track-shadow: none;
+  --seg-thumb: #ffffff;
+  --seg-thumb-shadow: 0 1px 2px rgb(0 0 0 / .06), 0 0 0 1px rgb(0 0 0 / .05);
+  --seg-fg: #171717;
+  --seg-fg-muted: #666666;
+  --seg-fg-disabled: var(--ink-disabled);
+  --switch-knob-off: #ffffff;
+  --dz-border: #dcdcdc;
+  --dz-bg: #ffffff;
+  --dz-border-active: var(--accent);
+  --dz-bg-active: rgb(0 112 243 / .04);
+
+  /* Geist type scale (body-md 14 / body-sm 12 / heading-md 20) */
+  --fs-xs: 12px;
+  --fs-sm: 12px;
+  --fs-md: 14px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 24px;
+
+  /* Direct-manipulation feedback only; zero entrance animations */
+  --dur-instant: 90ms;
+  --dur-base: 140ms;
+  --ease: cubic-bezier(.2, 0, 0, 1);
+
+  --topbar-h: 52px;
+  --inspector-w: 336px;
+
+  /* Shared component tokens — control heights scale up on phones via the
+     640px override below; no per-component media rules needed. */
+  --control-h-xs: 24px;
+  --control-h-sm: 32px;
+  --control-h: 34px;
+  --control-h-lg: 40px;
+  --row-h: 32px;
+  --seg-btn-h: 28px;
+  --seg-btn-h-sm: 26px;
+  --seg-radius: 7px;
+  --seg-pad: 3px;
+  --r-full: 9999px;
+  --dot-size: 6px;
+  --border-hairline: 1px solid var(--rule);
+  --border-hairline-strong: 1px solid var(--rule-strong);
+  --success: #50e3c2;
+  --danger-contrast: #ffffff;
+}
+
+/* Phones: comfort sizing flows through every control via these tokens. */
+@media (max-width: 640px) {
+  :root {
+    --control-h-xs: 28px;
+    --control-h-sm: 32px;
+    --control-h: 36px;
+    --control-h-lg: 42px;
+    --row-h: 36px;
+    --seg-btn-h: 32px;
+    --seg-btn-h-sm: 30px;
+  }
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    color-scheme: dark;
+    --bg: #000000;
+    --bg-well: #000000;
+    --bg-panel: #0a0a0a;
+    --bg-elevated: #111111;
+    --bg-subtle: #141414;
+    --rule: #1f1f1f;
+    --rule-strong: #333333;
+    --ink: #ededed;
+    --ink-secondary: #a1a1a1;
+    --ink-muted: #737373;
+    --ink-disabled: #525252;
+    --on-ink: #000000;
+    --cta-disabled-bg: #141414;
+    --cta-disabled-fg: #666666;
+    /* Solid ink buttons invert to near-white in dark; hover/active mirror the
+       light ladder (#171717→#383838→#666, each step toward mid-gray) instead
+       of collapsing the button to charcoal. */
+    --ink-hover: #d4d4d4;
+    --ink-active: #a3a3a3;
+    --accent: #3291ff;
+    --accent-deep: #66b2ff;
+    --accent-soft: rgb(50 145 255 / .20);
+    --signal: var(--accent);
+    --ok: #3291ff;
+    --danger: #e5484d;
+    --danger-deep: #ff6169;
+    --danger-bg: rgb(229 72 77 / .14);
+    --danger-bg-hover: rgb(229 72 77 / .24);
+    --danger-bg-active: rgb(229 72 77 / .32);
+    --focus-ring: 2px solid #3291ff;
+    --scrim: rgb(0 0 0 / .72);
+    --veil: rgb(0 0 0 / .82);
+    --curtain-halo: rgb(0 0 0 / .72);
+    --shadow-whisper: 0 1px 2px rgb(0 0 0 / .5);
+    --shadow-float:
+      inset 0 0 0 1px rgb(255 255 255 / .08),
+      0 4px 12px rgb(0 0 0 / .5),
+      0 12px 32px -4px rgb(0 0 0 / .8);
+    --shadow-btn: 0 1px 1px rgb(0 0 0 / .4);
+
+    --seg-track: #000000;
+    --seg-track-border: #242424;
+    --seg-track-shadow: none;
+    --seg-thumb: #1f1f1f;
+    --seg-thumb-shadow: inset 0 0 0 1px rgb(255 255 255 / .12);
+    --seg-fg: #ffffff;
+    --seg-fg-muted: #888888;
+    --seg-fg-disabled: var(--ink-disabled);
+    --switch-knob-off: #d4d4d4;
+    --dz-border: #262626;
+    --dz-bg: #070707;
+    --dz-border-active: var(--accent);
+    --dz-bg-active: rgb(50 145 255 / .06);
+  }
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #000000;
+  --bg-well: #000000;
+  --bg-panel: #0a0a0a;
+  --bg-elevated: #111111;
+  --bg-subtle: #141414;
+  --rule: #1f1f1f;
+  --rule-strong: #333333;
+  --ink: #ededed;
+  --ink-secondary: #a1a1a1;
+  --ink-muted: #737373;
+  --ink-disabled: #525252;
+  --on-ink: #000000;
+  --cta-disabled-bg: #141414;
+  --cta-disabled-fg: #666666;
+  /* Solid ink buttons invert to near-white in dark; hover/active mirror the
+     light ladder (#171717→#383838→#666, each step toward mid-gray) instead
+     of collapsing the button to charcoal. */
+  --ink-hover: #d4d4d4;
+  --ink-active: #a3a3a3;
+  --accent: #3291ff;
+  --accent-deep: #66b2ff;
+  --accent-soft: rgb(50 145 255 / .20);
+  --signal: var(--accent);
+  --ok: #3291ff;
+  --danger: #e5484d;
+  --danger-deep: #ff6169;
+  --danger-bg: rgb(229 72 77 / .14);
+  --danger-bg-hover: rgb(229 72 77 / .24);
+  --danger-bg-active: rgb(229 72 77 / .32);
+  --focus-ring: 2px solid #3291ff;
+  --scrim: rgb(0 0 0 / .72);
+  --veil: rgb(0 0 0 / .82);
+  --curtain-halo: rgb(0 0 0 / .72);
+  --shadow-whisper: 0 1px 2px rgb(0 0 0 / .5);
+  --shadow-float:
+    inset 0 0 0 1px rgb(255 255 255 / .08),
+    0 4px 12px rgb(0 0 0 / .5),
+    0 12px 32px -4px rgb(0 0 0 / .8);
+  --shadow-btn: 0 1px 1px rgb(0 0 0 / .4);
+
+  --seg-track: #000000;
+  --seg-track-border: #242424;
+  --seg-track-shadow: none;
+  --seg-thumb: #1f1f1f;
+  --seg-thumb-shadow: inset 0 0 0 1px rgb(255 255 255 / .12);
+  --seg-fg: #ffffff;
+  --seg-fg-muted: #888888;
+  --seg-fg-disabled: var(--ink-disabled);
+  --switch-knob-off: #d4d4d4;
+  --dz-border: #262626;
+  --dz-bg: #070707;
+  --dz-border-active: var(--accent);
+  --dz-bg-active: rgb(50 145 255 / .06);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-instant: 0ms;
+    --dur-base: 0ms;
+  }
+}

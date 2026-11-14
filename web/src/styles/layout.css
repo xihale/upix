@@ -1,0 +1,185 @@
+/* Layout: flush architectural grid. Structural panes meet cleanly along 1px
+   hairlines (#ebebeb) instead of floating as nested cards inside padded
+   margins. Depth lives in type and rules, never heavy elevation. */
+
+.app {
+  display: grid;
+  grid-template-rows: var(--topbar-h) minmax(0, 1fr);
+  height: 100dvh;
+  background: var(--bg);
+}
+
+/* ── Top bar ───────────────────────────────────────────────────────────── */
+.topbar {
+  display: flex;
+  align-items: stretch;
+  justify-content: space-between;
+  gap: var(--s5);
+  padding: env(safe-area-inset-top) max(var(--s5), env(safe-area-inset-right)) 0 max(var(--s5), env(safe-area-inset-left));
+  background: var(--bg-panel);
+  border-bottom: var(--border-hairline);
+}
+
+.topbar-start {
+  display: flex;
+  align-items: stretch;
+  gap: var(--s5);
+  min-width: 0;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--ink);
+  text-decoration: none;
+}
+.brand-mark { display: block; flex: none; }
+.wordmark { font-size: 15px; font-weight: 600; letter-spacing: -0.02em; line-height: 1; }
+
+.topbar-sep {
+  align-self: center;
+  width: 1px;
+  height: 16px;
+  background: var(--rule);
+}
+
+.topbar-nav { display: flex; align-items: stretch; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.topbar-nav::-webkit-scrollbar { display: none; }
+.topbar-end { display: flex; align-items: center; gap: var(--s2); flex: none; }
+
+.view-host { min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+.view { min-height: 100%; }
+.view-workbench { height: 100%; }
+
+/* ── Workbench: flush 2-column architectural grid ──────────────────────── */
+.workbench {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--inspector-w);
+  height: 100%;
+  min-height: 540px;
+}
+
+.stage-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-right: var(--border-hairline);
+}
+.stage-col > .stage { flex: 1 1 auto; min-height: 320px; }
+
+.inspector {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--bg-panel);
+}
+.inspector-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-gutter: stable;
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding: var(--s6) var(--s5);
+  background: var(--bg-panel);
+}
+.cta-dock {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: stretch;
+  gap: var(--s2);
+  padding: var(--s4) var(--s5) var(--s5);
+  background: var(--bg-panel);
+  border-top: var(--border-hairline);
+}
+.cta-dock .btn-cta { flex: 1; }
+.cta-dock .btn:not(.btn-cta) { flex: none; min-height: 38px; }
+/* Blocker / download status line dropped under the CTA (see inspector.js). */
+.cta-hint {
+  flex: 1 1 100%;
+  font-size: var(--fs-xs);
+  color: var(--ink-muted);
+  text-align: center;
+}
+
+/* ── Secondary pages (Models / Engine) ─────────────────────────────────── */
+.page {
+  position: relative;
+  max-width: 980px;
+  margin: 0 auto;
+  padding: var(--s8) max(var(--s6), env(safe-area-inset-right)) calc(var(--s8) * 2) max(var(--s6), env(safe-area-inset-left));
+  display: grid;
+  gap: var(--s6);
+  align-content: start;
+}
+.page-head { display: grid; gap: var(--s3); }
+.page-head-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: var(--s4);
+  flex-wrap: wrap;
+}
+.page-titles { display: grid; gap: 4px; }
+.page-titles h1 { font-size: var(--fs-2xl); font-weight: 600; line-height: 1.2; letter-spacing: -0.02em; }
+.page-sub { font-size: var(--fs-sm); color: var(--ink-muted); }
+.page-actions { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+
+/* ── Narrow screens (≤ 860px) ──────────────────────────────────────────── */
+@media (max-width: 860px) {
+  .app { grid-template-rows: auto minmax(0, 1fr); }
+  .topbar {
+    padding: env(safe-area-inset-top) max(var(--s3), env(safe-area-inset-right)) 0 max(var(--s3), env(safe-area-inset-left));
+    gap: var(--s2);
+    min-height: var(--topbar-h);
+  }
+  .topbar-start { gap: var(--s3); }
+  .topbar-sep { display: none; }
+  .view-host { scroll-padding-bottom: 84px; }
+
+  .view-workbench { height: auto; }
+  .workbench {
+    display: flex;
+    flex-direction: column;
+    height: auto;
+    /* Pin the CTA dock to the viewport bottom even when content is short. */
+    min-height: calc(100dvh - var(--topbar-h));
+  }
+  .stage-col {
+    border-right: 0;
+    border-bottom: var(--border-hairline);
+  }
+  .stage-col > .stage { flex: none; }
+  /* Empty keeps its presence; loaded, the well follows the image aspect
+     (see .well in components.css) instead of holding a huge fixed box. */
+  .stage[data-state='empty'] { height: min(60dvh, 500px); min-height: 300px; }
+  .inspector { display: contents; }
+  .inspector-scroll { overflow: visible; }
+  .cta-dock {
+    position: sticky;
+    bottom: 0;
+    z-index: 5;
+    margin-top: auto;
+    padding: var(--s3) var(--s4) calc(var(--s3) + env(safe-area-inset-bottom));
+  }
+  .cta-dock .btn-cta,
+  .cta-dock .btn:not(.btn-cta) { min-height: 42px; }
+  .page {
+    padding: var(--s6) max(var(--s4), env(safe-area-inset-right)) calc(var(--s6) * 2) max(var(--s4), env(safe-area-inset-left));
+    gap: var(--s5);
+  }
+  .page-titles h1 { font-size: var(--fs-xl); }
+}
+
+@media (max-width: 480px) {
+  .wordmark { display: none; }
+  .topbar-start { gap: var(--s2); }
+  .topbar-nav .seg-tabs { gap: var(--s3); }
+}
+
+/* ── Phones (≤ 640px) ─────────────────────────────────────────────────── */
+/* Structural changes only; component sizing lives in components.css. */
