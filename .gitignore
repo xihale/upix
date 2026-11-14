@@ -101,3 +101,14 @@ gpu_*.log
 # python
 __pycache__/
 .csearch/
+
+# Local agent tooling & scratch output (never committed)
+.agent/
+.agents/
+.claude/
+skills/
+skills-lock.json
+crates/
+target/
+dist/
+imgui.ini
