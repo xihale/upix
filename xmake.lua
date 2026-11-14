@@ -48,6 +48,9 @@ if is_plat("linux") then
     add_cxflags("-fPIE")
     add_ldflags("-pie", "-Wl,-z,relro,-z,now")
 elseif is_plat("macosx") then
+    -- Xcode 16 / MacOSX15.5 SDK gates libc++ stop_token/jthread behind
+    -- _LIBCPP_ENABLE_EXPERIMENTAL (enabled by default in Xcode 26+).
+    add_defines("_LIBCPP_ENABLE_EXPERIMENTAL")
     add_cxflags("-fstack-protector-strong")
     if is_mode("release") then
         add_cxflags("-D_FORTIFY_SOURCE=2")
