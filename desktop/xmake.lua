@@ -31,10 +31,19 @@ target("upix")
         "src/qrcodegen.cpp",
         "src/views/shell.cpp",
         "src/views/workbench.cpp",
+        "src/views/workbench/stage_overlays.cpp",
+        "src/views/workbench/filmstrip_dock.cpp",
+        "src/views/workbench/model_picker_modal.cpp",
+        "src/views/workbench/inspector.cpp",
         "src/views/models.cpp",
         "src/views/host.cpp",
-        "src/views/settings.cpp",
-        "src/views/guide.cpp"
+        "src/views/host/widgets.cpp",
+        "src/views/host/ip_menu.cpp",
+        "src/views/host/pairing_modal.cpp",
+        "src/views/host/hero_card.cpp",
+        "src/views/host/trusted_devices.cpp",
+        "src/views/host/activity_log.cpp",
+        "src/views/settings.cpp"
     )
     set_targetdir("$(projectdir)/desktop/build")
 

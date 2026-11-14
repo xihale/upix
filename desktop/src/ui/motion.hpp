@@ -40,6 +40,25 @@ inline bool& reduceMotion() {
     return r;
 }
 
+namespace detail {
+inline bool& frameActiveFlag() {
+    static bool active = false;
+    return active;
+}
+} // namespace detail
+
+// Frame-scoped motion activity tracker so the host loop runs at full VSync
+// while any spring, ease, spinner, or smooth scroll is converging, then sleeps.
+inline void beginMotionFrame() {
+    detail::frameActiveFlag() = false;
+}
+inline void markMotionActive() {
+    detail::frameActiveFlag() = true;
+}
+inline bool hasActiveMotion() {
+    return detail::frameActiveFlag();
+}
+
 // Deterministic headless clock override for unit tests and --audit-motion.
 // When headlessMode() is false (default), currentFrame() and currentDt() query ImGui.
 namespace detail {
@@ -183,6 +202,7 @@ inline float advance(Spring1D& s, float target, const SpringParams& p, float dt)
     }
     s.value = target + x;
     s.velocity = v;
+    markMotionActive();
     return s.value;
 }
 
@@ -238,7 +258,11 @@ inline float approach(ImGuiID id, float target, float durationMs, float defaultV
     const float tau = (durationMs / 1000.0f) / 3.0f;
     const float k = 1.0f - std::exp(-dt / tau);
     s.value += (target - s.value) * k;
-    if (std::fabs(s.value - target) < 1.0e-3f) s.value = target;
+    if (std::fabs(s.value - target) < 1.0e-3f) {
+        s.value = target;
+    } else {
+        markMotionActive();
+    }
     return s.value;
 }
 
@@ -269,6 +293,22 @@ inline float followSpring(ImGuiID id, float target, const SpringParams& p) {
 // Press rebound for a control. `pressed` = active this frame.
 inline float pressScale(ImGuiID id, bool pressed, float amount = PRESS_SCALE) {
     return springTo(id, pressed ? amount : 1.0f, PRESS, 1.0f);
+}
+
+// Smooth hover factor 0..1 (seeded at target on first sight -> zero entrance motion).
+inline float hoverFactor(ImGuiID id, bool hovered, float durationMs = INSTANT) {
+    const float t = hovered ? 1.0f : 0.0f;
+    return approach(id, t, durationMs, t);
+}
+
+// Smooth scroll interpolation toward target (px). Seeded at target on first sight.
+inline float smoothScroll(ImGuiID id, float target, float durationMs = 150.0f) {
+    const float val = approach(id, target, durationMs, target);
+    if (std::fabs(val - target) >= 0.25f) {
+        markMotionActive();
+        return val;
+    }
+    return target;
 }
 
 inline ImU32 wash(ImU32 base, ImU32 over, bool hovered) {

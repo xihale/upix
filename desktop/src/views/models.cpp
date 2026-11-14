@@ -1,13 +1,15 @@
 #include "views/common.hpp"
+#include "views/models/grouping.hpp"
+#include "views/models/model_row.hpp"
+
+#include "ui/flex.hpp"
 
 #include "imgui.h"
 
 #include <SDL3/SDL.h>
 
 #include <algorithm>
-#include <cctype>
 #include <cmath>
-#include <cstdio>
 #include <filesystem>
 #include <format>
 #include <string>
@@ -17,685 +19,434 @@
 namespace upix::views {
 namespace {
 
-constexpr float kRailW = 76.0f;
-constexpr float kPagePad = 32.0f;
-constexpr float kColMax = 720.0f;
-constexpr float kToolbarH = 32.0f;
-constexpr float kAfterToolbar = 16.0f;
-constexpr float kBannerGap = 16.0f;
-constexpr float kSectionGap = 24.0f;
-constexpr float kSectionHeadH = 18.0f;
-constexpr float kHeadToCard = 12.0f;
-constexpr float kCardGap = 16.0f;
-constexpr float kCardHeadH = 36.0f;
-constexpr float kRowH = 44.0f;
-constexpr float kRowPadX = 16.0f;
-constexpr float kEmptyH = 104.0f;
+constexpr float kPagePad = upix::ui::geist::space::XXXL;
+constexpr float kColMax = 980.0f;
 
 float gScroll = 0.0f;
+float gScrollTarget = 0.0f;
 float gContentH = 0.0f;
+std::string gDismissedBannerStatus;
+bool gMirrorOpen = false;
 
-std::string toLowerTrimmed(const char* raw) {
-    if (!raw) return {};
-    std::string s(raw);
-    size_t b = 0;
-    while (b < s.size() && std::isspace(static_cast<unsigned char>(s[b]))) ++b;
-    size_t e = s.size();
-    while (e > b && std::isspace(static_cast<unsigned char>(s[e - 1]))) --e;
-    s = s.substr(b, e - b);
-    for (char& c : s) {
-        if (static_cast<unsigned char>(c) < 0x80) {
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        }
-    }
-    return s;
+struct EmptyStateSlots {
+    upix::ui::flex::Slot icon;
+    upix::ui::flex::Slot title;
+    upix::ui::flex::Slot button;
+};
+
+EmptyStateSlots addEmptyState(upix::ui::flex::Container& parent, ImFont* sans, ImFont* sansMed,
+                              float colW, const char* title, bool withClearFilter, bool visible) {
+    using namespace upix::ui;
+    const ImVec2 tsz = calcText(sansMed, geist::type::BODY, title);
+    const ImVec2 bsz = calcText(sans, geist::type::BODY_SMALL, "清除筛选");
+    const float btnW = std::ceil(bsz.x) + 28.0f;
+    const float btnH = std::max(32.0f, std::ceil(bsz.y) + 14.0f);
+
+    auto box = parent.col({
+        .padding = flex::Edges::xy(geist::space::LG, geist::space::XXXL),
+        .gap = geist::space::SM,
+        .justify = flex::Justify::Center,
+        .align = flex::Align::Center,
+        .width = flex::Fixed(colW),
+        .visible = visible,
+    });
+    const auto iconSlot = box.slot(flex::Fixed(20.0f), flex::Fixed(20.0f));
+    const auto titleSlot = box.slot(flex::Auto(std::ceil(tsz.x) + 4.0f),
+                                    flex::Fixed(std::ceil(tsz.y) + 2.0f));
+    const auto btnSlot = box.slot(flex::Fixed(btnW), flex::Fixed(btnH), flex::AlignSelf::Center,
+                                  flex::Edges::only(0.0f, geist::space::XS, 0.0f, 0.0f), withClearFilter);
+    return {iconSlot, titleSlot, btnSlot};
 }
 
-std::string toLowerAscii(const std::string& in) {
-    std::string out = in;
-    for (char& c : out) {
-        if (static_cast<unsigned char>(c) < 0x80) {
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        }
-    }
-    return out;
-}
-
-bool sceneMatches(const std::string& filter, const std::string& scene) {
-    if (filter == "all" || filter.empty()) return true;
-    if (filter == "动漫") return scene.find("动漫") != std::string::npos;
-    if (filter == "照片") {
-        return scene.find("照片") != std::string::npos && scene.find("修复") == std::string::npos;
-    }
-    if (filter == "综合") {
-        return scene.find("综合") != std::string::npos || scene.find("通用") != std::string::npos || scene.empty();
-    }
-    if (filter == "修复") return scene.find("修复") != std::string::npos;
-    return scene.find(filter) != std::string::npos;
-}
-
-bool queryMatches(const std::string& qLower, const upix::gui::ModelItem& m, const std::string& family) {
-    if (qLower.empty()) return true;
-    char scBuf[32] = {};
-    const char* scLbl = upix::ui::ctl::sceneLabel(m.scene.c_str(), scBuf, sizeof(scBuf));
-    if (toLowerAscii(m.name).find(qLower) != std::string::npos) return true;
-    if (!m.short_name.empty() && toLowerAscii(m.short_name).find(qLower) != std::string::npos) return true;
-    if (!family.empty() && toLowerAscii(family).find(qLower) != std::string::npos) return true;
-    if (!m.scene.empty() && toLowerAscii(m.scene).find(qLower) != std::string::npos) return true;
-    if (scLbl && scLbl[0] && toLowerAscii(scLbl).find(qLower) != std::string::npos) return true;
-    return false;
-}
-
-bool isMissingSize(const std::string& s) {
-    return s.empty() || s == "0.00 MB" || s == "0 MB" || s == "0 B";
-}
-
-float textTop(float boxY, float boxH, float textH) {
-    return boxY + (boxH - textH) * 0.5f;
-}
-
-float drawSceneChip(ImDrawList* dl, ImFont* font, float x, float rowY, const std::string& scene) {
+bool drawEmptyState(ImDrawList* dl, const upix::ui::flex::Layout& fx, const EmptyStateSlots& slots,
+                    ImFont* sans, ImFont* sansMed, ImGuiID btnId,
+                    const char* title, bool withClearFilter) {
     using namespace upix::ui;
     const auto& t = geist::tokens();
-    char scBuf[32] = {};
-    const char* label = ctl::sceneLabel(scene.c_str(), scBuf, sizeof(scBuf));
-    const ImVec2 ts = calcText(font, geist::type::LABEL, label);
-    const float w = 24.0f + ts.x;
-    const float h = 20.0f;
-    const float y = rowY + (kRowH - h) * 0.5f;
-    ImVec2 p0 = snapPt(x, y);
-    ImVec2 p1 = snapPt(x + w, y + h);
-    dl->AddRectFilled(p0, p1, t.tagBg, geist::radius::SM);
-    dl->AddRect(p0, p1, t.outline, geist::radius::SM, 0, hairlinePx());
-    const float cy = (p0.y + p1.y) * 0.5f;
-    dl->AddCircleFilled(ImVec2(p0.x + 9.5f, cy), 2.5f, ctl::sceneDotColor(scene.c_str()));
-    drawText(dl, font, geist::type::LABEL, ImVec2(p0.x + 17.0f, textTop(p0.y, h, ts.y)), t.body, label);
-    return w;
-}
-
-float drawScaleChip(ImDrawList* dl, ImFont* font, float x, float rowY, int scale) {
-    using namespace upix::ui;
-    const auto& t = geist::tokens();
-    const std::string label = std::format("{}×", scale);
-    const ImVec2 ts = calcText(font, geist::type::LABEL, label.c_str());
-    const float w = 12.0f + ts.x;
-    const float h = 20.0f;
-    const float y = rowY + (kRowH - h) * 0.5f;
-    ImVec2 p0 = snapPt(x, y);
-    ImVec2 p1 = snapPt(x + w, y + h);
-    dl->AddRectFilled(p0, p1, t.container, geist::radius::SM);
-    dl->AddRect(p0, p1, t.outline, geist::radius::SM, 0, hairlinePx());
-    drawTextCentered(dl, font, geist::type::LABEL, p0, p1, t.mute, label.c_str());
-    return w;
-}
-
-void drawSectionHead(ImDrawList* dl, ImFont* sans, ImFont* mono, float x, float y, float w,
-                     const char* title, size_t count) {
-    using namespace upix::ui;
-    const auto& t = geist::tokens();
-    const ImVec2 ts = calcText(sans, geist::type::BODY_SMALL, title);
-    drawText(dl, sans, geist::type::BODY_SMALL, ImVec2(x, textTop(y, kSectionHeadH, ts.y)), t.mute, title);
-    const std::string cnt = std::format("{}", count);
-    const ImVec2 cs = calcText(mono, geist::type::BODY_SMALL, cnt.c_str());
-    const float cx = x + ts.x + 10.0f;
-    drawText(dl, mono, geist::type::BODY_SMALL, ImVec2(cx, textTop(y, kSectionHeadH, cs.y)), t.faint, cnt.c_str());
-    const float lineX = cx + cs.x + 10.0f;
-    const float lineY = snapPx(y + kSectionHeadH * 0.5f);
-    if (lineX < x + w - 8.0f) {
-        ctl::hHairline(dl, lineX, x + w, lineY, t.outline);
-    }
-}
-
-bool drawEmptyCard(ImDrawList* dl, ImFont* sans, ImGuiID btnId, float x, float y, float w,
-                   const char* title, const char* hint, bool withClearFilter) {
-    using namespace upix::ui;
-    const auto& t = geist::tokens();
-    const float cardH = withClearFilter ? 128.0f : kEmptyH;
-    ImVec2 p0 = snapPt(x, y);
-    ImVec2 p1 = snapPt(x + w, y + cardH);
-    ctl::groupCard(dl, p0, p1);
-    const float cx = (p0.x + p1.x) * 0.5f;
-    drawIcon(dl, "layers", ImVec2(cx, p0.y + 30.0f), 18.0f, t.mute);
-    const ImVec2 ts = calcText(sans, geist::type::BODY, title);
-    drawText(dl, sans, geist::type::BODY, ImVec2(cx - ts.x * 0.5f, p0.y + 46.0f), t.ink, title);
-    if (hint && hint[0]) {
-        const ImVec2 hs = calcText(sans, geist::type::BODY_SMALL, hint);
-        drawText(dl, sans, geist::type::BODY_SMALL, ImVec2(cx - hs.x * 0.5f, p0.y + 68.0f), t.mute, hint);
-    }
-    if (withClearFilter) {
-        const char* btnLabel = "清除筛选";
-        const ImVec2 bs = calcText(sans, ctl::geom::LABEL, btnLabel);
-        const float bw = bs.x + 2.0f * ctl::geom::GHOST_PX;
-        return ctl::ghostButton(dl, btnId, btnLabel, sans,
-                                snapPt(cx - bw * 0.5f, p0.y + 90.0f), bw, true);
+    drawIcon(dl, "layers", fx.rect(slots.icon).center(), 18.0f, t.mute);
+    drawTextCentered(dl, sansMed, geist::type::BODY, fx.p0(slots.title), fx.p1(slots.title), t.ink, title);
+    if (withClearFilter && fx.isVisible(slots.button)) {
+        return ctl::secondaryButton(dl, btnId, "清除筛选", sans, fx.p0(slots.button), fx.p1(slots.button));
     }
     return false;
 }
 
-struct RowRef {
-    upix::gui::ModelItem item;
-    bool remote = false;
+struct GroupSlots {
+    upix::ui::flex::Slot head;
+    std::vector<upix::ui::flex::Slot> rows;
 };
-
-struct GroupRef {
-    std::string title;
-    std::vector<RowRef> rows;
-};
-
-std::vector<GroupRef> filterGroups(const std::vector<upix::gui::ModelFamily>& groups,
-                                   const std::string& sceneFilter,
-                                   const std::string& qLower,
-                                   bool remote,
-                                   const std::unordered_set<std::string>* excludeNames = nullptr) {
-    std::vector<GroupRef> out;
-    for (const auto& g : groups) {
-        GroupRef fg;
-        fg.title = g.label;
-        for (const auto& it : g.items) {
-            if (excludeNames && excludeNames->count(it.name)) continue;
-            if (!sceneMatches(sceneFilter, it.scene)) continue;
-            if (!queryMatches(qLower, it, g.label)) continue;
-            fg.rows.push_back(RowRef{it, remote});
-        }
-        if (!fg.rows.empty()) out.push_back(std::move(fg));
-    }
-    return out;
-}
-
-size_t countRows(const std::vector<GroupRef>& groups) {
-    size_t n = 0;
-    for (const auto& g : groups) n += g.rows.size();
-    return n;
-}
-
-void drawModelRow(ImDrawList* dl, ImFont* sans, ImFont* mono, ImVec2 c0, ImVec2 c1, float ry, const RowRef& row,
-                  bool last, const upix::gui::Snapshot& snap, upix::gui::AppState& app) {
-    using namespace upix::ui;
-    const auto& t = geist::tokens();
-    const auto& m = row.item;
-    const bool current = !row.remote && m.name == snap.model;
-    const bool downloading = row.remote && snap.downloading == m.name;
-    const ImVec2 row0(c0.x, ry);
-    const ImVec2 row1(c1.x, ry + kRowH);
-
-    ImGui::PushID(row.remote ? "r" : "i");
-    ImGui::PushID(m.name.c_str());
-
-    const float left = c0.x + kRowPadX;
-    const float right = c1.x - kRowPadX;
-    const float cy = ry + kRowH * 0.5f;
-
-    // Reserve action rect first so clicking trash/download does not trigger row selection.
-    const float btnBox = 26.0f;
-    const ImVec2 bpos = snapPt(right - btnBox, ry + (kRowH - btnBox) * 0.5f);
-    const bool rowClickable = !row.remote;
-    bool rowHovered = false;
-    bool rowClicked = false;
-    if (rowClickable) {
-        const ImVec2 hitP0(row0.x + 1.0f, row0.y + 1.0f);
-        const ImVec2 hitP1(bpos.x - 6.0f, row1.y - 1.0f);
-        ImGui::SetCursorScreenPos(hitP0);
-        rowClicked = ImGui::InvisibleButton("##select_row", ImVec2(std::max(1.0f, hitP1.x - hitP0.x), std::max(1.0f, hitP1.y - hitP0.y)));
-        rowHovered = ImGui::IsItemHovered();
-        if (rowHovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-    } else {
-        rowHovered = ctl::mouseIn(row0, row1);
-    }
-
-    const bool anyHover = rowHovered || ctl::mouseIn(row0, row1);
-    if (current) {
-        const ImDrawFlags corners = last ? ImDrawFlags_RoundCornersBottom : 0;
-        dl->AddRectFilled(ImVec2(row0.x + 1.0f, row0.y), ImVec2(row1.x - 1.0f, last ? row1.y - 1.0f : row1.y),
-                          t.accentSoft, last ? (ctl::geom::CARD_R - 1.0f) : 0.0f, corners);
-    } else if (anyHover) {
-        const ImDrawFlags corners = last ? ImDrawFlags_RoundCornersBottom : 0;
-        dl->AddRectFilled(ImVec2(row0.x + 1.0f, row0.y), ImVec2(row1.x - 1.0f, last ? row1.y - 1.0f : row1.y),
-                          t.high, last ? (ctl::geom::CARD_R - 1.0f) : 0.0f, corners);
-    }
-    ctl::hHairline(dl, c0.x, c1.x, ry, t.outline);
-
-    if (rowClicked) {
-        app.setModel(m.name);
-    }
-
-    // Fixed 16px warm-engine mark slot on installed active row.
-    if (current) {
-        const ImVec2 markC(left + 8.0f, cy);
-        if (snap.daemon.loading) {
-            if (motion::reduceMotion()) {
-                dl->PathClear();
-                dl->PathArcTo(markC, 5.5f, 0.0f, 1.9f, 16);
-                dl->PathStroke(t.accent, 0, 1.6f);
-            } else {
-                ctl::busyArc(dl, markC, 5.5f, t.accent, 1.6f);
-            }
-        } else if (snap.daemon.running) {
-            drawIcon(dl, "zap", markC, 12.0f, t.accent);
-        }
-    }
-
-    const char* name = m.short_name.empty() ? m.name.c_str() : m.short_name.c_str();
-    const ImVec2 nameSz = calcText(mono, geist::type::BODY, name);
-    const float nameX = left + 16.0f + 8.0f;
-
-    char scBuf[32] = {};
-    const char* scLbl = ctl::sceneLabel(m.scene.c_str(), scBuf, sizeof(scBuf));
-    const float sceneW = 24.0f + calcText(sans, geist::type::LABEL, scLbl).x;
-    const std::string scaleLabel = std::format("{}×", m.scale);
-    const float scaleW = 12.0f + calcText(mono, geist::type::LABEL, scaleLabel.c_str()).x;
-    const float starW = m.recommended ? (6.0f + 12.0f) : 0.0f;
-
-    const std::string sizeStr = isMissingSize(m.size) ? std::string("—") : m.size;
-    const ImVec2 sizeSz = calcText(mono, geist::type::MONO, sizeStr.c_str());
-
-    std::string pct;
-    float sizeRight = right - btnBox - 12.0f;
-    if (downloading) {
-        pct = std::format("{}%", std::clamp(snap.download_pct, 0, 100));
-        const float pctW = calcText(mono, geist::type::LABEL, pct.c_str()).x;
-        sizeRight = right - (12.0f + 14.0f + 8.0f + 72.0f + 8.0f + pctW);
-    }
-
-    const float chipsW = sceneW + 8.0f + scaleW;
-    const float nameMax = std::max(24.0f, sizeRight - sizeSz.x - 14.0f - chipsW - 12.0f - starW - nameX);
-    const std::string fittedName = fitTextEllipsis(mono, geist::type::BODY, name, nameMax);
-    const float nameDrawW = calcText(mono, geist::type::BODY, fittedName.c_str()).x;
-
-    drawText(dl, mono, geist::type::BODY, ImVec2(nameX, textTop(ry, kRowH, nameSz.y)),
-             current ? t.ink : t.ink, fittedName.c_str());
-
-    float cursor = nameX + nameDrawW;
-    if (m.recommended) {
-        cursor += 6.0f;
-        drawIcon(dl, "star", ImVec2(cursor + 6.0f, cy), 11.0f, t.warning);
-        cursor += 12.0f;
-    }
-    cursor += 12.0f;
-    cursor += drawSceneChip(dl, sans, cursor, ry, m.scene);
-    cursor += 8.0f;
-    drawScaleChip(dl, mono, cursor, ry, m.scale);
-
-    const float sizeX = sizeRight - sizeSz.x;
-    drawText(dl, mono, geist::type::MONO, ImVec2(sizeX, textTop(ry, kRowH, sizeSz.y)), t.mute, sizeStr.c_str());
-
-    if (!row.remote) {
-        if (ctl::iconAction(dl, ImGui::GetID("del"), bpos, btnBox, "trash", "删除模型", sans, 13.5f,
-                            geist::radius::MD, true)) {
-            app.removeModel(m.name);
-        }
-    } else if (downloading) {
-        float x = sizeRight + 12.0f;
-        const ImVec2 spinC = snapPt(x + 7.0f, cy);
-        dl->AddCircle(spinC, 5.5f, withAlpha(t.outlineInput, 0.55f), 20, 1.5f);
-        if (motion::reduceMotion()) {
-            dl->PathClear();
-            dl->PathArcTo(spinC, 5.5f, 0.0f, 1.9f, 16);
-            dl->PathStroke(t.accent, 0, 1.6f);
-        } else {
-            ctl::busyArc(dl, spinC, 5.5f, t.accent, 1.6f);
-        }
-        x += 14.0f + 8.0f;
-        const float barW = 72.0f;
-        const float frac = snap.download_pct < 0 ? 0.0f : std::clamp(snap.download_pct / 100.0f, 0.0f, 1.0f);
-        ctl::progressBar(dl, ImGui::GetID("dlbar"), ImVec2(x, cy - ctl::geom::PROGRESS_H * 0.5f), barW, frac,
-                         ctl::geom::PROGRESS_H);
-        x += barW + 8.0f;
-        const ImVec2 pctSz = calcText(mono, geist::type::LABEL, pct.c_str());
-        drawText(dl, mono, geist::type::LABEL, ImVec2(x, textTop(ry, kRowH, pctSz.y)), t.accent, pct.c_str());
-    } else {
-        const bool busyDownloading = !snap.downloading.empty();
-        if (ctl::iconAction(dl, ImGui::GetID("dl"), bpos, btnBox, "download", "下载模型", sans, 13.0f,
-                            geist::radius::MD, !busyDownloading)) {
-            app.downloadModel(m.name);
-        }
-    }
-
-    ImGui::PopID();
-    ImGui::PopID();
-}
-
-float drawGroups(ImDrawList* dl, ImFont* sans, ImFont* mono, float x, float y, float w,
-                 const std::vector<GroupRef>& groups, const upix::gui::Snapshot& snap, upix::gui::AppState& app) {
-    using namespace upix::ui;
-    const auto& t = geist::tokens();
-    for (size_t gi = 0; gi < groups.size(); ++gi) {
-        if (gi) y += kCardGap;
-        const auto& g = groups[gi];
-        const float cardH = kCardHeadH + static_cast<float>(g.rows.size()) * kRowH;
-        ImVec2 c0 = snapPt(x, y);
-        ImVec2 c1 = snapPt(x + w, y + cardH);
-        ctl::groupCard(dl, c0, c1);
-
-        const std::string summary = std::format("{} 款", g.rows.size());
-        const ImVec2 ss = calcText(sans, geist::type::LABEL, summary.c_str());
-        const float countX = c1.x - kRowPadX - ss.x;
-        drawText(dl, sans, geist::type::LABEL, ImVec2(countX, textTop(c0.y, kCardHeadH, ss.y)), t.mute, summary.c_str());
-
-        const float titleMax = std::max(24.0f, countX - 12.0f - (c0.x + kRowPadX));
-        const ImVec2 ts = calcText(sans, geist::type::BODY, g.title.c_str());
-        ellipsisText(dl, sans, geist::type::BODY, ImVec2(c0.x + kRowPadX, textTop(c0.y, kCardHeadH, ts.y)),
-                     titleMax, t.ink, g.title.c_str());
-
-        float ry = c0.y + kCardHeadH;
-        for (size_t i = 0; i < g.rows.size(); ++i) {
-            drawModelRow(dl, sans, mono, c0, c1, ry, g.rows[i], i + 1 == g.rows.size(), snap, app);
-            ry += kRowH;
-        }
-        y += cardH;
-    }
-    return y;
-}
-
-bool modelsSearchBox(ImDrawList* dl, ImGuiID id, ImVec2 pos, float width, float height,
-                     char* buf, size_t bufCap, const char* placeholder, ImFont* font) {
-    using namespace upix::ui;
-    if (!buf || bufCap == 0 || width <= 40.0f) return false;
-    pos = snapPt(pos);
-    const ImVec2 p1 = snapPt(pos.x + width, pos.y + height);
-    const auto& t = geist::tokens();
-
-    dl->AddRectFilled(pos, p1, t.recessed, geist::radius::MD);
-    const bool hasText = buf[0] != '\0';
-
-    drawIcon(dl, "search", ImVec2(pos.x + 14.0f, cjkIconCenterY(pos, p1)), 13.0f, t.mute, 1.5f);
-
-    const float clearBtnW = hasText ? 22.0f : 0.0f;
-    const float inputX = pos.x + 28.0f;
-    const float inputW = std::max(16.0f, width - 34.0f - clearBtnW);
-
-    bool changed = false;
-    ImGui::PushID(static_cast<int>(id & 0x7fffffff));
-    ImGui::SetCursorScreenPos(ImVec2(inputX, pos.y + (height - 20.0f) * 0.5f));
-    if (font) ImGui::PushFont(font, geist::type::BODY_SMALL);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_Text, t.ink);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 2.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-    ImGui::SetNextItemWidth(inputW);
-    char item[24];
-    std::snprintf(item, sizeof(item), "##srch%08x", static_cast<unsigned>(id));
-    if (ImGui::InputText(item, buf, bufCap)) {
-        changed = true;
-    }
-    const bool active = ImGui::IsItemActive();
-    const bool focused = active || (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor(3);
-    if (font) ImGui::PopFont();
-    ImGui::PopID();
-
-    if (!hasText && placeholder && placeholder[0]) {
-        const ImVec2 psz = calcText(font, geist::type::BODY_SMALL, placeholder);
-        drawText(dl, font, geist::type::BODY_SMALL,
-                 ImVec2(inputX, pos.y + (height - psz.y) * 0.5f), t.faint, placeholder);
-    }
-
-    dl->AddRect(pos, p1, focused ? t.accent : t.outlineInput, geist::radius::MD, 0, hairlinePx());
-
-    if (hasText) {
-        const ImVec2 c0 = snapPt(p1.x - 24.0f, pos.y + (height - 20.0f) * 0.5f);
-        const ImVec2 c1 = snapPt(c0.x + 20.0f, c0.y + 20.0f);
-        ImGui::SetCursorScreenPos(c0);
-        const bool clrClicked = ImGui::InvisibleButton("##srch_clr", ImVec2(20.0f, 20.0f));
-        const bool clrHov = ImGui::IsItemHovered();
-        if (clrHov) {
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-            dl->AddRectFilled(c0, c1, t.high, geist::radius::SM);
-        }
-        drawIcon(dl, "x", ImVec2((c0.x + c1.x) * 0.5f, (c0.y + c1.y) * 0.5f), 11.0f,
-                 clrHov ? t.ink : t.mute, 1.5f);
-        if (clrClicked) {
-            buf[0] = '\0';
-            changed = true;
-        }
-    }
-    return changed;
-}
 
 } // namespace
 
-void renderModelsPage(ImDrawList* dl, ImVec2 winSize, UiViewState& ui,
+void renderModelsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
                       upix::gui::AppState& app, const upix::gui::Snapshot& snap,
                       SDL_Window* window, DialogBridge* dlgImport) {
     using namespace upix::ui;
+    using namespace upix::views::models_detail;
     const auto& t = geist::tokens();
+    ImFont* sans = ui.fontSans;
+    ImFont* sansMed = ui.fontSansMedium ? ui.fontSansMedium : ui.fontSans;
+    ImFont* mono = ui.fontMono;
 
-    const float availW = std::max(0.0f, winSize.x - kRailW);
-    const float colW = std::min(kColMax, std::max(320.0f, availW - 64.0f));
-    const float colX = snapPx(kRailW + (availW - colW) * 0.5f);
+    const float paneX = 0.0f;
+    const float paneY = kTopbarH;
+    const float paneW = std::max(0.0f, winSize.x);
+    const float paneH = std::max(0.0f, winSize.y - paneY);
 
-    dl->AddRectFilled(ImVec2(kRailW, 0.0f), winSize, t.bg);
+    const bool narrow = (paneW <= 860.0f);
+    const float padX = narrow ? 16.0f : 24.0f;
+    const float topPad = kPagePad;
+    const float bottomPad = narrow ? 48.0f : 64.0f;
+    const float secGap = narrow ? 20.0f : geist::space::XXL;
+    const float colW = std::min(kColMax, std::max(280.0f, paneW - padX * 2.0f));
+    const float rowOutset = std::min(12.0f, padX * 0.5f);
+    const float pageW = colW + rowOutset * 2.0f;
+    const float pageX = snapPx(paneX + (paneW - pageW) * 0.5f);
+
+    ImGui::SetCursorScreenPos(ImVec2(paneX, paneY));
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+    ImGui::BeginChild("##models_pane", ImVec2(paneW, paneH), ImGuiChildFlags_None,
+                      ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    ImGui::SetScrollY(0.0f);
+    ImDrawList* cdl = ImGui::GetWindowDrawList();
+    cdl->AddRectFilled(ImVec2(paneX, paneY), winSize, t.bg);
 
     const ImGuiIO& io = ImGui::GetIO();
-    const bool overPage = io.MousePos.x >= kRailW && io.MousePos.x < winSize.x &&
-                          io.MousePos.y >= 0.0f && io.MousePos.y < winSize.y;
-    const float maxScroll = std::max(0.0f, gContentH - winSize.y);
+    const bool modal = !snap.host.pending_device.empty();
+    const bool overPage = !modal && io.MousePos.x >= paneX && io.MousePos.x < winSize.x &&
+                          io.MousePos.y >= paneY && io.MousePos.y < winSize.y;
+    const float maxScroll = std::max(0.0f, gContentH - paneH);
     if (overPage && io.MouseWheel != 0.0f) {
-        gScroll -= io.MouseWheel * 48.0f;
+        gScrollTarget -= io.MouseWheel * 48.0f;
     }
-    gScroll = std::clamp(gScroll, 0.0f, maxScroll);
+    gScrollTarget = std::clamp(gScrollTarget, 0.0f, maxScroll);
+    gScroll = std::clamp(motion::smoothScroll(ImGui::GetID("models.scroll"), gScrollTarget), 0.0f, maxScroll);
 
-    dl->PushClipRect(ImVec2(kRailW, 0.0f), winSize, true);
+    // Prepare catalog summary, filter tabs, banner state, and grouped models before unified flex solve.
+    std::unordered_set<std::string> catalogNames;
+    double totalInstalledMB = 0.0;
+    for (const auto& m : snap.installed) {
+        catalogNames.insert(m.name);
+        totalInstalledMB += parseSizeMB(m.size);
+    }
+    for (const auto& m : snap.remote) {
+        catalogNames.insert(m.name);
+    }
+    const std::string subText = std::format(
+        "已缓存 {} / {} · {}",
+        snap.installed.size(), catalogNames.size(), formatTotalMB(totalInstalledMB));
 
-    float y = kPagePad - gScroll;
+    const ImVec2 titleSz = calcText(sansMed, geist::type::PAGE_TITLE, "模型库");
+    const ImVec2 subSz = calcText(mono, geist::type::MONO, subText.c_str());
+    const float hdrBtnH = std::max(34.0f, std::ceil(calcText(sansMed, geist::type::BODY, "导入模型").y) + 14.0f);
+    const float importW = std::ceil(calcText(sansMed, geist::type::BODY, "导入模型").x) + 22.0f;
+    const float mirrorW = std::ceil(calcText(sansMed, geist::type::BODY, "镜像源").x) + 20.0f;
+    const float refreshW = std::ceil(calcText(sansMed, geist::type::BODY, "刷新列表").x) + 20.0f;
+    const float dirW = std::ceil(calcText(sansMed, geist::type::BODY, "打开目录").x) + 20.0f;
 
-    // 1. Toolbar: searchBox + 5-way scene segmented + 3 right-aligned iconAction buttons.
-    {
-        const float btn = 32.0f;
-        const float btnGap = 6.0f;
-        const float rightW = btn * 3.0f + btnGap * 2.0f;
-        const float segW = 220.0f;
-        const float searchW = std::clamp(colW - segW - rightW - 24.0f, 140.0f, 248.0f);
-
-        modelsSearchBox(dl, ImGui::GetID("models.search"), ImVec2(colX, y), searchW, kToolbarH,
-                        ui.modelsSearch, sizeof(ui.modelsSearch), "搜索模型名称或场景…", ui.fontSans);
-
-        const char* sceneLabels[5] = {"全部", "动漫", "照片", "综合", "修复"};
-        const char* sceneValues[5] = {"all", "动漫", "照片", "综合", "修复"};
-        int sceneIdx = 0;
-        for (int i = 0; i < 5; ++i) {
-            if (ui.modelsSceneFilter == sceneValues[i]) {
-                sceneIdx = i;
-                break;
-            }
-        }
-        if (ctl::segmented(dl, ImGui::GetID("models.scene"),
-                           ImVec2(colX + searchW + 12.0f, y + (kToolbarH - ctl::geom::SEG_H) * 0.5f),
-                           ImVec2(segW, ctl::geom::SEG_H), sceneLabels, 5, sceneIdx, ui.fontSans, 12.0f)) {
-            ui.modelsSceneFilter = sceneValues[sceneIdx];
-        }
-
-        const float btnY = y + (kToolbarH - btn) * 0.5f;
-        const float xRefresh = colX + colW - btn;
-        const float xImport = xRefresh - btnGap - btn;
-        const float xFolder = xImport - btnGap - btn;
-
-        if (ctl::iconAction(dl, ImGui::GetID("models.open_dir"), ImVec2(xFolder, btnY), btn,
-                            "folder", "打开模型目录", ui.fontSans, 15.0f, geist::radius::MD)) {
-            std::error_code ec;
-            if (!snap.models_dir.empty()) {
-                std::filesystem::create_directories(snap.models_dir, ec);
-                SDL_OpenURL(("file://" + snap.models_dir).c_str());
-            }
-        }
-        if (ctl::iconAction(dl, ImGui::GetID("models.import"), ImVec2(xImport, btnY), btn,
-                            "download", "导入本地模型", ui.fontSans, 15.0f, geist::radius::MD)) {
-            SDL_ShowOpenFileDialog(onFileDialog, dlgImport, window, nullptr, 0, nullptr, true);
-        }
-        if (ctl::iconAction(dl, ImGui::GetID("models.refresh"), ImVec2(xRefresh, btnY), btn,
-                            "refresh", "重新扫描", ui.fontSans, 15.0f, geist::radius::MD)) {
-            app.refreshModels();
+    static constexpr const char* kSourceLabels[3] = {"HF-Mirror", "Hugging Face", "GitHub"};
+    static constexpr const char* kSourceValues[3] = {"hf-mirror", "hf", "github"};
+    int sourceIdx = 0;
+    for (int i = 0; i < 3; ++i) {
+        if (snap.model_source == kSourceValues[i]) {
+            sourceIdx = i;
+            break;
         }
     }
-    y += kToolbarH + kAfterToolbar;
+    float maxSrcLblW = 0.0f;
+    for (int i = 0; i < 3; ++i) {
+        maxSrcLblW = std::max(maxSrcLblW, calcText(sans, geist::type::LABEL, kSourceLabels[i]).x);
+    }
+    const float sourceSegW = std::max(48.0f, std::ceil(maxSrcLblW + 24.0f)) * 3.0f + ctl::geom::SEG_PAD * 2.0f;
+    const ImVec2 srcLblSz = calcText(sansMed, geist::type::BODY, "下载源");
+    const bool mirrorCompact = (colW < sourceSegW + srcLblSz.x + 60.0f);
 
-    // 2. Dismissible status banner when !snap.models_status.empty()
-    if (!snap.models_status.empty()) {
-        const float bannerH = 36.0f;
-        const ImVec2 b0 = snapPt(colX, y);
-        const ImVec2 b1 = snapPt(colX + colW, y + bannerH);
-        ctl::finish(dl, b0, b1, ctl::Finish::Raised, 8.0f);
-        dl->AddRect(b0, b1, t.outline, 8.0f, 0, hairlinePx());
-
-        const float midY = (b0.y + b1.y) * 0.5f;
-        dl->AddCircleFilled(ImVec2(b0.x + 14.0f, midY), 3.0f, t.accent);
-
-        const float closeBox = 24.0f;
-        const ImVec2 closePos = snapPt(b1.x - 6.0f - closeBox, midY - closeBox * 0.5f);
-        const float msgX = b0.x + 26.0f;
-        const float msgMaxW = std::max(40.0f, closePos.x - 10.0f - msgX);
-        const ImVec2 msz = calcText(ui.fontSans, geist::type::BODY_SMALL, snap.models_status.c_str());
-        ellipsisText(dl, ui.fontSans, geist::type::BODY_SMALL,
-                     ImVec2(msgX, midY - msz.y * 0.5f), msgMaxW, t.body, snap.models_status.c_str());
-
-        if (ctl::iconAction(dl, ImGui::GetID("models.clear_status"), closePos, closeBox,
-                            "x", "关闭提示", ui.fontSans, 11.0f, geist::radius::MD)) {
-            app.clearModelsStatus();
+    static const char* const kTabLabels[6] = {"全部", "推荐", "动漫", "照片", "综合", "修复"};
+    static const char* const kTabValues[6] = {"all", "rec", "动漫", "照片", "综合", "修复"};
+    int tabIdx = 0;
+    for (int i = 0; i < 6; ++i) {
+        if (ui.modelsSceneFilter == kTabValues[i]) {
+            tabIdx = i;
+            break;
         }
-        y += bannerH + kBannerGap;
     }
-
-    // 3. Filter installed & remote groups live by search query & scene filter.
-    std::unordered_set<std::string> installedNames;
-    for (const auto& g : snap.installed_groups) {
-        for (const auto& m : g.items) installedNames.insert(m.name);
+    constexpr float tabGap = geist::space::XL;
+    float tabsNeedW = 0.0f;
+    for (int i = 0; i < 6; ++i) {
+        tabsNeedW += std::ceil(calcText(sansMed, geist::type::BODY, kTabLabels[i]).x) + 4.0f;
     }
+    tabsNeedW += tabGap * 5.0f;
+    const float toolbarH = std::max(36.0f, std::ceil(calcText(sansMed, geist::type::BODY, "全部").y) + 16.0f);
+    const float searchW = std::max(220.0f, std::ceil(calcText(sans, geist::type::BODY, "搜索模型...").x) + 64.0f);
+    const bool singleRow = (colW >= tabsNeedW + searchW + geist::space::LG);
 
     const std::string qLower = toLowerTrimmed(ui.modelsSearch);
     const bool hasFilter = !qLower.empty() || (ui.modelsSceneFilter != "all" && !ui.modelsSceneFilter.empty());
+    const auto groups = buildUnifiedFilteredGroups(snap, ui.modelsSceneFilter, qLower);
 
-    const auto installed = filterGroups(snap.installed_groups, ui.modelsSceneFilter, qLower, false, nullptr);
-    const auto remote = filterGroups(snap.remote_groups, ui.modelsSceneFilter, qLower, true, &installedNames);
-    const size_t installedCount = countRows(installed);
-    const size_t remoteCount = countRows(remote);
+    const bool hasDownload = !snap.downloading.empty();
+    bool downloadingRowVisible = false;
+    if (hasDownload) {
+        for (const auto& g : groups) {
+            for (const auto& item : g.items) {
+                if (item.remote && item.name == snap.downloading) {
+                    downloadingRowVisible = true;
+                    break;
+                }
+            }
+            if (downloadingRowVisible) break;
+        }
+    }
+    const bool hasStatus = !snap.models_status.empty() && snap.models_status != gDismissedBannerStatus;
+    if (snap.models_status.empty()) gDismissedBannerStatus.clear();
+    const bool showBanner = (!hasDownload && hasStatus) || (hasDownload && !downloadingRowVisible);
 
-    if (hasFilter && installedCount == 0 && remoteCount == 0) {
-        if (drawEmptyCard(dl, ui.fontSans, ImGui::GetID("models.clear_all_empty"), colX, y, colW,
-                          "没有匹配的模型", "尝试换个关键词或切换场景筛选", true)) {
+    const std::string bannerMsg = hasDownload
+        ? std::format("正在下载 {}", snap.downloading)
+        : snap.models_status;
+    const ImVec2 msz = showBanner ? calcText(sans, geist::type::BODY_SMALL, bannerMsg.c_str()) : ImVec2(0.0f, 0.0f);
+    const std::string pctStr = hasDownload
+        ? std::format("{}%", std::clamp(snap.download_pct, 0, 100))
+        : std::string();
+    const ImVec2 psz = (showBanner && hasDownload) ? calcText(mono, geist::type::MONO, pctStr.c_str()) : ImVec2(0.0f, 0.0f);
+    const float pctW = (showBanner && hasDownload) ? (std::ceil(calcText(mono, geist::type::MONO, "100%").x) + 2.0f) : 0.0f;
+
+    const char* emptyTitle = hasFilter ? "无匹配模型" : "暂无可用模型";
+    const float bannerH = std::max(40.0f, std::ceil(std::max(msz.y, psz.y)) + 16.0f);
+
+    // Pass 1: Build ONE unified page flex tree.
+    static flex::Context pageCtx;
+    flex::Layout pageFx(pageCtx);
+    auto page = pageFx.col({
+        .gap = secGap,
+        .align = flex::Align::Center,
+        .width = flex::Fixed(pageW),
+    });
+
+    // 1. Page Header
+    auto hdr = page.row({
+        .gap = geist::space::LG,
+        .rowGap = geist::space::MD,
+        .justify = flex::Justify::SpaceBetween,
+        .align = flex::Align::Center,
+        .wrap = flex::Wrap::Wrap,
+        .width = flex::Fixed(colW),
+    });
+    auto titles = hdr.col({
+        .gap = 4.0f,
+        .width = flex::Flex(260.0f, 1.0f, 1.0f).min(200.0f),
+    });
+    const auto titleSlot = titles.slot(flex::Grow(1.0f), flex::Fixed(titleSz.y));
+    const auto subSlot = titles.slot(flex::Grow(1.0f), flex::Fixed(subSz.y));
+
+    auto actions = hdr.row({.gap = geist::space::SM, .align = flex::Align::Center, .wrap = flex::Wrap::Wrap});
+    const auto impSlot = actions.slot(flex::Fixed(importW), flex::Fixed(hdrBtnH));
+    const auto mirSlot = actions.slot(flex::Fixed(mirrorW), flex::Fixed(hdrBtnH));
+    const auto refSlot = actions.slot(flex::Fixed(refreshW), flex::Fixed(hdrBtnH));
+    const auto dirSlot = actions.slot(flex::Fixed(dirW), flex::Fixed(hdrBtnH));
+
+    // 1b. Collapsible Mirror Source Bar
+    auto mirrorBar = page.row({
+        .padding = flex::Edges::xy(14.0f, 10.0f),
+        .gap = geist::space::MD,
+        .rowGap = geist::space::SM,
+        .justify = flex::Justify::SpaceBetween,
+        .align = flex::Align::Center,
+        .wrap = flex::Wrap::Wrap,
+        .width = flex::Fixed(colW),
+        .visible = gMirrorOpen,
+    });
+    const auto mirTitleSlot = mirrorBar.slot(
+        mirrorCompact ? flex::Fixed(std::max(80.0f, colW - 28.0f)) : flex::Grow(1.0f, 80.0f).min(80.0f),
+        flex::Fixed(srcLblSz.y),
+        flex::AlignSelf::Center);
+    const auto mirSegSlot = mirrorBar.slot(
+        flex::Fixed(std::min(sourceSegW, std::max(180.0f, colW - 28.0f))),
+        flex::Fixed(ctl::geom::SEG_H_COMPACT),
+        flex::AlignSelf::Center);
+
+    // 2. Shared-Rule Filter & Search Toolbar
+    auto tb = page.row({
+        .gap = geist::space::LG,
+        .rowGap = geist::space::SM,
+        .justify = flex::Justify::SpaceBetween,
+        .align = flex::Align::End,
+        .wrap = flex::Wrap::Wrap,
+        .width = flex::Fixed(colW),
+    });
+    const auto tabsSlot = tb.slot(flex::Fixed(singleRow ? tabsNeedW : colW), flex::Fixed(toolbarH));
+    const auto searchSlot = tb.slot(flex::Fixed(singleRow ? searchW : colW), flex::Fixed(toolbarH));
+
+    // 3. Conditional Download / Status Banner
+    auto banner = page.row({
+        .padding = flex::Edges::only(14.0f, 6.0f, 8.0f, 6.0f),
+        .gap = 10.0f,
+        .align = flex::Align::Center,
+        .width = flex::Fixed(colW),
+        .height = flex::Fixed(bannerH),
+        .visible = showBanner,
+    });
+    const auto dotSlot = banner.slot(flex::Fixed(6.0f), flex::Fixed(6.0f));
+    const auto msgSlot = banner.slot(flex::Grow(1.0f, 40.0f).min(40.0f), flex::Fixed(msz.y));
+    const auto barSlot = banner.slot(flex::Shrink(140.0f, 1.0f).min(60.0f),
+                                     flex::Fixed(ctl::geom::PROGRESS_H), flex::AlignSelf::Center, {}, hasDownload);
+    auto pctBox = banner.row({
+        .justify = flex::Justify::End,
+        .align = flex::Align::Center,
+        .alignSelf = flex::AlignSelf::Center,
+        .width = flex::Fixed(pctW),
+        .height = flex::Fixed(psz.y),
+        .visible = hasDownload,
+    });
+    const auto pctTextSlot = pctBox.slot(flex::Fixed(std::ceil(psz.x)), flex::Fixed(psz.y));
+    const auto closeSlot = banner.slot(flex::Fixed(28.0f), flex::Fixed(28.0f));
+
+    // 4. EmptyState or Model Family Groups & Rows
+    const EmptyStateSlots emptySlots = addEmptyState(page, sans, sansMed, colW, emptyTitle,
+                                                     hasFilter, groups.empty());
+    std::vector<GroupSlots> groupSlots;
+    if (!groups.empty()) {
+        const float groupHeadH = std::ceil(std::max(calcText(mono, geist::type::BODY_SMALL, "A").y,
+                                                    calcText(sansMed, geist::type::BODY_SMALL, "模型").y)) + 8.0f;
+        const float rowH = modelRowHeight(sansMed);
+        auto groupsCol = page.col({
+            .gap = geist::space::XXL,
+            .align = flex::Align::Center,
+            .width = flex::Fixed(pageW),
+        });
+        groupSlots.reserve(groups.size());
+        for (const auto& g : groups) {
+            auto grpCol = groupsCol.col({
+                .align = flex::Align::Center,
+                .width = flex::Fixed(pageW),
+            });
+            GroupSlots gs;
+            gs.head = grpCol.slot(flex::Fixed(colW), flex::Fixed(groupHeadH));
+            gs.rows.reserve(g.items.size());
+            for (size_t ri = 0; ri < g.items.size(); ++ri) {
+                gs.rows.push_back(grpCol.slot(flex::Fixed(pageW), flex::Fixed(rowH)));
+            }
+            groupSlots.push_back(std::move(gs));
+        }
+    }
+
+    // Pass 2: Single unified solve.
+    const flex::Rect pageRect = pageFx.solveWidth(ImVec2(pageX, paneY + topPad - gScroll), pageW);
+    gContentH = pageRect.h + topPad + bottomPad;
+
+    cdl->PushClipRect(ImVec2(paneX, paneY), winSize, true);
+
+    // Draw Page Header
+    drawText(cdl, sansMed, geist::type::PAGE_TITLE, pageFx.p0(titleSlot), t.ink, "模型库");
+    ellipsisText(cdl, mono, geist::type::MONO, pageFx.p0(subSlot), pageFx.rect(subSlot).w, t.mute, subText.c_str());
+
+    if (ctl::secondaryButton(cdl, ImGui::GetID("models.import"), "导入模型", sansMed,
+                             pageFx.p0(impSlot), pageFx.p1(impSlot), nullptr, true, false)) {
+        SDL_ShowOpenFileDialog(onFileDialog, dlgImport, window, nullptr, 0, nullptr, true);
+    }
+    if (ctl::quietButton(cdl, ImGui::GetID("models.mirror"), "镜像源", sansMed,
+                         pageFx.p0(mirSlot), pageFx.p1(mirSlot), nullptr, true, false, geist::type::BODY)) {
+        gMirrorOpen = !gMirrorOpen;
+    }
+    if (ctl::quietButton(cdl, ImGui::GetID("models.refresh"), "刷新列表", sansMed,
+                         pageFx.p0(refSlot), pageFx.p1(refSlot), nullptr, true, false, geist::type::BODY)) {
+        app.refreshModels();
+    }
+    if (ctl::quietButton(cdl, ImGui::GetID("models.open_dir"), "打开目录", sansMed,
+                         pageFx.p0(dirSlot), pageFx.p1(dirSlot), nullptr, true, false, geist::type::BODY)) {
+        std::error_code ec;
+        if (!snap.models_dir.empty()) {
+            std::filesystem::create_directories(snap.models_dir, ec);
+            SDL_OpenURL(("file://" + snap.models_dir).c_str());
+        }
+    }
+
+    if (gMirrorOpen) {
+        const flex::Rect mRect = mirrorBar.rect();
+        ctl::flatSection(cdl, mRect.p0(), mRect.p1(), geist::radius::MD, t.surface, t.outline);
+        const flex::Rect mtR = pageFx.rect(mirTitleSlot);
+        ellipsisTextCentered(cdl, sansMed, geist::type::BODY, mtR.x, mtR.y, mtR.bottom(), mtR.w, t.ink, "下载源");
+        const flex::Rect segR = pageFx.rect(mirSegSlot);
+        if (ctl::segmented(cdl, ImGui::GetID("models.source"), segR.p0(), segR.size(),
+                           kSourceLabels, 3, sourceIdx, sans, geist::type::LABEL, false, true)) {
+            app.setModelSource(kSourceValues[sourceIdx]);
+        }
+    }
+
+    // Draw Filter & Search Toolbar
+    if (singleRow) {
+        const flex::Rect tbR = tb.rect();
+        ctl::hairlineRule(cdl, tbR.x, tbR.right(), tbR.bottom() - hairlinePx(), t.outline);
+    }
+    const flex::Rect tr = pageFx.rect(tabsSlot);
+    if (ctl::underlineTabs(cdl, ImGui::GetID("models.scene"), tr.p0(), tr.size(),
+                           kTabLabels, 6, tabIdx, sansMed, geist::type::BODY, tabGap, false, true)) {
+        ui.modelsSceneFilter = kTabValues[tabIdx];
+    }
+    const flex::Rect sr = pageFx.rect(searchSlot);
+    ctl::searchBox(cdl, ImGui::GetID("models.search"), sr.p0(), sr.w, sr.h,
+                   ui.modelsSearch, sizeof(ui.modelsSearch), "搜索模型...", sans, true);
+
+    // Draw Banner
+    if (showBanner) {
+        const flex::Rect bRect = banner.rect();
+        ctl::flatSection(cdl, bRect.p0(), bRect.p1(), geist::radius::MD, t.surface, t.outline);
+        cdl->AddCircleFilled(snapPt(pageFx.rect(dotSlot).center()), 3.0f, t.accent);
+
+        const flex::Rect msgR = pageFx.rect(msgSlot);
+        ellipsisTextCentered(cdl, sans, geist::type::BODY_SMALL, msgR.x, msgR.y, msgR.bottom(),
+                             msgR.w, t.ink, bannerMsg.c_str());
+
+        if (hasDownload && pageFx.isVisible(barSlot)) {
+            const flex::Rect barR = pageFx.rect(barSlot);
+            const float frac = snap.download_pct < 0 ? 0.0f : std::clamp(snap.download_pct / 100.0f, 0.0f, 1.0f);
+            ctl::progressBar(cdl, ImGui::GetID("models.banner_bar"), barR.p0(), barR.w, frac, ctl::geom::PROGRESS_H);
+            if (pageFx.isVisible(pctTextSlot)) {
+                const flex::Rect pctR = pageFx.rect(pctTextSlot);
+                drawTextCenteredY(cdl, mono, geist::type::MONO, pctR.x, pctR.y, pctR.bottom(),
+                                  t.accent, pctStr.c_str());
+            }
+        }
+
+        if (ctl::iconAction(cdl, ImGui::GetID("models.clear_status"), pageFx.p0(closeSlot), 28.0f,
+                            "x", "关闭提示", sans, 11.5f, geist::radius::MD, true, false)) {
+            gDismissedBannerStatus = snap.models_status;
+            app.clearModelsStatus();
+        }
+    }
+
+    // Draw EmptyState or Model Family Groups & Rows
+    if (groups.empty()) {
+        if (drawEmptyState(cdl, pageFx, emptySlots, sans, sansMed, ImGui::GetID("models.clear_empty"),
+                           emptyTitle, hasFilter)) {
             ui.modelsSearch[0] = '\0';
             ui.modelsSceneFilter = "all";
         }
-        y += 128.0f;
     } else {
-        drawSectionHead(dl, ui.fontSans, ui.fontMono, colX, y, colW, "已安装", installedCount);
-        y += kSectionHeadH + kHeadToCard;
-        if (installedCount == 0) {
-            if (hasFilter) {
-                if (drawEmptyCard(dl, ui.fontSans, ImGui::GetID("models.clear_inst_empty"), colX, y, colW,
-                                  "没有匹配的模型", "已安装列表中没有符合当前筛选条件的模型", true)) {
-                    ui.modelsSearch[0] = '\0';
-                    ui.modelsSceneFilter = "all";
-                }
-                y += 128.0f;
-            } else {
-                drawEmptyCard(dl, ui.fontSans, ImGui::GetID("models.inst_empty"), colX, y, colW,
-                              "尚未安装本地模型", "从下方列表下载推荐模型，或点击右上角导入", false);
-                y += kEmptyH;
+        for (size_t gi = 0; gi < groups.size(); ++gi) {
+            const auto& g = groups[gi];
+            const auto& gs = groupSlots[gi];
+            const std::string cnt = std::format("{}", g.items.size());
+            const bool isAsciiGroup = std::all_of(g.title.begin(), g.title.end(),
+                                                  [](unsigned char c) { return c < 0x80; });
+            ImFont* groupHeadFont = isAsciiGroup ? mono : sansMed;
+            const flex::Rect headR = pageFx.rect(gs.head);
+            ctl::eyebrowHeader(cdl, groupHeadFont, headR.p0(), headR.w,
+                               g.title.c_str(), cnt.c_str(), t.mute, t.mute, geist::type::BODY_SMALL);
+
+            for (size_t ri = 0; ri < g.items.size(); ++ri) {
+                drawModelRow(cdl, sans, sansMed, mono, pageFx.rect(gs.rows[ri]), rowOutset,
+                             g.title, g.items[ri], overPage, snap, app);
             }
-        } else {
-            y = drawGroups(dl, ui.fontSans, ui.fontMono, colX, y, colW, installed, snap, app);
-        }
-
-        y += kSectionGap;
-        drawSectionHead(dl, ui.fontSans, ui.fontMono, colX, y, colW, "可下载", remoteCount);
-        y += kSectionHeadH + kHeadToCard;
-        if (remoteCount == 0) {
-            if (hasFilter) {
-                if (drawEmptyCard(dl, ui.fontSans, ImGui::GetID("models.clear_rem_empty"), colX, y, colW,
-                                  "没有匹配的模型", "可下载列表中没有符合当前筛选条件的模型", true)) {
-                    ui.modelsSearch[0] = '\0';
-                    ui.modelsSceneFilter = "all";
-                }
-                y += 128.0f;
-            } else {
-                drawEmptyCard(dl, ui.fontSans, ImGui::GetID("models.rem_empty"), colX, y, colW,
-                              "没有可下载的模型", "所有目录模型均已安装，或点击右上角重新扫描", false);
-                y += kEmptyH;
-            }
-        } else {
-            y = drawGroups(dl, ui.fontSans, ui.fontMono, colX, y, colW, remote, snap, app);
         }
     }
 
-    dl->PopClipRect();
+    cdl->PopClipRect();
 
-    gContentH = (y + gScroll) + kPagePad;
-    if (gContentH > winSize.y && winSize.y > 24.0f) {
-        const float trackH = winSize.y - 16.0f;
-        const float thumbH = std::max(28.0f, trackH * (winSize.y / gContentH));
-        const float frac = maxScroll > 0.0f ? (gScroll / maxScroll) : 0.0f;
-        const float thumbY = 8.0f + frac * (trackH - thumbH);
-        dl->AddRectFilled(snapPt(winSize.x - 6.0f, thumbY), snapPt(winSize.x - 2.0f, thumbY + thumbH),
-                          withAlpha(t.faint, 0.45f), 2.0f);
-    }
-}
+    ctl::scrollThumb(cdl, ImVec2(paneX, paneY), ImVec2(paneX + paneW, paneY + paneH), gScroll, gContentH);
 
-bool modelsSearchBox(ImDrawList* dl, ImGuiID id, ImVec2 pos, float width, float height,
-                     char* buf, size_t bufCap, const char* placeholder, ImFont* font) {
-    using namespace upix::ui;
-    if (!buf || bufCap == 0 || width <= 40.0f) return false;
-    pos = snapPt(pos);
-    const ImVec2 p1 = snapPt(pos.x + width, pos.y + height);
-    const auto& t = geist::tokens();
-
-    dl->AddRectFilled(pos, p1, t.recessed, geist::radius::MD);
-    const bool hasText = buf[0] != '\0';
-
-    drawIcon(dl, "search", ImVec2(pos.x + 14.0f, cjkIconCenterY(pos, p1)), 13.0f, t.mute, 1.5f);
-
-    const float clearBtnW = hasText ? 22.0f : 0.0f;
-    const float inputX = pos.x + 28.0f;
-    const float inputW = std::max(16.0f, width - 34.0f - clearBtnW);
-
-    bool changed = false;
-    ImGui::PushID(static_cast<int>(id & 0x7fffffff));
-    ImGui::SetCursorScreenPos(ImVec2(inputX, pos.y + (height - 20.0f) * 0.5f));
-    if (font) ImGui::PushFont(font, geist::type::BODY_SMALL);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_Border, IM_COL32(0, 0, 0, 0));
-    ImGui::PushStyleColor(ImGuiCol_Text, t.ink);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0.0f, 2.0f));
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 0.0f);
-    ImGui::SetNextItemWidth(inputW);
-    char item[24];
-    std::snprintf(item, sizeof(item), "##srch%08x", static_cast<unsigned>(id));
-    if (ImGui::InputText(item, buf, bufCap)) {
-        changed = true;
-    }
-    const bool active = ImGui::IsItemActive();
-    const bool focused = active || (ImGui::IsItemFocused() && ImGui::GetIO().NavVisible);
-    ImGui::PopStyleVar(2);
-    ImGui::PopStyleColor(3);
-    if (font) ImGui::PopFont();
-    ImGui::PopID();
-
-    if (!hasText && placeholder && placeholder[0]) {
-        const ImVec2 psz = calcText(font, geist::type::BODY_SMALL, placeholder);
-        drawText(dl, font, geist::type::BODY_SMALL,
-                 ImVec2(inputX, pos.y + (height - psz.y) * 0.5f), t.faint, placeholder);
-    }
-
-    dl->AddRect(pos, p1, focused ? t.accent : t.outlineInput, geist::radius::MD, 0, hairlinePx());
-
-    if (hasText) {
-        const ImVec2 c0 = snapPt(p1.x - 24.0f, pos.y + (height - 20.0f) * 0.5f);
-        const ImVec2 c1 = snapPt(c0.x + 20.0f, c0.y + 20.0f);
-        ImGui::SetCursorScreenPos(c0);
-        const bool clrClicked = ImGui::InvisibleButton("##srch_clr", ImVec2(20.0f, 20.0f));
-        const bool clrHov = ImGui::IsItemHovered();
-        if (clrHov) {
-            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-            dl->AddRectFilled(c0, c1, t.high, geist::radius::SM);
-        }
-        drawIcon(dl, "x", ImVec2((c0.x + c1.x) * 0.5f, (c0.y + c1.y) * 0.5f), 11.0f,
-                 clrHov ? t.ink : t.mute, 1.5f);
-        if (clrClicked) {
-            buf[0] = '\0';
-            changed = true;
-        }
-    }
-    return changed;
+    ImGui::EndChild();
+    ImGui::PopStyleVar(1);
 }
 
 } // namespace upix::views

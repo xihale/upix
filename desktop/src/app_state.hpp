@@ -131,6 +131,7 @@ struct Snapshot {
     bool reduce_motion = false;
 
     std::string models_dir;
+    std::string model_source;         // "hf-mirror", "hf", "github"
     std::vector<ModelItem> installed;
     std::vector<ModelFamily> installed_groups;
     std::vector<ModelItem> remote;
@@ -189,9 +190,10 @@ public:
     void setBackupOriginal(bool b);
     void setRecursive(bool r);
     void setCustomOutDir(const std::string& dir);
-    void setDarkMode(bool dark);
+    void setDarkMode(bool dark, bool persist = true);
     void setReduceMotion(bool reduce);
 
+    void setModelSource(const std::string& src);
     void refreshModels();
     void importModels(const std::vector<std::string>& paths);
     void downloadModel(const std::string& name);

@@ -8,6 +8,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 #include <deque>
 #include <fstream>
 #include <sstream>
@@ -37,9 +38,25 @@ struct PrefsData {
     bool force = false;
     bool dark_mode = true;
     bool reduce_motion = false;
+    std::string model_source = "";
     int host_port = 9527;
     int daemon_idle_secs = 300;
 };
+
+std::string formatHostLog(const char* tag, const std::string& msg) {
+    const auto now = std::chrono::system_clock::now();
+    const std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm tm_buf{};
+#ifdef _WIN32
+    localtime_s(&tm_buf, &tt);
+#else
+    localtime_r(&tt, &tm_buf);
+#endif
+    char ts[16];
+    std::snprintf(ts, sizeof(ts), "%02d:%02d:%02d",
+                  tm_buf.tm_hour, tm_buf.tm_min, tm_buf.tm_sec);
+    return std::string(ts) + "|" + tag + "|" + msg + "|";
+}
 
 bool isSupportedImage(const fs::path& p) {
     std::string ext = p.extension().string();
@@ -200,6 +217,7 @@ void AppState::initRuntime() {
     snap_.version = UPIX_VERSION;
 #endif
     snap_.models_dir = upix::default_models_dir();
+    snap_.model_source = std::string(upix::model_source_id(upix::default_model_source()));
     loadPrefs();
 
     const char* fake = std::getenv("UPIX_FAKE");
@@ -275,6 +293,9 @@ void AppState::loadPrefs() {
     snap_.force = data.force;
     snap_.dark_mode = data.dark_mode;
     snap_.reduce_motion = data.reduce_motion;
+    if (auto parsed = upix::parse_model_source(data.model_source)) {
+        snap_.model_source = std::string(upix::model_source_id(*parsed));
+    }
     if (data.host_port > 0 && data.host_port <= 65535) {
         snap_.host.port = data.host_port;
     }
@@ -299,6 +320,7 @@ void AppState::savePrefs() {
     data.force = snap_.force;
     data.dark_mode = snap_.dark_mode;
     data.reduce_motion = snap_.reduce_motion;
+    data.model_source = snap_.model_source;
     data.host_port = snap_.host.port;
     data.daemon_idle_secs = snap_.daemon.idle_secs;
 
@@ -474,7 +496,7 @@ void AppState::applyFixture(const std::string& state) {
         snap_.job.total = 5;
         snap_.job.message = "显存分配不足";
         snap_.job.diag_detail = "VK_ERROR_OUT_OF_DEVICE_MEMORY · tile 512px";
-    } else if (state == "error-missing-model") {
+    } else if (state == "error-missing-model" || state == "error_missing_model") {
         snap_.model = "BSRGAN-x4";
         snap_.inputs = {
             {1, "shot_01.png", "shot_01.png", "", "", false, 1, 640, 427, "缺少模型", 3},
@@ -509,12 +531,12 @@ void AppState::applyFixture(const std::string& state) {
             snap_.host.pending_device = "Pixel 9 Pro";
             snap_.host.pending_fp = "EC61F2B66D4C25C4";
         }
-    } else if (state == "host-idle") {
+    } else if (state == "host-idle" || state == "host_idle") {
         snap_.host.running = false;
         snap_.host.trusted_devices.clear();
         snap_.host.logs.clear();
-    } else if (state == "settings" || state == "guide") {
-        // Base populated state is ideal for settings/guide
+    } else if (state == "settings") {
+        // Base populated state is ideal for settings
     }
     dirty_.store(true);
 }
@@ -774,10 +796,10 @@ void AppState::setCustomOutDir(const std::string& dir) {
     dirty_.store(true);
 }
 
-void AppState::setDarkMode(bool dark) {
+void AppState::setDarkMode(bool dark, bool persist) {
     std::lock_guard<std::mutex> lk(mtx_);
     snap_.dark_mode = dark;
-    savePrefs();
+    if (persist) savePrefs();
     dirty_.store(true);
 }
 
@@ -1120,8 +1142,29 @@ void AppState::cancelJob() {
     }
 }
 
+void AppState::setModelSource(const std::string& src) {
+    auto parsed = upix::parse_model_source(src);
+    if (!parsed) return;
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        const std::string normalized(upix::model_source_id(*parsed));
+        if (snap_.model_source == normalized) return;
+        snap_.model_source = normalized;
+        savePrefs();
+        dirty_.store(true);
+    }
+    refreshModels();
+}
+
 void AppState::refreshModels() {
-    spawnWorker([this](std::shared_ptr<std::atomic<bool>>) {
+    upix::ModelSource src = upix::default_model_source();
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        if (auto parsed = upix::parse_model_source(snap_.model_source)) {
+            src = *parsed;
+        }
+    }
+    spawnWorker([this, src](std::shared_ptr<std::atomic<bool>>) {
         const std::string dir = upix::default_models_dir();
         std::vector<ModelItem> inst;
         {
@@ -1144,7 +1187,7 @@ void AppState::refreshModels() {
             rebuildModelGroups();
         });
 
-        auto cat = upix::fetch_remote_models_or_catalog("");
+        auto cat = upix::fetch_remote_models_or_catalog("", src);
         std::string err = cat.fallback_error.value_or("");
         std::vector<ModelItem> rem;
         rem.reserve(cat.models.size());
@@ -1189,17 +1232,21 @@ void AppState::importModels(const std::vector<std::string>& paths) {
 }
 
 void AppState::downloadModel(const std::string& name) {
+    upix::ModelSource src = upix::default_model_source();
     {
         std::lock_guard<std::mutex> lk(mtx_);
         if (!snap_.downloading.empty()) return;
+        if (auto parsed = upix::parse_model_source(snap_.model_source)) {
+            src = *parsed;
+        }
         snap_.downloading = name;
         snap_.download_pct = 0;
         snap_.models_status = "正在下载 " + name + "…";
         dirty_.store(true);
     }
-    spawnWorker([this, name](std::shared_ptr<std::atomic<bool>>) {
+    spawnWorker([this, name, src](std::shared_ptr<std::atomic<bool>>) {
         std::string err;
-        auto remote = upix::fetch_remote_models("", err);
+        auto remote = upix::fetch_remote_models("", src, err);
         const upix::RemoteModel* target = nullptr;
         if (remote) {
             for (const auto& m : *remote) {
@@ -1224,7 +1271,8 @@ void AppState::downloadModel(const std::string& name) {
                     snap_.download_pct = pct;
                     snap_.models_status = "正在下载 " + name + " · " + std::to_string(pct) + "%";
                 });
-            });
+            },
+            src);
         post([this, name, res]() {
             snap_.downloading.clear();
             snap_.download_pct = -1;
@@ -1325,7 +1373,7 @@ void AppState::hostStart() {
     {
         std::lock_guard<std::mutex> lk(mtx_);
         snap_.host.running = true;
-        snap_.host.logs.push_back("[HOST] Starting Coordinator on :" + std::to_string(port));
+        snap_.host.logs.push_back(formatHostLog("HOST", "正在启动服务 :" + std::to_string(port)));
         dirty_.store(true);
     }
 
@@ -1351,14 +1399,14 @@ void AppState::hostStart() {
                     snap_.host.qr_payload.clear();
                     snap_.notice = "服务启动失败: " + msg;
                     snap_.notice_seq++;
-                    snap_.host.logs.push_back("[ERR] " + msg);
+                    snap_.host.logs.push_back(formatHostLog("ERR", msg));
                     host_worker_.reset();
                 });
                 return;
             }
             auto card = upix::build_connection_card(static_cast<uint16_t>(port), id.public_key());
             auto trusted = trustedItemsFromInfos(w->coordinator.trusted_devices(), false);
-            post([this, hostAlive, card, trusted = std::move(trusted)]() mutable {
+            post([this, hostAlive, port, card, trusted = std::move(trusted)]() mutable {
                 if (!hostAlive->load(std::memory_order_acquire)) return;
                 snap_.host.running = true;
                 snap_.host.fingerprint = card.fingerprint;
@@ -1368,7 +1416,7 @@ void AppState::hostStart() {
                 }
                 snap_.host.qr_payload = card.qr_payload;
                 snap_.host.trusted_devices = std::move(trusted);
-                snap_.host.logs.push_back("[HOST] Coordinator listening · QR ready");
+                snap_.host.logs.push_back(formatHostLog("HOST", "监听已就绪 :" + std::to_string(port) + " · 二维码可用"));
             });
 
             int lastPct = -1;
@@ -1384,7 +1432,7 @@ void AppState::hostStart() {
                     }
                     post([this, hostAlive, dev = pend->device_name, fp = pend->fingerprint, showNow]() {
                         if (!hostAlive->load(std::memory_order_acquire)) return;
-                        snap_.host.logs.push_back("[PAIR] Pairing request from " + dev);
+                        snap_.host.logs.push_back(formatHostLog("PAIR", "收到配对请求 · " + dev));
                         if (showNow || snap_.host.pending_device.empty()) {
                             snap_.host.pending_device = dev;
                             snap_.host.pending_fp = fp;
@@ -1413,7 +1461,7 @@ void AppState::hostStart() {
                 snap_.host.qr_payload.clear();
                 snap_.notice = "服务异常: " + msg;
                 snap_.notice_seq++;
-                snap_.host.logs.push_back("[ERR] " + msg);
+                snap_.host.logs.push_back(formatHostLog("ERR", msg));
                 host_worker_.reset();
             });
         } catch (...) {
@@ -1438,7 +1486,7 @@ void AppState::hostStop() {
     snap_.host.qr_payload.clear();
     snap_.host.pending_device.clear();
     snap_.host.pending_fp.clear();
-    snap_.host.logs.push_back("[HOST] Service stopped");
+    snap_.host.logs.push_back(formatHostLog("HOST", "服务已停止"));
     dirty_.store(true);
 }
 
@@ -1478,7 +1526,8 @@ void AppState::hostDecide(bool allow) {
     }
     std::lock_guard<std::mutex> lk(mtx_);
     if (!resolvedDev.empty()) {
-        snap_.host.logs.push_back(std::string(allow ? "[PAIR] Approved " : "[PAIR] Denied ") + resolvedDev);
+        snap_.host.logs.push_back(
+            formatHostLog("PAIR", std::string(allow ? "已允许配对 · " : "已拒绝配对 · ") + resolvedDev));
         if (allow) {
             bool exists = false;
             for (const auto& td : snap_.host.trusted_devices) {
