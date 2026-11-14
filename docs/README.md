@@ -2,7 +2,9 @@
 
 | 文档 | 说明 |
 |---|---|
-| [ARCHITECTURE.md](ARCHITECTURE.md) | 顶层架构、模块边界与三端共享核心关系 |
-| [DEVELOPMENT.md](DEVELOPMENT.md) | 构建环境、编译命令与测试入口 |
-| [../desktop/DESIGN.md](../desktop/DESIGN.md) | 桌面端「暗房仪器」设计语言、功能面、状态与动效规范 |
-| [../models/README.md](../models/README.md) | 模型分类、下载源与转换说明 |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | 顶层架构、目录边界、Native 共享核心与 Web/WASM 运行时 |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | 构建环境、xmake / Gradle / Web 编译命令与测试入口 |
+| [CLI.md](CLI.md) | `upix-cli` 子命令、参数选项、配置文件与环境变量 |
+| [../models/README.md](../models/README.md) | 模型选型、下载源、收录目录与已知排除项 |
+| [../models/LICENSES.md](../models/LICENSES.md) | 各模型家族上游来源、许可证与转换验证溯源 |
+| [../models/CONVERTING.md](../models/CONVERTING.md) | pth → ncnn 转换规范、验证门禁与仓库同步清单 |
