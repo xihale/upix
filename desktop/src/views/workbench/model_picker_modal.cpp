@@ -253,6 +253,19 @@ void renderModelPickerModal(ImVec2 winSize, UiViewState& ui, upix::gui::AppState
 
     const float maxScroll = std::max(0.0f, listContentH - listR.h);
 
+    auto pickModelRow = [&](const upix::gui::ModelItem& item) {
+        if (!item.remote || item.name == snap.downloading) {
+            app.setModel(item.name);
+            ui.showModelPicker = false;
+            return;
+        }
+        if (snap.downloading.empty()) {
+            app.setModel(item.name);
+            app.downloadModel(item.name);
+            ui.showModelPicker = false;
+        }
+    };
+
     // Keyboard navigation (↑↓ · ↵ · Esc) with auto-scroll
     bool kbMoved = false;
     if (!flatItems.empty()) {
@@ -265,8 +278,7 @@ void renderModelPickerModal(ImVec2 winSize, UiViewState& ui, upix::gui::AppState
             kbMoved = true;
         } else if (ImGui::IsKeyPressed(ImGuiKey_Enter) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter)) {
             const int pickIdx = (kbCursor >= 0 && kbCursor < nItems) ? kbCursor : 0;
-            app.setModel(flatItems[static_cast<size_t>(pickIdx)]->name);
-            ui.showModelPicker = false;
+            pickModelRow(*flatItems[static_cast<size_t>(pickIdx)]);
         }
     }
     if (kbMoved && kbCursor >= 0 && static_cast<size_t>(kbCursor) < flatItemTop.size() && maxScroll > 0.0f) {
@@ -439,11 +451,12 @@ void renderModelPickerModal(ImVec2 winSize, UiViewState& ui, upix::gui::AppState
                 const bool inListClip = ctl::mouseIn(listClipMin, listClipMax);
                 const bool rowHov = inListClip && ctl::mouseIn(rowR.p0(), rowR.p1());
                 const bool overDlBtn = isDlBtn && inListClip && ctl::mouseIn(btnR.p0(), btnR.p1());
+                const bool canPick = !m->remote || isDl || snap.downloading.empty();
                 const bool isKb = (flatIdx == kbCursor);
 
                 const float rowHovT = motion::hoverFactor(
                     ImGui::GetID("##pk_row_hov"),
-                    (rowHov && !overDlBtn && !isDl) || isKb);
+                    (rowHov && !overDlBtn && canPick) || isKb);
 
                 const ImVec2 bg0 = snapPt(rowR.x + 6.0f, rowR.y + 1.0f);
                 const ImVec2 bg1 = snapPt(rowR.right() - 6.0f, rowR.bottom() - 1.0f);
@@ -456,7 +469,7 @@ void renderModelPickerModal(ImVec2 winSize, UiViewState& ui, upix::gui::AppState
                     mdl->AddRectFilled(bg0, bg1, withAlpha(restSelBg, rowHovT), geist::radius::MD);
                 }
 
-                if (rowHov && !overDlBtn && !isDl) {
+                if (rowHov && !overDlBtn && canPick) {
                     ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
                 }
 
@@ -507,10 +520,9 @@ void renderModelPickerModal(ImVec2 winSize, UiViewState& ui, upix::gui::AppState
                     drawIcon(mdl, "check", snapPt(btnR.center()), 16.0f, t.accent, 1.85f);
                 }
 
-                if (rowHov && !dlClicked && !overDlBtn && !isDl &&
+                if (rowHov && !dlClicked && !overDlBtn && canPick &&
                     ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
-                    app.setModel(m->name);
-                    ui.showModelPicker = false;
+                    pickModelRow(*m);
                 }
 
                 ImGui::PopID();

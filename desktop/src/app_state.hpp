@@ -110,10 +110,12 @@ struct DaemonState {
 };
 
 struct Snapshot {
+    static constexpr const char* kDefaultModel = "Real-ESRGANv3-anime-x2";
+
     std::string version = "0.2.0";
     std::vector<InputItem> inputs;
     int active_input = 0;
-    std::string model = "AnimeSharp-x4";
+    std::string model = kDefaultModel;
     std::string format = "";          // "" (跟随), "png", "jpg", "webp", "avif"
     int quality = 90;
     int chroma = 420;                 // 420 / 444
@@ -229,6 +231,7 @@ private:
     void spawnWorker(std::function<void(std::shared_ptr<std::atomic<bool>> alive)> fn);
     void reapWorkers();
     void rebuildModelGroups();
+    void startModelDownload(const std::string& name, std::optional<upix::RemoteModel> prefetched);
     void loadPrefs();
     void savePrefs();
     std::string resolvePrefsPath() const;
@@ -240,6 +243,7 @@ private:
     std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
     std::uint64_t next_input_id_ = 1;
     std::string prefs_path_;
+    bool auto_dl_default_attempted_ = false;
 
     // Background job / worker / host coordination
     std::atomic<bool> job_cancel_{false};

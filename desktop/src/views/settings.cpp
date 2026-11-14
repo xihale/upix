@@ -635,7 +635,7 @@ void drawAboutSection(ImDrawList* dl, const upix::ui::flex::Layout& fx, const Ab
         std::error_code ec;
         if (!snap.models_dir.empty()) {
             std::filesystem::create_directories(snap.models_dir, ec);
-            SDL_OpenURL(("file://" + snap.models_dir).c_str());
+            openLocalPathInSystem(snap.models_dir);
         }
     }
     keepNavFocusInView(fx.rect(s.dirBtn), sc);

@@ -14,10 +14,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 #include <vector>
 
@@ -183,6 +186,33 @@ inline void drawMiniThumb(ImDrawList* dl, ImVec2 p0, ImVec2 p1, const UiViewStat
     } else {
         dl->AddRectFilled(p0, p1, geist::tokens().container, radius);
     }
+}
+
+inline void openLocalPathInSystem(const std::filesystem::path& p) {
+    std::error_code ec;
+    const auto canon = std::filesystem::weakly_canonical(p, ec);
+    const std::u8string u8 = (ec ? p : canon).generic_u8string();
+    std::string url = "file://";
+    if (u8.empty() || u8[0] != u8'/') {
+        url.push_back('/');
+    }
+    static constexpr char kHex[] = "0123456789ABCDEF";
+    for (size_t i = 0; i < u8.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(u8[i]);
+        const bool is_drive_colon = (i == 1 && c == ':' &&
+            ((u8[0] >= u8'A' && u8[0] <= u8'Z') || (u8[0] >= u8'a' && u8[0] <= u8'z')));
+        const bool unreserved =
+            (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') ||
+            c == '/' || c == '-' || c == '_' || c == '.' || c == '~' || is_drive_colon;
+        if (unreserved) {
+            url.push_back(static_cast<char>(c));
+        } else {
+            url.push_back('%');
+            url.push_back(kHex[(c >> 4) & 0x0F]);
+            url.push_back(kHex[c & 0x0F]);
+        }
+    }
+    SDL_OpenURL(url.c_str());
 }
 
 void renderNavRail(ImDrawList* dl, ImVec2 winSize, UiViewState& ui, const upix::gui::Snapshot& snap);

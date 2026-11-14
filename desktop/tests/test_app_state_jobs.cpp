@@ -28,9 +28,28 @@ void writeDummyFile(const fs::path& p, const std::string& content = "stub") {
     out << content;
 }
 
+void setEnvVar(const char* name, const char* value) {
+#ifdef _WIN32
+    _putenv_s(name, value ? value : "");
+#else
+    setenv(name, value, 1);
+#endif
+}
+
+void unsetEnvVar(const char* name) {
+#ifdef _WIN32
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+
 } // namespace
 
 int main() {
+    CHECK(std::string(upix::gui::Snapshot::kDefaultModel) == "Real-ESRGANv3-anime-x2");
+    CHECK(upix::gui::Snapshot{}.model == "Real-ESRGANv3-anime-x2");
+
     const fs::path tmpRoot = fs::temp_directory_path() / "upix_test_app_state_jobs";
     std::error_code ec;
     fs::remove_all(tmpRoot, ec);
@@ -46,8 +65,9 @@ int main() {
     writeDummyFile(inputDir / "upix_AnimeSharp-x4" / "already.png");
 
     // Disable network model refresh interference cleanly using UPIX_FAKE
-    setenv("UPIX_FAKE", "1", 1);
-    setenv("UPIX_MODELS_DIR", (tmpRoot / "models").c_str(), 1);
+    setEnvVar("UPIX_FAKE", "1");
+    const std::string modelsDir = (tmpRoot / "models").string();
+    setEnvVar("UPIX_MODELS_DIR", modelsDir.c_str());
 
     {
         upix::gui::AppState app(prefsFile.string());
@@ -136,7 +156,7 @@ int main() {
     }
 
     // 8. Prefs persistence across AppState instances
-    unsetenv("UPIX_FAKE");
+    unsetEnvVar("UPIX_FAKE");
     {
         upix::gui::AppState app2(prefsFile.string());
         auto loaded = app2.snapshot();

@@ -374,7 +374,7 @@ void renderModelsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
         std::error_code ec;
         if (!snap.models_dir.empty()) {
             std::filesystem::create_directories(snap.models_dir, ec);
-            SDL_OpenURL(("file://" + snap.models_dir).c_str());
+            openLocalPathInSystem(snap.models_dir);
         }
     }
 

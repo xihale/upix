@@ -20,10 +20,11 @@ namespace upix::gui {
 
 namespace fs = std::filesystem;
 
-namespace {
+// Glaze reflection requires external linkage under Clang.
+namespace detail {
 
 struct PrefsData {
-    std::string model = "AnimeSharp-x4";
+    std::string model = Snapshot::kDefaultModel;
     std::string format = "";
     int quality = 90;
     int chroma = 420;
@@ -44,6 +45,12 @@ struct PrefsData {
     int host_port = 9527;
     int daemon_idle_secs = 300;
 };
+
+} // namespace detail
+
+namespace {
+
+using detail::PrefsData;
 
 std::string formatHostLog(const char* tag, const std::string& msg) {
     const auto now = std::chrono::system_clock::now();
@@ -642,6 +649,14 @@ bool AppState::addFromClipboardText(const std::string& text) {
         }
         if (line.rfind("file://", 0) == 0) {
             line = line.substr(7);
+#ifdef _WIN32
+            // Strip leading slash from file:///C:/... URIs on Windows.
+            if (line.size() >= 3 && line[0] == '/' &&
+                ((line[1] >= 'A' && line[1] <= 'Z') || (line[1] >= 'a' && line[1] <= 'z')) &&
+                line[2] == ':') {
+                line = line.substr(1);
+            }
+#endif
         }
         if (line.empty()) continue;
         std::error_code ec;
@@ -1197,6 +1212,7 @@ void AppState::setModelSource(const std::string& src) {
         const std::string normalized(upix::model_source_id(*parsed));
         if (snap_.model_source == normalized) return;
         snap_.model_source = normalized;
+        auto_dl_default_attempted_ = false;
         savePrefs();
         dirty_.store(true);
     }
@@ -1236,6 +1252,15 @@ void AppState::refreshModels() {
 
         auto cat = upix::fetch_remote_models_or_catalog("", src);
         std::string err = cat.fallback_error.value_or("");
+        std::optional<upix::RemoteModel> autoTarget;
+        if (!cat.fallback_error) {
+            for (const auto& m : cat.models) {
+                if (m.name == Snapshot::kDefaultModel) {
+                    autoTarget = m;
+                    break;
+                }
+            }
+        }
         std::vector<ModelItem> rem;
         rem.reserve(cat.models.size());
         for (const auto& m : cat.models) {
@@ -1246,10 +1271,21 @@ void AppState::refreshModels() {
                 std::string(meta.scene), meta.recommended, true
             });
         }
-        post([this, rem = std::move(rem), err = std::move(err)]() mutable {
+        post([this, rem = std::move(rem), err = std::move(err),
+              autoTarget = std::move(autoTarget)]() mutable {
             snap_.remote_error = std::move(err);
             snap_.remote = std::move(rem);
             rebuildModelGroups();
+            if (autoTarget && !auto_dl_default_attempted_ &&
+                snap_.model == Snapshot::kDefaultModel && snap_.downloading.empty()) {
+                const bool installed = std::any_of(
+                    snap_.installed.begin(), snap_.installed.end(),
+                    [](const ModelItem& m) { return m.name == Snapshot::kDefaultModel; });
+                if (!installed) {
+                    auto_dl_default_attempted_ = true;
+                    startModelDownload(Snapshot::kDefaultModel, std::move(autoTarget));
+                }
+            }
         });
     });
 }
@@ -1265,9 +1301,7 @@ void AppState::importModels(const std::vector<std::string>& paths) {
         auto res = upix::import_model_files(paths, upix::default_models_dir());
         post([this, res]() {
             if (res.ok) {
-                snap_.models_status = upix::i18n::tr(upix::i18n::Key::ModelsImportDone);
-                snap_.notice = snap_.models_status;
-                snap_.notice_seq++;
+                snap_.models_status.clear();
                 refreshModels();
             } else {
                 snap_.models_status = res.error.empty() ? upix::i18n::tr(upix::i18n::Key::ModelsImportFailed) : res.error;
@@ -1279,6 +1313,10 @@ void AppState::importModels(const std::vector<std::string>& paths) {
 }
 
 void AppState::downloadModel(const std::string& name) {
+    startModelDownload(name, std::nullopt);
+}
+
+void AppState::startModelDownload(const std::string& name, std::optional<upix::RemoteModel> prefetched) {
     upix::ModelSource src = upix::default_model_source();
     {
         std::lock_guard<std::mutex> lk(mtx_);
@@ -1291,16 +1329,18 @@ void AppState::downloadModel(const std::string& name) {
         snap_.models_status = upix::i18n::fmt(upix::i18n::Key::ModelsDownloadingFmt, name);
         dirty_.store(true);
     }
-    spawnWorker([this, name, src](std::shared_ptr<std::atomic<bool>>) {
-        std::string err;
-        auto remote = upix::fetch_remote_models("", src, err);
-        const upix::RemoteModel* target = nullptr;
-        if (remote) {
-            for (const auto& m : *remote) {
-                if (m.name == name) { target = &m; break; }
+    spawnWorker([this, name, src, prefetched = std::move(prefetched)](std::shared_ptr<std::atomic<bool>>) {
+        std::optional<upix::RemoteModel> resolved = prefetched;
+        if (!resolved) {
+            std::string err;
+            auto remote = upix::fetch_remote_models("", src, err);
+            if (remote) {
+                for (const auto& m : *remote) {
+                    if (m.name == name) { resolved = m; break; }
+                }
             }
         }
-        if (!target) {
+        if (!resolved) {
             post([this, name]() {
                 snap_.downloading.clear();
                 snap_.download_pct = -1;
@@ -1310,7 +1350,7 @@ void AppState::downloadModel(const std::string& name) {
             });
             return;
         }
-        auto res = upix::download_model(*target, upix::default_models_dir(),
+        auto res = upix::download_model(*resolved, upix::default_models_dir(),
             [this, name](const upix::DownloadProgress& p) {
                 if (p.total <= 0) return;
                 int pct = static_cast<int>(p.downloaded * 100 / p.total);
@@ -1324,9 +1364,16 @@ void AppState::downloadModel(const std::string& name) {
             snap_.downloading.clear();
             snap_.download_pct = -1;
             if (res.ok) {
-                snap_.models_status = upix::i18n::fmt(upix::i18n::Key::ModelsInstalledFmt, name);
-                snap_.notice = snap_.models_status;
-                snap_.notice_seq++;
+                snap_.models_status.clear();
+                if (snap_.job.phase == JobPhase::Error && snap_.job.missing_model == name) {
+                    snap_.job = JobState{};
+                    for (auto& inp : snap_.inputs) {
+                        if (inp.status_kind == 3) {
+                            inp.status_kind = 0;
+                            inp.status_text = upix::i18n::tr(upix::i18n::Key::StatusPending);
+                        }
+                    }
+                }
                 refreshModels();
             } else {
                 snap_.models_status = upix::i18n::fmt(upix::i18n::Key::ModelsDownloadFailedFmt, name);
@@ -1344,9 +1391,7 @@ void AppState::removeModel(const std::string& name) {
     fs::remove(fs::path(dir) / (name + ".bin"), ec);
     {
         std::lock_guard<std::mutex> lk(mtx_);
-        snap_.models_status = upix::i18n::fmt(upix::i18n::Key::ModelsRemovedFmt, name);
-        snap_.notice = snap_.models_status;
-        snap_.notice_seq++;
+        snap_.models_status.clear();
         dirty_.store(true);
     }
     refreshModels();

@@ -101,7 +101,7 @@ void openFileInSystem(const std::string& path) {
     if (path.empty() || path.rfind("__fixture", 0) == 0) return;
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) return;
-    SDL_OpenURL(("file://" + path).c_str());
+    openLocalPathInSystem(path);
 }
 
 void revealFileParentInSystem(const std::string& path) {
@@ -110,7 +110,7 @@ void revealFileParentInSystem(const std::string& path) {
     const std::filesystem::path p(path);
     const std::filesystem::path dir = std::filesystem::is_directory(p, ec) ? p : p.parent_path();
     if (!dir.empty() && std::filesystem::exists(dir, ec)) {
-        SDL_OpenURL(("file://" + dir.string()).c_str());
+        openLocalPathInSystem(dir);
     }
 }
 
