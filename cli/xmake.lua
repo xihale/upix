@@ -12,6 +12,10 @@ target("upix-cli")
     -- AVIF is linked in or dlopen'd at runtime.
     on_load(function (target)
         import("core.project.project")
+        local ver = os.getenv("UPIX_VERSION")
+        if not ver or ver == "" then
+            ver = project.version()
+        end
         local caps = ""
         if has_config("avif-encoder") then
             caps = caps .. " +avif-encoder"
@@ -22,7 +26,7 @@ target("upix-cli")
         if caps == "" then
             caps = " avif:system-dlopen"
         end
-        target:add('defines', 'UPIX_VERSION="v' .. project.version() .. caps .. '"')
+        target:add('defines', 'UPIX_VERSION="v' .. ver .. caps .. '"')
     end)
 
     add_deps("upix-core")

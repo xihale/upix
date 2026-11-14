@@ -4,14 +4,22 @@ name: Release CLI
 # separate product (release-android.yml → android-arm64-v8a).
 on:
   push:
-    tags: ["cli-v*"]
+    tags:
+      - "cli-v*"
+      - "v*-*"
   workflow_dispatch:
     inputs:
       version:
-        description: "Version without prefix (e.g. 0.1.0). Ignored on tag push."
+        description: "Version without prefix (e.g. 0.2.0 or 0.2.0-beta.1). Ignored on tag push."
         required: true
         type: string
-        default: "0.1.0"
+        default: "0.2.0-beta.1"
+      prerelease:
+        description: "Mark GitHub release as pre-release (auto detects -beta/-alpha/-rc)."
+        required: false
+        type: choice
+        options: ["auto", "true", "false"]
+        default: "auto"
 
 # Least privilege: only `publish` needs write; every other job reads.
 permissions:
@@ -28,18 +36,27 @@ jobs:
     timeout-minutes: 2
     outputs:
       version: ${{ steps.v.outputs.version }}
+      tag_name: ${{ steps.v.outputs.tag_name }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
       - id: v
         env:
           # Dispatch inputs are attacker-influenced text: keep them out of the
           # script body (shell injection) and off `$GITHUB_OUTPUT` unvalidated.
           INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
         run: |
           set -euo pipefail
           if [[ "${GITHUB_REF}" == refs/tags/cli-v* ]]; then
+            tag_name="${GITHUB_REF_NAME}"
             version="${GITHUB_REF_NAME#cli-v}"
+          elif [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            tag_name="${GITHUB_REF_NAME}"
+            version="${GITHUB_REF_NAME#v}"
           else
-            version="${INPUT_VERSION}"
+            version="${INPUT_VERSION#cli-v}"
+            version="${version#v}"
+            tag_name="cli-v${version}"
           fi
           # The version becomes an artifact/tag name, so reject anything that
           # is not a plain version string instead of shipping from a typo.
@@ -47,7 +64,19 @@ jobs:
             echo "invalid version: '${version}' (allowed: A-Za-z0-9._-)" >&2
             exit 1
           }
+          if [[ "${INPUT_PRERELEASE}" == "true" || "${INPUT_PRERELEASE}" == "false" ]]; then
+            prerelease="${INPUT_PRERELEASE}"
+          else
+            shopt -s nocasematch
+            if [[ "$version" == *-* || "$version" =~ (alpha|beta|rc|pre|dev|preview) ]]; then
+              prerelease="true"
+            else
+              prerelease="false"
+            fi
+          fi
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'tag_name=%s\n' "$tag_name" >> "$GITHUB_OUTPUT"
+          printf 'prerelease=%s\n' "$prerelease" >> "$GITHUB_OUTPUT"
 
   spirv:
     name: spirv pack (linux)
@@ -100,6 +129,8 @@ jobs:
         with:
           cache-kind: host-${{ matrix.artifact }}
       - name: Build CLI
+        env:
+          UPIX_VERSION: ${{ needs.meta.outputs.version }}
         run: xmake cli -p "${{ matrix.plat }}" -a "${{ matrix.arch }}" --native-isa=n ${{ matrix.extra }}
       - name: Pack
         env:
@@ -179,8 +210,10 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2 (v2.6.2)
         with:
-          tag_name: cli-v${{ needs.meta.outputs.version }}
+          tag_name: ${{ needs.meta.outputs.tag_name }}
           name: Upix CLI ${{ needs.meta.outputs.version }}
+          prerelease: ${{ needs.meta.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.meta.outputs.prerelease == 'true' && 'false' || 'true' }}
           files: |
             upix-cli-*-linux-x86_64.tar.gz
             upix-cli-*-macos-arm64.tar.gz

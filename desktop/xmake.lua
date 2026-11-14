@@ -5,7 +5,11 @@ target("upix")
 
     on_load(function (target)
         import("core.project.project")
-        target:add("defines", 'UPIX_VERSION="' .. project.version() .. '"')
+        local ver = os.getenv("UPIX_VERSION")
+        if not ver or ver == "" then
+            ver = project.version()
+        end
+        target:add("defines", 'UPIX_VERSION="' .. ver .. '"')
         local assets = path.join(os.scriptdir(), "assets")
         target:add("defines", 'FIXTURE_DIR="' .. assets:gsub("\\", "/") .. '"')
     end)
