@@ -5,33 +5,34 @@ import { h, reconcile, text } from './dom.js';
 import { icon } from './icons.js';
 import { downloadProgress, formatBytes, groupModelsByFamily, matchesModelQuery } from './format.js';
 import { progressBar, recBadge, scaleBadge, sceneBadge } from './controls.js';
+import { getLocale, t } from '../i18n/index.js';
 
 export function mountModelPicker({ store, actions }) {
   let query = '';
+  const pickerTitle = h('h2', { id: 'picker-title', class: 'sr-only' }, t('picker.title'));
   const search = h('input', {
-    type: 'search', class: 'picker-input', placeholder: '搜索模型…', 'aria-label': '搜索模型',
+    type: 'search', class: 'picker-input', placeholder: t('picker.searchPlaceholder'), 'aria-label': t('picker.searchLabel'),
     autocomplete: 'off', spellcheck: false,
     oninput: () => { query = search.value.trim().toLowerCase(); render(); },
   });
-  const list = h('div', { class: 'picker-list', role: 'listbox', 'aria-label': '模型列表' });
-  const empty = h('p', { class: 'picker-empty muted', hidden: true }, '无匹配模型');
+  const closeBtn = h('button', {
+    type: 'button', class: 'icon-btn icon-btn-sm', 'aria-label': t('common.close'), title: t('common.close'),
+    onclick: () => dialog.close(),
+  }, icon('x', 14));
+  const list = h('div', { class: 'picker-list', role: 'listbox', 'aria-label': t('picker.listLabel') });
+  const empty = h('p', { class: 'picker-empty muted', hidden: true }, t('picker.empty'));
+  const manageBtn = h('button', {
+    type: 'button', class: 'link-btn',
+    onclick: () => { dialog.close(); store.set({ tab: 'models' }); },
+  }, t('picker.manageModels'));
   const dialog = h('dialog', { class: 'picker', 'aria-labelledby': 'picker-title' },
-    h('h2', { id: 'picker-title', class: 'sr-only' }, '选择模型'),
-    h('div', { class: 'picker-bar' },
-      icon('search', 16),
-      search,
-      h('button', {
-        type: 'button', class: 'icon-btn icon-btn-sm', 'aria-label': '关闭', title: '关闭',
-        onclick: () => dialog.close(),
-      }, icon('x', 14))),
+    pickerTitle,
+    h('div', { class: 'picker-bar' }, icon('search', 16), search, closeBtn),
     list,
     empty,
     h('div', { class: 'picker-foot' },
       h('span', { class: 'picker-keys mono', 'aria-hidden': 'true' }, '↑↓ · ↵ · Esc'),
-      h('button', {
-        type: 'button', class: 'link-btn',
-        onclick: () => { dialog.close(); store.set({ tab: 'models' }); },
-      }, '管理模型')));
+      manageBtn));
   document.body.append(dialog);
 
   dialog.addEventListener('click', e => { if (e.target === dialog) dialog.close(); });
@@ -67,15 +68,15 @@ export function mountModelPicker({ store, actions }) {
     const name = h('span', { class: 'pick-name mono truncate' });
     const tags = h('span', { class: 'pick-tags' });
     const meta = h('span', { class: 'pick-meta mono' });
-    const bar = progressBar('下载进度');
+    const bar = progressBar(t('common.downloadProgress'));
     const select = h('button', { type: 'button', class: 'pick-select', role: 'option' },
       dot, h('span', { class: 'pick-main' }, name, tags), meta);
     const pctEl = h('span', { class: 'pick-pct mono', hidden: true });
     const cancelBtn = h('button', {
-      type: 'button', class: 'icon-btn icon-btn-sm', title: '取消', hidden: true,
+      type: 'button', class: 'icon-btn icon-btn-sm', title: t('common.cancel'), hidden: true,
       onclick: () => model && actions.cancelDownload(model.name),
     }, icon('x', 14));
-    const cachedEl = h('span', { class: 'pick-state', hidden: true }, '已缓存');
+    const cachedEl = h('span', { class: 'pick-state', hidden: true }, t('picker.cached'));
     const dlBtn = h('button', {
       type: 'button', class: 'btn btn-secondary btn-sm', hidden: true,
       onclick: () => model && actions.downloadModel(model.name),
@@ -96,9 +97,12 @@ export function mountModelPicker({ store, actions }) {
           bar.set(dlState.pct);
           text(pctEl, dlState.label);
         }
-        const sig = [model.name, model.installed, model.scale, model.recommended, selected, dlState.busy, dlState.error].join('|');
+        const sig = [
+          getLocale(), model.name, model.installed, model.scale, model.recommended, selected, dlState.busy, dlState.error,
+        ].join('|');
         if (sig === lastSig) return;
         lastSig = sig;
+        bar.setLabel(t('common.downloadProgress'));
         text(name, model.shortName || model.name);
         select.setAttribute('aria-selected', String(selected));
         el.classList.toggle('is-selected', selected);
@@ -107,12 +111,16 @@ export function mountModelPicker({ store, actions }) {
         text(meta, formatBytes(model.sizeBytes));
         pctEl.hidden = !dlState.busy;
         cancelBtn.hidden = !dlState.busy;
-        cancelBtn.setAttribute('aria-label', `取消下载 ${model.name}`);
+        cancelBtn.title = t('common.cancel');
+        cancelBtn.setAttribute('aria-label', t('picker.cancelDownloadAria', { name: model.name }));
         cachedEl.hidden = dlState.busy || !model.installed;
+        text(cachedEl, t('picker.cached'));
         dlBtn.hidden = dlState.busy || model.installed;
-        text(dlBtn, dlState.error ? '重试' : '下载');
-        dlBtn.title = dlState.error || '下载';
-        dlBtn.setAttribute('aria-label', dlState.error ? `重试下载 ${model.name}` : `下载 ${model.name}`);
+        text(dlBtn, dlState.error ? t('common.retry') : t('common.download'));
+        dlBtn.title = dlState.error || t('common.download');
+        dlBtn.setAttribute('aria-label', dlState.error
+          ? t('picker.retryDownloadAria', { name: model.name })
+          : t('picker.downloadAria', { name: model.name }));
       },
     };
   }
@@ -125,7 +133,18 @@ export function mountModelPicker({ store, actions }) {
     reconcile(list, nodes, n => n.key, createItem, cache);
   }
 
-  store.subscribe(['models', 'downloads', 'settings'], () => { if (dialog.open) render(); });
+  store.subscribe(['locale'], () => {
+    text(pickerTitle, t('picker.title'));
+    search.placeholder = t('picker.searchPlaceholder');
+    search.setAttribute('aria-label', t('picker.searchLabel'));
+    closeBtn.title = t('common.close');
+    closeBtn.setAttribute('aria-label', t('common.close'));
+    list.setAttribute('aria-label', t('picker.listLabel'));
+    text(empty, t('picker.empty'));
+    text(manageBtn, t('picker.manageModels'));
+  });
+
+  store.subscribe(['models', 'downloads', 'settings', 'locale'], () => { if (dialog.open) render(); });
 
   return {
     open() {

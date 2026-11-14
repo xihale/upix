@@ -3,6 +3,8 @@
 // refreshes. A record is deleted the moment its output is downloaded, so the
 // next refresh destroys exactly the images the user already saved.
 
+import { t } from '../i18n/index.js';
+
 const DB_NAME = 'upix-workspace-v1';
 const DB_VERSION = 1;
 const STORE_ITEMS = 'items';
@@ -10,7 +12,7 @@ const STORE_ITEMS = 'items';
 function openDb() {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
-      reject(new Error('浏览器不支持 IndexedDB'));
+      reject(new Error(t('runtime.idbUnsupported')));
       return;
     }
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -21,7 +23,7 @@ function openDb() {
       }
     };
     req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error || new Error('打开 IndexedDB 失败'));
+    req.onerror = () => reject(req.error || new Error(t('runtime.idbOpenFailed')));
   });
 }
 
@@ -32,8 +34,8 @@ async function withStore(mode, fn) {
       const tx = db.transaction(STORE_ITEMS, mode);
       const result = fn(tx.objectStore(STORE_ITEMS));
       tx.oncomplete = () => resolve(result);
-      tx.onabort = () => reject(tx.error || new Error('工作区存储操作中止'));
-      tx.onerror = () => reject(tx.error || new Error('工作区存储操作失败'));
+      tx.onabort = () => reject(tx.error || new Error(t('runtime.wsAborted')));
+      tx.onerror = () => reject(tx.error || new Error(t('runtime.wsFailed')));
     });
   } finally {
     db.close();

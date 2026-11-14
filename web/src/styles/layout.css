@@ -176,7 +176,7 @@
 }
 
 @media (max-width: 480px) {
-  .wordmark { display: none; }
+  .wordmark, .lang-btn-label { display: none; }
   .topbar-start { gap: var(--s2); }
   .topbar-nav .seg-tabs { gap: var(--s3); }
 }

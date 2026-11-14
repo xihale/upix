@@ -2,6 +2,7 @@
 // Verifies SHA-256 digests (`crypto.subtle` with WASM `upix_sha256_hex` fallback for LAN HTTP contexts).
 
 import { extractZipEntries } from './zip-utils.js';
+import { t } from '../i18n/index.js';
 
 const DB_NAME = 'upix-models-v1';
 const DB_VERSION = 1;
@@ -46,7 +47,7 @@ export function getSourceBaseUrl(sourceId) {
 function openDb() {
   return new Promise((resolve, reject) => {
     if (typeof indexedDB === 'undefined') {
-      reject(new Error('浏览器不支持 IndexedDB'));
+      reject(new Error(t('runtime.idbUnsupported')));
       return;
     }
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -60,7 +61,7 @@ function openDb() {
       }
     };
     req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error || new Error('打开 IndexedDB 失败'));
+    req.onerror = () => reject(req.error || new Error(t('runtime.idbOpenFailed')));
   });
 }
 
@@ -148,15 +149,15 @@ function buildCandidateUrls(filename, mirrorPref) {
 async function fetchStreamWithProgress(url, { signal, onProgress, expectedTotal = 0 } = {}) {
   const resp = await fetch(url, { signal, credentials: 'omit' });
   if (!resp.ok) {
-    const friendly = resp.status === 404 ? '下载地址不存在（文件可能已下架）'
-      : resp.status === 403 ? '下载被拒绝（可能触发了访问限制）'
-        : resp.status >= 500 ? '下载服务器暂时不可用，请稍后重试'
-          : `下载失败（网络错误 ${resp.status}）`;
+    const friendly = resp.status === 404 ? t('runtime.http404')
+      : resp.status === 403 ? t('runtime.http403')
+        : resp.status >= 500 ? t('runtime.http5xx')
+          : t('runtime.httpError', { status: resp.status });
     throw new Error(friendly);
   }
   const contentType = resp.headers.get('content-type') || '';
   if (contentType.includes('text/html')) {
-    throw new Error('下载地址返回了无效数据（可能被网络拦截），可尝试配置镜像或导入本地模型文件');
+    throw new Error(t('runtime.invalidHtmlPayload'));
   }
   const totalHeader = Number(resp.headers.get('content-length') || 0);
   const total = totalHeader > 0 ? totalHeader : expectedTotal;
@@ -247,13 +248,13 @@ export class UpixModelStore {
     if (!refresh && db) {
       const cached = await idbGet(db, STORE_META, 'remote_manifest');
       if (cached && Array.isArray(cached.models) && Date.now() - cached.fetchedAt < 30 * 60 * 1000) {
-        return { models: cached.models, error: null };
+        return { models: cached.models, error: null, errorKind: null };
       }
     }
 
     const primaryId = resolveWebModelSource(mirrorBaseUrl);
     const urls = buildCandidateUrls('manifest.json', mirrorBaseUrl);
-    let lastErr = primaryId === 'hf' ? 'Hugging Face 无法连接' : '无法连接模型发布源';
+    let lastErr = primaryId === 'hf' ? t('runtime.hfUnreachable') : t('runtime.sourceUnreachable');
     for (const url of urls) {
       try {
         const resp = await fetch(url, { credentials: 'omit' });
@@ -274,27 +275,28 @@ export class UpixModelStore {
               fetchedAt: Date.now(),
             }).catch(() => {});
           }
-          return { models: json.models, error: null };
+          return { models: json.models, error: null, errorKind: null };
         }
       } catch (err) {
         lastErr = err instanceof Error ? err.message : String(err);
       }
     }
 
-    const finalErr = primaryId === 'hf' ? `Hugging Face 无法连接（${lastErr}）` : lastErr;
+    const errorKind = primaryId === 'hf' ? 'hf' : 'remote';
+    const finalErr = primaryId === 'hf' ? t('runtime.hfUnreachableDetail', { detail: lastErr }) : lastErr;
     // Fallback to stale cached manifest if available.
     if (db) {
       const stale = await idbGet(db, STORE_META, 'remote_manifest').catch(() => null);
       if (stale && Array.isArray(stale.models)) {
-        return { models: stale.models, error: finalErr };
+        return { models: stale.models, error: finalErr, errorKind };
       }
     }
-    return { models: [], error: finalErr };
+    return { models: [], error: finalErr, errorKind };
   }
 
   async listModels({ refreshRemote = false, mirrorBaseUrl = '' } = {}) {
     const catalog = this.wasm.getCatalog();
-    const [{ models: remoteModels, error: remoteError }, localDevMap, db] = await Promise.all([
+    const [{ models: remoteModels, error: remoteError, errorKind: remoteErrorKind }, localDevMap, db] = await Promise.all([
       this.fetchRemoteManifest({ refresh: refreshRemote, mirrorBaseUrl }),
       this.probeLocalDevModels(),
       this.db(),
@@ -326,7 +328,7 @@ export class UpixModelStore {
       out.push({
         name: c.name,
         shortName: c.short_name || c.name,
-        family: c.family || '独立模型',
+        family: c.family || 'standalone',
         scale: (inst && inst.scale) || (rm && rm.scale) || c.scale || 2,
         scene: c.scene || '',
         recommended: Boolean(c.recommended),
@@ -350,9 +352,9 @@ export class UpixModelStore {
       out.push({
         name: rec.name,
         shortName: rec.shortName || classified.short_name || rec.name,
-        family: rec.family || '本地导入',
+        family: rec.family || 'imported',
         scale: rec.scale || classified.scale || 2,
-        scene: rec.scene || classified.scene || '自定义',
+        scene: rec.scene || classified.scene || 'custom',
         recommended: false,
         sizeBytes: bytes,
         sha256: rec.sha256 || '',
@@ -366,6 +368,7 @@ export class UpixModelStore {
     return {
       models: out,
       remoteError: remoteError || undefined,
+      remoteErrorKind: remoteErrorKind || undefined,
       storageUsedBytes,
     };
   }
@@ -406,7 +409,7 @@ export class UpixModelStore {
       }
     }
 
-    throw new Error(`模型 "${name}" 未下载，需先下载或导入`);
+    throw new Error(t('runtime.modelNotDownloaded', { name }));
   }
 
   async saveVerifiedPair(name, paramText, binBytes, { source = 'remote', sha256 = '' } = {}) {
@@ -429,9 +432,9 @@ export class UpixModelStore {
     const record = {
       name,
       shortName: classified.short_name || name,
-      family: source === 'imported' && !classified.scene ? '本地导入' : (classified.family || ''),
+      family: source === 'imported' && !classified.scene ? 'imported' : (classified.family || ''),
       scale,
-      scene: classified.scene || (source === 'imported' ? '自定义' : ''),
+      scene: classified.scene || (source === 'imported' ? 'custom' : ''),
       recommended: Boolean(classified.recommended),
       paramText,
       binBytes: binBuffer,
@@ -443,7 +446,7 @@ export class UpixModelStore {
 
     const db = await this.db();
     if (!db) {
-      throw new Error('IndexedDB 不可用，无法保存模型缓存');
+      throw new Error(t('runtime.idbSaveUnavailable'));
     }
     await idbPut(db, STORE_MODELS, record);
 
@@ -465,7 +468,7 @@ export class UpixModelStore {
 
   async downloadModel(name, { mirrorBaseUrl = '', signal, onProgress } = {}) {
     if (!name || /[/\\]/.test(name)) {
-      throw new Error('模型名称无效');
+      throw new Error(t('runtime.invalidModelName'));
     }
 
     // Fast path in local dev if `~/.local/share/upix/models` already has the model!
@@ -483,11 +486,11 @@ export class UpixModelStore {
     const expectedSize = (rm && rm.size_bytes) || 0;
     const urls = buildCandidateUrls(`${name}.zip`, mirrorBaseUrl);
     let zipBytes = null;
-    let lastError = '下载失败';
+    let lastError = t('models.failed');
 
     for (const url of urls) {
       if (signal && signal.aborted) {
-        throw new DOMException('已取消', 'AbortError');
+        throw new DOMException(t('common.cancelled'), 'AbortError');
       }
       try {
         zipBytes = await fetchStreamWithProgress(url, {
@@ -503,8 +506,8 @@ export class UpixModelStore {
     }
 
     if (!zipBytes) {
-      const sourcePrefix = resolveWebModelSource(mirrorBaseUrl) === 'hf' ? 'Hugging Face 无法连接：' : '';
-      throw new Error(`模型 ${name} 下载失败：${sourcePrefix}${lastError}（可切换镜像源或导入 .zip/.param+.bin）`);
+      const sourcePrefix = resolveWebModelSource(mirrorBaseUrl) === 'hf' ? t('runtime.hfPrefix') : '';
+      throw new Error(t('runtime.modelDownloadFailed', { name, prefix: sourcePrefix, error: lastError }));
     }
 
     if (onProgress) {
@@ -513,7 +516,10 @@ export class UpixModelStore {
 
     const actualSha = await computeSha256Hex(zipBytes, this.wasm);
     if (expectedSha && actualSha.toLowerCase() !== expectedSha) {
-      throw new Error(`模型包 SHA-256 校验失败：预期 ${expectedSha.slice(0, 12)}…，实际 ${actualSha.slice(0, 12)}…`);
+      throw new Error(t('runtime.sha256Mismatch', {
+        expected: expectedSha.slice(0, 12),
+        actual: actualSha.slice(0, 12),
+      }));
     }
 
     if (onProgress) {
@@ -527,7 +533,7 @@ export class UpixModelStore {
       || [...entries.entries()].find(([k]) => k.endsWith('.bin'))?.[1];
 
     if (!paramBytes || !binBytes) {
-      throw new Error(`模型压缩包缺少 ${name}.param 或 ${name}.bin`);
+      throw new Error(t('runtime.zipMissingFiles', { name }));
     }
 
     const paramText = new TextDecoder('utf-8').decode(paramBytes);
@@ -589,7 +595,7 @@ export class UpixModelStore {
     for (const [stem, paramText] of paramByStem.entries()) {
       const binBytes = binByStem.get(stem);
       if (!binBytes) {
-        throw new Error(`找到 ${stem}.param，但缺少 ${stem}.bin`);
+        throw new Error(t('runtime.missingBinFile', { stem }));
       }
       const sha = await computeSha256Hex(binBytes, this.wasm);
       const item = await this.saveVerifiedPair(stem, paramText, binBytes, {
@@ -600,7 +606,7 @@ export class UpixModelStore {
     }
 
     if (imported.length === 0) {
-      throw new Error('未识别到 ncnn 模型文件（需同名 .param + .bin 或包含两者的 .zip）');
+      throw new Error(t('runtime.unrecognizedModelFiles'));
     }
     return imported;
   }

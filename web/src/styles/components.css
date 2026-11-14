@@ -227,6 +227,8 @@
 }
 .select-opt.is-selected { color: var(--ink); font-weight: 500; }
 .select-opt:disabled { color: var(--ink-disabled); cursor: not-allowed; }
+.select-opt-end { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.select-opt-meta { font-size: var(--fs-xs); font-weight: 400; color: var(--ink-muted); }
 .select-check { flex: none; opacity: 0; color: var(--ink); }
 .select-opt.is-selected .select-check { opacity: 1; }
 

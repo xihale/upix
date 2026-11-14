@@ -1,6 +1,8 @@
 // Browser-native image decode (`createImageBitmap` + EXIF `from-image`) and
 // Rust WASM container encode (`PNG` / `JPEG` with `420/422/444` / `WebP` + `urn:upix:sr:1` XMP).
 
+import { t } from '../i18n/index.js';
+
 export function detectImageFormat(bytes, fallbackMime = '', fileName = '') {
   if (bytes && bytes.byteLength >= 12) {
     if (
@@ -239,7 +241,7 @@ function makeCanvas2d(width, height) {
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (ctx) return { canvas, ctx, isOffscreen: false };
   }
-  throw new Error('当前运行环境不支持 Canvas 2D 像素读写');
+  throw new Error(t('runtime.canvas2dUnsupported'));
 }
 
 async function decodeBitmap(blob) {
@@ -261,7 +263,7 @@ async function decodeBitmap(blob) {
       const img = await new Promise((resolve, reject) => {
         const el = new Image();
         el.onload = () => resolve(el);
-        el.onerror = () => reject(new Error('无法解码输入图像'));
+        el.onerror = () => reject(new Error(t('runtime.decodeFailed')));
         el.src = url;
       });
       return img;
@@ -270,7 +272,7 @@ async function decodeBitmap(blob) {
     }
   }
 
-  throw new Error('当前环境不支持 createImageBitmap 图像解码');
+  throw new Error(t('runtime.createImageBitmapUnsupported'));
 }
 
 /**
@@ -304,7 +306,7 @@ export async function decodeInputImage(fileOrBlob, wasmBridge, { metadataOnly = 
 
   if (width <= 0 || height <= 0) {
     if (typeof bitmap.close === 'function') bitmap.close();
-    throw new Error('输入图像尺寸无效');
+    throw new Error(t('runtime.invalidImageDims'));
   }
 
   if (metadataOnly && rawFormat === 'jpeg') {
@@ -376,13 +378,13 @@ async function canvasEncodeBlob(canvas, isOffscreen, mimeType, qualityFloat) {
   if (typeof canvas.toBlob === 'function') {
     return new Promise((resolve, reject) => {
       canvas.toBlob(
-        (blob) => (blob ? resolve(blob) : reject(new Error('Canvas WebP 编码失败'))),
+        (blob) => (blob ? resolve(blob) : reject(new Error(t('runtime.canvasWebpFailed')))),
         mimeType,
         qualityFloat,
       );
     });
   }
-  throw new Error('Canvas 不支持导出 Blob');
+  throw new Error(t('runtime.canvasBlobUnsupported'));
 }
 
 /**

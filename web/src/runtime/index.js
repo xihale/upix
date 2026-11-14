@@ -17,6 +17,7 @@ import { decodeInputImage, encodeOutputImage, formatOutputFilename } from './ima
 import { isFollowOutputFormat, normalizeOutputFormat } from '../ui/format.js';
 import { createZipBlob } from './zip-utils.js';
 import { getSyntheticBenchmarkModel, SYNTH_BENCHMARK_MODEL_NAME } from './synth-model.js';
+import { t } from '../i18n/index.js';
 
 const TILE_SHRINK_LADDER = [512, 384, 256, 192, 128, 96, 64];
 
@@ -237,7 +238,7 @@ export class UpixRuntime {
       label: 'WASM (CPU)',
       deviceName: wasmAvailable
         ? this.cpuBackend.getDeviceName(defaultThreadCount())
-        : '不可用',
+        : t('common.unavailable'),
       reason: wasmReason,
       features: {
         simd128,
@@ -360,7 +361,7 @@ export class UpixRuntime {
     };
 
     if (signal && signal.aborted) {
-      throw new DOMException('已取消', 'AbortError');
+      throw new DOMException(t('common.cancelled'), 'AbortError');
     }
 
     const reqBackend = (backend || 'auto').toLowerCase();
@@ -405,7 +406,10 @@ export class UpixRuntime {
     if (!force && srMarker) {
       return {
         skipped: true,
-        skipReason: `检测到 Upix XMP 标记（${srMarker.model || 'unknown'} · ${srMarker.scale || '?'}×），已自动跳过二次超分`,
+        skipReason: t('runtime.skipSrMarker', {
+          model: srMarker.model || 'unknown',
+          scale: srMarker.scale || '?',
+        }),
         existingMarker: srMarker,
         inputWidth: inW,
         inputHeight: inH,
@@ -462,7 +466,7 @@ export class UpixRuntime {
     try {
       while (true) {
         if (signal && signal.aborted) {
-          throw new DOMException('已取消', 'AbortError');
+          throw new DOMException(t('common.cancelled'), 'AbortError');
         }
 
         const effectiveOverlap = Math.max(0, Math.min(tileOverlap, Math.floor(currentTileSize / 4)));

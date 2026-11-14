@@ -3,6 +3,8 @@
 // and safely re-reads `memory.buffer` after every WASM call in case linear
 // memory grew (`memory.grow`).
 
+import { t } from '../i18n/index.js';
+
 const WASM_SIMD_PROBE = new Uint8Array([
   0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
   0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7b, 0x03,
@@ -47,7 +49,7 @@ export async function compileUpixWasmModule(customUrl) {
       resp = await fetch(defaultWasmUrl(true));
     }
     if (!resp.ok) {
-      throw new Error(`无法加载 WebAssembly 核心模块 (${resp.status} ${primaryUrl})`);
+      throw new Error(t('runtime.wasmLoadFailed', { status: resp.status, url: primaryUrl }));
     }
     if (typeof WebAssembly.compileStreaming === 'function') {
       try {
@@ -107,7 +109,7 @@ export class UpixWasmBridge {
     }
     const ptr = this.exports.upix_alloc(byteLen) >>> 0;
     if (!ptr) {
-      throw new Error(`WASM 缓冲区分配失败 (${byteLen} bytes)`);
+      throw new Error(t('runtime.wasmBufAllocFailed', { bytes: byteLen }));
     }
     this[ptrKey] = ptr;
     this[capKey] = byteLen;
@@ -121,7 +123,7 @@ export class UpixWasmBridge {
     const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
     const ptr = this.exports.upix_alloc(view.byteLength) >>> 0;
     if (!ptr) {
-      throw new Error(`WASM 内存分配失败 (${view.byteLength} bytes)`);
+      throw new Error(t('runtime.wasmMemAllocFailed', { bytes: view.byteLength }));
     }
     this.u8().set(view, ptr);
     return { ptr, len: view.byteLength };
@@ -141,7 +143,7 @@ export class UpixWasmBridge {
   readLastError() {
     const ptr = this.exports.upix_last_error_ptr() >>> 0;
     const len = this.exports.upix_last_error_len() >>> 0;
-    if (!ptr || !len) return '未知 WASM 运行时错误';
+    if (!ptr || !len) return t('runtime.wasmUnknownError');
     return this.decoder.decode(new Uint8Array(this.memory.buffer, ptr, len));
   }
 
@@ -290,7 +292,7 @@ export class UpixWasmBridge {
           tilePtr = this.exports.upix_alloc(outBytes) >>> 0;
           if (!tilePtr) {
             tileCap = 0;
-            throw new Error('WASM 分块缓冲区分配失败');
+            throw new Error(t('runtime.wasmTileAllocFailed'));
           }
           tileCap = outBytes;
         }
@@ -336,7 +338,7 @@ export class UpixWasmBridge {
     if (!accumPtr || !weightPtr) {
       if (accumPtr) this.free(accumPtr, accumBytes);
       if (weightPtr) this.free(weightPtr, weightBytes);
-      throw new Error('输出图像融合缓冲区超出 WASM 内存上限');
+      throw new Error(t('runtime.wasmBlendOom'));
     }
     this.u8().fill(0, accumPtr, accumPtr + accumBytes);
     this.u8().fill(0, weightPtr, weightPtr + weightBytes);
@@ -354,7 +356,7 @@ export class UpixWasmBridge {
           tilePtr = this.exports.upix_alloc(tileBytes) >>> 0;
           if (!tilePtr) {
             tileCap = 0;
-            throw new Error('WASM 融合块分配失败');
+            throw new Error(t('runtime.wasmBlendTileAllocFailed'));
           }
           tileCap = tileBytes;
         }
@@ -377,7 +379,7 @@ export class UpixWasmBridge {
       finalizeToU8: (alphaPlaneU8 = null) => {
         const outBytes = px * outChannels;
         const outPtr = this.exports.upix_alloc(outBytes) >>> 0;
-        if (!outPtr) throw new Error('WASM 最终图像缓冲区分配失败');
+        if (!outPtr) throw new Error(t('runtime.wasmFinalBufAllocFailed'));
         let alphaAlloc = { ptr: 0, len: 0 };
         try {
           if (alphaPlaneU8 && alphaPlaneU8.byteLength > 0) {
@@ -423,7 +425,7 @@ export class UpixWasmBridge {
     const dstPtr = this.exports.upix_alloc(dstBytes) >>> 0;
     if (!dstPtr) {
       this.free(srcAlloc.ptr, srcAlloc.len);
-      throw new Error('Alpha 双三次缩放缓冲区分配失败');
+      throw new Error(t('runtime.wasmAlphaScaleAllocFailed'));
     }
     try {
       this.exports.upix_bicubic_scale_u8(srcAlloc.ptr, srcW, srcH, dstPtr, dstW, dstH);

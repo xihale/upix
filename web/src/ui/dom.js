@@ -1,5 +1,7 @@
 // Tiny DOM toolkit: hyperscript, keyed list reconciliation, a few helpers.
 
+import { t } from '../i18n/index.js';
+
 export function h(tag, props, ...children) {
   const el = document.createElement(tag);
   if (props) {
@@ -88,7 +90,7 @@ export function sleep(ms, signal) {
 }
 
 export function abortError() {
-  return new DOMException('已取消', 'AbortError');
+  return new DOMException(t('common.cancelled'), 'AbortError');
 }
 
 export function isAbort(error) {

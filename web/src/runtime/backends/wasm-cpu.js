@@ -1,6 +1,7 @@
 // WASM (CPU) SIMD128 multi-Worker tile backend (`WasmCpuBackend`).
 
 import { supportsWasmSimd128 } from '../wasm-bridge.js';
+import { getLocale, t } from '../../i18n/index.js';
 
 export const MAX_WASM_WORKERS = 16;
 
@@ -28,14 +29,14 @@ class WorkerSlot {
       if (!entry) return;
       this.pending.delete(data.reqId);
       if (data.type === 'error') {
-        entry.reject(new Error(data.message || 'Worker 执行失败'));
+        entry.reject(new Error(data.message || t('runtime.workerFailed')));
       } else {
         entry.resolve(data);
       }
     };
 
     this.worker.onerror = (err) => {
-      const msg = err?.message || 'Web Worker 异常退出';
+      const msg = err?.message || t('runtime.workerExited');
       for (const entry of this.pending.values()) {
         entry.reject(new Error(msg));
       }
@@ -54,7 +55,7 @@ class WorkerSlot {
 
   terminate() {
     for (const entry of this.pending.values()) {
-      entry.reject(new DOMException('已取消', 'AbortError'));
+      entry.reject(new DOMException(t('common.cancelled'), 'AbortError'));
     }
     this.pending.clear();
     this.worker.terminate();
@@ -83,7 +84,7 @@ export class WasmCpuBackend {
       try {
         const w = new Worker(new URL('../cpu.worker.js', import.meta.url), { type: 'module' });
         const slot = new WorkerSlot(w);
-        await slot.request({ type: 'init', wasmModule: this.hostBridge.module });
+        await slot.request({ type: 'init', wasmModule: this.hostBridge.module, locale: getLocale() });
         this.slots.push(slot);
       } catch {
         this.workersSupported = false;
@@ -116,6 +117,7 @@ export class WasmCpuBackend {
           await slot.request(
             {
               type: 'load_model',
+              locale: getLocale(),
               modelName: modelPayload.name,
               paramText: modelPayload.paramText,
               binBuffer: binCopy,
@@ -164,7 +166,7 @@ export class WasmCpuBackend {
       // Single-thread cooperative fallback
       for (let i = 0; i < regions.length; i += 1) {
         if (signal && signal.aborted) {
-          throw new DOMException('已取消', 'AbortError');
+          throw new DOMException(t('common.cancelled'), 'AbortError');
         }
         const region = regions[i];
         const tileIn = extractTile(region, channels);
@@ -192,7 +194,7 @@ export class WasmCpuBackend {
       this.terminateAll();
     };
     if (signal) {
-      if (signal.aborted) throw new DOMException('已取消', 'AbortError');
+      if (signal.aborted) throw new DOMException(t('common.cancelled'), 'AbortError');
       signal.addEventListener('abort', onAbort, { once: true });
     }
 

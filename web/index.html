@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Upix Web — 图像超分工作台</title>
-  <meta name="description" content="Upix 本地图像超分，支持 WebGPU、WASM 与 WebNN。">
+  <title>Upix Web</title>
+  <meta name="description" content="Local image super-resolution in the browser with WebGPU, WASM, and WebNN.">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)">
@@ -16,13 +16,35 @@
     try {
       const t = localStorage.getItem('upix.web.theme');
       if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+      const p = localStorage.getItem('upix.web.locale');
+      let lang = 'en';
+      if (p === 'zh-CN' || p === 'en') {
+        lang = p;
+      } else {
+        const list = navigator.languages && navigator.languages.length ? navigator.languages : [navigator.language];
+        for (const tag of list) {
+          if (!tag) continue;
+          try {
+            const loc = new Intl.Locale(tag);
+            const l = (loc.language || '').toLowerCase();
+            if (l === 'zh' || l === 'cmn') {
+              const s = (loc.script || '').toLowerCase();
+              const r = (loc.region || '').toUpperCase();
+              lang = s === 'hans' ? 'zh-CN' : (s === 'hant' || r === 'TW' || r === 'HK' || r === 'MO') ? 'en' : 'zh-CN';
+              break;
+            }
+            if (l === 'en') { lang = 'en'; break; }
+          } catch {}
+        }
+      }
+      document.documentElement.lang = lang;
     } catch {}
   </script>
 </head>
 <body>
-  <a class="skip-link" href="#main">跳至主内容</a>
+  <a class="skip-link" href="#main">Skip to main content</a>
   <div id="app" class="app"></div>
-  <noscript><p style="padding:24px;font:14px system-ui">Upix Web 需要启用 JavaScript。</p></noscript>
+  <noscript><p style="padding:24px;font:14px system-ui">Upix Web 需要启用 JavaScript。/ Upix Web requires JavaScript.</p></noscript>
   <script type="module" src="./src/main.js"></script>
 </body>
 </html>

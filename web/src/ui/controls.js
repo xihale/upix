@@ -4,6 +4,7 @@
 import { clamp, h, text } from './dom.js';
 import { icon } from './icons.js';
 import { sceneLabel } from './format.js';
+import { formatNumber, t } from '../i18n/index.js';
 
 let seq = 0;
 const nextId = p => `${p}-${++seq}`;
@@ -119,6 +120,7 @@ export function segmented({ label, options, value, kind = 'radiogroup', size = '
   return {
     el,
     set(next) { if (String(next) !== String(current)) { current = next; paint(); place(wasShown); } },
+    setLabel(nextLabel) { el.setAttribute('aria-label', nextLabel); },
     setOptions(opts) {
       const sig = JSON.stringify(opts.map(o => [o.value, o.label, !!o.disabled, o.title]));
       if (sig === el.dataset.sig) return;
@@ -132,6 +134,8 @@ export function segmented({ label, options, value, kind = 'radiogroup', size = '
 /** Tactile Swiss toggle switch. */
 export function switchRow({ label, hint, checked = false, onChange }) {
   const knob = h('span', { class: 'switch-knob' });
+  const labelEl = h('span', { class: 'switch-label' }, label);
+  const hintEl = hint ? h('span', { class: 'field-hint' }, hint) : null;
   const btn = h('button', {
     type: 'button', class: 'switch-row', role: 'switch', 'aria-checked': String(checked),
     onclick: () => {
@@ -140,33 +144,38 @@ export function switchRow({ label, hint, checked = false, onChange }) {
       onChange?.(next);
     },
   },
-  h('span', { class: 'switch-text' },
-    h('span', { class: 'switch-label' }, label),
-    hint && h('span', { class: 'field-hint' }, hint)),
+  h('span', { class: 'switch-text' }, labelEl, hintEl),
   h('span', { class: 'switch-track' }, knob));
   return {
     el: btn,
     set(v) { btn.setAttribute('aria-checked', String(!!v)); },
+    setText({ label: nextLabel, hint: nextHint }) {
+      if (nextLabel != null) text(labelEl, nextLabel);
+      if (hintEl && nextHint != null) text(hintEl, nextHint);
+    },
   };
 }
 
 /** Hairline range slider with tabular numeric readout. */
 export function rangeRow({ label, min, max, value, step = 1, unit = '', onChange }) {
   const id = nextId('range');
+  const labelEl = h('label', { class: 'field-label', htmlFor: id }, label);
   const out = h('output', { class: 'range-out mono', htmlFor: id });
   const input = h('input', { type: 'range', id, class: 'range', min, max, step, value });
   const paint = () => {
     input.style.setProperty('--fill', `${((input.value - min) / (max - min)) * 100}%`);
-    text(out, `${input.value}${unit}`);
-    input.setAttribute('aria-valuetext', `${input.value}${unit}`);
+    const formatted = formatNumber(Number(input.value), { maximumFractionDigits: 0 });
+    text(out, `${formatted}${unit}`);
+    input.setAttribute('aria-valuetext', `${formatted}${unit}`);
   };
   input.addEventListener('input', () => { paint(); onChange?.(Number(input.value)); });
   paint();
   return {
     el: h('div', { class: 'field-stack' },
-      h('div', { class: 'field-head' }, h('label', { class: 'field-label', htmlFor: id }, label), out),
+      h('div', { class: 'field-head' }, labelEl, out),
       input),
     set(v) { input.value = v; paint(); },
+    setLabel(nextLabel) { text(labelEl, nextLabel); },
   };
 }
 
@@ -335,6 +344,10 @@ export function selectControl({ label, options, value, onChange }) {
       current = String(next);
       paint();
     },
+    setLabel(nextLabel) {
+      trigger.setAttribute('aria-label', nextLabel);
+      menu.setAttribute('aria-label', nextLabel);
+    },
     setOptions,
     get value() { return current; },
   };
@@ -361,6 +374,7 @@ export function stackField(label, control, hint, meta) {
 export function accordion(title, ...children) {
   let open = false;
   const bodyId = nextId('acc');
+  const titleEl = h('span', { class: 'sec-title' }, title);
   const summaryEl = h('span', { class: 'acc-summary truncate' });
   const trigger = h('button', {
     type: 'button',
@@ -369,9 +383,7 @@ export function accordion(title, ...children) {
     'aria-controls': bodyId,
     onclick: () => setOpen(!open),
   },
-  h('span', { class: 'acc-titles' },
-    h('span', { class: 'sec-title' }, title),
-    summaryEl),
+  h('span', { class: 'acc-titles' }, titleEl, summaryEl),
   icon('chevron-right', 14, 'acc-chevron'));
   const body = h('div', { class: 'acc-body', id: bodyId, hidden: true }, ...children);
 
@@ -383,6 +395,7 @@ export function accordion(title, ...children) {
 
   return {
     el: h('section', { class: 'acc-sec' }, trigger, body),
+    setTitle(val) { text(titleEl, val); },
     setSummary(val) { text(summaryEl, val); summaryEl.hidden = !val; },
     setOpen,
   };
@@ -398,7 +411,7 @@ export function section(title, headerEnd, ...children) {
 }
 
 export function scaleBadge(scale) {
-  return h('span', { class: 'tag-meta tag-scale mono', title: `放大 ${scale} 倍` }, `${scale}×`);
+  return h('span', { class: 'tag-meta tag-scale mono', title: t('common.scaleTitle', { scale }) }, `${scale}×`);
 }
 
 export function sceneBadge(scene) {
@@ -406,7 +419,7 @@ export function sceneBadge(scene) {
 }
 
 export function recBadge() {
-  return h('span', { class: 'tag-meta tag-rec' }, '推荐');
+  return h('span', { class: 'tag-meta tag-rec' }, t('common.recommended'));
 }
 
 export function statusDot(kind) {
@@ -418,6 +431,7 @@ export function progressBar(label) {
   const el = h('div', { class: 'bar', role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-label': label }, fill);
   return {
     el,
+    setLabel(nextLabel) { el.setAttribute('aria-label', nextLabel); },
     set(percentage) {
       const p = clamp(percentage ?? 0, 0, 100);
       fill.style.setProperty('--p', String(p / 100));
@@ -427,8 +441,10 @@ export function progressBar(label) {
 }
 
 /** Destructive button that asks twice inline without modal interruption. */
-export function confirmButton({ label, confirmLabel = '确认', iconName, className = '', onConfirm, title }) {
+export function confirmButton({ label, confirmLabel = t('common.confirm'), iconName, className = '', onConfirm, title }) {
   let timer = 0;
+  let curLabel = label;
+  let curConfirm = confirmLabel;
   const idleSlot = iconName ? icon(iconName, 14) : h('span', {}, label);
   const armedSlot = h('span', { hidden: true }, confirmLabel);
   const btn = h('button', {
@@ -447,7 +463,7 @@ export function confirmButton({ label, confirmLabel = '确认', iconName, classN
   };
   function arm() {
     btn.dataset.armed = 'true';
-    btn.setAttribute('aria-label', `${confirmLabel} ${label}`);
+    btn.setAttribute('aria-label', `${curConfirm} ${curLabel}`);
     idleSlot.hidden = true;
     armedSlot.hidden = false;
     window.addEventListener('pointerdown', onOutsidePointer, true);
@@ -458,10 +474,22 @@ export function confirmButton({ label, confirmLabel = '确认', iconName, classN
     window.removeEventListener('pointerdown', onOutsidePointer, true);
     if (!btn.dataset.armed) return;
     delete btn.dataset.armed;
-    btn.setAttribute('aria-label', label);
+    btn.setAttribute('aria-label', curLabel);
     idleSlot.hidden = false;
     armedSlot.hidden = true;
   }
+  btn.setLabels = ({ label: nextLabel, confirmLabel: nextConfirm, title: nextTitle }) => {
+    if (nextLabel != null) {
+      curLabel = nextLabel;
+      if (!iconName) text(idleSlot, nextLabel);
+      btn.title = nextTitle ?? nextLabel;
+    }
+    if (nextConfirm != null) {
+      curConfirm = nextConfirm;
+      text(armedSlot, nextConfirm);
+    }
+    btn.setAttribute('aria-label', btn.dataset.armed === 'true' ? `${curConfirm} ${curLabel}` : curLabel);
+  };
   return btn;
 }
 

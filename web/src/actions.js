@@ -2,11 +2,12 @@
 // views stay declarative (read store, call an action).
 
 import { downloadBlob, isAbort } from './ui/dom.js';
-import { BACKENDS, benchRows, errorMessage, isImageFile, isModelFile, stripExt } from './ui/format.js';
+import { benchRows, errorMessage, getBackends, isImageFile, isModelFile, stripExt } from './ui/format.js';
 import { createSampleImage } from './sample.js';
 import {
   clearWorkspaceItems, deleteWorkspaceItems, loadWorkspaceItems, putWorkspaceItem,
 } from './runtime/workspace-store.js';
+import { formatNumber, t } from './i18n/index.js';
 
 export function createActions({ runtime, store, toast }) {
   const downloadAborts = new Map();
@@ -117,8 +118,8 @@ export function createActions({ runtime, store, toast }) {
     setSettings({ modelName: pick.name });
   }
 
-  async function refreshCaps() {
-    store.set({ capsLoading: true });
+  async function refreshCaps({ silent = false } = {}) {
+    if (!silent) store.set({ capsLoading: true });
     try {
       const caps = await runtime.getCapabilities();
       store.set({ caps, capsLoading: false });
@@ -137,11 +138,12 @@ export function createActions({ runtime, store, toast }) {
         models: result.models,
         storageUsed: result.storageUsedBytes ?? 0,
         remoteError: result.remoteError ?? '',
+        remoteErrorKind: result.remoteErrorKind ?? '',
         modelsLoading: false,
       });
       reconcileModel();
     } catch (error) {
-      store.set({ modelsLoading: false, remoteError: errorMessage(error) });
+      store.set({ modelsLoading: false, remoteError: errorMessage(error), remoteErrorKind: 'remote' });
     }
   }
 
@@ -150,7 +152,7 @@ export function createActions({ runtime, store, toast }) {
       await runtime.init();
     } catch (error) {
       store.set({ bootError: errorMessage(error) });
-      toast(`初始化失败：${errorMessage(error)}`, 'error');
+      toast(t('actions.initFailed', { error: errorMessage(error) }), 'error');
     }
     await restoreWorkspace();
     await Promise.all([refreshCaps(), refreshModels()]);
@@ -162,7 +164,7 @@ export function createActions({ runtime, store, toast }) {
     const images = files.filter(isImageFile);
     const models = files.filter(f => !isImageFile(f) && isModelFile(f));
     const ignored = files.length - images.length - models.length;
-    if (ignored > 0) toast(`已忽略 ${ignored} 个不支持文件`, 'warn');
+    if (ignored > 0) toast(t('actions.ignoredFiles', { count: ignored }), 'warn');
     if (models.length) await importModels(models);
     if (!images.length) return;
 
@@ -262,7 +264,7 @@ export function createActions({ runtime, store, toast }) {
   async function ensureModel() {
     const { settings } = get();
     const model = findModel(settings.modelName);
-    if (!model) { toast('未选择模型', 'warn'); return false; }
+    if (!model) { toast(t('actions.noModelSelected'), 'warn'); return false; }
     if (model.installed) return true;
     return downloadModel(model.name);
   }
@@ -321,12 +323,15 @@ export function createActions({ runtime, store, toast }) {
       runAbort = null;
       store.set({ running: false, progress: null });
     }
-    if (controller.signal.aborted) { toast('已取消', 'info'); return; }
-    const seconds = ((performance.now() - started) / 1000).toFixed(1);
-    const parts = [`完成 ${done} 张`];
-    if (skipped) parts.push(`跳过 ${skipped} 张`);
-    if (failed) parts.push(`失败 ${failed} 张`);
-    toast(`${parts.join(' · ')} · ${seconds}s`, failed ? 'warn' : 'success');
+    if (controller.signal.aborted) { toast(t('common.cancelled'), 'info'); return; }
+    const seconds = formatNumber((performance.now() - started) / 1000, {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    });
+    const parts = [t('actions.batchDone', { count: done })];
+    if (skipped) parts.push(t('actions.batchSkipped', { count: skipped }));
+    if (failed) parts.push(t('actions.batchFailed', { count: failed }));
+    toast(t('actions.batchSummary', { parts: parts.join(' · '), seconds }), failed ? 'warn' : 'success');
   }
 
   async function startProcessing() {
@@ -334,12 +339,16 @@ export function createActions({ runtime, store, toast }) {
     if (running || !queue.length) return;
     if (settings.backend === 'auto') {
       if (!caps?.webgpu?.available && !caps?.webnn?.available && !caps?.wasm?.available) {
-        toast('无可用推理后端', 'error');
+        toast(t('actions.noBackendAvailable'), 'error');
         return;
       }
     } else {
       const backend = caps?.[settings.backend];
-      if (!backend?.available) { toast(`${BACKENDS[settings.backend]?.label ?? settings.backend} 不可用`, 'error'); return; }
+      if (!backend?.available) {
+        const label = getBackends()[settings.backend]?.label ?? settings.backend;
+        toast(t('actions.backendUnavailable', { label }), 'error');
+        return;
+      }
     }
     if (!(await ensureModel())) return;
     const ready = get().queue.filter(i => i.status !== 'probing');
@@ -383,7 +392,7 @@ export function createActions({ runtime, store, toast }) {
         });
       } else {
         setDownload({ error: errorMessage(error) });
-        toast(`下载失败：${errorMessage(error)}`, 'error');
+        toast(t('actions.downloadFailed', { error: errorMessage(error) }), 'error');
       }
       return false;
     } finally {
@@ -405,26 +414,26 @@ export function createActions({ runtime, store, toast }) {
     try {
       await runtime.deleteModel(name);
       await refreshModels();
-    } catch (error) { toast(`删除失败：${errorMessage(error)}`, 'error'); }
+    } catch (error) { toast(t('actions.deleteFailed', { error: errorMessage(error) }), 'error'); }
   }
 
   async function clearCache() {
     try {
       await runtime.clearModelCache();
       await refreshModels();
-      toast('已清空缓存', 'info');
-    } catch (error) { toast(`清空失败：${errorMessage(error)}`, 'error'); }
+      toast(t('actions.cacheCleared'), 'info');
+    } catch (error) { toast(t('actions.clearFailed', { error: errorMessage(error) }), 'error'); }
   }
 
   async function importModels(files) {
     const list = [...files].filter(isModelFile);
-    if (!list.length) { toast('需要 .param / .bin 或 .zip 文件', 'warn'); return; }
+    if (!list.length) { toast(t('actions.needModelFiles'), 'warn'); return; }
     try {
       const items = await runtime.importModelFiles(list);
       await refreshModels();
-      toast(`已导入 ${items.length} 个模型`, 'success');
+      toast(t('actions.importedModels', { count: items.length }), 'success');
       if (items[0]) setSettings({ modelName: items[0].name });
-    } catch (error) { toast(`导入失败：${errorMessage(error)}`, 'error'); }
+    } catch (error) { toast(t('actions.importFailed', { error: errorMessage(error) }), 'error'); }
   }
 
   const selectModel = name => setSettings({ modelName: name });
@@ -456,7 +465,7 @@ export function createActions({ runtime, store, toast }) {
       const zip = await runtime.buildZipArchive(entries);
       downloadBlob(zip, 'upix-batch.zip');
       forgetItems(done.map(item => item.id));
-    } catch (error) { toast(`打包失败：${errorMessage(error)}`, 'error'); }
+    } catch (error) { toast(t('actions.zipFailed', { error: errorMessage(error) }), 'error'); }
   }
 
   const loadSample = async () => addFiles([await createSampleImage()]);

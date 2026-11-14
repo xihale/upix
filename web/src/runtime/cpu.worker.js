@@ -1,6 +1,7 @@
 // Dedicated Web Worker executing WASM SIMD128 ncnn tile inference (`crates/upix-wasm`).
 
 import { UpixWasmBridge } from './wasm-bridge.js';
+import { setActiveLocale, t } from '../i18n/index.js';
 
 let bridge = null;
 let loadedModel = null; // { name, handle, meta }
@@ -10,6 +11,9 @@ self.onmessage = async (event) => {
   if (!msg || typeof msg !== 'object') return;
 
   try {
+    if (msg.locale) {
+      setActiveLocale(msg.locale);
+    }
     if (msg.type === 'init') {
       bridge = await UpixWasmBridge.create(msg.wasmModule);
       self.postMessage({ type: 'ready', reqId: msg.reqId });
@@ -36,7 +40,7 @@ self.onmessage = async (event) => {
 
     if (msg.type === 'infer_tile') {
       if (!bridge || !loadedModel) {
-        throw new Error('Worker 模型尚未加载');
+        throw new Error(t('runtime.workerModelNotLoaded'));
       }
       const inputF32 = new Float32Array(msg.tileBuffer);
       const t0 = performance.now();

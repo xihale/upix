@@ -4,13 +4,18 @@ import { h } from './dom.js';
 import { mountStage } from './stage.js';
 import { mountQueue } from './queue.js';
 import { mountInspector } from './inspector.js';
+import { t } from '../i18n/index.js';
 
 export function mountWorkbench({ root, store, actions }) {
   const stageHost = h('div');
   const queueHost = h('div', { hidden: true });
-  const inspectorHost = h('aside', { 'aria-label': '参数检查器' });
+  const inspectorHost = h('aside', { 'aria-label': t('inspector.asideLabel') });
   root.classList.add('workbench');
   root.append(h('div', { class: 'stage-col' }, stageHost, queueHost), inspectorHost);
+
+  store.subscribe(['locale'], () => {
+    inspectorHost.setAttribute('aria-label', t('inspector.asideLabel'));
+  });
 
   mountStage({ host: stageHost, dropTarget: root, store, actions });
   mountQueue({ host: queueHost, store, actions });

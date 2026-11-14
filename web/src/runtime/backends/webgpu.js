@@ -11,6 +11,8 @@
 // - Compiled per-shape tile execution plan cache (`GPUBuffer` pool + pre-built `GPUBindGroup`s +
 //   single-pass command-buffer coalescing + persistent `MAP_READ` staging + CPU/GPU tile overlap)
 
+import { formatNumber, t } from '../../i18n/index.js';
+
 const UNIFORM_STRIDE = 256;
 const UNIFORM_SIZE = 64; // 16 x u32/f32
 const MAX_CACHED_PLANS = 4;
@@ -1798,8 +1800,8 @@ export class WebGpuBackend {
         id: 'webgpu',
         available: false,
         label: 'WebGPU',
-        deviceName: '不可用',
-        reason: '当前浏览器不支持 WebGPU（需支持 WebGPU 的浏览器，并通过 HTTPS 或 localhost 访问）',
+        deviceName: t('common.unavailable'),
+        reason: t('runtime.webgpuUnsupportedProbe'),
       };
     }
     try {
@@ -1809,8 +1811,8 @@ export class WebGpuBackend {
           id: 'webgpu',
           available: false,
           label: 'WebGPU',
-          deviceName: '无可用适配器',
-          reason: '未找到可用 WebGPU 适配器',
+          deviceName: t('runtime.noGpuAdapter'),
+          reason: t('runtime.noGpuAdapterReason'),
         };
       }
       const info = adapter.info || (typeof adapter.requestAdapterInfo === 'function' ? await adapter.requestAdapterInfo().catch(() => ({})) : {});
@@ -1833,7 +1835,7 @@ export class WebGpuBackend {
         id: 'webgpu',
         available: false,
         label: 'WebGPU',
-        deviceName: '初始化失败',
+        deviceName: t('runtime.initFailed'),
         reason: err instanceof Error ? err.message : String(err),
       };
     }
@@ -1842,11 +1844,11 @@ export class WebGpuBackend {
   async init() {
     if (this.device) return;
     if (typeof navigator === 'undefined' || !navigator.gpu) {
-      throw new Error('当前浏览器不支持 WebGPU，请改用 WASM 后端');
+      throw new Error(t('runtime.webgpuUnsupportedUseWasm'));
     }
     this.adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
     if (!this.adapter) {
-      throw new Error('未能获取 GPU 适配器（WebGPU 可能被浏览器禁用），请改用 WASM 后端');
+      throw new Error(t('runtime.webgpuNoAdapterUseWasm'));
     }
 
     const info = this.adapter.info || {};
@@ -2101,7 +2103,8 @@ export class WebGpuBackend {
     const allocPlanStorage = (minBytes) => {
       const size = alignBytes(minBytes, 256);
       if (size > maxBind || size > maxBuf) {
-        const err = new Error(`GPU 显存单块绑定超限（${(size / (1024 * 1024)).toFixed(1)} MB）`);
+        const mb = formatNumber(size / (1024 * 1024), { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+        const err = new Error(t('runtime.gpuBindingOom', { mb }));
         err.isOom = true;
         throw err;
       }
@@ -2147,7 +2150,7 @@ export class WebGpuBackend {
 
       const recordOp = (shaderKey, readBuffers, writeBuffer, u32Params, workgroups) => {
         if ((dispatchIndex + 1) * UNIFORM_STRIDE > uniformCapacity) {
-          throw new Error('GPU 缓冲区容量超限，请尝试更小的分块尺寸');
+          throw new Error(t('runtime.gpuBufferLimit'));
         }
         const wordBase = (dispatchIndex * UNIFORM_STRIDE) / 4;
         for (let i = 0; i < Math.min(16, u32Params.length); i += 1) {
@@ -2410,7 +2413,7 @@ export class WebGpuBackend {
           const inp = blobs[layer.bottoms[0]];
           const top = layer.tops[0];
           if (!op.global_pooling) {
-            throw new Error('当前模型与 WebGPU 后端不兼容，请改用 WASM 后端');
+            throw new Error(t('runtime.webgpuIncompatible'));
           }
           const outT = allocTensor(1, 1, inp.c, consumerCounts[top]);
           recordOp(
@@ -2476,7 +2479,7 @@ export class WebGpuBackend {
           }
         } else if (op.op === 'concat') {
           if (op.axis !== 0) {
-            throw new Error(`当前模型结构超出 WebGPU 支持范围，请改用 WASM 后端`);
+            throw new Error(t('runtime.webgpuIncompatible'));
           }
           const first = blobs[layer.bottoms[0]];
           let totalC = 0;
@@ -2705,7 +2708,7 @@ export class WebGpuBackend {
           );
           blobs[top] = outT;
         } else {
-          throw new Error(`当前模型使用了 WebGPU 暂不支持的算子（${op.op}），请改用 WASM 后端`);
+          throw new Error(t('runtime.webgpuUnsupportedOp', { op: op.op }));
         }
 
         for (const bIdx of layer.bottoms) {
@@ -2715,7 +2718,7 @@ export class WebGpuBackend {
 
       const finalBlob = blobs[meta.output_blob];
       if (!finalBlob) {
-        throw new Error('WebGPU 计算输出为空，请重试或改用 WASM 后端');
+        throw new Error(t('runtime.webgpuEmptyOutput'));
       }
 
       const outTotalFloats = outW * outH * channels;
@@ -2857,7 +2860,7 @@ export class WebGpuBackend {
 
     for (let i = 0; i < regions.length; i += 1) {
       if (signal && signal.aborted) {
-        throw new DOMException('已取消', 'AbortError');
+        throw new DOMException(t('common.cancelled'), 'AbortError');
       }
       const region = regions[i];
       const tileIn = nextTileIn;

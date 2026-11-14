@@ -1,6 +1,10 @@
 // Minimal observable store. State is replaced immutably, so subscribers can
 // compare by reference and re-render only the slice they care about.
 
+import {
+  readStoredLocalePref, resolveLocale, setActiveLocale, t, writeStoredLocalePref,
+} from './i18n/index.js';
+
 export function createStore(initial) {
   let state = initial;
   const subs = new Set();
@@ -61,6 +65,19 @@ export function applyTheme(theme) {
   else delete root.dataset.theme;
 }
 
+export function applyLocale(locale) {
+  const resolved = setActiveLocale(locale);
+  if (typeof document !== 'undefined') {
+    document.documentElement.lang = resolved;
+    document.title = t('meta.title');
+    const desc = document.querySelector('meta[name="description"]');
+    if (desc) desc.setAttribute('content', t('meta.description'));
+    const skip = document.querySelector('.skip-link');
+    if (skip) skip.textContent = t('meta.skipToContent');
+  }
+  return resolved;
+}
+
 export function loadPersisted() {
   let settings = { ...DEFAULT_SETTINGS };
   try {
@@ -71,8 +88,12 @@ export function loadPersisted() {
   } catch { settings = { ...DEFAULT_SETTINGS }; }
   const savedTheme = read(THEME_KEY);
   const theme = savedTheme === 'light' || savedTheme === 'dark' ? savedTheme : 'system';
+  const localePref = readStoredLocalePref();
+  const locale = resolveLocale(localePref);
   return {
     theme,
+    localePref,
+    locale,
     settings,
     mirrorBaseUrl: read(MIRROR_KEY) ?? '',
   };
@@ -83,6 +104,7 @@ export function persist(state) {
   write(MIRROR_KEY, state.mirrorBaseUrl);
   if (state.theme === 'light' || state.theme === 'dark') write(THEME_KEY, state.theme);
   else remove(THEME_KEY);
+  writeStoredLocalePref(state.localePref);
 }
 
 export function createInitialState() {
@@ -97,6 +119,7 @@ export function createInitialState() {
     models: [],
     modelsLoading: true,
     remoteError: '',
+    remoteErrorKind: '',
     storageUsed: 0,
     downloads: {}, // name -> { loaded, total, phase } | { error }
 

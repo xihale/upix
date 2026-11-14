@@ -1,13 +1,16 @@
 // Formatting + vocabulary shared by every view.
 
+import { formatNumber, formatPercent, t } from '../i18n/index.js';
+
 export function formatBytes(bytes) {
   if (!Number.isFinite(bytes) || bytes < 0) return '—';
-  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024) return `${formatNumber(bytes, { maximumFractionDigits: 0 })} B`;
   const units = ['KB', 'MB', 'GB', 'TB'];
   let value = bytes / 1024;
   let i = 0;
   while (value >= 1024 && i < units.length - 1) { value /= 1024; i++; }
-  return `${value >= 100 || i === 0 ? value.toFixed(0) : value.toFixed(value >= 10 ? 1 : 2).replace(/\.?0+$/, '')} ${units[i]}`;
+  const maxDigits = value >= 100 || i === 0 ? 0 : (value >= 10 ? 1 : 2);
+  return `${formatNumber(value, { maximumFractionDigits: maxDigits })} ${units[i]}`;
 }
 
 export function formatDims(w, h) {
@@ -16,24 +19,49 @@ export function formatDims(w, h) {
 
 export function formatMs(ms) {
   if (!Number.isFinite(ms)) return '—';
-  if (ms < 1000) return `${ms < 10 ? ms.toFixed(1) : Math.round(ms)} ms`;
-  return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)} s`;
+  if (ms < 1000) {
+    const digits = ms < 10 ? 1 : 0;
+    return `${formatNumber(ms, { minimumFractionDigits: digits, maximumFractionDigits: digits })} ms`;
+  }
+  const digits = ms < 10_000 ? 2 : 1;
+  return `${formatNumber(ms / 1000, { minimumFractionDigits: digits, maximumFractionDigits: digits })} s`;
 }
 
 export function formatNum(value, digits = 1) {
-  return Number.isFinite(value) ? value.toFixed(digits) : '—';
+  return Number.isFinite(value)
+    ? formatNumber(value, { minimumFractionDigits: digits, maximumFractionDigits: digits })
+    : '—';
 }
 
 export function stripExt(name) {
   return name.replace(/\.[^./\\]+$/, '');
 }
 
-export const BACKENDS = {
-  webgpu: { id: 'webgpu', label: 'WebGPU', short: 'WebGPU', shortFail: '浏览器不支持' },
-  wasm: { id: 'wasm', label: 'WASM CPU', short: 'WASM', shortFail: '浏览器不支持' },
-  webnn: { id: 'webnn', label: 'WebNN', short: 'WebNN', experimental: true, shortFail: '环境不支持' },
-};
 export const BACKEND_IDS = ['webgpu', 'wasm', 'webnn'];
+
+export function getBackends() {
+  return {
+    webgpu: {
+      id: 'webgpu',
+      label: t('backends.webgpu.label'),
+      short: t('backends.webgpu.short'),
+      shortFail: t('backends.webgpu.shortFail'),
+    },
+    wasm: {
+      id: 'wasm',
+      label: t('backends.wasm.label'),
+      short: t('backends.wasm.short'),
+      shortFail: t('backends.wasm.shortFail'),
+    },
+    webnn: {
+      id: 'webnn',
+      label: t('backends.webnn.label'),
+      short: t('backends.webnn.short'),
+      experimental: true,
+      shortFail: t('backends.webnn.shortFail'),
+    },
+  };
+}
 
 /**
  * Benchmark row plan shared by the Engine view and `runBenchmark`: one row per
@@ -43,9 +71,10 @@ export const BACKEND_IDS = ['webgpu', 'wasm', 'webnn'];
  * precedence over `caps.webnn.features.webnnDevices` when present.
  */
 export function benchRows(caps, lab = {}) {
+  const backends = getBackends();
   const rows = [
-    { id: 'webgpu', label: BACKENDS.webgpu.label, available: !!caps?.webgpu?.available, reason: caps?.webgpu?.reason },
-    { id: 'wasm', label: BACKENDS.wasm.label, available: !!caps?.wasm?.available, reason: caps?.wasm?.reason },
+    { id: 'webgpu', label: backends.webgpu.label, available: !!caps?.webgpu?.available, reason: caps?.webgpu?.reason },
+    { id: 'wasm', label: backends.wasm.label, available: !!caps?.wasm?.available, reason: caps?.wasm?.reason },
   ];
   const devices = caps?.webnn?.features?.webnnDevices ?? {};
   const nnCap = caps?.webnn;
@@ -57,38 +86,66 @@ export function benchRows(caps, lab = {}) {
       available: probe ? probe.status === 'ok' : (nnCap?.available && devices[d] === true),
       probing: probe?.status === 'probing',
       reason: probe?.reason
-        ?? (nnCap?.available && devices[d] === false ? `${d.toUpperCase()} 不可用` : nnCap?.reason),
+        ?? (nnCap?.available && devices[d] === false
+          ? t('sheet.deviceUnavailable', { device: d.toUpperCase() })
+          : nnCap?.reason),
     });
   }
   return rows;
 }
 
-const SCENES = {
-  anime: '动漫', 动漫: '动漫',
-  photo: '照片', 照片: '照片',
-  general: '综合', 综合: '综合',
-  restore: '修复', restoration: '修复', 修复: '修复',
+const SCENE_ALIASES = {
+  anime: 'anime', 动漫: 'anime',
+  photo: 'photo', 照片: 'photo',
+  general: 'general', 综合: 'general',
+  restore: 'restore', restoration: 'restore', 修复: 'restore',
+  custom: 'custom', 自定义: 'custom',
 };
-const SCENE_KEYS = { 动漫: 'anime', 照片: 'photo', 综合: 'general', 修复: 'restore' };
+
+export function sceneKey(scene) {
+  return SCENE_ALIASES[String(scene ?? '').trim().toLowerCase()] ?? 'general';
+}
 
 export function sceneLabel(scene) {
-  return SCENES[String(scene ?? '').trim().toLowerCase()] ?? (scene || '综合');
+  const raw = String(scene ?? '').trim();
+  const key = SCENE_ALIASES[raw.toLowerCase()];
+  if (key) return t(`scenes.${key}`);
+  return raw || t('scenes.general');
 }
-export function sceneKey(scene) {
-  return SCENE_KEYS[sceneLabel(scene)] ?? 'general';
+
+const FAMILY_ALIASES = {
+  standalone: 'standalone',
+  独立模型: 'standalone',
+  imported: 'imported',
+  本地导入: 'imported',
+};
+
+export function familyLabel(family) {
+  const raw = String(family ?? '').trim();
+  const key = FAMILY_ALIASES[raw.toLowerCase()] ?? FAMILY_ALIASES[raw];
+  return key ? t(`families.${key}`) : raw;
 }
 
 export function matchesModelQuery(model, query) {
   if (!query) return true;
-  const hay = `${model.name} ${model.shortName ?? ''} ${model.family} ${sceneLabel(model.scene)} ${model.scene}`.toLowerCase();
+  const hay = [
+    model.name,
+    model.shortName ?? '',
+    model.family,
+    familyLabel(model.family),
+    sceneLabel(model.scene),
+    sceneKey(model.scene),
+    model.scene,
+  ].join(' ').toLowerCase();
   return hay.includes(query);
 }
 
 export function groupModelsByFamily(models) {
   const families = new Map();
   for (const m of models) {
-    if (!families.has(m.family)) families.set(m.family, []);
-    families.get(m.family).push(m);
+    const fam = familyLabel(m.family);
+    if (!families.has(fam)) families.set(fam, []);
+    families.get(fam).push(m);
   }
   const nodes = [];
   for (const [family, items] of families) {
@@ -104,17 +161,19 @@ export function downloadProgress(dl) {
   return {
     busy,
     pct,
-    label: busy ? (dl.phase === 'verify' ? '校验中' : `${Math.round(pct)}%`) : '',
+    label: busy ? (dl.phase === 'verify' ? t('inspector.verifying') : formatPercent(pct)) : '',
     error: dl?.error ?? '',
   };
 }
 
-export const OUTPUT_FORMATS = [
-  { value: 'follow', label: '跟随' },
-  { value: 'png', label: 'PNG' },
-  { value: 'jpeg', label: 'JPEG' },
-  { value: 'webp', label: 'WebP' },
-];
+export function getOutputFormats() {
+  return [
+    { value: 'follow', label: t('inspector.formatFollow') },
+    { value: 'png', label: 'PNG' },
+    { value: 'jpeg', label: 'JPEG' },
+    { value: 'webp', label: 'WebP' },
+  ];
+}
 
 export const OUTPUT_FORMAT_LABELS = {
   png: 'PNG',
@@ -160,5 +219,5 @@ export function isModelFile(file) {
 }
 
 export function errorMessage(error) {
-  return error?.message || String(error) || '未知错误';
+  return error?.message || String(error) || t('common.unknownError');
 }

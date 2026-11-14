@@ -4,8 +4,9 @@
 
 import { clamp, h, text } from './dom.js';
 import { icon } from './icons.js';
-import { BACKENDS, formatDims, formatNum } from './format.js';
+import { formatDims, formatNum, getBackends } from './format.js';
 import { progressBar } from './controls.js';
+import { formatPercent, t } from '../i18n/index.js';
 
 export function pickImages(actions) {
   const input = h('input', {
@@ -17,23 +18,26 @@ export function pickImages(actions) {
 }
 
 const PHASES = [
-  [/decode|解码/, '解码'],
-  [/load|model|加载/, '加载模型'],
-  [/compile|pipeline|编译/, '编译管线'],
-  [/blend|merge|stitch|fuse|融合/, '融合'],
-  [/encode|write|编码/, '编码'],
+  [/decode|解码/, 'stage.phases.decode'],
+  [/load|model|加载/, 'stage.phases.loadModel'],
+  [/compile|pipeline|编译/, 'stage.phases.compile'],
+  [/blend|merge|stitch|fuse|融合/, 'stage.phases.blend'],
+  [/encode|write|编码/, 'stage.phases.encode'],
 ];
 
 export function phaseLabel(p) {
   const phase = String(p?.phase ?? '').toLowerCase();
   if (/infer|tile|run|推理/.test(phase)) {
-    return p.totalTiles ? `推理 ${p.completedTiles}/${p.totalTiles}` : '推理';
+    return p.totalTiles
+      ? t('stage.phases.inferProgress', { completed: p.completedTiles, total: p.totalTiles })
+      : t('stage.phases.infer');
   }
-  return PHASES.find(([re]) => re.test(phase))?.[1] ?? (p?.phase || '准备中');
+  const key = PHASES.find(([re]) => re.test(phase))?.[1];
+  return key ? t(key) : (p?.phase || t('stage.preparing'));
 }
 
 const ZOOMS = [
-  { id: 'fit', label: '适应' },
+  { id: 'fit', key: 'stage.zoomFit' },
   { id: 1, label: '1:1' },
   { id: 2, label: '2:1' },
   { id: 4, label: '4:1' },
@@ -44,30 +48,34 @@ export function mountStage({ host, dropTarget, store, actions }) {
   host.dataset.state = 'empty';
 
   // ── empty state: explicit rounded dropzone ───────────────────────────────
+  const dzTitle = h('h2', { class: 'dz-title' }, t('stage.dropTitle'));
+  const chooseBtn = h('button', { type: 'button', class: 'btn btn-primary', onclick: () => pickImages(actions) }, t('stage.chooseImages'));
+  const sampleBtn = h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => actions.loadSample() }, t('stage.sample'));
+  const dzHint = h('p', { class: 'dz-hint' }, t('stage.formatsHint'));
+
   const empty = h('div', { class: 'stage-empty' },
     h('div', {
       class: 'dropzone',
       onclick: e => { if (!e.target.closest('button')) pickImages(actions); },
     },
     h('div', { class: 'dz-icon', 'aria-hidden': 'true' }, icon('upload', 20)),
-    h('h2', { class: 'dz-title' }, '拖放或粘贴图像'),
-    h('div', { class: 'dz-actions' },
-      h('button', { type: 'button', class: 'btn btn-primary', onclick: () => pickImages(actions) }, '选择图像'),
-      h('button', { type: 'button', class: 'btn btn-secondary', onclick: () => actions.loadSample() }, '示例图')),
-    h('p', { class: 'dz-hint' }, 'PNG · JPEG · WebP · AVIF')));
+    dzTitle,
+    h('div', { class: 'dz-actions' }, chooseBtn, sampleBtn),
+    dzHint));
 
   // ── image well ───────────────────────────────────────────────────────────
-  const imgBefore = h('img', { class: 'img', alt: '原图', draggable: false, decoding: 'async' });
-  const imgAfter = h('img', { class: 'img', alt: '超分结果', draggable: false, decoding: 'async' });
+  const imgBefore = h('img', { class: 'img', alt: t('stage.imgBeforeAlt'), draggable: false, decoding: 'async' });
+  const imgAfter = h('img', { class: 'img', alt: t('stage.imgAfterAlt'), draggable: false, decoding: 'async' });
   const canvasBefore = h('div', { class: 'canvas' }, imgBefore);
   const canvasAfter = h('div', { class: 'canvas' }, imgAfter);
   const layerAfter = h('div', { class: 'layer layer-after' }, canvasAfter);
   const layerBefore = h('div', { class: 'layer layer-before' }, canvasBefore);
 
   const handle = h('div', {
-    class: 'curtain-handle', role: 'slider', tabindex: '0', 'aria-label': '前后对比位置',
+    class: 'curtain-handle', role: 'slider', tabindex: '0',
+    'aria-label': t('stage.curtainLabel'),
     'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '50',
-    'aria-description': '方向键移动，Home / End 到两端',
+    'aria-description': t('stage.curtainDescription'),
   }, h('i', { class: 'curtain-index', 'aria-hidden': 'true' }));
   const curtain = h('div', { class: 'curtain' },
     h('i', { class: 'curtain-line' }), h('i', { class: 'curtain-hit' }), handle);
@@ -75,18 +83,19 @@ export function mountStage({ host, dropTarget, store, actions }) {
   const tagAfter = h('span', { class: 'stage-tag tag-after mono' });
   const viewport = h('div', { class: 'viewport' }, layerAfter, layerBefore, curtain, tagBefore, tagAfter);
 
-  const zoomReadout = h('span', { class: 'zoom-readout mono', 'aria-live': 'off' }, '100%');
+  const zoomReadout = h('span', { class: 'zoom-readout mono', 'aria-live': 'off' }, formatPercent(100));
   const zoomButtons = ZOOMS.map(z => h('button', {
     type: 'button', class: 'zoom-btn', dataset: { zoom: String(z.id) }, 'aria-pressed': 'false',
     onclick: () => (z.id === 'fit' ? zoomFit() : zoomTo(z.id / dpr())),
-  }, z.label));
+  }, z.key ? t(z.key) : z.label));
+  const fitBtn = zoomButtons[0];
   const pixelBtn = h('button', {
-    type: 'button', class: 'zoom-btn', 'aria-pressed': 'false', title: '像素渲染',
+    type: 'button', class: 'zoom-btn', 'aria-pressed': 'false', title: t('stage.pixelTitle'),
     onclick: () => actions.setSettings({ pixelated: !store.get().settings.pixelated }),
-  }, '像素');
+  }, t('stage.pixel'));
   // Zoom controls float at the bottom edge of the well — the thumb zone on
   // phones, editor-style on desktop.
-  const zoomGroup = h('div', { class: 'zoom-group zoom-capsule', role: 'group', 'aria-label': '缩放比例' },
+  const zoomGroup = h('div', { class: 'zoom-group zoom-capsule', role: 'group', 'aria-label': t('stage.zoomGroupLabel') },
     ...zoomButtons, pixelBtn, zoomReadout);
 
   // Flush SR marker strip (never obscures image)
@@ -95,7 +104,7 @@ export function mountStage({ host, dropTarget, store, actions }) {
   const notice = h('div', { class: 'notice-strip', role: 'status', hidden: true }, noticeText, noticeBtn);
 
   // Telemetry docked cleanly at bottom of well
-  const teleBar = progressBar('处理进度');
+  const teleBar = progressBar(t('common.processingProgress'));
   const telePhase = h('span', { class: 'tele-phase' });
   const telePct = h('span', { class: 'tele-pct mono' });
   const teleStats = h('p', { class: 'tele-stats mono' });
@@ -107,20 +116,22 @@ export function mountStage({ host, dropTarget, store, actions }) {
     teleBar.el,
     teleStats);
 
+  const failTitle = h('p', { class: 'fail-title' }, t('stage.failTitle'));
   const failText = h('p', { class: 'fail-text mono' });
+  const retryBtn = h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: () => actions.startProcessing() }, t('common.retry'));
+  const removeBtn = h('button', {
+    type: 'button', class: 'btn btn-quiet btn-sm',
+    onclick: () => store.get().activeId != null && actions.removeItem(store.get().activeId),
+  }, t('common.remove'));
   const failure = h('div', { class: 'failure', role: 'alert', hidden: true },
-    h('p', { class: 'fail-title' }, '处理失败'),
+    failTitle,
     failText,
-    h('div', { class: 'fail-actions' },
-      h('button', { type: 'button', class: 'btn btn-secondary btn-sm', onclick: () => actions.startProcessing() }, '重试'),
-      h('button', {
-        type: 'button', class: 'btn btn-quiet btn-sm',
-        onclick: () => store.get().activeId != null && actions.removeItem(store.get().activeId),
-      }, '移除')));
+    h('div', { class: 'fail-actions' }, retryBtn, removeBtn));
 
   const well = h('div', { class: 'well' }, viewport, zoomGroup, telemetry, failure);
   const view = h('div', { class: 'stage-view' }, notice, well);
-  const veil = h('div', { class: 'drop-veil', 'aria-hidden': 'true' }, h('span', {}, '松开添加'));
+  const veilLabel = h('span', {}, t('stage.dropToAdd'));
+  const veil = h('div', { class: 'drop-veil', 'aria-hidden': 'true' }, veilLabel);
   host.append(empty, view, veil);
 
   // ── view state (zoom / pan / curtain) ────────────────────────────────────
@@ -171,7 +182,7 @@ export function mountStage({ host, dropTarget, store, actions }) {
       c.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
     }
     const pct = scale * d * 100;
-    text(zoomReadout, `${pct >= 100 ? Math.round(pct) : pct.toFixed(1)}%`);
+    text(zoomReadout, formatPercent(pct, { maximumFractionDigits: pct >= 100 ? 0 : 1 }));
     for (const b of zoomButtons) {
       const z = b.dataset.zoom;
       const on = z === 'fit' ? mode === 'fit' : mode === 'free' && Math.abs(scale * d - Number(z)) < 0.004;
@@ -207,11 +218,18 @@ export function mountStage({ host, dropTarget, store, actions }) {
     apply();
   }
 
+  function updateSplitAria() {
+    handle.setAttribute('aria-valuetext', t('stage.curtainValueText', {
+      before: Math.round(split * 100),
+      after: Math.round((1 - split) * 100),
+    }));
+  }
+
   function setSplit(p) {
     split = clamp(p, 0, 1);
     viewport.style.setProperty('--split', String(split));
     handle.setAttribute('aria-valuenow', String(Math.round(split * 100)));
-    handle.setAttribute('aria-valuetext', `原图 ${Math.round(split * 100)}%，结果 ${Math.round((1 - split) * 100)}%`);
+    updateSplitAria();
   }
 
   new ResizeObserver(layout).observe(viewport);
@@ -308,8 +326,8 @@ export function mountStage({ host, dropTarget, store, actions }) {
     tagAfter.hidden = !hasResult;
     layerAfter.hidden = !hasResult;
     if (hasResult) {
-      text(tagBefore, `原图 ${formatDims(result.inputWidth, result.inputHeight)}`);
-      text(tagAfter, `${result.scale}× ${formatDims(result.outputWidth, result.outputHeight)}`);
+      text(tagBefore, t('stage.tagBefore', { dims: formatDims(result.inputWidth, result.inputHeight) }));
+      text(tagAfter, t('stage.tagAfter', { scale: result.scale, dims: formatDims(result.outputWidth, result.outputHeight) }));
     }
 
     base = baseSize(item);
@@ -330,15 +348,20 @@ export function mountStage({ host, dropTarget, store, actions }) {
     if (showNotice) {
       const forced = item.force || settings.force;
       const model = marker.model ? `${marker.model}${marker.scale ? ` ${marker.scale}×` : ''}` : `${marker.scale}×`;
-      text(noticeText, `已含超分标记 · ${model} · ${forced ? '将重新超分' : item.status === 'skipped' ? '已跳过' : '默认跳过'}`);
+      const statusText = forced
+        ? t('stage.srWillReupscale')
+        : item.status === 'skipped'
+          ? t('stage.srSkipped')
+          : t('stage.srDefaultSkip');
+      text(noticeText, t('stage.srNotice', { model, status: statusText }));
       noticeBtn.hidden = settings.force && !item.force;
-      noticeBtn.textContent = item.force ? '撤销' : '重新超分';
+      noticeBtn.textContent = item.force ? t('stage.undo') : t('stage.reUpscale');
       noticeBtn.onclick = () => actions.setItemForce(item.id, !item.force);
     }
 
     // failure
     failure.hidden = item.status !== 'failed';
-    if (item.status === 'failed') text(failText, item.error || '未知错误');
+    if (item.status === 'failed') text(failText, item.error || t('common.unknownError'));
 
     well.dataset.busy = String(item.status === 'processing');
   }
@@ -351,22 +374,44 @@ export function mountStage({ host, dropTarget, store, actions }) {
     if (!busy) return;
     const p = progress?.itemId === item.id ? progress : null;
     teleBar.set(p?.percentage ?? 0);
-    text(telePhase, p ? phaseLabel(p) : '准备中');
-    text(telePct, `${Math.round(p?.percentage ?? 0)}%`);
+    text(telePhase, p ? phaseLabel(p) : t('stage.preparing'));
+    text(telePct, formatPercent(p?.percentage ?? 0));
     const showQueue = (p?.queueTotal ?? 0) > 1;
     teleQueue.hidden = !showQueue;
     if (showQueue) text(teleQueue, `${p.queueIndex + 1}/${p.queueTotal}`);
-    const backend = BACKENDS[p?.backendUsed ?? store.get().settings.backend];
+    const backends = getBackends();
+    const backend = backends[p?.backendUsed ?? store.get().settings.backend];
     const parts = [];
-    if (p?.totalTiles) parts.push(`${p.completedTiles}/${p.totalTiles} 块`);
-    if (p?.tileMs) parts.push(`${formatNum(p.tileMs)} ms/块`, `${formatNum(p.tilesPerSec)} 块/s`);
+    if (p?.totalTiles) parts.push(t('stage.tilesCount', { completed: p.completedTiles, total: p.totalTiles }));
+    if (p?.tileMs) parts.push(`${formatNum(p.tileMs)} ${t('stage.tileMsUnit')}`, `${formatNum(p.tilesPerSec)} ${t('stage.tilesPerSecUnit')}`);
     parts.push(backend.short);
     if (p?.tileSizeUsed) parts.push(`${p.tileSizeUsed}px`);
     text(teleStats, parts.join(' · '));
   }
 
-  store.subscribe(['queue', 'activeId', 'settings'], render);
-  store.subscribe(['queue', 'activeId', 'progress', 'settings'], renderTelemetry);
+  store.subscribe(['locale'], () => {
+    text(dzTitle, t('stage.dropTitle'));
+    text(chooseBtn, t('stage.chooseImages'));
+    text(sampleBtn, t('stage.sample'));
+    text(dzHint, t('stage.formatsHint'));
+    imgBefore.alt = t('stage.imgBeforeAlt');
+    imgAfter.alt = t('stage.imgAfterAlt');
+    handle.setAttribute('aria-label', t('stage.curtainLabel'));
+    handle.setAttribute('aria-description', t('stage.curtainDescription'));
+    updateSplitAria();
+    text(fitBtn, t('stage.zoomFit'));
+    text(pixelBtn, t('stage.pixel'));
+    pixelBtn.title = t('stage.pixelTitle');
+    zoomGroup.setAttribute('aria-label', t('stage.zoomGroupLabel'));
+    teleBar.setLabel(t('common.processingProgress'));
+    text(failTitle, t('stage.failTitle'));
+    text(retryBtn, t('common.retry'));
+    text(removeBtn, t('common.remove'));
+    text(veilLabel, t('stage.dropToAdd'));
+  });
+
+  store.subscribe(['queue', 'activeId', 'settings', 'locale'], render);
+  store.subscribe(['queue', 'activeId', 'progress', 'settings', 'locale'], renderTelemetry);
   setSplit(0.5);
 
   // ── drag & drop (whole workbench is the target) ──────────────────────────

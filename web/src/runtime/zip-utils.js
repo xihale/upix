@@ -3,6 +3,8 @@
 // descriptors (flag bit 3) extract cleanly, and writes standard UTF-8 Stored
 // ZIP archives for instant zero-recompression batch image export.
 
+import { t } from '../i18n/index.js';
+
 const CRC32_TABLE = (() => {
   const table = new Uint32Array(256);
   for (let i = 0; i < 256; i += 1) {
@@ -25,7 +27,7 @@ export function crc32(bytes) {
 
 async function inflateRaw(compressedBytes, expectedSize) {
   if (typeof DecompressionStream === 'undefined') {
-    throw new Error('当前浏览器不支持 DecompressionStream，无法解压 Deflate 模型压缩包');
+    throw new Error(t('runtime.zipDecompressionUnsupported'));
   }
   const ds = new DecompressionStream('deflate-raw');
   const writer = ds.writable.getWriter();
@@ -69,7 +71,7 @@ export async function extractZipEntries(input) {
     }
   }
   if (eocdOffset < 0) {
-    throw new Error('无效的 ZIP 文件（未找到中央目录结束标记 EOCD）');
+    throw new Error(t('runtime.zipInvalidEocd'));
   }
 
   const totalEntries = view.getUint16(eocdOffset + 10, true);
@@ -80,7 +82,7 @@ export async function extractZipEntries(input) {
   let ptr = cdOffset;
   for (let i = 0; i < totalEntries; i += 1) {
     if (ptr + 46 > bytes.byteLength || view.getUint32(ptr, true) !== 0x02014b50) {
-      throw new Error('损坏的 ZIP 中央目录条目');
+      throw new Error(t('runtime.zipCorruptCentralDir'));
     }
     const method = view.getUint16(ptr + 10, true);
     const compSize = view.getUint32(ptr + 20, true);
@@ -101,7 +103,7 @@ export async function extractZipEntries(input) {
       localHeaderOffset + 30 > bytes.byteLength ||
       view.getUint32(localHeaderOffset, true) !== 0x04034b50
     ) {
-      throw new Error(`损坏的本地文件头: ${rawName}`);
+      throw new Error(t('runtime.zipCorruptLocalHeader', { name: rawName }));
     }
     const localNameLen = view.getUint16(localHeaderOffset + 26, true);
     const localExtraLen = view.getUint16(localHeaderOffset + 28, true);
@@ -114,7 +116,7 @@ export async function extractZipEntries(input) {
     } else if (method === 8) {
       fileBytes = await inflateRaw(payload, uncompSize);
     } else {
-      throw new Error(`不支持的 ZIP 压缩算法 (method=${method}): ${rawName}`);
+      throw new Error(t('runtime.zipUnsupportedMethod', { method, name: rawName }));
     }
 
     const baseName = rawName.split('/').pop() || rawName;
@@ -154,7 +156,7 @@ export async function createZipBlob(entries) {
     } else if (payload && typeof payload.arrayBuffer === 'function') {
       rawBytes = new Uint8Array(await payload.arrayBuffer());
     } else {
-      throw new Error(`模型文件损坏（${item.name} 数据不完整），请重新下载或导入`);
+      throw new Error(t('runtime.zipCorruptEntry', { name: item.name }));
     }
 
     // Deduplicate colliding archive filenames gracefully.

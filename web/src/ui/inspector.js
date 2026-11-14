@@ -4,12 +4,13 @@
 import { h, text } from './dom.js';
 import { icon } from './icons.js';
 import {
-  OUTPUT_FORMATS, OUTPUT_FORMAT_LABELS, formatBytes, inferInputFormat, isFollowOutputFormat, normalizeOutputFormat,
+  OUTPUT_FORMAT_LABELS, formatBytes, getOutputFormats, inferInputFormat, isFollowOutputFormat, normalizeOutputFormat,
 } from './format.js';
 import {
   accordion, progressBar, rangeRow, recBadge, scaleBadge, sceneBadge, section, segmented, selectControl, stackField, switchRow,
 } from './controls.js';
 import { mountModelPicker } from './modelPicker.js';
+import { t } from '../i18n/index.js';
 
 export function mountInspector({ host, store, actions }) {
   host.classList.add('inspector');
@@ -25,80 +26,82 @@ export function mountInspector({ host, store, actions }) {
   const modelTags = h('span', { class: 'model-tags' });
   const modelTrigger = h('button', {
     type: 'button', class: 'model-trigger', 'aria-haspopup': 'dialog',
-    title: '选择模型 (Ctrl/⌘ + K)',
+    title: t('inspector.selectModelTitle'),
     onclick: () => picker.open(),
   },
   h('span', { class: 'model-main' }, modelName, modelTags),
   icon('chevron-down', 14, 'model-chevron'));
-  const modelBar = progressBar('下载进度');
+  const modelBar = progressBar(t('common.downloadProgress'));
 
   // ── 2. Output ────────────────────────────────────────────────────────────
   // Backend switching lives in the topbar capsule sheet; the workbench keeps
   // only per-run parameters.
   const format = segmented({
-    label: '输出格式', fill: true, size: 'md', value: store.get().settings.outputFormat,
-    options: OUTPUT_FORMATS,
+    label: t('inspector.outputFormat'), fill: true, size: 'md', value: store.get().settings.outputFormat,
+    options: getOutputFormats(),
     onChange: v => set({ outputFormat: v }),
   });
   const followHint = h('p', { class: 'field-hint', hidden: true });
   const quality = rangeRow({
-    label: '质量', min: 1, max: 100, value: store.get().settings.quality,
+    label: t('inspector.quality'), min: 1, max: 100, value: store.get().settings.quality,
     onChange: v => set({ quality: v }),
   });
   const lossless = switchRow({
-    label: '无损', checked: store.get().settings.webpLossless,
+    label: t('inspector.lossless'), checked: store.get().settings.webpLossless,
     onChange: v => set({ webpLossless: v }),
   });
   const subsamplingSeg = segmented({
-    label: 'JPEG 色度抽样', fill: true, size: 'sm', value: store.get().settings.jpegSubsampling,
+    label: t('inspector.jpegChromaLabel'), fill: true, size: 'sm', value: store.get().settings.jpegSubsampling,
     options: [{ value: '420', label: '4:2:0' }, { value: '422', label: '4:2:2' }, { value: '444', label: '4:4:4' }],
     onChange: v => set({ jpegSubsampling: v }),
   });
-  const subsampling = stackField('色度抽样', subsamplingSeg.el);
+  const subsampling = stackField(t('inspector.chromaSubsampling'), subsamplingSeg.el);
 
   const pngSelect = selectControl({
-    label: 'PNG 压缩等级',
+    label: t('inspector.pngLevelLabel'),
     value: store.get().settings.pngLevel,
     options: [
-      { value: 'auto', label: '自动' },
-      { value: 'fast', label: '快速' },
-      { value: 'best', label: '最小' },
+      { value: 'auto', label: t('inspector.pngAuto') },
+      { value: 'fast', label: t('inspector.pngFast') },
+      { value: 'best', label: t('inspector.pngBest') },
     ],
     onChange: v => set({ pngLevel: v }),
   });
-  const pngLevel = stackField('压缩等级', pngSelect.el, null, '无损');
+  const pngLevel = stackField(t('inspector.compressionLevel'), pngSelect.el, null, t('inspector.lossless'));
 
   // ── 3. Advanced (collapsed by default) ──────────────────────────────────
   const tileSelect = selectControl({
-    label: '分块尺寸',
+    label: t('inspector.tileSize'),
     value: String(store.get().settings.tileSize),
     options: [
-      { value: 'auto', label: '自动' },
+      { value: 'auto', label: t('common.auto') },
       ...[128, 256, 384, 512].map(v => ({ value: String(v), label: `${v} px` })),
     ],
     onChange: v => set({ tileSize: v }),
   });
   const overlapSeg = segmented({
-    label: '边缘重叠', fill: true, size: 'sm', value: String(store.get().settings.tileOverlap),
+    label: t('inspector.overlap'), fill: true, size: 'sm', value: String(store.get().settings.tileOverlap),
     options: [8, 16, 32].map(v => ({ value: String(v), label: `${v}px` })),
     onChange: v => set({ tileOverlap: Number(v) }),
   });
   const threadsSelect = selectControl({
-    label: 'CPU 线程', value: String(store.get().settings.wasmThreads), options: [],
+    label: t('inspector.cpuThreads'), value: String(store.get().settings.wasmThreads), options: [],
     onChange: v => set({ wasmThreads: v }),
   });
-  const threadsField = stackField('CPU 线程', threadsSelect.el);
+  const tileField = stackField(t('inspector.tileSize'), tileSelect.el);
+  const overlapField = stackField(t('inspector.overlap'), overlapSeg.el);
+  const threadsField = stackField(t('inspector.cpuThreads'), threadsSelect.el);
   const fp16 = switchRow({
-    label: '优先 FP16', checked: store.get().settings.preferFp16,
+    label: t('inspector.preferFp16'), checked: store.get().settings.preferFp16,
     onChange: v => set({ preferFp16: v }),
   });
   const force = switchRow({
-    label: '强制超分', hint: '忽略超分标记',
+    label: t('inspector.forceUpscale'), hint: t('inspector.forceHint'),
     checked: store.get().settings.force, onChange: v => set({ force: v }),
   });
-  const advSection = accordion('高级',
-    stackField('分块尺寸', tileSelect.el),
-    stackField('边缘重叠', overlapSeg.el),
+  const advSection = accordion(t('inspector.secAdvanced'),
+    tileField,
+    overlapField,
     threadsField,
     fp16.el,
     force.el);
@@ -119,17 +122,16 @@ export function mountInspector({ host, store, actions }) {
   const saveBtn = h('button', {
     type: 'button', class: 'btn btn-secondary', hidden: true,
     onclick: () => actions.downloadItem(store.get().activeId),
-  }, '保存图像');
+  }, t('inspector.saveImage'));
   const zipBtn = h('button', {
     type: 'button', class: 'btn btn-secondary', hidden: true,
     onclick: () => actions.downloadZip(),
-  }, '打包全部');
+  }, t('inspector.zipAll'));
   const dock = h('div', { class: 'cta-dock' }, cta, saveBtn, zipBtn, ctaHint);
 
-  const scroll = h('div', { class: 'inspector-scroll' },
-    section('模型', modelHeadEnd, modelTrigger, modelBar.el),
-    section('输出', null, format.el, followHint, quality.el, lossless.el, subsampling, pngLevel),
-    advSection.el);
+  const modelSec = section(t('inspector.secModel'), modelHeadEnd, modelTrigger, modelBar.el);
+  const outputSec = section(t('inspector.secOutput'), null, format.el, followHint, quality.el, lossless.el, subsampling, pngLevel);
+  const scroll = h('div', { class: 'inspector-scroll' }, modelSec, outputSec, advSection.el);
   host.append(scroll, dock);
 
   // Global Ctrl/⌘ + K opens model picker when in workbench
@@ -145,10 +147,45 @@ export function mountInspector({ host, store, actions }) {
   // ── subscriptions ────────────────────────────────────────────────────────
   const modelOf = s => s.models.find(m => m.name === s.settings.modelName);
 
-  store.subscribe(['models', 'settings', 'downloads', 'modelsLoading'], s => {
+  store.subscribe(['locale'], () => {
+    modelTrigger.title = t('inspector.selectModelTitle');
+    modelBar.setLabel(t('common.downloadProgress'));
+    text(modelSec.querySelector('.sec-title'), t('inspector.secModel'));
+    text(outputSec.querySelector('.sec-title'), t('inspector.secOutput'));
+    format.setLabel(t('inspector.outputFormat'));
+    format.setOptions(getOutputFormats());
+    quality.setLabel(t('inspector.quality'));
+    lossless.setText({ label: t('inspector.lossless') });
+    subsamplingSeg.setLabel(t('inspector.jpegChromaLabel'));
+    text(subsampling.querySelector('.field-label'), t('inspector.chromaSubsampling'));
+    pngSelect.setLabel(t('inspector.pngLevelLabel'));
+    pngSelect.setOptions([
+      { value: 'auto', label: t('inspector.pngAuto') },
+      { value: 'fast', label: t('inspector.pngFast') },
+      { value: 'best', label: t('inspector.pngBest') },
+    ]);
+    text(pngLevel.querySelector('.field-label'), t('inspector.compressionLevel'));
+    text(pngLevel.querySelector('.field-meta'), t('inspector.lossless'));
+    tileSelect.setLabel(t('inspector.tileSize'));
+    tileSelect.setOptions([
+      { value: 'auto', label: t('common.auto') },
+      ...[128, 256, 384, 512].map(v => ({ value: String(v), label: `${v} px` })),
+    ]);
+    text(tileField.querySelector('.field-label'), t('inspector.tileSize'));
+    overlapSeg.setLabel(t('inspector.overlap'));
+    text(overlapField.querySelector('.field-label'), t('inspector.overlap'));
+    threadsSelect.setLabel(t('inspector.cpuThreads'));
+    text(threadsField.querySelector('.field-label'), t('inspector.cpuThreads'));
+    fp16.setText({ label: t('inspector.preferFp16') });
+    force.setText({ label: t('inspector.forceUpscale'), hint: t('inspector.forceHint') });
+    advSection.setTitle(t('inspector.secAdvanced'));
+    text(saveBtn, t('inspector.saveImage'));
+  });
+
+  store.subscribe(['models', 'settings', 'downloads', 'modelsLoading', 'locale'], s => {
     const m = modelOf(s);
     const dl = m && s.downloads[m.name];
-    text(modelName, m ? (m.shortName || m.name) : s.modelsLoading ? '加载中…' : '选择模型');
+    text(modelName, m ? (m.shortName || m.name) : s.modelsLoading ? t('common.loading') : t('inspector.selectModel'));
     modelName.title = m?.name ?? '';
     modelTags.replaceChildren(...(m ? [scaleBadge(m.scale), sceneBadge(m.scene), ...(m.recommended ? [recBadge()] : [])] : []));
     modelDl.hidden = !m || m.installed;
@@ -160,26 +197,29 @@ export function mountInspector({ host, store, actions }) {
     if (dl && !dl.error) {
       const pct = dl.total ? (dl.loaded / dl.total) * 100 : 0;
       modelBar.set(pct);
-      text(modelState, dl.phase === 'verify' ? '校验中' : `${Math.round(pct)}%`);
-      text(modelDl, '取消');
+      text(modelState, dl.phase === 'verify' ? t('inspector.verifying') : `${Math.round(pct)}%`);
+      text(modelDl, t('common.cancel'));
       modelDl.onclick = () => actions.cancelDownload(m.name);
     } else if (m.installed) {
       text(modelState, '');
     } else {
-      text(modelState, dl?.error ? '下载失败' : formatBytes(m.sizeBytes));
-      text(modelDl, dl?.error ? '重试' : '下载');
+      text(modelState, dl?.error ? t('inspector.downloadFailed') : formatBytes(m.sizeBytes));
+      text(modelDl, dl?.error ? t('common.retry') : t('common.download'));
       modelDl.onclick = () => actions.downloadModel(m.name);
     }
   });
 
-  store.subscribe(['caps', 'capsLoading', 'settings'], ({ caps, settings }) => {
+  store.subscribe(['caps', 'capsLoading', 'settings', 'locale'], ({ caps, settings }) => {
     const hc = navigator.hardwareConcurrency ?? 4;
     const maxThreads = Math.max(1, caps?.wasm?.features?.threads ?? hc);
     const autoThreads = caps?.wasm?.features?.autoThreads;
     threadsField.hidden = settings.backend !== 'wasm';
     threadsSelect.setOptions([
-      { value: 'auto', label: autoThreads ? `自动 (${autoThreads} 线程)` : '自动' },
-      ...[1, 2, 4, 8, 12, 16].filter(n => n <= maxThreads).map(n => ({ value: String(n), label: `${n} 线程` })),
+      { value: 'auto', label: autoThreads ? t('inspector.threadsAuto', { threads: autoThreads }) : t('common.auto') },
+      ...[1, 2, 4, 8, 12, 16].filter(n => n <= maxThreads).map(n => ({
+        value: String(n),
+        label: t('inspector.threadsCount', { threads: n }),
+      })),
     ]);
     threadsSelect.set(String(settings.wasmThreads));
     // A manual count saved on a stronger device can exceed this one's system
@@ -189,20 +229,22 @@ export function mountInspector({ host, store, actions }) {
     const hasFp16 = !!caps?.webgpu?.features?.fp16;
     fp16.el.hidden = !(settings.backend === 'webgpu' && hasFp16);
 
-    const tileText = settings.tileSize === 'auto' ? '自动分块' : `${settings.tileSize}px 分块`;
-    const overlapText = `${settings.tileOverlap}px 重叠`;
+    const tileText = settings.tileSize === 'auto'
+      ? t('inspector.summaryTileAuto')
+      : t('inspector.summaryTilePx', { size: settings.tileSize });
+    const overlapText = t('inspector.summaryOverlapPx', { overlap: settings.tileOverlap });
     const summaryParts = [tileText, overlapText];
     if (settings.backend === 'wasm') {
       const n = settings.wasmThreads === 'auto' ? (autoThreads ?? maxThreads) : settings.wasmThreads;
-      summaryParts.push(`${n} 线程`);
+      summaryParts.push(t('inspector.threadsCount', { threads: Number(n) }));
     } else if (settings.backend === 'webgpu' && hasFp16) {
       summaryParts.push(settings.preferFp16 ? 'FP16' : 'FP32');
     }
-    if (settings.force) summaryParts.push('强制');
+    if (settings.force) summaryParts.push(t('inspector.summaryForce'));
     advSection.setSummary(summaryParts.join(' · '));
   });
 
-  store.subscribe(['settings', 'queue', 'activeId'], ({ settings: s, queue, activeId }) => {
+  store.subscribe(['settings', 'queue', 'activeId', 'locale'], ({ settings: s, queue, activeId }) => {
     format.set(s.outputFormat);
     const follow = isFollowOutputFormat(s.outputFormat);
     const active = queue.find(i => i.id === activeId) ?? null;
@@ -214,14 +256,16 @@ export function mountInspector({ host, store, actions }) {
     followHint.hidden = !follow;
     if (follow) {
       if (!active) {
-        text(followHint, '跟随原图格式');
+        text(followHint, t('inspector.followInput'));
       } else if (srcFmt === 'avif') {
-        text(followHint, queue.length > 1 ? 'AVIF → WebP · 批量按原图导出' : 'AVIF 转为 WebP 导出');
+        text(followHint, queue.length > 1 ? t('inspector.followAvifBatch') : t('inspector.followAvifSingle'));
       } else if (effectiveFmt) {
         const label = OUTPUT_FORMAT_LABELS[effectiveFmt] ?? effectiveFmt.toUpperCase();
-        text(followHint, queue.length > 1 ? `当前 ${label} · 批量按原图导出` : `导出为 ${label}`);
+        text(followHint, queue.length > 1
+          ? t('inspector.followBatch', { format: label })
+          : t('inspector.followSingle', { format: label }));
       } else {
-        text(followHint, '跟随原图格式');
+        text(followHint, t('inspector.followInput'));
       }
     }
 
@@ -240,7 +284,7 @@ export function mountInspector({ host, store, actions }) {
     force.set(s.force);
   });
 
-  store.subscribe(['queue', 'models', 'settings', 'caps', 'running', 'downloads', 'activeId'], s => {
+  store.subscribe(['queue', 'models', 'settings', 'caps', 'running', 'downloads', 'activeId', 'locale'], s => {
     const m = modelOf(s);
     const dl = m && s.downloads[m.name];
     const downloading = !!dl && !dl.error;
@@ -254,8 +298,8 @@ export function mountInspector({ host, store, actions }) {
       cta.classList.add('is-cancel');
       cta.classList.remove('is-disabled');
       cta.removeAttribute('aria-disabled');
-      cta.title = '取消处理';
-      text(ctaLabel, '取消');
+      cta.title = t('inspector.cancelTitle');
+      text(ctaLabel, t('common.cancel'));
       ctaHint.hidden = true;
       saveBtn.hidden = true;
       zipBtn.hidden = true;
@@ -268,33 +312,31 @@ export function mountInspector({ host, store, actions }) {
       ctaMode = 'save';
       cta.classList.remove('is-disabled');
       cta.removeAttribute('aria-disabled');
-      cta.title = `保存 ${s.queue.find(i => i.id === s.activeId)?.name ?? ''}`;
-      text(ctaLabel, '保存图像');
+      cta.title = t('inspector.saveTitle', { name: s.queue.find(i => i.id === s.activeId)?.name ?? '' });
+      text(ctaLabel, t('inspector.saveImage'));
       ctaHint.hidden = true;
       saveBtn.hidden = true;
       zipBtn.hidden = doneCount < 2;
       if (!zipBtn.hidden) {
-        zipBtn.title = `打包 ${doneCount} 张图像`;
-        text(zipBtn, `打包全部 (${doneCount})`);
+        zipBtn.title = t('inspector.zipTitle', { count: doneCount });
+        text(zipBtn, t('inspector.zipAllCount', { count: doneCount }));
       }
       return;
     }
 
-    // Otherwise the dock is the run control. The label is the action —
-    // 开始超分, or 继续超分 once part of the batch is already done; batch size
-    // lives in the queue strip, download state and blockers in the hint line.
+    // Otherwise the dock is the run control.
     ctaMode = 'run';
     zipBtn.hidden = true;
     const backend = s.caps?.[s.settings.backend];
     const blocked = backend && !backend.available;
     const resuming = doneCount > 0 && pending.length > 0;
-    const action = resuming ? '继续超分' : '开始超分';
-    const buttonText = downloading ? (dl.phase === 'verify' ? '校验模型…' : '下载模型…')
-      : !s.queue.length ? '请先添加图像'
-        : !m ? '请先选择模型'
-          : blocked ? '后端不可用' : action;
+    const action = resuming ? t('inspector.ctaResume') : t('inspector.ctaStart');
+    const buttonText = downloading ? (dl.phase === 'verify' ? t('inspector.ctaVerifyingModel') : t('inspector.ctaDownloadingModel'))
+      : !s.queue.length ? t('inspector.ctaAddImages')
+        : !m ? t('inspector.ctaSelectModel')
+          : blocked ? t('inspector.ctaBackendUnavailable') : action;
     const hint = !downloading && s.queue.length && m
-      ? (blocked ? '可在顶栏切换后端' : !m.installed ? '需先下载模型' : '')
+      ? (blocked ? t('inspector.hintSwitchBackend') : !m.installed ? t('inspector.hintDownloadModel') : '')
       : '';
     const locked = downloading || !s.queue.length || !m || blocked;
     cta.classList.toggle('is-disabled', locked);
@@ -303,7 +345,7 @@ export function mountInspector({ host, store, actions }) {
     cta.title = '';
     text(ctaHint, hint);
     ctaHint.hidden = !hint;
-    if (!locked && pending.length > 1) cta.setAttribute('aria-label', `${action}，${pending.length} 张待处理`);
+    if (!locked && pending.length > 1) cta.setAttribute('aria-label', t('inspector.ctaPendingAria', { action, count: pending.length }));
     else cta.removeAttribute('aria-label');
     text(ctaLabel, buttonText);
     // Mid-batch export: a finished active image can be saved at any time.

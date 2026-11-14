@@ -3,34 +3,32 @@
 // using strictly <=4D intermediate shapes for maximum DirectML / CoreML / XNNPACK / LiteRT compatibility.
 
 import { resolveCropBounds } from './webgpu.js';
+import { t } from '../../i18n/index.js';
 
-// Flag URL hint lives ONLY in toast-only paths (`getContext` throws); the Engine page
-// shows it once inside the 启用方式 guide, and probe reasons must not repeat it.
-const WEBNN_FLAG_HINT = '可在 Chrome / Edge 打开 chrome://flags/#web-machine-learning-neural-network 开启后重启浏览器';
 const DEVICE_LABELS = { gpu: 'GPU', npu: 'NPU', cpu: 'CPU' };
 
 /**
  * Maps raw `navigator.ml.createContext` failures (browser DOMException text such as
  * "Failed to execute 'createContext' on 'ML': WebNN is not supported on this platform.")
- * to user-facing Chinese hints. The raw browser text never reaches the UI directly.
+ * to localized user-facing hints. The raw browser text never reaches the UI directly.
  */
 function friendlyCreateContextError(err, deviceType = 'gpu') {
   const raw = err instanceof Error ? err.message : String(err ?? '');
   const lower = raw.toLowerCase();
   if (lower.includes('not supported') || lower.includes('unsupported') || lower.includes('not available')) {
-    return '当前环境不支持 WebNN（浏览器未开放该实验功能），请改用 WebGPU 或 WASM 后端';
+    return t('runtime.webnnErrNotSupported');
   }
   if (lower.includes('permission') || lower.includes('denied') || lower.includes('blocked')) {
-    return 'WebNN 被浏览器或系统策略阻止，暂时无法使用，请改用 WebGPU 或 WASM 后端';
+    return t('runtime.webnnErrBlocked');
   }
   if (lower.includes('out of memory') || lower.includes('allocation') || lower.includes('resource')) {
-    return '设备资源不足，无法创建 WebNN 加速上下文，请关闭部分页面后重试';
+    return t('runtime.webnnErrOom');
   }
   const label = DEVICE_LABELS[deviceType] ?? String(deviceType).toUpperCase();
   if (lower.includes('device') || lower.includes('adapter')) {
-    return `本机 ${label} 暂不可用于 WebNN，可尝试其他设备类型，或改用 WebGPU / WASM 后端`;
+    return t('runtime.webnnErrDevice', { device: label });
   }
-  return raw ? `WebNN 初始化失败，请改用 WebGPU 或 WASM 后端（${raw}）` : 'WebNN 初始化失败，请改用 WebGPU 或 WASM 后端';
+  return raw ? t('runtime.webnnErrInitDetail', { detail: raw }) : t('runtime.webnnErrInit');
 }
 
 function tensorDesc(dims, dataType = 'float32') {
@@ -307,7 +305,7 @@ export class WebNnBackend {
     if (typeof navigator === 'undefined' || !navigator.ml || typeof MLGraphBuilder === 'undefined') {
       return {
         available: false,
-        reason: '当前浏览器未启用 WebNN（实验功能）',
+        reason: t('runtime.webnnNotEnabled'),
       };
     }
     try {
@@ -331,8 +329,8 @@ export class WebNnBackend {
         available: false,
         experimental: true,
         label: 'WebNN',
-        deviceName: '未启用',
-        reason: '当前浏览器未启用 WebNN（实验功能）',
+        deviceName: t('common.disabled'),
+        reason: t('runtime.webnnNotEnabled'),
         features: { webnnDevices: { gpu: false, npu: false, cpu: false } },
       };
     }
@@ -354,8 +352,8 @@ export class WebNnBackend {
       available: anyAvailable,
       experimental: true,
       label: 'WebNN',
-      deviceName: anyAvailable ? `WebNN (${supportedList.join(' / ')})` : '无可用设备',
-      reason: anyAvailable ? undefined : (gpu.reason || cpu.reason || '当前环境没有可用的 WebNN 设备'),
+      deviceName: anyAvailable ? `WebNN (${supportedList.join(' / ')})` : t('runtime.webnnNoDevices'),
+      reason: anyAvailable ? undefined : (gpu.reason || cpu.reason || t('runtime.webnnNoDevicesReason')),
       features: {
         webnnDevices: {
           gpu: gpu.available,
@@ -368,7 +366,7 @@ export class WebNnBackend {
 
   async getContext(deviceType = 'gpu', powerPreference = 'high-performance') {
     if (typeof navigator === 'undefined' || !navigator.ml || typeof MLGraphBuilder === 'undefined') {
-      throw new Error(`当前浏览器未启用 WebNN（实验功能）。${WEBNN_FLAG_HINT}`);
+      throw new Error(`${t('runtime.webnnNotEnabled')} · ${t('runtime.webnnFlagHint')}`);
     }
     const key = `${deviceType}:${powerPreference}`;
     if (this.contexts.has(key)) {
@@ -378,7 +376,7 @@ export class WebNnBackend {
     try {
       ctx = await navigator.ml.createContext({ deviceType, powerPreference });
     } catch (err) {
-      throw new Error(`${friendlyCreateContextError(err, deviceType)}。${WEBNN_FLAG_HINT}`, { cause: err });
+      throw new Error(`${friendlyCreateContextError(err, deviceType)} · ${t('runtime.webnnFlagHint')}`, { cause: err });
     }
     this.contexts.set(key, ctx);
     return { context: ctx, key };
@@ -851,13 +849,13 @@ export class WebNnBackend {
           w: inp.w + op.left + op.right,
         };
       } else {
-        throw new Error(`当前模型使用了 WebNN 暂不支持的算子（${op.op}），请改用 WebGPU 或 WASM 后端`);
+        throw new Error(t('runtime.webnnUnsupportedOp', { op: op.op }));
       }
     }
 
     const finalOut = blobs[meta.output_blob];
     if (!finalOut) {
-      throw new Error('WebNN 计算图缺少输出节点');
+      throw new Error(t('runtime.webnnMissingOutput'));
     }
 
     // Graph output transposed back to HWC [1, rawOutH, rawOutW, outC]; on
@@ -964,7 +962,7 @@ export class WebNnBackend {
       return res.outputs?.output || outArr;
     }
 
-    throw new Error('当前 WebNN 环境不支持图计算调度，请改用 WebGPU 或 WASM 后端');
+    throw new Error(t('runtime.webnnDispatchUnsupported'));
   }
 
   computeFeedShape(meta, width, height) {
@@ -1226,7 +1224,7 @@ export class WebNnBackend {
     for (let i = 0; i < regions.length; i += 1) {
       if (signal && signal.aborted) {
         if (inFlight) inFlight.promise.catch(() => {});
-        throw new DOMException('已取消', 'AbortError');
+        throw new DOMException(t('common.cancelled'), 'AbortError');
       }
       if (pendingDone) {
         onTileDone(pendingDone.idx, pendingDone.region, pendingDone.tileOut, pendingDone.elapsedMs);
