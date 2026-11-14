@@ -1,8 +1,9 @@
 [
   {
-    "id": "upix-web",
+    "id": "upix-web-deploy",
     "execute-command": "/usr/bin/sudo",
     "pass-arguments-to-command": [
+      { "source": "string", "name": "-H" },
       { "source": "string", "name": "-u" },
       { "source": "string", "name": "upix-ci" },
       { "source": "string", "name": "/usr/local/lib/webhook-deploy" },
