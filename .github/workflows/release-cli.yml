@@ -1,7 +1,7 @@
 name: Release CLI
 
-# Desktop CLI for linux-x86_64 and macos-arm64. Android is a separate product
-# (release-android.yml → android-arm64-v8a).
+# Desktop CLI for linux-x86_64, macos-arm64, and macos-x86_64. Android is a
+# separate product (release-android.yml → android-arm64-v8a).
 on:
   push:
     tags: ["cli-v*"]
@@ -70,7 +70,7 @@ jobs:
     name: compile (${{ matrix.artifact }})
     needs: [meta, spirv]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 45
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -84,6 +84,11 @@ jobs:
             plat: macosx
             arch: arm64
             artifact: macos-arm64
+            extra: ""
+          - os: macos-15-intel
+            plat: macosx
+            arch: x86_64
+            artifact: macos-x86_64
             extra: ""
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (v4.4.0)
@@ -131,6 +136,8 @@ jobs:
             artifact: linux-x86_64
           - os: macos-latest
             artifact: macos-arm64
+          - os: macos-15-intel
+            artifact: macos-x86_64
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4 (v4.3.0)
         with:
@@ -177,6 +184,7 @@ jobs:
           files: |
             upix-cli-*-linux-x86_64.tar.gz
             upix-cli-*-macos-arm64.tar.gz
+            upix-cli-*-macos-x86_64.tar.gz
           fail_on_unmatched_files: true
           generate_release_notes: true
           target_commitish: ${{ github.sha }}

@@ -12,8 +12,8 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: compile (linux-x86_64)
+  spirv:
+    name: spirv pack (linux)
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -22,15 +22,67 @@ jobs:
         with:
           cache-kind: host
       - uses: ./.github/actions/spirv-pack
-      - name: Build CLI
-        run: xmake cli --cc=gcc-14 --cxx=g++-14
-      - name: Build host tests
-        run: xmake tests --build --cc=gcc-14 --cxx=g++-14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4 (v4.6.2)
         with:
-          name: host-bins
+          name: spirv-pack
+          path: share/core/spirv_pack.bin
+          if-no-files-found: error
+          retention-days: 3
+
+  build:
+    name: compile (${{ matrix.artifact }})
+    needs: spirv
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            plat: linux
+            arch: x86_64
+            artifact: linux-x86_64
+            extra: --cc=gcc-14 --cxx=g++-14
+          - os: macos-latest
+            plat: macosx
+            arch: arm64
+            artifact: macos-arm64
+            extra: ""
+          - os: macos-15-intel
+            plat: macosx
+            arch: x86_64
+            artifact: macos-x86_64
+            extra: ""
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (v4.4.0)
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4 (v4.3.0)
+        with:
+          name: spirv-pack
+          path: share/core
+      - uses: ./.github/actions/setup-xmake
+        with:
+          cache-kind: host-${{ matrix.artifact }}
+      - name: Install Linux GUI dev headers
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libvulkan-dev libx11-dev libxcb1-dev libxext-dev libxcursor-dev \
+            libxfixes-dev libxi-dev libxrandr-dev libxrender-dev libxss-dev \
+            libwayland-dev
+      - name: Build CLI
+        run: xmake cli -p "${{ matrix.plat }}" -a "${{ matrix.arch }}" ${{ matrix.extra }}
+      - name: Build GUI
+        run: xmake gui --build -p "${{ matrix.plat }}" --arch="${{ matrix.arch }}" ${{ matrix.extra }}
+      - name: Build host tests
+        run: xmake tests --build -p "${{ matrix.plat }}" -a "${{ matrix.arch }}" ${{ matrix.extra }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4 (v4.6.2)
+        with:
+          name: host-bins-${{ matrix.artifact }}
           path: |
-            build/linux/x86_64/release/upix-cli
+            build/${{ matrix.plat }}/${{ matrix.arch }}/release/upix-cli
+            build/${{ matrix.plat }}/${{ matrix.arch }}/release/test_local_socket
+            desktop/build/upix
             cli/build/test_*
             desktop/build/tests/test_*
           if-no-files-found: error
@@ -40,39 +92,73 @@ jobs:
         run: ccache -s || true
 
   test:
-    name: run tests
+    name: run tests (${{ matrix.artifact }})
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            plat: linux
+            arch: x86_64
+            artifact: linux-x86_64
+          - os: macos-latest
+            plat: macosx
+            arch: arm64
+            artifact: macos-arm64
+          - os: macos-15-intel
+            plat: macosx
+            arch: x86_64
+            artifact: macos-x86_64
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (v4.4.0)
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4 (v4.3.0)
         with:
-          name: host-bins
-      - name: Runtime libs (no compiler)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq \
-            libdeflate-dev libpng-dev libjpeg-dev libwebp-dev \
-            libcurl4-openssl-dev libzip-dev libomp-dev \
-            mesa-vulkan-drivers
+          name: host-bins-${{ matrix.artifact }}
       - name: Make binaries executable
-        run: chmod +x build/linux/x86_64/release/upix-cli cli/build/test_* desktop/build/tests/test_*
+        run: |
+          chmod +x \
+            "build/${{ matrix.plat }}/${{ matrix.arch }}/release/upix-cli" \
+            "build/${{ matrix.plat }}/${{ matrix.arch }}/release/test_local_socket" \
+            desktop/build/upix cli/build/test_* desktop/build/tests/test_*
+      - name: Runtime libs and Python deps (no compiler)
+        run: |
+          set -euo pipefail
+          case "${RUNNER_OS}" in
+            Linux)
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq \
+                libdeflate-dev libpng-dev libjpeg-dev libwebp-dev \
+                libcurl4-openssl-dev libzip-dev libomp-dev \
+                mesa-vulkan-drivers python3-numpy python3-pil
+              ;;
+            macOS)
+              brew install libdeflate
+              if ! "build/${{ matrix.plat }}/${{ matrix.arch }}/release/upix-cli" --version >/dev/null 2>&1; then
+                brew install libpng jpeg webp libzip openssl@3
+              fi
+              python3 -m venv "$RUNNER_TEMP/py"
+              "$RUNNER_TEMP/py/bin/pip" install --quiet numpy pillow
+              echo "$RUNNER_TEMP/py/bin" >> "$GITHUB_PATH"
+              ;;
+          esac
       - name: Run host tests
         run: |
           set -euo pipefail
+          "build/${{ matrix.plat }}/${{ matrix.arch }}/release/test_local_socket"
           for t in cli/build/test_* desktop/build/tests/test_*; do
             [[ -x "$t" ]] && "$t"
           done
       - name: Fetch test models (serve E2E + model oracle)
-        run: build/linux/x86_64/release/upix-cli model download \
-          NomosUni-SPAN-x2 HFA2k-LUDVAE-SPAN-x2 \
-          Real-ESRGANv3-anime-x2 Archivist-Medium-Compact-x1 \
-          NomosWebPhoto-RealPLKSR-x4 Real-ESRGAN-x2plus \
-          Real-CUGAN-no-denoise-x2
-      - name: Serve E2E suite (CPU)
         run: |
-          sudo apt-get install -y -qq python3-numpy python3-pil
-          python3 tests/serve/run.py --device cpu
+          "build/${{ matrix.plat }}/${{ matrix.arch }}/release/upix-cli" model download \
+            NomosUni-SPAN-x2 HFA2k-LUDVAE-SPAN-x2 \
+            Real-ESRGANv3-anime-x2 Archivist-Medium-Compact-x1 \
+            NomosWebPhoto-RealPLKSR-x4 Real-ESRGAN-x2plus \
+            Real-CUGAN-no-denoise-x2
+      - name: Serve E2E suite (CPU)
+        run: python3 tests/serve/run.py --binary "build/${{ matrix.plat }}/${{ matrix.arch }}/release/upix-cli" --device cpu
       - name: Model-effect oracle (CPU, golden images)
-        run: python3 tests/model_oracle/run.py --require-models
+        run: python3 tests/model_oracle/run.py --binary "build/${{ matrix.plat }}/${{ matrix.arch }}/release/upix-cli" --require-models

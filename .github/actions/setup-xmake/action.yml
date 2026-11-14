@@ -36,18 +36,18 @@ runs:
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4 (v4.3.0)
       with:
         path: ~/.xmake/packages
-        key: xmake-${{ inputs.cache-kind }}-${{ runner.os }}-${{ hashFiles('xmake.lua', 'share/xmake.lua', 'cli/xmake.lua', 'apps/xmake.lua', 'tools/xmake.lua', 'packages/**') }}
+        key: xmake-${{ inputs.cache-kind }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('xmake.lua', 'share/xmake.lua', 'share/perf/xmake.lua', 'cli/xmake.lua', 'desktop/xmake.lua', 'apps/xmake.lua', 'tools/xmake.lua', 'packages/**') }}
         restore-keys: |
-          xmake-${{ inputs.cache-kind }}-${{ runner.os }}-
+          xmake-${{ inputs.cache-kind }}-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Cache ccache
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4 (v4.3.0)
       with:
         path: ~/.ccache
-        key: ccache-${{ inputs.cache-kind }}-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+        key: ccache-${{ inputs.cache-kind }}-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.sha }}
         restore-keys: |
-          ccache-${{ inputs.cache-kind }}-${{ runner.os }}-${{ github.ref_name }}-
-          ccache-${{ inputs.cache-kind }}-${{ runner.os }}-
+          ccache-${{ inputs.cache-kind }}-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-
+          ccache-${{ inputs.cache-kind }}-${{ runner.os }}-${{ runner.arch }}-
 
     - name: ccache env
       shell: bash
