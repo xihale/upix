@@ -2,6 +2,7 @@
 #include "views/host/internal.hpp"
 #include "i18n.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
 

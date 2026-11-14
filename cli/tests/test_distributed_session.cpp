@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -32,9 +33,42 @@
 #include <system_error>
 #include <thread>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <io.h>
+#include <process.h>
+#else
 #include <unistd.h>
+#endif
 #include <vector>
 using namespace upix;  // NOLINT
+
+namespace {
+auto current_pid() -> int {
+#ifdef _WIN32
+    return ::_getpid();
+#else
+    return ::getpid();
+#endif
+}
+
+auto dup_stdout_fd() -> int {
+#ifdef _WIN32
+    return ::_dup(::_fileno(stdout));
+#else
+    return ::dup(STDOUT_FILENO);
+#endif
+}
+
+void restore_stdout_fd(int saved_fd) {
+#ifdef _WIN32
+    ::_dup2(saved_fd, ::_fileno(stdout));
+    ::_close(saved_fd);
+#else
+    ::dup2(saved_fd, STDOUT_FILENO);
+    ::close(saved_fd);
+#endif
+}
+}  // namespace
 
 #define CHECK(cond)                                                            \
     do {                                                                       \
@@ -471,7 +505,7 @@ int main() {
 
     // ── Temp workspace: identities + pre-seeded TrustStore (auto-approve). ──
     const auto dir = std::filesystem::temp_directory_path() /
-        ("upix-test-session-" + std::to_string(::getpid()));
+        ("upix-test-session-" + std::to_string(current_pid()));
     std::filesystem::create_directories(dir);
     const auto server_id_path = dir / "server_identity";
     const auto client_id_path = dir / "client_identity";
@@ -714,8 +748,11 @@ int main() {
             client_identity.public_key()));
         {
             struct stat st{};
-            CHECK(::stat(pairing_trust_path.c_str(), &st) == 0);
+            const std::string p = pairing_trust_path.string();
+            CHECK(::stat(p.c_str(), &st) == 0);
+#ifndef _WIN32
             CHECK((st.st_mode & 0777) == 0600);
+#endif
         }
         auto devs = pairing.trusted_devices();
         CHECK(devs.size() == 1);
@@ -785,8 +822,11 @@ int main() {
             CHECK(write_private_file_atomic(atomic_target, "first", 5, ec));
             CHECK(!ec);
             struct stat st{};
-            CHECK(::stat(atomic_target.c_str(), &st) == 0);
+            const std::string p = atomic_target.string();
+            CHECK(::stat(p.c_str(), &st) == 0);
+#ifndef _WIN32
             CHECK((st.st_mode & 0777) == 0600);
+#endif
 
             const auto collision_dir = dir / "atomic_dir_collision";
             std::filesystem::create_directories(collision_dir / "nested");
@@ -1114,13 +1154,13 @@ int main() {
         //    guarantees the same tile is picked for the same model+buckets.
         const auto cap_path = dir / "tile0_capture.log";
         std::fflush(stdout);
-        const int saved_stdout = ::dup(STDOUT_FILENO);
+        const int saved_stdout = dup_stdout_fd();
         CHECK(saved_stdout >= 0);
-        CHECK(std::freopen(cap_path.c_str(), "w", stdout) != nullptr);
+        const std::string cap_path_str = cap_path.string();
+        CHECK(std::freopen(cap_path_str.c_str(), "w", stdout) != nullptr);
         auto auto_first = submit_and_await(rsock, *rsession, png_bytes, model_name_env, 0);
         std::fflush(stdout);
-        ::dup2(saved_stdout, STDOUT_FILENO);
-        ::close(saved_stdout);
+        restore_stdout_fd(saved_stdout);
         CHECK(auto_first.has_value());
         CHECK(auto_first->first.success == 1);
         CHECK(auto_first->second.size() > 1000);
@@ -1231,9 +1271,10 @@ int main() {
             // inference after the cancel.
             const auto cap_path = dir / "disconnect_capture.log";
             std::fflush(stdout);
-            const int saved_stdout = ::dup(STDOUT_FILENO);
+            const int saved_stdout = dup_stdout_fd();
             CHECK(saved_stdout >= 0);
-            CHECK(std::freopen(cap_path.c_str(), "w", stdout) != nullptr);
+            const std::string cap_path_str = cap_path.string();
+            CHECK(std::freopen(cap_path_str.c_str(), "w", stdout) != nullptr);
             bool aborted = false;
             auto t_drop = std::chrono::steady_clock::now();
             double abort_s = 0.0;
@@ -1255,8 +1296,7 @@ int main() {
                 }
             }
             std::fflush(stdout);
-            ::dup2(saved_stdout, STDOUT_FILENO);
-            ::close(saved_stdout);
+            restore_stdout_fd(saved_stdout);
             CHECK(aborted);
             std::printf("OK dead-connection mid-task: PC inference stopped after "
                         "%.2f s (handler noticed at first poll tick)\n", abort_s);

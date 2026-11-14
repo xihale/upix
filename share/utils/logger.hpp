@@ -18,6 +18,12 @@
 #include <android/log.h>
 #endif
 
+// <wingdi.h> defines `#define ERROR 0`, colliding with LogLevel::ERROR when
+// windows.h is pulled in transitively (e.g. via Vulkan/ncnn headers).
+#ifdef ERROR
+#undef ERROR
+#endif
+
 namespace upix {
 
 enum class LogLevel {

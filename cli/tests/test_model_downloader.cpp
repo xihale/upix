@@ -42,7 +42,8 @@ static std::string sha256_hex(const fs::path& p) {
 
 static bool make_zip(const fs::path& path, const std::vector<Entry>& entries) {
     int error = 0;
-    zip_t* zip = zip_open(path.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &error);
+    const std::string path_str = path.string();
+    zip_t* zip = zip_open(path_str.c_str(), ZIP_CREATE | ZIP_TRUNCATE, &error);
     if (!zip) return false;
     for (const auto& [name, data] : entries) {
         zip_source_t* source = zip_source_buffer(zip, data.data(), data.size(), 0);

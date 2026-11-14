@@ -17,6 +17,12 @@
 #include <string_view>
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 #endif
 
@@ -260,7 +266,8 @@ auto sha256_file(const fs::path& path, std::string& error) -> std::string {
 auto extract_zip(const fs::path& zip_path, const fs::path& out_dir,
                  const std::string& model_name, std::string& error) -> bool {
     int err_code = 0;
-    zip_t* raw = zip_open(zip_path.c_str(), ZIP_RDONLY, &err_code);
+    const std::string zip_path_str = zip_path.string();
+    zip_t* raw = zip_open(zip_path_str.c_str(), ZIP_RDONLY, &err_code);
     if (!raw) {
         zip_error_t zerr;
         zip_error_init_with_code(&zerr, err_code);

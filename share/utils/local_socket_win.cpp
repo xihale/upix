@@ -3,6 +3,12 @@
 
 #ifdef _WIN32
 
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <windows.h>
 
 #include <cstring>
@@ -52,8 +58,6 @@ auto map_error(int werr) -> int {
     }
 }
 
-constexpr int kTimeoutMsSentinel = -1;  // INFINITE
-
 }  // namespace
 
 LocalSocket::LocalSocket() = default;
@@ -91,8 +95,11 @@ auto LocalSocket::connect(const std::string& path)
     // maps to ECONNREFUSED (treated as "no daemon" upstream).
     HANDLE h = nullptr;
     for (int attempt = 0; attempt < 10; ++attempt) {
+        // Must open with FILE_FLAG_OVERLAPPED because raw_send_some / raw_receive_some
+        // issue overlapped I/O so CancelIoEx and read deadlines work reliably.
         h = ::CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE,
-                          0, nullptr, OPEN_EXISTING, 0, nullptr);
+                          0, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED,
+                          nullptr);
         if (h != INVALID_HANDLE_VALUE) break;
         const int werr = last_error_code();
         if (werr != ERROR_PIPE_BUSY) {
@@ -156,6 +163,9 @@ auto LocalSocket::raw_send_some(const uint8_t* data, size_t size, size_t& sent)
             ::CloseHandle(ov.hEvent);
             return NetworkError{map_error(werr), "Write failed"};
         }
+    } else if (!::GetOverlappedResult(h, &ov, &written, FALSE)) {
+        ::CloseHandle(ov.hEvent);
+        return NetworkError{map_error(last_error_code()), "Write failed"};
     }
     ::CloseHandle(ov.hEvent);
     sent = written;
@@ -175,12 +185,20 @@ auto LocalSocket::raw_receive_some(uint8_t* buffer, size_t max_size,
         return NetworkError{EIO, "Event creation failed"};
     }
     DWORD got = 0;
-    if (!::ReadFile(h, buffer, static_cast<DWORD>(max_size), nullptr, &ov)) {
-        const int werr = last_error_code();
-        if (werr != ERROR_IO_PENDING) {
+    if (::ReadFile(h, buffer, static_cast<DWORD>(max_size), nullptr, &ov)) {
+        if (!::GetOverlappedResult(h, &ov, &got, FALSE)) {
+            const int werr = last_error_code();
             ::CloseHandle(ov.hEvent);
             return NetworkError{map_error(werr), "Read failed"};
         }
+        ::CloseHandle(ov.hEvent);
+        received = got;
+        return std::nullopt;
+    }
+    const int werr = last_error_code();
+    if (werr != ERROR_IO_PENDING) {
+        ::CloseHandle(ov.hEvent);
+        return NetworkError{map_error(werr), "Read failed"};
     }
     // Bound wait: the timeout lives in the socket's set_timeout contract.
     // Pipes don't carry SO_RCVTIMEO, so we hold it here (default 60 s, the
@@ -231,6 +249,7 @@ LocalServer::~LocalServer() {
 
 auto LocalServer::listen(const std::string& path, int backlog)
     -> expected<void, NetworkError> {
+    (void)backlog;
     stop();
 
     if (path.empty()) {
@@ -313,6 +332,9 @@ auto LocalServer::accept()
             ::CloseHandle(ov.hEvent);
             return std::unexpected(NetworkError{ECANCELED, "Accept cancelled"});
         }
+    } else if (!connected) {
+        ::CloseHandle(ov.hEvent);
+        return std::unexpected(NetworkError{map_error(werr), "Accept failed"});
     }
     ::CloseHandle(ov.hEvent);
 

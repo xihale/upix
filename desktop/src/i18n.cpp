@@ -338,9 +338,11 @@ std::atomic<int>& locale_atomic() {
     return v;
 }
 
+#if !defined(_WIN32) && !defined(__APPLE__)
 const char* std_getenv_adapter(const char* name, void*) {
     return std::getenv(name);
 }
+#endif
 
 } // namespace
 

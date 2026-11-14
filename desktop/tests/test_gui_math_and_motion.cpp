@@ -3,6 +3,7 @@
 #include "ui/geist.hpp"
 #include "ui/motion.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>

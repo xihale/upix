@@ -44,7 +44,9 @@ public:
 
 protected:
     StreamSocket() = default;
-    ~StreamSocket() { close_fd(); }
+    // Virtual so std::unique_ptr<LocalSocket/TCPSocket> deletes cleanly when subclassed;
+    // derived destructors close the handle while their raw_close() override is alive.
+    virtual ~StreamSocket() = default;
 
     // Mutexes are non-movable; derived classes implement their own move
     // operations around take_handle_from().

@@ -119,7 +119,13 @@ int main() {
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
+#ifdef _WIN32
+        // Named pipes have no half-close; closing the client handle sends EOF
+        // to the peer's blocked ReadFile.
+        sock.close();
+#else
         sock.shutdown_wake();  // peer's blocked receive must fail now
+#endif
         srv.join();
         check(interrupted.load(), "peer shutdown_wake interrupts a blocked receive");
         server.stop();

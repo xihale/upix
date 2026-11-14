@@ -15,6 +15,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -69,6 +70,17 @@ auto recv_serve_request(LocalSocket& sock,
     return true;
 }
 
+auto make_endpoint(const std::filesystem::path& dir, std::string_view name)
+    -> std::string {
+#ifdef _WIN32
+    // Windows LocalServer expects a named-pipe name (no drive/directory separators).
+    (void)dir;
+    return "upix-sdc-" + std::to_string(current_pid()) + "-" + std::string(name);
+#else
+    return (dir / (std::string(name) + ".sock")).string();
+#endif
+}
+
 }  // namespace
 
 int main() {
@@ -87,13 +99,14 @@ int main() {
         CHECK(fs::exists(*exe));
         CHECK(fs::is_regular_file(*exe));
 
-        const std::string missing_sock = (dir / "missing.sock").string();
+        const std::string missing_sock = make_endpoint(dir, "missing");
         CHECK(!daemon_endpoint_present(missing_sock));
         auto st = serve_daemon_status(missing_sock);
         CHECK(!st.running);
         CHECK(!st.stale);
 
         const auto pid_path = serve_pid_file_path(missing_sock);
+        fs::create_directories(fs::path(pid_path).parent_path(), ec);
         {
             std::ofstream pf(pid_path, std::ios::binary);
             pf << "garbage-pid\n";
@@ -102,13 +115,14 @@ int main() {
         CHECK(!stale_st.running);
         CHECK(stale_st.stale);
         CHECK(!serve_daemon_stop(missing_sock));
+        fs::remove(pid_path, ec);
     }
 
     // 2. ServeDaemon start fails cleanly on empty models_dir and accepts idle_timeout(0/1).
     {
         const auto empty_models = dir / "empty_models";
         fs::create_directories(empty_models, ec);
-        const std::string sock = (dir / "daemon_fail.sock").string();
+        const std::string sock = make_endpoint(dir, "daemon_fail");
         ServeDaemon d;
         d.set_idle_timeout(0);
         d.set_idle_timeout(1);
@@ -119,7 +133,9 @@ int main() {
 
     // 3. Mock LocalServer: progress frames, force flag propagation, skipped=1, out_path.
     {
-        const std::string sock_path = (dir / "mock_ok.sock").string();
+        const std::string sock_path = make_endpoint(dir, "mock_ok");
+        const std::string expected_in = (dir / "input.png").lexically_normal().string();
+        const std::string expected_out = (dir / "output.png").lexically_normal().string();
         LocalServer server;
         auto lres = server.listen(sock_path);
         CHECK(lres.has_value());
@@ -134,8 +150,8 @@ int main() {
             std::string in_p, out_p;
             CHECK(recv_serve_request(*sock, req, in_p, out_p));
             CHECK(req.force == 1);
-            CHECK(in_p == "/tmp/input.png");
-            CHECK(out_p == "/tmp/output.png");
+            CHECK(in_p == expected_in);
+            CHECK(out_p == expected_out);
             CHECK(std::string(req.model_name) == "test-model");
 
             ServeProgress p1{1, 2, 0};
@@ -166,8 +182,8 @@ int main() {
         });
 
         ServeRequestArgs args;
-        args.input_path = "/tmp/input.png";
-        args.output_path = "/tmp/output.png";
+        args.input_path = expected_in;
+        args.output_path = expected_out;
         args.model_name = "test-model";
         args.output_format = "png";
         args.force = true;
@@ -197,7 +213,7 @@ int main() {
 
     // 4. Mid-request cancellation wakes blocked serve_request promptly via shutdown_wake.
     {
-        const std::string sock_path = (dir / "mock_cancel.sock").string();
+        const std::string sock_path = make_endpoint(dir, "mock_cancel");
         LocalServer server;
         CHECK(server.listen(sock_path).has_value());
 
@@ -238,7 +254,7 @@ int main() {
     // 5. Hostile oversized payload_length and bad checksum are rejected cleanly.
     for (int mode = 0; mode < 2; ++mode) {
         const std::string sock_path =
-            (dir / ("mock_bad_" + std::to_string(mode) + ".sock")).string();
+            make_endpoint(dir, "mock_bad_" + std::to_string(mode));
         LocalServer server;
         CHECK(server.listen(sock_path).has_value());
 
@@ -285,7 +301,7 @@ int main() {
 
     // 6. Legacy ServeResponse (sizeof - 8, no skipped/reserved0 tail) compatibility.
     {
-        const std::string sock_path = (dir / "mock_legacy.sock").string();
+        const std::string sock_path = make_endpoint(dir, "mock_legacy");
         LocalServer server;
         CHECK(server.listen(sock_path).has_value());
 

@@ -2,8 +2,15 @@
 #include "logger.hpp"
 
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <mstcpip.h>
 #include <iphlpapi.h>
 #include <windows.h>
 #else
@@ -11,6 +18,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <net/if.h>
 #include <netdb.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -25,8 +33,9 @@
 
 namespace upix {
 
-#ifdef _WIN32
 namespace {
+
+#ifdef _WIN32
 
 // WinSock lifecycle: one WSAStartup per process, refcount-safe to call from
 // any connect/listen path. Windows sockets need it; POSIX is a no-op call.
@@ -89,8 +98,6 @@ void apply_tcp_keepalive(sock_t s) {
 
 #else  // POSIX
 
-namespace {
-
 using sock_t = int;
 constexpr sock_t kInvalidSock = -1;
 
@@ -117,11 +124,16 @@ void apply_tcp_keepalive(sock_t s) {
 #endif
 }
 
+#endif  // platform split (WinSock vs POSIX)
+
 // ── Shared socket-option setup (TCP_NODELAY + 1 MB buffers + keepalive) ────
 void tune_connected_sock(sock_t s) {
     int flag = 1;
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY,
                reinterpret_cast<const char*>(&flag), sizeof(flag));
+#ifdef SO_NOSIGPIPE
+    setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &flag, sizeof(flag));
+#endif
     int buf_size = 1 * 1024 * 1024;
     setsockopt(s, SOL_SOCKET, SO_SNDBUF,
                reinterpret_cast<const char*>(&buf_size), sizeof(buf_size));
@@ -131,7 +143,6 @@ void tune_connected_sock(sock_t s) {
 }
 
 }  // namespace
-#endif  // platform split (WinSock vs POSIX)
 
 // ── Raw primitives (StreamSocket contract) ─────────────────────────────────
 
@@ -321,7 +332,8 @@ bool TCPSocket::connect_with_timeout(const std::string& host, uint16_t port, int
         }
 #endif
 
-        const int rc = ::connect(fd, reinterpret_cast<const sockaddr*>(&addr), ai->ai_addrlen);
+        const int rc = ::connect(fd, reinterpret_cast<const sockaddr*>(&addr),
+                                 static_cast<socklen_t>(ai->ai_addrlen));
         bool connected = rc == 0;
         if (!connected) {
             const int e = sock_err();
@@ -364,7 +376,7 @@ bool TCPSocket::connect_with_timeout(const std::string& host, uint16_t port, int
             ::freeaddrinfo(candidates);
 
             sock_ = static_cast<intptr_t>(fd);
-            tune_connected_sock(sock_);
+            tune_connected_sock(fd);
             peer_address_ = host;
             peer_port_ = port;
             return true;
@@ -589,15 +601,21 @@ std::vector<std::string> get_local_addresses() {
     ifaddrs* ifa = nullptr;
     if (getifaddrs(&ifa) == 0) {
         for (ifaddrs* p = ifa; p != nullptr; p = p->ifa_next) {
-            if (p->ifa_addr && p->ifa_addr->sa_family == AF_INET) {
-                char buf[INET_ADDRSTRLEN];
-                inet_ntop(AF_INET,
-                         &reinterpret_cast<sockaddr_in*>(p->ifa_addr)->sin_addr,
-                         buf, sizeof(buf));
-                std::string name = p->ifa_name;
-                if (name != "lo" && name.find("docker") == std::string::npos) {
-                    addresses.push_back(buf);
-                }
+            if (!p->ifa_addr || p->ifa_addr->sa_family != AF_INET) {
+                continue;
+            }
+            // Use interface flags rather than "lo" name so macOS/BSD loopback ("lo0")
+            // and inactive interfaces are excluded too.
+            if ((p->ifa_flags & IFF_LOOPBACK) || !(p->ifa_flags & IFF_UP)) {
+                continue;
+            }
+            char buf[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET,
+                     &reinterpret_cast<sockaddr_in*>(p->ifa_addr)->sin_addr,
+                     buf, sizeof(buf));
+            std::string name = p->ifa_name ? p->ifa_name : "";
+            if (name.find("docker") == std::string::npos) {
+                addresses.push_back(buf);
             }
         }
         freeifaddrs(ifa);

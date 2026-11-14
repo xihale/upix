@@ -4,6 +4,7 @@
 #include "utils/image.hpp"
 #include "utils/sr_marker.hpp"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>

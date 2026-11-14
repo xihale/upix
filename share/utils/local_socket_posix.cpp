@@ -55,6 +55,10 @@ auto LocalSocket::connect(const std::string& path) -> expected<void, NetworkErro
     if (sock_ < 0) {
         return std::unexpected(NetworkError{errno, "Failed to create socket"});
     }
+#ifdef SO_NOSIGPIPE
+    int one = 1;
+    ::setsockopt(sock_, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
 
     sockaddr_un addr{};
     addr.sun_family = AF_UNIX;
@@ -237,6 +241,10 @@ auto LocalServer::accept() -> expected<std::unique_ptr<LocalSocket>, NetworkErro
     if (client < 0) {
         return std::unexpected(NetworkError{errno, "Accept failed"});
     }
+#ifdef SO_NOSIGPIPE
+    int one = 1;
+    ::setsockopt(client, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
+#endif
 
     auto sock = std::make_unique<LocalSocket>();
     sock->sock_ = client;

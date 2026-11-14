@@ -16,7 +16,11 @@ auto fd_send_some(int fd, const uint8_t* data, size_t size, size_t& sent)
     // like a dead connection.
     ssize_t n;
     do {
+#ifdef MSG_NOSIGNAL
         n = ::send(fd, data, size, MSG_NOSIGNAL);
+#else
+        n = ::send(fd, data, size, 0);
+#endif
     } while (n < 0 && errno == EINTR);
     if (n < 0) {
         return NetworkError{errno, "Send failed"};

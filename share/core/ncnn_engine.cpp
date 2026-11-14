@@ -33,9 +33,6 @@
 // Platform-specific memory detection
 #if defined(__linux__)
 #include <sys/sysinfo.h>
-#elif defined(_WIN32)
-#include <windows.h>
-#include <psapi.h>
 #elif defined(__APPLE__)
 #include <mach/mach.h>
 #endif

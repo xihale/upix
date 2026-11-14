@@ -169,10 +169,10 @@ static void SetupVulkan(std::vector<const char*> instance_extensions, bool withS
     vkEnumerateDeviceExtensionProperties(g_PhysicalDevice, nullptr, &dev_props_count, nullptr);
     std::vector<VkExtensionProperties> dev_props(dev_props_count);
     vkEnumerateDeviceExtensionProperties(g_PhysicalDevice, nullptr, &dev_props_count, dev_props.data());
-#ifdef VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME
-    if (IsExtensionAvailable(dev_props, VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME))
-        device_extensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
-#endif
+    // MoltenVK requires VK_KHR_portability_subset whenever the device advertises it;
+    // check by string so vulkan_beta.h is not needed.
+    if (IsExtensionAvailable(dev_props, "VK_KHR_portability_subset"))
+        device_extensions.push_back("VK_KHR_portability_subset");
 
     const float queue_priority[] = {1.0f};
     VkDeviceQueueCreateInfo queue_info[1] = {};
@@ -1392,7 +1392,9 @@ int main(int argc, char** argv) {
         CreateOffscreenTarget(&g_Offscreen, fbW, fbH);
     } else {
         SDL_SetAppMetadata("Upix", UPIX_VERSION, "io.upix");
+#if defined(__linux__) && !defined(__ANDROID__)
         SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "wayland,x11");
+#endif
         SDL_SetHint(SDL_HINT_IME_IMPLEMENTED_UI, "0");
 
         if (!SDL_Init(SDL_INIT_VIDEO)) {
@@ -1629,11 +1631,13 @@ int main(int argc, char** argv) {
     init_info.CheckVkResultFn = check_vk_result;
     ImGui_ImplVulkan_Init(&init_info);
 
-#ifndef _WIN32
     if ((!fixtureState.empty() || auditMotion) && !std::getenv("UPIX_FAKE")) {
+#ifdef _WIN32
+        _putenv_s("UPIX_FAKE", "1");
+#else
         setenv("UPIX_FAKE", "1", 1);
-    }
 #endif
+    }
     upix::gui::AppState app;
 
     if (!fixtureState.empty()) {
@@ -1698,7 +1702,9 @@ int main(int argc, char** argv) {
     const int benchWarmup = 10;
     std::vector<double> benchFrameMs;
     std::chrono::steady_clock::time_point benchT0;
+#ifndef _WIN32
     double benchCpuMs0 = 0.0;
+#endif
     double benchPrevMs = 0.0;
     if (benchFrames > 0) redrawFrames = 1 << 30;
 
@@ -1743,7 +1749,11 @@ int main(int argc, char** argv) {
                     }
                 }
                 if (event.type == SDL_EVENT_KEY_DOWN) {
+#ifdef __APPLE__
+                    const bool ctrl = (event.key.mod & (SDL_KMOD_CTRL | SDL_KMOD_GUI)) != 0;
+#else
                     const bool ctrl = (event.key.mod & SDL_KMOD_CTRL) != 0;
+#endif
                     if (ctrl && event.key.key == SDLK_PERIOD) {
                         app.cancelJob();
                     } else if (ctrl && event.key.key == SDLK_O && !io.WantTextInput && ui.activeTab == 0) {

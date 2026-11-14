@@ -6,6 +6,7 @@
 #include "core/tile_processor.hpp"
 #include "utils/image.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>

@@ -634,7 +634,8 @@ auto Coordinator::recv_encrypted_poll(WorkerConnection& conn, int poll_ms,
                                           Protocol::HEADER_SIZE - got);
         if (!chunk.has_value()) {
             const int code = chunk.error().code;
-            if (got == 0 && (code == EAGAIN || code == EWOULDBLOCK)) {
+            // Windows SO_RCVTIMEO maps WSAETIMEDOUT -> ETIMEDOUT.
+            if (got == 0 && (code == EAGAIN || code == EWOULDBLOCK || code == ETIMEDOUT)) {
                 return FramePoll::Timeout;
             }
             return FramePoll::Error;
@@ -1599,7 +1600,8 @@ void Coordinator::handle_client(std::stop_token st,
                         uint8_t byte = 0;
                         auto received = conn.socket->receive(&byte, 1);
                         if (received || (received.error().code != EAGAIN &&
-                                         received.error().code != EWOULDBLOCK)) {
+                                         received.error().code != EWOULDBLOCK &&
+                                         received.error().code != ETIMEDOUT)) {
                             resolve_approval(pa.id, false);
                             return;
                         }
