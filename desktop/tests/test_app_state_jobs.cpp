@@ -1,4 +1,5 @@
 #include "app_state.hpp"
+#include "i18n.hpp"
 
 #include <cstdio>
 #include <cstdlib>
@@ -109,6 +110,13 @@ int main() {
         app.setDaemonIdleSecs(900);
         app.setModel("UltraSharp-x4");
         app.setBackupOriginal(false);
+        app.setLanguage("zh-CN");
+        CHECK(app.snapshot().language == "zh-CN");
+        CHECK(upix::i18n::current_locale() == upix::i18n::Locale::ZhCn);
+        app.setLanguage("en");
+        CHECK(app.snapshot().language == "en");
+        CHECK(upix::i18n::current_locale() == upix::i18n::Locale::En);
+        app.setLanguage("zh-CN");
 
         // 6. Missing model check on startJob
         app.startJob();
@@ -142,6 +150,17 @@ int main() {
         CHECK(loaded.host.port == 9600);
         CHECK(loaded.daemon.idle_secs == 900);
         CHECK(loaded.backup_original == false);
+        CHECK(loaded.language == "zh-CN");
+        CHECK(upix::i18n::current_locale() == upix::i18n::Locale::ZhCn);
+        app2.setLanguage("auto");
+        CHECK(app2.snapshot().language == "auto");
+    }
+
+    // 9. Reload "auto" preference cleanly
+    {
+        upix::gui::AppState app3(prefsFile.string());
+        CHECK(app3.snapshot().language == "auto");
+        CHECK(upix::i18n::preference() == upix::i18n::LangPref::Auto);
     }
 
     fs::remove_all(tmpRoot, ec);

@@ -1,5 +1,6 @@
 // views/host/trusted_devices.cpp — Trusted Devices flex section builder and renderer.
 #include "views/host/internal.hpp"
+#include "i18n.hpp"
 
 #include <cmath>
 #include <utility>
@@ -15,14 +16,16 @@ TrustedSlots buildTrustedDevices(upix::ui::flex::Container& page, float colW,
     s.countStr = std::to_string(nDev);
     s.clearId = ImGui::GetID("host.clear_trusted");
 
-    const char* clrLabel = "清空";
-    const char* clrConfirm = "确认清空?";
+    using upix::i18n::Key;
+    using upix::i18n::tr;
+    const char* clrLabel = tr(Key::CommonClear);
+    const char* clrConfirm = tr(Key::CommonConfirmClearQ);
     const char* activeClrLabel = ctl::isConfirmArmed(s.clearId) ? clrConfirm : clrLabel;
     const ImVec2 clrSz = calcText(sansMed, geist::type::BODY_SMALL, activeClrLabel);
     const float cw = std::ceil(clrSz.x) + 20.0f;
     const float ch = std::max(30.0f, std::ceil(clrSz.y) + 12.0f);
 
-    const ImVec2 titleSz = calcText(sansMed, geist::type::BODY_SMALL, "已信任设备");
+    const ImVec2 titleSz = calcText(sansMed, geist::type::BODY_SMALL, tr(Key::HostTrustedTitle));
     const ImVec2 countSz = calcText(mono, geist::type::MONO, s.countStr.c_str());
     const float headH = std::max(36.0f, std::ceil(std::max(titleSz.y, countSz.y)) + 14.0f);
 
@@ -40,13 +43,13 @@ TrustedSlots buildTrustedDevices(upix::ui::flex::Container& page, float colW,
     s.headDiv = sec.slot(flex::Grow(1.0f), flex::Fixed(hairlinePx()));
 
     if (nDev == 0) {
-        const float emptyH = std::max(54.0f, std::ceil(calcText(sans, geist::type::BODY_SMALL, "暂无已信任设备").y) + 28.0f);
+        const float emptyH = std::max(54.0f, std::ceil(calcText(sans, geist::type::BODY_SMALL, tr(Key::HostNoTrusted)).y) + 28.0f);
         s.empty = sec.slot(flex::Grow(1.0f), flex::Fixed(emptyH));
         s.emptyDiv = sec.slot(flex::Grow(1.0f), flex::Fixed(hairlinePx()));
         return s;
     }
 
-    const float badgeW = ctl::metaChipWidth(sans, "已信任", false, 6.0f);
+    const float badgeW = ctl::metaChipWidth(sans, tr(Key::HostTrustedBadge), false, 6.0f);
     const float btnBox = 30.0f;
     const float rowH = std::max(52.0f, std::ceil(calcText(sansMed, geist::type::BODY, "Ag").y) + 24.0f);
     s.rows.reserve(nDev);
@@ -91,13 +94,15 @@ void drawTrustedDevices(ImDrawList* dl, const upix::ui::flex::Layout& fx, const 
     using namespace upix::ui;
     const auto& t = geist::tokens();
 
-    const flex::Rect tr = fx.rect(s.title);
+    using upix::i18n::Key;
+    using upix::i18n::tr;
+    const flex::Rect trR = fx.rect(s.title);
     const flex::Rect cr = fx.rect(s.count);
-    drawTextCenteredY(dl, sansMed, geist::type::BODY_SMALL, tr.x, tr.y, tr.bottom(), t.mute, "已信任设备");
+    drawTextCenteredY(dl, sansMed, geist::type::BODY_SMALL, trR.x, trR.y, trR.bottom(), t.mute, tr(Key::HostTrustedTitle));
     drawTextCenteredY(dl, mono, geist::type::MONO, cr.x, cr.y, cr.bottom(), t.mute, s.countStr.c_str());
 
     if (fx.isVisible(s.clear)) {
-        if (ctl::confirmButton(dl, s.clearId, "清空", "确认清空?",
+        if (ctl::confirmButton(dl, s.clearId, tr(Key::CommonClear), tr(Key::CommonConfirmClearQ),
                                sansMed, fx.p0(s.clear), fx.p1(s.clear),
                                !modal && !ui.showIpPicker)) {
             app.clearTrustedDevices();
@@ -110,7 +115,7 @@ void drawTrustedDevices(ImDrawList* dl, const upix::ui::flex::Layout& fx, const 
     if (nDev == 0) {
         const flex::Rect er = fx.rect(s.empty);
         const std::string fitted = fitTextEllipsis(
-            sans, geist::type::BODY_SMALL, "暂无已信任设备", er.w - 24.0f);
+            sans, geist::type::BODY_SMALL, tr(Key::HostNoTrusted), er.w - 24.0f);
         drawTextCentered(dl, sans, geist::type::BODY_SMALL, er.p0(), er.p1(), t.mute, fitted.c_str());
         const flex::Rect ed = fx.rect(s.emptyDiv);
         ctl::hairlineRule(dl, ed.x, ed.right(), ed.y);
@@ -136,7 +141,7 @@ void drawTrustedDevices(ImDrawList* dl, const upix::ui::flex::Layout& fx, const 
         const flex::Rect nr = fx.rect(rs.name);
         ellipsisTextCentered(dl, sansMed, geist::type::BODY, nr.x, nr.y, nr.bottom(), nr.w, t.ink, d.name.c_str());
 
-        ctl::metaChip(dl, sans, fx.p0(rs.badge), "已信任", 0, t.body, t.tagBg);
+        ctl::metaChip(dl, sans, fx.p0(rs.badge), tr(Key::HostTrustedBadge), 0, t.body, t.tagBg);
 
         if (fx.isVisible(rs.fp)) {
             const flex::Rect fpr = fx.rect(rs.fp);
@@ -144,9 +149,9 @@ void drawTrustedDevices(ImDrawList* dl, const upix::ui::flex::Layout& fx, const 
         }
 
         ImGui::PushID(static_cast<int>(i));
-        if (ctl::confirmButton(dl, ImGui::GetID("host.untrust"), nullptr, "确认?", sansMed,
+        if (ctl::confirmButton(dl, ImGui::GetID("host.untrust"), nullptr, tr(Key::CommonConfirmQ), sansMed,
                                fx.p0(rs.del), fx.p1(rs.del),
-                               !modal && !ui.showIpPicker, "trash", "移除设备", 13.5f)) {
+                               !modal && !ui.showIpPicker, "trash", tr(Key::HostRemoveDevice), 13.5f)) {
             app.removeTrustedDevice(d.fingerprint);
         }
         ImGui::PopID();

@@ -1,4 +1,5 @@
 #include "app_state.hpp"
+#include "i18n.hpp"
 #include "utils/platform.hpp"
 
 #include <glaze/glaze.hpp>
@@ -38,6 +39,7 @@ struct PrefsData {
     bool force = false;
     bool dark_mode = true;
     bool reduce_motion = false;
+    std::string language = "auto";
     std::string model_source = "";
     int host_port = 9527;
     int daemon_idle_secs = 300;
@@ -132,7 +134,7 @@ std::vector<ModelFamily> buildGroups(const std::vector<ModelItem>& list, bool re
         }
     }
     if (!orphans.empty()) {
-        out.push_back(ModelFamily{"独立模型", std::move(orphans)});
+        out.push_back(ModelFamily{upix::i18n::tr(upix::i18n::Key::ModelsStandalone), std::move(orphans)});
     }
     return out;
 }
@@ -164,7 +166,7 @@ std::vector<TrustedDeviceItem> trustedItemsFromInfos(
     int idx = 1;
     for (const auto& info : infos) {
         std::string name = info.label.empty()
-            ? ("已授权设备 #" + std::to_string(idx))
+            ? upix::i18n::fmt(upix::i18n::Key::HostTrustedFallbackName, idx)
             : info.label;
         ++idx;
         out.push_back(TrustedDeviceItem{std::move(name), info.fingerprint, online});
@@ -219,6 +221,8 @@ void AppState::initRuntime() {
     snap_.models_dir = upix::default_models_dir();
     snap_.model_source = std::string(upix::model_source_id(upix::default_model_source()));
     loadPrefs();
+    upix::i18n::set_preference(snap_.language);
+    snap_.daemon.label = upix::i18n::tr(upix::i18n::Key::DaemonStopped);
 
     const char* fake = std::getenv("UPIX_FAKE");
     if (fake && fake[0] != '\0') {
@@ -293,6 +297,8 @@ void AppState::loadPrefs() {
     snap_.force = data.force;
     snap_.dark_mode = data.dark_mode;
     snap_.reduce_motion = data.reduce_motion;
+    snap_.language = upix::i18n::lang_pref_id(upix::i18n::parse_lang_pref(data.language));
+    upix::i18n::set_preference(snap_.language);
     if (auto parsed = upix::parse_model_source(data.model_source)) {
         snap_.model_source = std::string(upix::model_source_id(*parsed));
     }
@@ -320,6 +326,7 @@ void AppState::savePrefs() {
     data.force = snap_.force;
     data.dark_mode = snap_.dark_mode;
     data.reduce_motion = snap_.reduce_motion;
+    data.language = snap_.language;
     data.model_source = snap_.model_source;
     data.host_port = snap_.host.port;
     data.daemon_idle_secs = snap_.daemon.idle_secs;
@@ -410,7 +417,9 @@ void AppState::rebuildModelGroups() {
 
 void AppState::applyFixture(const std::string& state) {
     std::lock_guard<std::mutex> lk(mtx_);
+    const std::string keepLang = snap_.language;
     snap_ = Snapshot{};
+    snap_.language = keepLang;
 #ifdef UPIX_VERSION
     snap_.version = UPIX_VERSION;
 #endif
@@ -432,7 +441,7 @@ void AppState::applyFixture(const std::string& state) {
         {"UltraSharp-x4", "UltraSharp-x4", 4, "31.2 MB", "照片", true, true},
     };
     rebuildModelGroups();
-    snap_.daemon = {true, false, 4321, 300, "热引擎已就绪"};
+    snap_.daemon = {true, false, 4321, 300, upix::i18n::tr(upix::i18n::Key::DaemonReady)};
     snap_.host.fingerprint = "EC61F2B66D4C25C4";
     snap_.host.ips = {"192.168.0.126", "10.210.210.2"};
     snap_.host.port = 9527;
@@ -443,9 +452,9 @@ void AppState::applyFixture(const std::string& state) {
 
     if (state == "default" || state == "picked") {
         snap_.inputs = {
-            {1, "scene.png", "scene.png", "", "", false, 1, 640, 427, "待处理", 0},
-            {2, "portrait_02.jpg", "portrait_02.jpg", "", "", false, 1, 1280, 720, "待处理", 0},
-            {3, "wallpaper_03.webp", "wallpaper_03.webp", "", "", false, 1, 1920, 1080, "待处理", 0},
+            {1, "scene.png", "scene.png", "", "", false, 1, 640, 427, upix::i18n::tr(upix::i18n::Key::StatusPending), 0},
+            {2, "portrait_02.jpg", "portrait_02.jpg", "", "", false, 1, 1280, 720, upix::i18n::tr(upix::i18n::Key::StatusPending), 0},
+            {3, "wallpaper_03.webp", "wallpaper_03.webp", "", "", false, 1, 1920, 1080, upix::i18n::tr(upix::i18n::Key::StatusPending), 0},
         };
     } else if (state == "running") {
         snap_.format = "avif";
@@ -486,7 +495,7 @@ void AppState::applyFixture(const std::string& state) {
         snap_.inputs = {
             {1, "shot_01.png", "shot_01.png", "", "shot_01_out.png", false, 1, 640, 427, "4× · 0.8s", 2},
             {2, "shot_02.png", "shot_02.png", "", "shot_02_out.png", false, 1, 640, 427, "4× · 0.9s", 2},
-            {3, "shot_03.png", "shot_03.png", "", "", false, 1, 640, 427, "显存不足", 3},
+            {3, "shot_03.png", "shot_03.png", "", "", false, 1, 640, 427, upix::i18n::tr(upix::i18n::Key::FixtureErrOutOfVram), 3},
             {4, "shot_04.png", "shot_04.png", "", "", false, 1, 640, 427, "640×427", 0},
             {5, "shot_05.png", "shot_05.png", "", "", false, 1, 640, 427, "640×427", 0},
         };
@@ -494,26 +503,26 @@ void AppState::applyFixture(const std::string& state) {
         snap_.job.phase = JobPhase::Error;
         snap_.job.index = 3;
         snap_.job.total = 5;
-        snap_.job.message = "显存分配不足";
+        snap_.job.message = upix::i18n::tr(upix::i18n::Key::FixtureErrVramAlloc);
         snap_.job.diag_detail = "VK_ERROR_OUT_OF_DEVICE_MEMORY · tile 512px";
     } else if (state == "error-missing-model" || state == "error_missing_model") {
         snap_.model = "BSRGAN-x4";
         snap_.inputs = {
-            {1, "shot_01.png", "shot_01.png", "", "", false, 1, 640, 427, "缺少模型", 3},
+            {1, "shot_01.png", "shot_01.png", "", "", false, 1, 640, 427, upix::i18n::tr(upix::i18n::Key::StatusMissingModel), 3},
         };
         snap_.job.phase = JobPhase::Error;
         snap_.job.index = 1;
         snap_.job.total = 1;
         snap_.job.missing_model = "BSRGAN-x4";
-        snap_.job.message = "未找到模型 BSRGAN-x4";
-        snap_.job.diag_detail = "请先在模型库下载或切换已安装模型";
+        snap_.job.message = upix::i18n::fmt(upix::i18n::Key::JobErrMissingModelFmt, std::string_view("BSRGAN-x4"));
+        snap_.job.diag_detail = upix::i18n::tr(upix::i18n::Key::FixtureMissingModelHint);
     } else if (state == "models") {
         snap_.downloading = "BSRGAN-x4";
         snap_.download_pct = 60;
-        snap_.models_status = "正在下载 BSRGAN-x4 · 60%";
+        snap_.models_status = upix::i18n::fmt(upix::i18n::Key::ModelsDownloadPctFmt, std::string_view("BSRGAN-x4"), 60);
     } else if (state == "picker") {
         snap_.inputs = {
-            {1, "scene.png", "scene.png", "", "", false, 1, 640, 427, "待处理", 0},
+            {1, "scene.png", "scene.png", "", "", false, 1, 640, 427, upix::i18n::tr(upix::i18n::Key::StatusPending), 0},
         };
     } else if (state == "host" || state == "pairing") {
         snap_.host.running = true;
@@ -523,9 +532,9 @@ void AppState::applyFixture(const std::string& state) {
         snap_.host.task_percent = 78;
         snap_.host.active_device = "Pixel 9 Pro";
         snap_.host.logs = {
-            "12:28:04|HOST|192.168.0.126:9527 · 监听已就绪|",
-            "12:28:11|CODEC|协商能力: Vulkan FP16 · AVIF 双向编解码已启用|信任库: 2 台设备",
-            "12:28:19|TASK|Pixel 9 Pro 协同推理 · AnimeSharp-x4 (4×)|12 / 16 块",
+            std::string("12:28:04|HOST|") + upix::i18n::fmt(upix::i18n::Key::HostLogListeningFmt, std::string_view("192.168.0.126:9527")) + "|",
+            std::string("12:28:11|CODEC|") + upix::i18n::tr(upix::i18n::Key::FixtureHostLogCodecSummary) + "|" + upix::i18n::tr(upix::i18n::Key::FixtureHostLogCodecDetail),
+            std::string("12:28:19|TASK|") + upix::i18n::tr(upix::i18n::Key::FixtureHostLogTaskSummary) + "|" + upix::i18n::tr(upix::i18n::Key::FixtureHostLogTaskDetail),
         };
         if (state == "pairing") {
             snap_.host.pending_device = "Pixel 9 Pro";
@@ -544,7 +553,7 @@ void AppState::applyFixture(const std::string& state) {
 void AppState::addPaths(const std::vector<std::string>& paths) {
     std::lock_guard<std::mutex> lk(mtx_);
     if (snap_.job.phase == JobPhase::Running || snap_.job.phase == JobPhase::Cancelling) {
-        snap_.notice = "任务进行中，请先等待完成或取消";
+        snap_.notice = upix::i18n::tr(upix::i18n::Key::NoticeJobRunning);
         snap_.notice_seq++;
         dirty_.store(true);
         return;
@@ -582,14 +591,14 @@ void AppState::addPaths(const std::vector<std::string>& paths) {
             item.batch_root = clean;
             const int cnt = static_cast<int>(gatherSupportedImagesInDir(p, rec).size());
             if (cnt == 0) {
-                snap_.notice = "文件夹里没有受支持的图片";
+                snap_.notice = upix::i18n::tr(upix::i18n::Key::NoticeNoImagesInDir);
                 snap_.notice_seq++;
                 continue;
             }
             item.count = cnt;
-            item.status_text = std::to_string(cnt) + " 张图片";
+            item.status_text = upix::i18n::fmt(upix::i18n::Key::StatusImageCountFmt, cnt);
         } else {
-            item.status_text = "待处理";
+            item.status_text = upix::i18n::tr(upix::i18n::Key::StatusPending);
         }
         snap_.inputs.push_back(std::move(item));
     }
@@ -600,7 +609,7 @@ void AppState::addPaths(const std::vector<std::string>& paths) {
         snap_.active_input = 0;
     }
     if (skipped > 0) {
-        snap_.notice = "已忽略 " + std::to_string(skipped) + " 个不支持的文件";
+        snap_.notice = upix::i18n::fmt(upix::i18n::Key::NoticeIgnoredFilesFmt, skipped);
         snap_.notice_seq++;
     }
     dirty_.store(true);
@@ -810,6 +819,45 @@ void AppState::setReduceMotion(bool reduce) {
     dirty_.store(true);
 }
 
+void AppState::setLanguage(const std::string& lang, bool persist) {
+    std::lock_guard<std::mutex> lk(mtx_);
+    const auto prevLoc = upix::i18n::current_locale();
+    snap_.language = upix::i18n::lang_pref_id(upix::i18n::parse_lang_pref(lang));
+    upix::i18n::set_preference(snap_.language);
+    const auto newLoc = upix::i18n::current_locale();
+    if (!snap_.daemon.loading) {
+        snap_.daemon.label = upix::i18n::tr(
+            snap_.daemon.running ? upix::i18n::Key::DaemonReady : upix::i18n::Key::DaemonStopped);
+    } else {
+        snap_.daemon.label = upix::i18n::tr(
+            snap_.daemon.running ? upix::i18n::Key::DaemonStopping : upix::i18n::Key::DaemonStarting);
+    }
+    if (prevLoc != newLoc) {
+        rebuildModelGroups();
+        const upix::i18n::Key statusKeys[] = {
+            upix::i18n::Key::StatusPending,
+            upix::i18n::Key::StatusInferring,
+            upix::i18n::Key::StatusBatchDone,
+            upix::i18n::Key::StatusSkipped,
+            upix::i18n::Key::StatusFailed,
+            upix::i18n::Key::StatusError,
+            upix::i18n::Key::StatusCancelled,
+            upix::i18n::Key::StatusDone,
+            upix::i18n::Key::StatusMissingModel,
+        };
+        for (auto& inp : snap_.inputs) {
+            for (const auto k : statusKeys) {
+                if (inp.status_text == upix::i18n::tr_for(prevLoc, k)) {
+                    inp.status_text = upix::i18n::tr_for(newLoc, k);
+                    break;
+                }
+            }
+        }
+    }
+    if (persist) savePrefs();
+    dirty_.store(true);
+}
+
 void AppState::setNotice(const std::string& msg) {
     std::lock_guard<std::mutex> lk(mtx_);
     snap_.notice = msg;
@@ -844,11 +892,11 @@ void AppState::startJob() {
             snap_.job = JobState{};
             snap_.job.phase = JobPhase::Error;
             snap_.job.missing_model = snap_.model;
-            snap_.job.message = "未找到模型 " + snap_.model;
-            snap_.job.diag_detail = "请先下载该模型或切换其他已安装模型";
+            snap_.job.message = upix::i18n::fmt(upix::i18n::Key::JobErrMissingModelFmt, snap_.model);
+            snap_.job.diag_detail = upix::i18n::tr(upix::i18n::Key::JobErrMissingModelDetail);
             for (auto& inp : snap_.inputs) {
                 inp.status_kind = 3;
-                inp.status_text = "缺少模型";
+                inp.status_text = upix::i18n::tr(upix::i18n::Key::StatusMissingModel);
             }
             dirty_.store(true);
             return;
@@ -861,11 +909,11 @@ void AppState::startJob() {
         snap_.job.current_file = snap_.inputs.front().name;
         for (auto& inp : snap_.inputs) {
             inp.status_kind = 0;
-            inp.status_text = "待处理";
+            inp.status_text = upix::i18n::tr(upix::i18n::Key::StatusPending);
             inp.output_path.clear();
         }
         snap_.inputs.front().status_kind = 1;
-        snap_.inputs.front().status_text = "推理中";
+        snap_.inputs.front().status_text = upix::i18n::tr(upix::i18n::Key::StatusInferring);
         runSnap = snap_;
         dirty_.store(true);
     }
@@ -931,11 +979,11 @@ void AppState::startJob() {
                     if (!tasks) {
                         post([this, idx, err]() {
                             snap_.job.phase = JobPhase::Error;
-                            snap_.job.message = "目录读取失败";
+                            snap_.job.message = upix::i18n::tr(upix::i18n::Key::JobErrReadDir);
                             snap_.job.diag_detail = err;
                             if (idx < snap_.inputs.size()) {
                                 snap_.inputs[idx].status_kind = 3;
-                                snap_.inputs[idx].status_text = "异常";
+                                snap_.inputs[idx].status_text = upix::i18n::tr(upix::i18n::Key::StatusError);
                             }
                         });
                         return;
@@ -984,7 +1032,7 @@ void AppState::startJob() {
                 snap_.job.percent = 0;
                 if (idxCopy < snap_.inputs.size()) {
                     snap_.inputs[idxCopy].status_kind = 1;
-                    snap_.inputs[idxCopy].status_text = "推理中";
+                    snap_.inputs[idxCopy].status_text = upix::i18n::tr(upix::i18n::Key::StatusInferring);
                 }
             });
         };
@@ -1032,13 +1080,11 @@ void AppState::startJob() {
                 if (idxCopy < snap_.inputs.size()) {
                     snap_.inputs[idxCopy].output_path = finalOut;
                     if (!snap_.inputs[idxCopy].is_dir) {
-                        char buf[32];
-                        std::snprintf(buf, sizeof(buf), "完成 · %.1fs", itemSec);
                         snap_.inputs[idxCopy].status_kind = 2;
-                        snap_.inputs[idxCopy].status_text = buf;
+                        snap_.inputs[idxCopy].status_text = upix::i18n::fmt(upix::i18n::Key::StatusDoneFmt, itemSec);
                     } else {
                         snap_.inputs[idxCopy].status_kind = 2;
-                        snap_.inputs[idxCopy].status_text = "批处理完成";
+                        snap_.inputs[idxCopy].status_text = upix::i18n::tr(upix::i18n::Key::StatusBatchDone);
                     }
                 }
             });
@@ -1054,7 +1100,7 @@ void AppState::startJob() {
             post([this, idxCopy]() {
                 if (idxCopy < snap_.inputs.size() && !snap_.inputs[idxCopy].is_dir) {
                     snap_.inputs[idxCopy].status_kind = 2;
-                    snap_.inputs[idxCopy].status_text = "已跳过";
+                    snap_.inputs[idxCopy].status_text = upix::i18n::tr(upix::i18n::Key::StatusSkipped);
                 }
             });
         };
@@ -1068,7 +1114,7 @@ void AppState::startJob() {
             post([this, idxCopy, reason]() {
                 if (idxCopy < snap_.inputs.size()) {
                     snap_.inputs[idxCopy].status_kind = 3;
-                    snap_.inputs[idxCopy].status_text = "失败";
+                    snap_.inputs[idxCopy].status_text = upix::i18n::tr(upix::i18n::Key::StatusFailed);
                 }
                 if (!reason.empty()) snap_.job.diag_detail = reason;
             });
@@ -1078,11 +1124,11 @@ void AppState::startJob() {
         if (job_cancel_.load(std::memory_order_acquire)) {
             post([this]() {
                 snap_.job.phase = JobPhase::Cancelled;
-                snap_.job.message = "已取消";
+                snap_.job.message = upix::i18n::tr(upix::i18n::Key::StatusCancelled);
                 for (auto& inp : snap_.inputs) {
                     if (inp.status_kind == 1 || inp.status_kind == 0) {
                         inp.status_kind = 0;
-                        inp.status_text = "已取消";
+                        inp.status_text = upix::i18n::tr(upix::i18n::Key::StatusCancelled);
                     }
                 }
             });
@@ -1096,19 +1142,19 @@ void AppState::startJob() {
             }
             post([this, failIdx]() {
                 snap_.job.phase = JobPhase::Error;
-                snap_.job.message = "推理执行失败";
+                snap_.job.message = upix::i18n::tr(upix::i18n::Key::JobErrInferFailed);
                 if (snap_.job.diag_detail.empty()) {
-                    snap_.job.diag_detail = "请检查模型文件或计算设备状态";
+                    snap_.job.diag_detail = upix::i18n::tr(upix::i18n::Key::JobErrInferDetail);
                 }
                 for (auto& inp : snap_.inputs) {
                     if (inp.status_kind == 1) {
                         inp.status_kind = 3;
-                        inp.status_text = "失败";
+                        inp.status_text = upix::i18n::tr(upix::i18n::Key::StatusFailed);
                     }
                 }
                 if (failIdx < snap_.inputs.size() && snap_.inputs[failIdx].status_kind == 0) {
                     snap_.inputs[failIdx].status_kind = 3;
-                    snap_.inputs[failIdx].status_text = "失败";
+                    snap_.inputs[failIdx].status_text = upix::i18n::tr(upix::i18n::Key::StatusFailed);
                 }
             });
             return;
@@ -1119,12 +1165,13 @@ void AppState::startJob() {
             snap_.job.phase = JobPhase::Done;
             snap_.job.percent = 100;
             snap_.job.elapsed_sec = totalSec;
-            snap_.job.message = "完成";
+            snap_.job.message = upix::i18n::tr(upix::i18n::Key::StatusDone);
             for (auto& inp : snap_.inputs) {
                 if (inp.status_kind == 1 || inp.status_kind == 0) {
                     inp.status_kind = 2;
-                    if (inp.status_text == "推理中" || inp.status_text == "待处理") {
-                        inp.status_text = "完成";
+                    if (inp.status_text == upix::i18n::tr(upix::i18n::Key::StatusInferring) ||
+                        inp.status_text == upix::i18n::tr(upix::i18n::Key::StatusPending)) {
+                        inp.status_text = upix::i18n::tr(upix::i18n::Key::StatusDone);
                     }
                 }
             }
@@ -1137,7 +1184,7 @@ void AppState::cancelJob() {
     std::lock_guard<std::mutex> lk(mtx_);
     if (snap_.job.phase == JobPhase::Running) {
         snap_.job.phase = JobPhase::Cancelling;
-        snap_.job.message = "正在取消…";
+        snap_.job.message = upix::i18n::tr(upix::i18n::Key::WbPhaseCancelling);
         dirty_.store(true);
     }
 }
@@ -1195,7 +1242,7 @@ void AppState::refreshModels() {
             auto meta = upix::classify_model_scene(m.name);
             rem.push_back(ModelItem{
                 m.name, m.name, m.scale,
-                m.size_bytes > 0 ? formatBytes(m.size_bytes) : std::string("目录"),
+                m.size_bytes > 0 ? formatBytes(m.size_bytes) : std::string(upix::i18n::tr(upix::i18n::Key::CommonDirectory)),
                 std::string(meta.scene), meta.recommended, true
             });
         }
@@ -1211,19 +1258,19 @@ void AppState::importModels(const std::vector<std::string>& paths) {
     if (paths.empty()) return;
     {
         std::lock_guard<std::mutex> lk(mtx_);
-        snap_.models_status = "正在导入模型…";
+        snap_.models_status = upix::i18n::tr(upix::i18n::Key::ModelsImporting);
         dirty_.store(true);
     }
     spawnWorker([this, paths](std::shared_ptr<std::atomic<bool>>) {
         auto res = upix::import_model_files(paths, upix::default_models_dir());
         post([this, res]() {
             if (res.ok) {
-                snap_.models_status = "模型导入完成";
-                snap_.notice = "模型导入完成";
+                snap_.models_status = upix::i18n::tr(upix::i18n::Key::ModelsImportDone);
+                snap_.notice = snap_.models_status;
                 snap_.notice_seq++;
                 refreshModels();
             } else {
-                snap_.models_status = res.error.empty() ? "导入失败" : res.error;
+                snap_.models_status = res.error.empty() ? upix::i18n::tr(upix::i18n::Key::ModelsImportFailed) : res.error;
                 snap_.notice = snap_.models_status;
                 snap_.notice_seq++;
             }
@@ -1241,7 +1288,7 @@ void AppState::downloadModel(const std::string& name) {
         }
         snap_.downloading = name;
         snap_.download_pct = 0;
-        snap_.models_status = "正在下载 " + name + "…";
+        snap_.models_status = upix::i18n::fmt(upix::i18n::Key::ModelsDownloadingFmt, name);
         dirty_.store(true);
     }
     spawnWorker([this, name, src](std::shared_ptr<std::atomic<bool>>) {
@@ -1257,7 +1304,7 @@ void AppState::downloadModel(const std::string& name) {
             post([this, name]() {
                 snap_.downloading.clear();
                 snap_.download_pct = -1;
-                snap_.models_status = "未在远端清单中找到: " + name;
+                snap_.models_status = upix::i18n::fmt(upix::i18n::Key::ModelsNotFoundRemoteFmt, name);
                 snap_.notice = snap_.models_status;
                 snap_.notice_seq++;
             });
@@ -1269,7 +1316,7 @@ void AppState::downloadModel(const std::string& name) {
                 int pct = static_cast<int>(p.downloaded * 100 / p.total);
                 post([this, name, pct]() {
                     snap_.download_pct = pct;
-                    snap_.models_status = "正在下载 " + name + " · " + std::to_string(pct) + "%";
+                    snap_.models_status = upix::i18n::fmt(upix::i18n::Key::ModelsDownloadPctFmt, name, pct);
                 });
             },
             src);
@@ -1277,13 +1324,13 @@ void AppState::downloadModel(const std::string& name) {
             snap_.downloading.clear();
             snap_.download_pct = -1;
             if (res.ok) {
-                snap_.models_status = "已安装 " + name;
-                snap_.notice = "已安装 " + name;
+                snap_.models_status = upix::i18n::fmt(upix::i18n::Key::ModelsInstalledFmt, name);
+                snap_.notice = snap_.models_status;
                 snap_.notice_seq++;
                 refreshModels();
             } else {
-                snap_.models_status = "下载失败: " + name;
-                snap_.notice = "下载失败: " + name;
+                snap_.models_status = upix::i18n::fmt(upix::i18n::Key::ModelsDownloadFailedFmt, name);
+                snap_.notice = snap_.models_status;
                 snap_.notice_seq++;
             }
         });
@@ -1297,7 +1344,7 @@ void AppState::removeModel(const std::string& name) {
     fs::remove(fs::path(dir) / (name + ".bin"), ec);
     {
         std::lock_guard<std::mutex> lk(mtx_);
-        snap_.models_status = "已移除模型: " + name;
+        snap_.models_status = upix::i18n::fmt(upix::i18n::Key::ModelsRemovedFmt, name);
         snap_.notice = snap_.models_status;
         snap_.notice_seq++;
         dirty_.store(true);
@@ -1313,7 +1360,7 @@ void AppState::refreshDaemonStatus() {
     snap_.daemon.running = ready;
     snap_.daemon.loading = false;
     snap_.daemon.pid = static_cast<int>(st.pid);
-    snap_.daemon.label = ready ? "热引擎已就绪" : "热引擎未启动";
+    snap_.daemon.label = upix::i18n::tr(ready ? upix::i18n::Key::DaemonReady : upix::i18n::Key::DaemonStopped);
     dirty_.store(true);
 }
 
@@ -1335,7 +1382,7 @@ void AppState::toggleDaemon() {
         {
             std::lock_guard<std::mutex> lk(mtx_);
             snap_.daemon.loading = true;
-            snap_.daemon.label = "正在停止热引擎…";
+            snap_.daemon.label = upix::i18n::tr(upix::i18n::Key::DaemonStopping);
             dirty_.store(true);
         }
         spawnWorker([this, sock](std::shared_ptr<std::atomic<bool>>) {
@@ -1346,7 +1393,7 @@ void AppState::toggleDaemon() {
         {
             std::lock_guard<std::mutex> lk(mtx_);
             snap_.daemon.loading = true;
-            snap_.daemon.label = "正在启动热引擎…";
+            snap_.daemon.label = upix::i18n::tr(upix::i18n::Key::DaemonStarting);
             dirty_.store(true);
         }
         spawnWorker([this, sock, idleSecs, modelName, forceCpu](std::shared_ptr<std::atomic<bool>>) {
@@ -1356,7 +1403,7 @@ void AppState::toggleDaemon() {
             post([this, ok, err = std::move(err)]() {
                 refreshDaemonStatus();
                 if (!ok && !err.empty()) {
-                    snap_.notice = "热引擎启动失败: " + err;
+                    snap_.notice = upix::i18n::fmt(upix::i18n::Key::DaemonStartFailedFmt, err);
                     snap_.notice_seq++;
                 }
             });
@@ -1373,7 +1420,7 @@ void AppState::hostStart() {
     {
         std::lock_guard<std::mutex> lk(mtx_);
         snap_.host.running = true;
-        snap_.host.logs.push_back(formatHostLog("HOST", "正在启动服务 :" + std::to_string(port)));
+        snap_.host.logs.push_back(formatHostLog("HOST", upix::i18n::fmt(upix::i18n::Key::HostLogStartingFmt, port)));
         dirty_.store(true);
     }
 
@@ -1397,7 +1444,7 @@ void AppState::hostStart() {
                     if (!hostAlive->load(std::memory_order_acquire)) return;
                     snap_.host.running = false;
                     snap_.host.qr_payload.clear();
-                    snap_.notice = "服务启动失败: " + msg;
+                    snap_.notice = upix::i18n::fmt(upix::i18n::Key::HostStartFailedFmt, msg);
                     snap_.notice_seq++;
                     snap_.host.logs.push_back(formatHostLog("ERR", msg));
                     host_worker_.reset();
@@ -1416,7 +1463,7 @@ void AppState::hostStart() {
                 }
                 snap_.host.qr_payload = card.qr_payload;
                 snap_.host.trusted_devices = std::move(trusted);
-                snap_.host.logs.push_back(formatHostLog("HOST", "监听已就绪 :" + std::to_string(port) + " · 二维码可用"));
+                snap_.host.logs.push_back(formatHostLog("HOST", upix::i18n::fmt(upix::i18n::Key::HostLogListeningFmt, port)));
             });
 
             int lastPct = -1;
@@ -1432,7 +1479,7 @@ void AppState::hostStart() {
                     }
                     post([this, hostAlive, dev = pend->device_name, fp = pend->fingerprint, showNow]() {
                         if (!hostAlive->load(std::memory_order_acquire)) return;
-                        snap_.host.logs.push_back(formatHostLog("PAIR", "收到配对请求 · " + dev));
+                        snap_.host.logs.push_back(formatHostLog("PAIR", upix::i18n::fmt(upix::i18n::Key::HostLogPairReqFmt, dev)));
                         if (showNow || snap_.host.pending_device.empty()) {
                             snap_.host.pending_device = dev;
                             snap_.host.pending_fp = fp;
@@ -1459,7 +1506,7 @@ void AppState::hostStart() {
                 if (!hostAlive->load(std::memory_order_acquire)) return;
                 snap_.host.running = false;
                 snap_.host.qr_payload.clear();
-                snap_.notice = "服务异常: " + msg;
+                snap_.notice = upix::i18n::fmt(upix::i18n::Key::HostErrRuntimeFmt, msg);
                 snap_.notice_seq++;
                 snap_.host.logs.push_back(formatHostLog("ERR", msg));
                 host_worker_.reset();
@@ -1469,7 +1516,7 @@ void AppState::hostStart() {
                 if (!hostAlive->load(std::memory_order_acquire)) return;
                 snap_.host.running = false;
                 snap_.host.qr_payload.clear();
-                snap_.notice = "服务启动异常";
+                snap_.notice = upix::i18n::tr(upix::i18n::Key::HostErrStartException);
                 snap_.notice_seq++;
                 host_worker_.reset();
             });
@@ -1486,7 +1533,7 @@ void AppState::hostStop() {
     snap_.host.qr_payload.clear();
     snap_.host.pending_device.clear();
     snap_.host.pending_fp.clear();
-    snap_.host.logs.push_back(formatHostLog("HOST", "服务已停止"));
+    snap_.host.logs.push_back(formatHostLog("HOST", upix::i18n::tr(upix::i18n::Key::HostLogStopped)));
     dirty_.store(true);
 }
 
@@ -1526,8 +1573,10 @@ void AppState::hostDecide(bool allow) {
     }
     std::lock_guard<std::mutex> lk(mtx_);
     if (!resolvedDev.empty()) {
-        snap_.host.logs.push_back(
-            formatHostLog("PAIR", std::string(allow ? "已允许配对 · " : "已拒绝配对 · ") + resolvedDev));
+        snap_.host.logs.push_back(formatHostLog(
+            "PAIR",
+            upix::i18n::fmt(allow ? upix::i18n::Key::HostLogPairAllowedFmt : upix::i18n::Key::HostLogPairDeniedFmt,
+                            resolvedDev)));
         if (allow) {
             bool exists = false;
             for (const auto& td : snap_.host.trusted_devices) {

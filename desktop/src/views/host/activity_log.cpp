@@ -1,5 +1,6 @@
 // views/host/activity_log.cpp — Activity/Runtime Log flex section builder and renderer.
 #include "views/host/internal.hpp"
+#include "i18n.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -57,7 +58,7 @@ LogSlots buildActivityLog(upix::ui::flex::Container& page, float colW,
     const float bodyH = std::max(112.0f, lineH * 3.5f + 8.0f);
     s.scrollUsed = gLogScroll;
 
-    const ImVec2 ts = calcText(sansMed, geist::type::BODY_SMALL, "运行日志");
+    const ImVec2 ts = calcText(sansMed, geist::type::BODY_SMALL, upix::i18n::tr(upix::i18n::Key::HostLogTitle));
     const bool hasModel = !snap.model.empty();
     const float modelChipW = hasModel ? ctl::metaChipWidth(mono, snap.model.c_str(), false, 6.0f) : 0.0f;
 
@@ -107,7 +108,7 @@ LogSlots buildActivityLog(upix::ui::flex::Container& page, float colW,
 
     std::vector<LogEntry> entries;
     if (snap.host.logs.empty()) {
-        entries.push_back({"", "HOST", "等待配对…", "", false});
+        entries.push_back({"", "HOST", upix::i18n::tr(upix::i18n::Key::HostLogWaiting), "", false});
     } else {
         entries.reserve(snap.host.logs.size());
         for (const std::string& raw : snap.host.logs) {
@@ -172,7 +173,8 @@ void drawActivityLog(ImDrawList* dl, const upix::ui::flex::Layout& fx, const Log
     dl->AddCircleFilled(snapPt(fx.rect(s.sig).center()), 3.0f, sig);
     {
         const flex::Rect tr = fx.rect(s.title);
-        drawTextCenteredY(dl, sansMed, geist::type::BODY_SMALL, tr.x, tr.y, tr.bottom(), t.mute, "运行日志");
+        drawTextCenteredY(dl, sansMed, geist::type::BODY_SMALL, tr.x, tr.y, tr.bottom(), t.mute,
+                          upix::i18n::tr(upix::i18n::Key::HostLogTitle));
     }
     if (fx.isVisible(s.model)) {
         const flex::Rect mr = fx.rect(s.model);

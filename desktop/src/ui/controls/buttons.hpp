@@ -335,7 +335,9 @@ inline bool confirmButton(ImDrawList* dl, ImGuiID id, const char* restLabel, con
         }
     }
 
-    const char* armText = (confirmLabel && confirmLabel[0]) ? confirmLabel : "确认?";
+    const char* armText = (confirmLabel && confirmLabel[0])
+        ? confirmLabel
+        : upix::i18n::tr(upix::i18n::Key::CommonConfirmQ);
     ImVec2 r0 = p0;
     ImVec2 r1 = p1;
     const bool iconOnlyRest = (!restLabel || !restLabel[0]) && icon && icon[0];

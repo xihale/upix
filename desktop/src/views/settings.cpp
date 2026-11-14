@@ -1,5 +1,6 @@
 #include "views/common.hpp"
 
+#include "i18n.hpp"
 #include "ui/flex.hpp"
 
 #include "imgui.h"
@@ -178,30 +179,35 @@ struct EngineSection {
 EngineSection buildEngineSection(upix::ui::flex::Container& page, const UiViewState& ui,
                                  const upix::gui::Snapshot& snap, ImFont* sansMed) {
     using namespace upix::ui;
+    using upix::i18n::Key;
+    using upix::i18n::tr;
     EngineSection out;
-    out.sec = addSection(page, sansMed, "推理引擎");
+    out.sec = addSection(page, sansMed, tr(Key::SettingsSecEngine));
 
     static constexpr const char* kDevLabels[2] = {"GPU", "CPU"};
-    static constexpr const char* kTileLabels[4] = {"自动", "512", "256", "128"};
-    static constexpr const char* kIdleLabels[4] = {"5分钟", "15分钟", "30分钟", "不退出"};
+    const char* kTileLabels[4] = {tr(Key::CommonAuto), "512", "256", "128"};
+    const char* kIdleLabels[4] = {
+        tr(Key::SettingsIdle5m),
+        tr(Key::SettingsIdle15m),
+        tr(Key::SettingsIdle30m),
+        tr(Key::SettingsIdleNever),
+    };
     out.devSegW = calcSegmentedW(ui.fontSans, kDevLabels, 2, 64.0f);
     out.tileSegW = calcSegmentedW(ui.fontSans, kTileLabels, 4, 54.0f);
     out.idleSegW = calcSegmentedW(ui.fontSans, kIdleLabels, 4, 60.0f);
 
-    out.gpu = addControlRow(out.sec.list, sansMed, ui.fontSans, "计算设备", nullptr,
+    out.gpu = addControlRow(out.sec.list, sansMed, ui.fontSans, tr(Key::SettingsComputeDevice), nullptr,
                             flex::Shrink(out.devSegW, 1.0f).min(72.0f), flex::Fixed(ctl::geom::SEG_H_COMPACT));
-    out.tile = addControlRow(out.sec.list, sansMed, ui.fontSans, "分块尺寸", nullptr,
+    out.tile = addControlRow(out.sec.list, sansMed, ui.fontSans, tr(Key::SettingsTileSize), nullptr,
                              flex::Shrink(out.tileSegW, 1.0f).min(144.0f), flex::Fixed(ctl::geom::SEG_H_COMPACT));
 
     out.statusBuf = snap.daemon.loading
-        ? "正在启动…"
-        : (snap.daemon.running ? "已就绪" : "未开启");
+        ? tr(Key::SettingsDaemonStarting)
+        : (snap.daemon.running ? tr(Key::SettingsDaemonReady) : tr(Key::SettingsDaemonOff));
     if (!snap.daemon.loading && snap.daemon.running && snap.daemon.pid > 0) {
-        char pidBuf[64];
-        std::snprintf(pidBuf, sizeof(pidBuf), "已就绪 · PID %d", snap.daemon.pid);
-        out.statusBuf = pidBuf;
+        out.statusBuf = upix::i18n::fmt(Key::SettingsDaemonReadyPid, snap.daemon.pid);
     }
-    const ImVec2 daemonTsz = calcText(sansMed, geist::type::BODY, "常驻热引擎");
+    const ImVec2 daemonTsz = calcText(sansMed, geist::type::BODY, tr(Key::SettingsDaemonTitle));
     const ImVec2 statusSsz = calcText(ui.fontSans, ctl::geom::ROW_SUB, out.statusBuf.c_str());
 
     out.daemonRow = out.sec.list.row({
@@ -225,7 +231,7 @@ EngineSection buildEngineSection(upix::ui::flex::Container& page, const UiViewSt
     out.daemonToggle = out.daemonRow.slot(flex::Fixed(ctl::geom::TOGGLE_W), flex::Fixed(ctl::geom::TOGGLE_H),
                                           flex::AlignSelf::Center);
 
-    out.idle = addControlRow(out.sec.list, sansMed, ui.fontSans, "常驻时间", nullptr,
+    out.idle = addControlRow(out.sec.list, sansMed, ui.fontSans, tr(Key::SettingsIdleTime), nullptr,
                              flex::Shrink(out.idleSegW, 1.0f).min(144.0f), flex::Fixed(ctl::geom::SEG_H_COMPACT));
     return out;
 }
@@ -234,25 +240,27 @@ void drawEngineSection(ImDrawList* dl, const upix::ui::flex::Layout& fx, const E
                        const UiViewState& ui, upix::gui::AppState& app, const upix::gui::Snapshot& snap,
                        ImFont* sansMed, float colW, const ScrollCtx& sc) {
     using namespace upix::ui;
+    using upix::i18n::Key;
+    using upix::i18n::tr;
     const auto& t = geist::tokens();
 
-    ctl::eyebrowHeader(dl, sansMed, fx.p0(s.sec.header), colW, "推理引擎");
+    ctl::eyebrowHeader(dl, sansMed, fx.p0(s.sec.header), colW, tr(Key::SettingsSecEngine));
     const flex::Slot rows[] = {s.gpu.row, s.tile.row, s.daemonRow, s.idle.row};
     drawSectionHairlines(dl, fx, s.sec.list, rows, std::size(rows));
 
     static constexpr const char* kDevLabels[2] = {"GPU", "CPU"};
     drawRowHover(dl, fx, s.gpu.row, "row-gpu", sc);
-    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.gpu.text, "计算设备", nullptr);
+    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.gpu.text, tr(Key::SettingsComputeDevice), nullptr);
     int devIdx = snap.gpu ? 0 : 1;
     if (ctl::segmented(dl, ImGui::GetID("seg-gpu"), fx.p0(s.gpu.control), fx.size(s.gpu.control),
                        kDevLabels, 2, devIdx, ui.fontSans, geist::type::LABEL, false, true)) {
         app.setGpu(devIdx == 0);
     }
 
-    static constexpr const char* kTileLabels[4] = {"自动", "512", "256", "128"};
+    const char* kTileLabels[4] = {tr(Key::CommonAuto), "512", "256", "128"};
     static constexpr int kTileVals[4] = {0, 512, 256, 128};
     drawRowHover(dl, fx, s.tile.row, "row-tile", sc);
-    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.tile.text, "分块尺寸", nullptr);
+    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.tile.text, tr(Key::SettingsTileSize), nullptr);
     int tileIdx = findOptionIndex(kTileVals, snap.tile_size);
     if (ctl::segmented(dl, ImGui::GetID("seg-tile"), fx.p0(s.tile.control), fx.size(s.tile.control),
                        kTileLabels, 4, tileIdx, ui.fontSans, geist::type::LABEL, false, true)) {
@@ -261,7 +269,7 @@ void drawEngineSection(ImDrawList* dl, const upix::ui::flex::Layout& fx, const E
 
     drawRowHover(dl, fx, s.daemonRow, "row-daemon", sc);
     ellipsisText(dl, sansMed, geist::type::BODY, fx.p0(s.daemonTitle), fx.size(s.daemonTitle).x,
-                 t.ink, "常驻热引擎");
+                 t.ink, tr(Key::SettingsDaemonTitle));
     const ImVec2 dotC = fx.rect(s.daemonDot).center();
     if (snap.daemon.loading) {
         ctl::busyArc(dl, snapPt(dotC), 4.2f, t.accent, 1.5f);
@@ -278,10 +286,15 @@ void drawEngineSection(ImDrawList* dl, const upix::ui::flex::Layout& fx, const E
     }
     keepNavFocusInView(fx.rect(s.daemonToggle), sc);
 
-    static constexpr const char* kIdleLabels[4] = {"5分钟", "15分钟", "30分钟", "不退出"};
+    const char* kIdleLabels[4] = {
+        tr(Key::SettingsIdle5m),
+        tr(Key::SettingsIdle15m),
+        tr(Key::SettingsIdle30m),
+        tr(Key::SettingsIdleNever),
+    };
     static constexpr int kIdleVals[4] = {300, 900, 1800, 0};
     drawRowHover(dl, fx, s.idle.row, "row-idle", sc);
-    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.idle.text, "常驻时间", nullptr);
+    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.idle.text, tr(Key::SettingsIdleTime), nullptr);
     int idleIdx = findOptionIndex(kIdleVals, snap.daemon.idle_secs);
     if (ctl::segmented(dl, ImGui::GetID("seg-idle"), fx.p0(s.idle.control), fx.size(s.idle.control),
                        kIdleLabels, 4, idleIdx, ui.fontSans, geist::type::LABEL, false, true)) {
@@ -305,8 +318,10 @@ struct EncodingSection {
 EncodingSection buildEncodingSection(upix::ui::flex::Container& page, const UiViewState& ui,
                                      const upix::gui::Snapshot& snap, ImFont* sansMed) {
     using namespace upix::ui;
+    using upix::i18n::Key;
+    using upix::i18n::tr;
     EncodingSection out;
-    out.sec = addSection(page, sansMed, "默认编码与批处理");
+    out.sec = addSection(page, sansMed, tr(Key::SettingsSecEncoding));
 
     const bool isPng = (snap.format == "png");
     const bool isAvif = (snap.format == "avif");
@@ -314,14 +329,18 @@ EncodingSection buildEncodingSection(upix::ui::flex::Container& page, const UiVi
     const bool showChroma = (snap.format == "jpg" || snap.format == "avif");
     const bool showSpeed = isAvif;
 
-    static constexpr const char* kFmtLabels[5] = {"跟随", "PNG", "JPEG", "WebP", "AVIF"};
+    const char* kFmtLabels[5] = {tr(Key::CommonFollow), "PNG", "JPEG", "WebP", "AVIF"};
     static constexpr const char* kChromaLabels[2] = {"4:4:4", "4:2:0"};
-    static constexpr const char* kSpeedLabels[3] = {"精细", "均衡", "快速"};
+    const char* kSpeedLabels[3] = {
+        tr(Key::SettingsSpeedFine),
+        tr(Key::SettingsSpeedBalanced),
+        tr(Key::SettingsSpeedFast),
+    };
     const float fmtSegW = calcSegmentedW(ui.fontSans, kFmtLabels, 5, 52.0f);
     const float chromaSegW = calcSegmentedW(ui.fontMono, kChromaLabels, 2, 64.0f);
     const float speedSegW = calcSegmentedW(ui.fontSans, kSpeedLabels, 3, 58.0f);
 
-    out.fmt = addControlRow(out.sec.list, sansMed, ui.fontSans, "默认输出格式", nullptr,
+    out.fmt = addControlRow(out.sec.list, sansMed, ui.fontSans, tr(Key::SettingsDefaultFmt), nullptr,
                             flex::Shrink(fmtSegW, 1.0f).min(176.0f), flex::Fixed(ctl::geom::SEG_H_COMPACT));
 
     const float qInputW = std::max(56.0f, std::ceil(calcText(ui.fontMono, geist::type::MONO, "100").x) + 20.0f);
@@ -336,7 +355,7 @@ EncodingSection buildEncodingSection(upix::ui::flex::Container& page, const UiVi
         .height = flex::Auto().min(kRowMinH),
         .visible = showQuality,
     });
-    out.qualityText = addTitleSubCol(out.qualityRow, sansMed, ui.fontSans, "默认质量", nullptr);
+    out.qualityText = addTitleSubCol(out.qualityRow, sansMed, ui.fontSans, tr(Key::SettingsDefaultQuality), nullptr);
     auto qRight = out.qualityRow.row({
         .gap = 10.0f,
         .align = flex::Align::Center,
@@ -348,16 +367,16 @@ EncodingSection buildEncodingSection(upix::ui::flex::Container& page, const UiVi
                                     flex::Fixed(ctl::geom::SLIDER_H), flex::AlignSelf::Center);
     out.qualityInput = qRight.slot(flex::Fixed(qInputW), flex::Fixed(qInputH), flex::AlignSelf::Center);
 
-    out.chroma = addControlRow(out.sec.list, sansMed, ui.fontSans, "色度抽样", nullptr,
+    out.chroma = addControlRow(out.sec.list, sansMed, ui.fontSans, tr(Key::SettingsChroma), nullptr,
                                flex::Shrink(chromaSegW, 1.0f).min(72.0f),
                                flex::Fixed(ctl::geom::SEG_H_COMPACT), showChroma);
-    out.speed = addControlRow(out.sec.list, sansMed, ui.fontSans, "编码速度", nullptr,
+    out.speed = addControlRow(out.sec.list, sansMed, ui.fontSans, tr(Key::SettingsEncodeSpeed), nullptr,
                               flex::Shrink(speedSegW, 1.0f).min(108.0f),
                               flex::Fixed(ctl::geom::SEG_H_COMPACT), showSpeed);
 
-    out.rec = addControlRow(out.sec.list, sansMed, ui.fontSans, "文件夹包含子目录", nullptr,
+    out.rec = addControlRow(out.sec.list, sansMed, ui.fontSans, tr(Key::SettingsRecursive), nullptr,
                             flex::Fixed(ctl::geom::TOGGLE_W), flex::Fixed(ctl::geom::TOGGLE_H));
-    out.force = addControlRow(out.sec.list, sansMed, ui.fontSans, "忽略超分标记强制重跑", nullptr,
+    out.force = addControlRow(out.sec.list, sansMed, ui.fontSans, tr(Key::SettingsForce), nullptr,
                               flex::Fixed(ctl::geom::TOGGLE_W), flex::Fixed(ctl::geom::TOGGLE_H));
     return out;
 }
@@ -366,16 +385,18 @@ void drawEncodingSection(ImDrawList* dl, const upix::ui::flex::Layout& fx, const
                          const UiViewState& ui, upix::gui::AppState& app, const upix::gui::Snapshot& snap,
                          ImFont* sansMed, float colW, const ScrollCtx& sc) {
     using namespace upix::ui;
-    ctl::eyebrowHeader(dl, sansMed, fx.p0(s.sec.header), colW, "默认编码与批处理");
+    using upix::i18n::Key;
+    using upix::i18n::tr;
+    ctl::eyebrowHeader(dl, sansMed, fx.p0(s.sec.header), colW, tr(Key::SettingsSecEncoding));
 
     const flex::Slot rows[] = {s.fmt.row, s.qualityRow, s.chroma.row, s.speed.row,
                                s.rec.row, s.force.row};
     drawSectionHairlines(dl, fx, s.sec.list, rows, std::size(rows));
 
-    static constexpr const char* kFmtLabels[5] = {"跟随", "PNG", "JPEG", "WebP", "AVIF"};
+    const char* kFmtLabels[5] = {tr(Key::CommonFollow), "PNG", "JPEG", "WebP", "AVIF"};
     static constexpr const char* kFmtVals[5] = {"", "png", "jpg", "webp", "avif"};
     drawRowHover(dl, fx, s.fmt.row, "row-fmt", sc);
-    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.fmt.text, "默认输出格式", nullptr);
+    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.fmt.text, tr(Key::SettingsDefaultFmt), nullptr);
     int fmtIdx = 0;
     for (int i = 0; i < 5; ++i) {
         if (snap.format == kFmtVals[i]) fmtIdx = i;
@@ -387,7 +408,7 @@ void drawEncodingSection(ImDrawList* dl, const upix::ui::flex::Layout& fx, const
 
     if (fx.isVisible(s.qualityRow)) {
         drawRowHover(dl, fx, s.qualityRow, "row-quality", sc);
-        drawTitleSub(dl, sansMed, ui.fontSans, fx, s.qualityText, "默认质量", nullptr);
+        drawTitleSub(dl, sansMed, ui.fontSans, fx, s.qualityText, tr(Key::SettingsDefaultQuality), nullptr);
         int q = snap.quality;
         if (ctl::slider(dl, ImGui::GetID("qs-quality"), fx.p0(s.qualitySlider),
                         fx.size(s.qualitySlider).x, q, 1, 100)) {
@@ -404,7 +425,7 @@ void drawEncodingSection(ImDrawList* dl, const upix::ui::flex::Layout& fx, const
         static constexpr const char* kChromaLabels[2] = {"4:4:4", "4:2:0"};
         static constexpr int kChromaVals[2] = {444, 420};
         drawRowHover(dl, fx, s.chroma.row, "row-chroma", sc);
-        drawTitleSub(dl, sansMed, ui.fontSans, fx, s.chroma.text, "色度抽样", nullptr);
+        drawTitleSub(dl, sansMed, ui.fontSans, fx, s.chroma.text, tr(Key::SettingsChroma), nullptr);
         int cIdx = (snap.chroma == 444) ? 0 : 1;
         if (ctl::segmented(dl, ImGui::GetID("seg-chroma"), fx.p0(s.chroma.control), fx.size(s.chroma.control),
                            kChromaLabels, 2, cIdx, ui.fontMono, geist::type::LABEL, false, true)) {
@@ -413,10 +434,14 @@ void drawEncodingSection(ImDrawList* dl, const upix::ui::flex::Layout& fx, const
     }
 
     if (fx.isVisible(s.speed.row)) {
-        static constexpr const char* kSpeedLabels[3] = {"精细", "均衡", "快速"};
+        const char* kSpeedLabels[3] = {
+            tr(Key::SettingsSpeedFine),
+            tr(Key::SettingsSpeedBalanced),
+            tr(Key::SettingsSpeedFast),
+        };
         static constexpr int kSpeedVals[3] = {4, 6, 8};
         drawRowHover(dl, fx, s.speed.row, "row-speed", sc);
-        drawTitleSub(dl, sansMed, ui.fontSans, fx, s.speed.text, "编码速度", nullptr);
+        drawTitleSub(dl, sansMed, ui.fontSans, fx, s.speed.text, tr(Key::SettingsEncodeSpeed), nullptr);
         int sIdx = findOptionIndex(kSpeedVals, snap.avif_speed, 1);
         if (ctl::segmented(dl, ImGui::GetID("seg-speed"), fx.p0(s.speed.control), fx.size(s.speed.control),
                            kSpeedLabels, 3, sIdx, ui.fontSans, geist::type::LABEL, false, true)) {
@@ -425,7 +450,7 @@ void drawEncodingSection(ImDrawList* dl, const upix::ui::flex::Layout& fx, const
     }
 
     drawRowHover(dl, fx, s.rec.row, "row-rec", sc);
-    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.rec.text, "文件夹包含子目录", nullptr);
+    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.rec.text, tr(Key::SettingsRecursive), nullptr);
     bool rec = snap.recursive;
     if (ctl::toggleSwitch(dl, ImGui::GetID("sw-rec"), fx.p0(s.rec.control), rec)) {
         app.setRecursive(rec);
@@ -433,7 +458,7 @@ void drawEncodingSection(ImDrawList* dl, const upix::ui::flex::Layout& fx, const
     keepNavFocusInView(fx.rect(s.rec.control), sc);
 
     drawRowHover(dl, fx, s.force.row, "row-force", sc);
-    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.force.text, "忽略超分标记强制重跑", nullptr);
+    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.force.text, tr(Key::SettingsForce), nullptr);
     bool force = snap.force;
     if (ctl::toggleSwitch(dl, ImGui::GetID("sw-force"), fx.p0(s.force.control), force)) {
         app.setForce(force);
@@ -443,6 +468,7 @@ void drawEncodingSection(ImDrawList* dl, const upix::ui::flex::Layout& fx, const
 
 struct AppearanceSection {
     SectionSlots sec;
+    ControlRowSlots language;
     ControlRowSlots theme;
     ControlRowSlots motion;
 };
@@ -450,13 +476,23 @@ struct AppearanceSection {
 AppearanceSection buildAppearanceSection(upix::ui::flex::Container& page, const UiViewState& ui,
                                          ImFont* sansMed) {
     using namespace upix::ui;
+    using upix::i18n::Key;
+    using upix::i18n::tr;
     AppearanceSection out;
-    out.sec = addSection(page, sansMed, "交互与外观");
-    static constexpr const char* kThemeLabels[2] = {"深色", "浅色"};
+    out.sec = addSection(page, sansMed, tr(Key::SettingsSecAppearance));
+    const char* kLangLabels[3] = {
+        tr(Key::SettingsLangAuto),
+        tr(Key::SettingsLangZhCn),
+        tr(Key::SettingsLangEn),
+    };
+    const float langSegW = calcSegmentedW(ui.fontSans, kLangLabels, 3, 64.0f);
+    out.language = addControlRow(out.sec.list, sansMed, ui.fontSans, tr(Key::SettingsLanguage), nullptr,
+                                 flex::Shrink(langSegW, 1.0f).min(144.0f), flex::Fixed(ctl::geom::SEG_H_COMPACT));
+    const char* kThemeLabels[2] = {tr(Key::SettingsThemeDark), tr(Key::SettingsThemeLight)};
     const float themeSegW = calcSegmentedW(ui.fontSans, kThemeLabels, 2, 64.0f);
-    out.theme = addControlRow(out.sec.list, sansMed, ui.fontSans, "外观主题", nullptr,
+    out.theme = addControlRow(out.sec.list, sansMed, ui.fontSans, tr(Key::SettingsTheme), nullptr,
                               flex::Shrink(themeSegW, 1.0f).min(72.0f), flex::Fixed(ctl::geom::SEG_H_COMPACT));
-    out.motion = addControlRow(out.sec.list, sansMed, ui.fontSans, "减少动态效果", nullptr,
+    out.motion = addControlRow(out.sec.list, sansMed, ui.fontSans, tr(Key::SettingsReduceMotion), nullptr,
                                flex::Fixed(ctl::geom::TOGGLE_W), flex::Fixed(ctl::geom::TOGGLE_H));
     return out;
 }
@@ -465,14 +501,33 @@ void drawAppearanceSection(ImDrawList* dl, const upix::ui::flex::Layout& fx, con
                            const UiViewState& ui, upix::gui::AppState& app, const upix::gui::Snapshot& snap,
                            ImFont* sansMed, float colW, const ScrollCtx& sc) {
     using namespace upix::ui;
-    ctl::eyebrowHeader(dl, sansMed, fx.p0(s.sec.header), colW, "交互与外观");
+    using upix::i18n::Key;
+    using upix::i18n::tr;
+    ctl::eyebrowHeader(dl, sansMed, fx.p0(s.sec.header), colW, tr(Key::SettingsSecAppearance));
 
-    const flex::Slot rows[] = {s.theme.row, s.motion.row};
+    const flex::Slot rows[] = {s.language.row, s.theme.row, s.motion.row};
     drawSectionHairlines(dl, fx, s.sec.list, rows, std::size(rows));
 
-    static constexpr const char* kThemeLabels[2] = {"深色", "浅色"};
+    const char* kLangLabels[3] = {
+        tr(Key::SettingsLangAuto),
+        tr(Key::SettingsLangZhCn),
+        tr(Key::SettingsLangEn),
+    };
+    static constexpr const char* kLangVals[3] = {"auto", "zh-CN", "en"};
+    drawRowHover(dl, fx, s.language.row, "row-lang", sc);
+    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.language.text, tr(Key::SettingsLanguage), nullptr);
+    const auto pref = upix::i18n::parse_lang_pref(snap.language);
+    int langIdx = (pref == upix::i18n::LangPref::ZhCn) ? 1
+                : ((pref == upix::i18n::LangPref::En) ? 2 : 0);
+    if (ctl::segmented(dl, ImGui::GetID("seg-lang"), fx.p0(s.language.control), fx.size(s.language.control),
+                       kLangLabels, 3, langIdx, ui.fontSans, geist::type::LABEL, false, true)) {
+        app.setLanguage(kLangVals[langIdx]);
+    }
+    keepNavFocusInView(fx.rect(s.language.control), sc);
+
+    const char* kThemeLabels[2] = {tr(Key::SettingsThemeDark), tr(Key::SettingsThemeLight)};
     drawRowHover(dl, fx, s.theme.row, "row-theme", sc);
-    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.theme.text, "外观主题", nullptr);
+    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.theme.text, tr(Key::SettingsTheme), nullptr);
     int themeIdx = snap.dark_mode ? 0 : 1;
     if (ctl::segmented(dl, ImGui::GetID("seg-theme"), fx.p0(s.theme.control), fx.size(s.theme.control),
                        kThemeLabels, 2, themeIdx, ui.fontSans, geist::type::LABEL, false, true)) {
@@ -481,7 +536,7 @@ void drawAppearanceSection(ImDrawList* dl, const upix::ui::flex::Layout& fx, con
     keepNavFocusInView(fx.rect(s.theme.control), sc);
 
     drawRowHover(dl, fx, s.motion.row, "row-motion", sc);
-    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.motion.text, "减少动态效果", nullptr);
+    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.motion.text, tr(Key::SettingsReduceMotion), nullptr);
     bool rm = snap.reduce_motion;
     if (ctl::toggleSwitch(dl, ImGui::GetID("sw-rm"), fx.p0(s.motion.control), rm)) {
         app.setReduceMotion(rm);
@@ -507,10 +562,12 @@ struct AboutSection {
 AboutSection buildAboutSection(upix::ui::flex::Container& page, const UiViewState& ui,
                                const upix::gui::Snapshot& snap, ImFont* sansMed) {
     using namespace upix::ui;
+    using upix::i18n::Key;
+    using upix::i18n::tr;
     AboutSection out;
-    out.sec = addSection(page, sansMed, "目录与关于");
+    out.sec = addSection(page, sansMed, tr(Key::SettingsSecAbout));
 
-    const ImVec2 btnSz = calcText(ui.fontSans, geist::type::BODY, "打开目录");
+    const ImVec2 btnSz = calcText(ui.fontSans, geist::type::BODY, tr(Key::CommonOpenDir));
     const float dirBtnW = std::max(84.0f, std::ceil(btnSz.x) + 28.0f);
     const float dirBtnH = std::max(32.0f, std::ceil(btnSz.y) + 12.0f);
     const char* dirPath = snap.models_dir.empty() ? "—" : snap.models_dir.c_str();
@@ -529,7 +586,7 @@ AboutSection buildAboutSection(upix::ui::flex::Container& page, const UiViewStat
         .width = flex::Grow(1.0f),
         .height = flex::Auto(),
     });
-    out.dirText = addTitleSubCol(dirTop, sansMed, ui.fontSans, "模型存储目录", nullptr);
+    out.dirText = addTitleSubCol(dirTop, sansMed, ui.fontSans, tr(Key::SettingsModelsDir), nullptr);
     out.dirBtn = dirTop.slot(flex::Fixed(dirBtnW), flex::Fixed(dirBtnH), flex::AlignSelf::Center);
     out.dirWell = out.dirRow.row({
         .padding = flex::Edges::xy(10.0f, 0.0f),
@@ -563,15 +620,17 @@ void drawAboutSection(ImDrawList* dl, const upix::ui::flex::Layout& fx, const Ab
                       const UiViewState& ui, const upix::gui::Snapshot& snap,
                       ImFont* sansMed, float colW, const ScrollCtx& sc) {
     using namespace upix::ui;
+    using upix::i18n::Key;
+    using upix::i18n::tr;
     const auto& t = geist::tokens();
-    ctl::eyebrowHeader(dl, sansMed, fx.p0(s.sec.header), colW, "目录与关于");
+    ctl::eyebrowHeader(dl, sansMed, fx.p0(s.sec.header), colW, tr(Key::SettingsSecAbout));
 
     const flex::Slot rows[] = {s.dirRow, s.aboutRow};
     drawSectionHairlines(dl, fx, s.sec.list, rows, std::size(rows));
 
     drawRowHover(dl, fx, s.dirRow, "row-dir", sc);
-    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.dirText, "模型存储目录", nullptr);
-    if (ctl::secondaryButton(dl, ImGui::GetID("btn-open-mdir"), "打开目录", ui.fontSans,
+    drawTitleSub(dl, sansMed, ui.fontSans, fx, s.dirText, tr(Key::SettingsModelsDir), nullptr);
+    if (ctl::secondaryButton(dl, ImGui::GetID("btn-open-mdir"), tr(Key::CommonOpenDir), ui.fontSans,
                              fx.p0(s.dirBtn), fx.p1(s.dirBtn))) {
         std::error_code ec;
         if (!snap.models_dir.empty()) {
@@ -628,7 +687,7 @@ void renderSettingsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
     gScroll = std::clamp(motion::smoothScroll(ImGui::GetID("settings.scroll"), gScrollTarget), 0.0f, prevMaxScroll);
 
     ImFont* sansMed = ui.fontSansMedium ? ui.fontSansMedium : ui.fontSans;
-    const char* pageTitle = "设置";
+    const char* pageTitle = upix::i18n::tr(upix::i18n::Key::SettingsTitle);
 
     static flex::Context sCtx;
     flex::Layout fx(sCtx);

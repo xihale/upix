@@ -164,10 +164,12 @@ void renderEmptyDropzone(ImDrawList* dl, const upix::ui::flex::Rect& stageRect,
     const float cardW = std::min(460.0f, std::max(240.0f, stageRect.w - geist::space::XXXL * 1.5f));
     const float cardH = std::min(248.0f, std::max(176.0f, stageRect.h - geist::space::XXXL - 36.0f));
 
-    const char* dropTitle = "拖放或粘贴图像";
-    const char* filesLabel = "选择图像";
-    const char* folderLabel = "选择文件夹";
-    const char* recLabel = "包含子文件夹";
+    using upix::i18n::Key;
+    using upix::i18n::tr;
+    const char* dropTitle = tr(Key::WbDropTitle);
+    const char* filesLabel = tr(Key::WbSelectImages);
+    const char* folderLabel = tr(Key::WbSelectFolder);
+    const char* recLabel = tr(Key::WbIncludeSubfolders);
 
     const ImVec2 titleSz = calcText(mediumFont, geist::type::SUBHEADING, dropTitle);
     const ImVec2 recSz = calcText(sansFont, geist::type::BODY_SMALL, recLabel);
@@ -319,11 +321,11 @@ void renderFloatingZoomCapsule(ImDrawList* dl, const upix::ui::flex::Rect& viewR
     const bool is4x = !ui.fitMode && std::fabs(effScale - 4.0f) < 0.02f;
 
     const ZoomBtnSpec btns[5] = {
-        {"适应", false, ui.fitMode, 0.0f, 0},
+        {upix::i18n::tr(upix::i18n::Key::WbZoomFit), false, ui.fitMode, 0.0f, 0},
         {"1:1", true, is1x, 1.0f, 1},
         {"2:1", true, is2x, 2.0f, 1},
         {"4:1", true, is4x, 4.0f, 1},
-        {"像素", false, stagePixelated, 1.0f, 2},
+        {upix::i18n::tr(upix::i18n::Key::WbZoomPixel), false, stagePixelated, 1.0f, 2},
     };
 
     char pctBuf[24] = {};
@@ -452,16 +454,18 @@ void renderRunningTelemetryPill(ImDrawList* dl, const upix::ui::flex::Rect& view
         ? formatInto(queueBuf, "{} / {}", std::max(1, snap.job.index), snap.job.total)
         : nullptr;
 
+    using upix::i18n::Key;
+    using upix::i18n::tr;
     char phaseBuf[64] = {};
     const char* phaseStr = nullptr;
     if (snap.job.phase == upix::gui::JobPhase::Cancelling) {
-        phaseStr = "正在取消…";
+        phaseStr = tr(Key::WbPhaseCancelling);
     } else if (snap.job.tiles_total > 0) {
-        phaseStr = formatInto(phaseBuf, "推理 {}/{}", snap.job.tiles_done, snap.job.tiles_total);
+        phaseStr = formatKeyInto(phaseBuf, Key::WbPhaseInferringFmt, snap.job.tiles_done, snap.job.tiles_total);
     } else if (!snap.job.current_file.empty()) {
         phaseStr = snap.job.current_file.c_str();
     } else {
-        phaseStr = "准备中";
+        phaseStr = tr(Key::WbPhasePreparing);
     }
 
     char pctBuf[16] = {};
@@ -470,11 +474,11 @@ void renderRunningTelemetryPill(ImDrawList* dl, const upix::ui::flex::Rect& view
     char statsBuf[160] = {};
     const char* backendStr = snap.gpu ? "Vulkan" : "CPU";
     if (snap.job.tiles_total > 0 && snap.job.eta_sec > 0) {
-        formatInto(statsBuf, "{} · 分块 {}/{} · ~{}s · {}", snap.model,
-                   snap.job.tiles_done, snap.job.tiles_total, snap.job.eta_sec, backendStr);
+        formatKeyInto(statsBuf, Key::WbStatsTileEtaFmt, snap.model,
+                      snap.job.tiles_done, snap.job.tiles_total, snap.job.eta_sec, backendStr);
     } else if (snap.job.tiles_total > 0) {
-        formatInto(statsBuf, "{} · 分块 {}/{} · {}", snap.model,
-                   snap.job.tiles_done, snap.job.tiles_total, backendStr);
+        formatKeyInto(statsBuf, Key::WbStatsTileFmt, snap.model,
+                      snap.job.tiles_done, snap.job.tiles_total, backendStr);
     } else {
         formatInto(statsBuf, "{} · {}", snap.model, backendStr);
     }
@@ -547,14 +551,16 @@ void renderErrorVeilCard(ImDrawList* dl, const upix::ui::flex::Rect& viewRect,
 
     dl->AddRectFilled(viewRect.p0(), viewRect.p1(), withAlpha(t.bg, t.veilAlpha));
 
+    using upix::i18n::Key;
+    using upix::i18n::tr;
     const bool missingModel = !snap.job.missing_model.empty();
     const bool noModel = snap.model.empty();
-    const char* titleStr = missingModel ? "缺少模型" : "处理失败";
-    const char* msgStr = snap.job.message.empty() ? "推理发生未知错误" : snap.job.message.c_str();
+    const char* titleStr = tr(missingModel ? Key::WbErrMissingModelTitle : Key::WbErrFailedTitle);
+    const char* msgStr = snap.job.message.empty() ? tr(Key::WbErrUnknownMsg) : snap.job.message.c_str();
     const bool hasDiag = !snap.job.diag_detail.empty();
     const char* diagStr = snap.job.diag_detail.c_str();
-    const char* actLabel = missingModel ? "下载模型" : (noModel ? "选择模型" : "重试");
-    const char* resetLabel = "重置";
+    const char* actLabel = tr(missingModel ? Key::ModelsDownload : (noModel ? Key::WbErrSelectModel : Key::WbErrRetry));
+    const char* resetLabel = tr(Key::CommonReset);
 
     const float cardW = std::min(460.0f, std::max(260.0f, viewRect.w - geist::space::XXXL));
     const ImVec2 titleSz = calcText(mediumFont, geist::type::SUBHEADING, titleStr);

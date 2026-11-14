@@ -237,11 +237,11 @@ void renderStageCanvas(ImDrawList* dl, const upix::ui::flex::Rect& stageWellR,
         if (isCompare) {
             char beforeTag[48] = {};
             if (snap.job.in_w > 0 && snap.job.in_h > 0) {
-                detail::formatInto(beforeTag, "原图 {}×{}", snap.job.in_w, snap.job.in_h);
+                detail::formatKeyInto(beforeTag, upix::i18n::Key::WbCompareOrigDims, snap.job.in_w, snap.job.in_h);
             } else if (activeItem && activeItem->width > 0 && activeItem->height > 0) {
-                detail::formatInto(beforeTag, "原图 {}×{}", activeItem->width, activeItem->height);
+                detail::formatKeyInto(beforeTag, upix::i18n::Key::WbCompareOrigDims, activeItem->width, activeItem->height);
             } else {
-                detail::formatInto(beforeTag, "原图");
+                detail::formatInto(beforeTag, "{}", upix::i18n::tr(upix::i18n::Key::WbCompareOrig));
             }
 
             char afterTag[48] = {};

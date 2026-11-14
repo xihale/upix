@@ -30,13 +30,15 @@ void renderFilmstripDock(ImDrawList* dl, const upix::ui::flex::Rect& dockRect, U
     const char* cntText = formatInto(cntBuf, "{}/{}", doneCnt, snap.inputs.size());
     const ImVec2 cntSz = calcText(monoFont, geist::type::MONO, cntText);
 
+    using upix::i18n::Key;
+    using upix::i18n::tr;
     const ImGuiIO& io = ImGui::GetIO();
     const ImGuiID clearId = ImGui::GetID("##dock_clear");
     const bool clearArmed = ctl::isConfirmArmed(clearId);
-    const char* clearLabel = clearArmed ? "确认清空？" : "清空";
+    const char* clearLabel = tr(clearArmed ? Key::CommonConfirmClearQ : Key::CommonClear);
     const float clearFs = clearArmed ? geist::type::BODY : geist::type::BODY_SMALL;
     const float clearW = std::max(52.0f, std::ceil(calcText(sansFont, clearFs, clearLabel).x) + 20.0f);
-    const float actBtnH = std::max(32.0f, std::ceil(calcText(sansFont, geist::type::BODY, "确认").y) + 10.0f);
+    const float actBtnH = std::max(32.0f, std::ceil(calcText(sansFont, geist::type::BODY, tr(Key::CommonConfirmQ)).y) + 10.0f);
 
     constexpr float kCardW = 76.0f;
     constexpr float kCardH = 54.0f;
@@ -102,12 +104,12 @@ void renderFilmstripDock(ImDrawList* dl, const upix::ui::flex::Rect& dockRect, U
 
     if (addActVis) {
         if (ctl::iconAction(dl, ImGui::GetID("##dock_add_persistent"), addActR.p0(), addActR.w, "plus",
-                            "添加图像", sansFont, 15.0f, geist::radius::MD, !isRunning, false)) {
+                            tr(Key::DockAddImage), sansFont, 15.0f, geist::radius::MD, !isRunning, false)) {
             SDL_ShowOpenFileDialog(onFileDialog, dlgFiles, window, nullptr, 0, nullptr, true);
         }
     }
     drawTextCenteredY(dl, monoFont, geist::type::MONO, cntR.x, cntR.y, cntR.bottom(), t.mute, cntText);
-    if (ctl::confirmButton(dl, clearId, "清空", "确认清空？", sansFont,
+    if (ctl::confirmButton(dl, clearId, tr(Key::CommonClear), tr(Key::CommonConfirmClearQ), sansFont,
                            clearR.p0(), clearR.p1(), !isRunning,
                            nullptr, nullptr, 15.0f, 3.0f, true, false)) {
         app.clearInputs();
@@ -159,16 +161,16 @@ void renderFilmstripDock(ImDrawList* dl, const upix::ui::flex::Rect& dockRect, U
 
         ImU32 dotCol = t.mute;
         char pctTextBuf[16] = {};
-        const char* stStr = "排队";
+        const char* stStr = tr(Key::DockQueued);
         if (item.status_kind == 1) {
             dotCol = t.accent;
             stStr = formatInto(pctTextBuf, "{}%", snap.job.percent);
         } else if (item.status_kind == 2) {
             dotCol = t.accent;
-            stStr = "完成";
+            stStr = tr(Key::DockDone);
         } else if (item.status_kind == 3) {
             dotCol = t.error;
-            stStr = item.status_text.empty() ? "失败" : item.status_text.c_str();
+            stStr = item.status_text.empty() ? tr(Key::DockFailed) : item.status_text.c_str();
         }
         char tipBuf[256] = {};
         const char* tipText = item.name.empty()
@@ -221,7 +223,7 @@ void renderFilmstripDock(ImDrawList* dl, const upix::ui::flex::Rect& dockRect, U
             const ImVec2 savedPos = ImGui::GetIO().MousePos;
             if (!inStripClip) ImGui::GetIO().MousePos = ImVec2(-1.0e6f, -1.0e6f);
             rmClicked = ctl::iconAction(dl, ImGui::GetID("##film_rm"), rmR.p0(), rmR.w, "x",
-                                        "移除图像", sansFont, 12.5f, geist::radius::SM, !isRunning, false);
+                                        tr(Key::DockRemoveImage), sansFont, 12.5f, geist::radius::SM, !isRunning, false);
             if (!inStripClip) ImGui::GetIO().MousePos = savedPos;
             ImGui::PopID();
         }
@@ -252,7 +254,7 @@ void renderFilmstripDock(ImDrawList* dl, const upix::ui::flex::Rect& dockRect, U
                 addFocused = !isRunning && ImGui::GetIO().NavVisible && ImGui::IsItemFocused();
                 if (addHov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
                 if (!isRunning) {
-                    ctl::tooltip(dl, ImGui::GetID("##dock_add_tip"), a0, a1, "添加图像", sansFont, addHov, false);
+                    ctl::tooltip(dl, ImGui::GetID("##dock_add_tip"), a0, a1, tr(Key::DockAddImage), sansFont, addHov, false);
                 }
             }
             const float hovT = motion::hoverFactor(ImGui::GetID("##dock_add_hov"), addHov);

@@ -1,5 +1,6 @@
 // views/host/hero_card.cpp — QR & Endpoint Hero Card flex builder and renderer.
 #include "views/host/internal.hpp"
+#include "i18n.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -29,18 +30,19 @@ HeroSlots buildHeroCard(upix::ui::flex::Container& page, float colW,
     const float qrSz = 196.0f;
     const bool wide = (colW >= 560.0f);
 
-    const ImVec2 fpLblSz = calcText(sans, geist::type::BODY_SMALL, "指纹");
-    const ImVec2 ipLblSz = calcText(sans, geist::type::BODY_SMALL, "地址");
-    const ImVec2 portLblSz = calcText(sans, geist::type::BODY_SMALL, "端口");
+    const ImVec2 fpLblSz = calcText(sans, geist::type::BODY_SMALL, upix::i18n::tr(upix::i18n::Key::HostFingerprint));
+    const ImVec2 ipLblSz = calcText(sans, geist::type::BODY_SMALL, upix::i18n::tr(upix::i18n::Key::HostAddress));
+    const ImVec2 portLblSz = calcText(sans, geist::type::BODY_SMALL, upix::i18n::tr(upix::i18n::Key::HostPort));
 
     s.stateText = s.running ? "LIVE" : "IDLE";
     const ImVec2 stateSz = calcText(mono, geist::type::MONO, s.stateText);
-    s.subStatus = s.running ? (s.curIp.empty() ? portText : (s.curIp + ":" + portText)) : "服务未启动";
+    s.subStatus = s.running ? (s.curIp.empty() ? portText : (s.curIp + ":" + portText))
+                            : upix::i18n::tr(upix::i18n::Key::HostStopped);
     s.subFont = s.running ? mono : sans;
     s.subPx = s.running ? geist::type::MONO : geist::type::BODY_SMALL;
     const ImVec2 subSz = calcText(s.subFont, s.subPx, s.subStatus.c_str());
 
-    s.btnLabel = s.running ? "停止服务" : "启动服务";
+    s.btnLabel = upix::i18n::tr(s.running ? upix::i18n::Key::HostStop : upix::i18n::Key::HostStart);
     const float btnW = ctaWidth(sansMed, s.btnLabel, true);
     const float btnH = std::max(40.0f, std::ceil(calcText(sansMed, geist::type::BODY, s.btnLabel).y) + 18.0f);
     const float ctrlH = std::max(34.0f, ctl::geom::META_CHIP_H + 8.0f);
@@ -163,7 +165,8 @@ void drawHeroCard(ImDrawList* dl, const upix::ui::flex::Layout& fx, const HeroSl
            s.running && !snap.host.qr_payload.empty());
 
     const flex::Rect fpLblR = fx.rect(s.fpLbl);
-    drawTextCenteredY(dl, sans, geist::type::BODY_SMALL, fpLblR.x, fpLblR.y, fpLblR.bottom(), t.mute, "指纹");
+    drawTextCenteredY(dl, sans, geist::type::BODY_SMALL, fpLblR.x, fpLblR.y, fpLblR.bottom(),
+                      t.mute, upix::i18n::tr(upix::i18n::Key::HostFingerprint));
     for (size_t i = 0; i < 4; ++i) {
         const flex::Rect cr = fx.rect(s.chips[i]);
         ctl::metaChip(dl, mono, cr.p0(), s.groups[i].c_str(), 0, t.ink, t.tagBg, cr.h, 8.0f);
@@ -174,8 +177,10 @@ void drawHeroCard(ImDrawList* dl, const upix::ui::flex::Layout& fx, const HeroSl
         dl->AddRectFilled(copyR.p0(), copyR.p1(), t.accentSoft, geist::radius::MD);
         drawIcon(dl, "check", copyR.center(), 13.0f, t.accent, 1.8f);
         const bool hov = ctl::mouseIn(copyR.p0(), copyR.p1());
-        ctl::tooltip(dl, ImGui::GetID("host.copyfp.tip"), copyR.p0(), copyR.p1(), "已复制", sans, hov, false);
-    } else if (ctl::iconAction(dl, ImGui::GetID("host.copyfp"), copyR.p0(), copyR.w, "copy", "复制指纹",
+        ctl::tooltip(dl, ImGui::GetID("host.copyfp.tip"), copyR.p0(), copyR.p1(),
+                     upix::i18n::tr(upix::i18n::Key::HostCopied), sans, hov, false);
+    } else if (ctl::iconAction(dl, ImGui::GetID("host.copyfp"), copyR.p0(), copyR.w, "copy",
+                               upix::i18n::tr(upix::i18n::Key::HostCopyFp),
                                sans, 13.0f, geist::radius::MD, !modal, false)) {
         SDL_SetClipboardText(snap.host.fingerprint.c_str());
         gCopiedUntil = ImGui::GetTime() + 1.5;
@@ -186,7 +191,8 @@ void drawHeroCard(ImDrawList* dl, const upix::ui::flex::Layout& fx, const HeroSl
 
     // IP row
     const flex::Rect ipLblR = fx.rect(s.ipLbl);
-    drawTextCenteredY(dl, sans, geist::type::BODY_SMALL, ipLblR.x, ipLblR.y, ipLblR.bottom(), t.mute, "地址");
+    drawTextCenteredY(dl, sans, geist::type::BODY_SMALL, ipLblR.x, ipLblR.y, ipLblR.bottom(),
+                      t.mute, upix::i18n::tr(upix::i18n::Key::HostAddress));
     {
         const flex::Rect trigR = s.ipTrig.rect();
         const ImVec2 a = trigR.p0();
@@ -240,7 +246,8 @@ void drawHeroCard(ImDrawList* dl, const upix::ui::flex::Layout& fx, const HeroSl
 
     // Port row
     const flex::Rect portLblR = fx.rect(s.portLbl);
-    drawTextCenteredY(dl, sans, geist::type::BODY_SMALL, portLblR.x, portLblR.y, portLblR.bottom(), t.mute, "端口");
+    drawTextCenteredY(dl, sans, geist::type::BODY_SMALL, portLblR.x, portLblR.y, portLblR.bottom(),
+                      t.mute, upix::i18n::tr(upix::i18n::Key::HostPort));
     {
         int nextPort = snap.host.port;
         if (portInputField(dl, ImGui::GetID("host.port"), fx.p0(s.port), fx.p1(s.port),

@@ -2,6 +2,7 @@
 #pragma once
 
 #include "app_state.hpp"
+#include "i18n.hpp"
 #include "ui/controls.hpp"
 
 #include <algorithm>
@@ -96,8 +97,12 @@ inline std::string formatTotalMB(double mb) {
 
 inline std::string_view stripFamilyPrefixForDisplay(const std::string& familyTitle,
                                                     const upix::gui::ModelItem& m) {
-    if (familyTitle.empty() || familyTitle == "独立模型" ||
-        familyTitle == "已安装模型" || familyTitle == "可下载模型") {
+    using upix::i18n::Key;
+    using upix::i18n::tr;
+    if (familyTitle.empty() ||
+        familyTitle == "独立模型" || familyTitle == tr(Key::ModelsStandalone) ||
+        familyTitle == "已安装模型" || familyTitle == tr(Key::ModelsGroupInstalled) ||
+        familyTitle == "可下载模型" || familyTitle == tr(Key::ModelsGroupAvailable)) {
         return m.name;
     }
     if (!m.short_name.empty() && m.short_name != m.name) {
@@ -168,7 +173,9 @@ inline std::vector<MergedModelGroup> buildUnifiedFilteredGroups(const upix::gui:
     for (const auto& [name, _] : byName) allNames.push_back(name);
     std::unordered_map<std::string, std::string> familyOf;
     for (const auto& fg : upix::groups(allNames)) {
-        const std::string fam = fg.label.empty() ? std::string("独立模型") : fg.label;
+        const std::string fam = fg.label.empty()
+            ? std::string(upix::i18n::tr(upix::i18n::Key::ModelsStandalone))
+            : fg.label;
         for (const auto& it : fg.items) familyOf[it.name] = fam;
     }
 
@@ -198,7 +205,7 @@ inline std::vector<MergedModelGroup> buildUnifiedFilteredGroups(const upix::gui:
         }
     }
     if (!orphans.empty()) {
-        result.push_back(MergedModelGroup{"独立模型", std::move(orphans)});
+        result.push_back(MergedModelGroup{upix::i18n::tr(upix::i18n::Key::ModelsStandalone), std::move(orphans)});
     }
     return result;
 }

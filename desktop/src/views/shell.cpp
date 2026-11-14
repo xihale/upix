@@ -1,4 +1,5 @@
 #include "views/common.hpp"
+#include "i18n.hpp"
 #include "ui/flex.hpp"
 
 #include "imgui.h"
@@ -49,12 +50,17 @@ void renderTopBar(ImDrawList* dl, ImVec2 winSize, UiViewState& ui, const upix::g
         : 0.0f;
     const float rightW = pillW + geist::space::SM + kCtrlH + winCtrlsW;
 
-    static constexpr const char* kTabLabels[4] = {"工作台", "模型", "远程", "设置"};
-    static constexpr const char* kTabTips[4] = {
-        "工作台 (Ctrl+1)",
-        "模型 (Ctrl+2)",
-        "远程 (Ctrl+3)",
-        "设置 (Ctrl+4)",
+    const char* kTabLabels[4] = {
+        upix::i18n::tr(upix::i18n::Key::TabWorkbench),
+        upix::i18n::tr(upix::i18n::Key::TabModels),
+        upix::i18n::tr(upix::i18n::Key::TabHost),
+        upix::i18n::tr(upix::i18n::Key::TabSettings),
+    };
+    const char* kTabTips[4] = {
+        upix::i18n::tr(upix::i18n::Key::TabTipWorkbench),
+        upix::i18n::tr(upix::i18n::Key::TabTipModels),
+        upix::i18n::tr(upix::i18n::Key::TabTipHost),
+        upix::i18n::tr(upix::i18n::Key::TabTipSettings),
     };
     float tabWs[4] = {};
     float tabsTextW = 0.0f;
@@ -227,7 +233,8 @@ void renderTopBar(ImDrawList* dl, ImVec2 winSize, UiViewState& ui, const upix::g
                           motion::mix(t.body, t.ink, hovT), backendLabel);
         const bool focused = interactive && hit.focused && ImGui::GetIO().NavVisible;
         ctl::detail::focusRing(dl, p0, p1, geist::radius::MD, focused);
-        const char* tip = snap.gpu ? "计算后端：Vulkan（点击前往设置）" : "计算后端：CPU（点击前往设置）";
+        const char* tip = upix::i18n::tr(
+            snap.gpu ? upix::i18n::Key::BackendTipGpu : upix::i18n::Key::BackendTipCpu);
         ctl::tooltip(dl, ImGui::GetID("topbar.backend.tip"), p0, p1, tip, sansFont,
                      interactive && hit.hovered, focused);
         if (interactive && hit.clicked) {
@@ -241,7 +248,7 @@ void renderTopBar(ImDrawList* dl, ImVec2 winSize, UiViewState& ui, const upix::g
         const bool isDark = (geist::mode() == geist::Mode::Dark);
         const char* themeIcon = isDark ? "moon" : "sun";
         if (ctl::iconAction(dl, ImGui::GetID("topbar.theme"), snapPt(themeR.x, themeR.y), kCtrlH,
-                            themeIcon, "切换外观：深色 / 浅色", sansFont, 16.0f,
+                            themeIcon, upix::i18n::tr(upix::i18n::Key::ThemeToggleTip), sansFont, 16.0f,
                             geist::radius::MD, interactive, false)) {
             ui.requestDarkMode = isDark ? 0 : 1;
         }
@@ -254,14 +261,15 @@ void renderTopBar(ImDrawList* dl, ImVec2 winSize, UiViewState& ui, const upix::g
 
         const flex::Rect minR = topFx.rect(minSlot);
         if (ctl::iconAction(dl, ImGui::GetID("topbar.win_min"), snapPt(minR.x, minR.y), kCtrlH,
-                            "win-minimize", "最小化", sansFont, 14.0f,
+                            "win-minimize", upix::i18n::tr(upix::i18n::Key::WinMinimize), sansFont, 14.0f,
                             geist::radius::MD, interactive, false)) {
             ui.requestWindowAction = 1;
         }
 
         const flex::Rect maxR = topFx.rect(maxSlot);
         const char* maxIcon = ui.windowMaximized ? "win-restore" : "win-maximize";
-        const char* maxTip = ui.windowMaximized ? "还原" : "最大化";
+        const char* maxTip = upix::i18n::tr(
+            ui.windowMaximized ? upix::i18n::Key::WinRestore : upix::i18n::Key::WinMaximize);
         if (ctl::iconAction(dl, ImGui::GetID("topbar.win_max"), snapPt(maxR.x, maxR.y), kCtrlH,
                             maxIcon, maxTip, sansFont, 14.0f,
                             geist::radius::MD, interactive, false)) {
@@ -270,7 +278,7 @@ void renderTopBar(ImDrawList* dl, ImVec2 winSize, UiViewState& ui, const upix::g
 
         const flex::Rect closeR = topFx.rect(closeSlot);
         if (ctl::iconAction(dl, ImGui::GetID("topbar.win_close"), snapPt(closeR.x, closeR.y), kCtrlH,
-                            "x", "关闭", sansFont, 14.0f,
+                            "x", upix::i18n::tr(upix::i18n::Key::WinClose), sansFont, 14.0f,
                             geist::radius::MD, interactive, false, true)) {
             ui.requestWindowAction = 3;
         }

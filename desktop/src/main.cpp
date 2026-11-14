@@ -1,5 +1,6 @@
 #include "app_state.hpp"
 #include "core/serve/daemon_control.hpp"
+#include "i18n.hpp"
 #include "views/common.hpp"
 
 #include "imgui.h"
@@ -986,7 +987,12 @@ static bool RunAuditMotion(ImGui_ImplVulkanH_Window* wd, OffscreenTarget* ot,
     bool ok = true;
 
     ImFont* medFont = ui.fontSansMedium ? ui.fontSansMedium : ui.fontSans;
-    static constexpr const char* kTabLabels[4] = {"工作台", "模型", "远程", "设置"};
+    const char* kTabLabels[4] = {
+        upix::i18n::tr(upix::i18n::Key::TabWorkbench),
+        upix::i18n::tr(upix::i18n::Key::TabModels),
+        upix::i18n::tr(upix::i18n::Key::TabHost),
+        upix::i18n::tr(upix::i18n::Key::TabSettings),
+    };
     float tabXs[4] = {};
     float tabWs[4] = {};
     bool tabsMeasured = false;
@@ -1495,14 +1501,26 @@ int main(int argc, char** argv) {
         "/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf",
         "/usr/share/fonts/adobe-source-sans/SourceSans3-Regular.otf",
         "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+        "/System/Library/Fonts/SFNS.ttf",
+        "/System/Library/Fonts/HelveticaNeue.ttc",
         "C:\\Windows\\Fonts\\segoeui.ttf",
     };
     const CjkCandidate cjkFontPaths[] = {
         {"/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc", 2},
         {"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", 2},
+        {"/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc", 2},
         {"/usr/share/fonts/noto-cjk/NotoSansCJK-Medium.ttc", 2},
         {"/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc", 2},
+        {"/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc", 0},
+        {"/usr/share/fonts/wenquanyi/wqy-zenhei/wqy-zenhei.ttc", 0},
+        {"/System/Library/Fonts/PingFang.ttc", 0},
+        {"/System/Library/Fonts/STHeiti Light.ttc", 0},
+        {"/System/Library/Fonts/Hiragino Sans GB.ttc", 0},
         {"C:\\Windows\\Fonts\\msyh.ttc", 0},
+        {"C:\\Windows\\Fonts\\simsun.ttc", 0},
     };
     CjkCandidate foundCjk = {nullptr, 0};
     for (const auto& cand : cjkFontPaths) {
@@ -1531,11 +1549,18 @@ int main(int argc, char** argv) {
         {"/usr/share/fonts/Adwaita/AdwaitaSans-Regular.ttf", (5 << 16)},
         {"/usr/share/fonts/adobe-source-sans/SourceSans3-Medium.otf", 0},
         {"/usr/share/fonts/adobe-source-sans/SourceSans3-Semibold.otf", 0},
+        {"/usr/share/fonts/TTF/DejaVuSans-Bold.ttf", 0},
+        {"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 0},
+        {"/System/Library/Fonts/SFNS.ttf", 0},
+        {"/System/Library/Fonts/HelveticaNeue.ttc", 0},
         {"C:\\Windows\\Fonts\\seguisb.ttf", 0},
     };
     const CjkCandidate cjkMediumPaths[] = {
         {"/usr/share/fonts/noto-cjk/NotoSansCJK-Medium.ttc", 2},
         {"/usr/share/fonts/opentype/noto/NotoSansCJK-Medium.ttc", 2},
+        {"/usr/share/fonts/google-noto-cjk/NotoSansCJK-Medium.ttc", 2},
+        {"/System/Library/Fonts/PingFang.ttc", 1},
+        {"/System/Library/Fonts/STHeiti Medium.ttc", 0},
         {"C:\\Windows\\Fonts\\msyhbd.ttc", 0},
     };
     CjkCandidate foundCjkMedium = foundCjk;
@@ -1564,7 +1589,10 @@ int main(int argc, char** argv) {
         "/usr/share/fonts/TTF/JetBrainsMono-Medium.ttf",
         "/usr/share/fonts/TTF/JetBrainsMonoNLNerdFontMono-Regular.ttf",
         "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
         "/usr/share/fonts/dejavu/DejaVuSansMono.ttf",
+        "/System/Library/Fonts/SFNSMono.ttf",
+        "/System/Library/Fonts/Menlo.ttc",
         "C:\\Windows\\Fonts\\consola.ttf"
     };
     for (const char* path : monoFontPaths) {
@@ -1625,6 +1653,7 @@ int main(int argc, char** argv) {
     }
     {
         auto initSnap = app.snapshot();
+        upix::i18n::set_preference(initSnap.language);
         upix::ui::geist::mode() = initSnap.dark_mode ? upix::ui::geist::Mode::Dark : upix::ui::geist::Mode::Light;
         upix::ui::motion::reduceMotion() = initSnap.reduce_motion;
     }
@@ -1754,7 +1783,7 @@ int main(int argc, char** argv) {
                             }
                         }
                         if (!pasted) {
-                            app.setNotice("剪贴板里没有图片或有效文件路径");
+                            app.setNotice(upix::i18n::tr(upix::i18n::Key::NoticeClipboardEmpty));
                         }
                     } else if (event.key.key == SDLK_ESCAPE) {
                         auto cur = app.snapshot();

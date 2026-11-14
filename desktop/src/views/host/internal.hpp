@@ -38,7 +38,7 @@ struct HeroSlots {
     std::string curIp;
     std::string subStatus;
     const char* stateText = "IDLE";
-    const char* btnLabel = "启动服务";
+    const char* btnLabel = nullptr;
     ImFont* subFont = nullptr;
     float subPx = 0.0f;
     bool running = false;

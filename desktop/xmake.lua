@@ -22,12 +22,15 @@ target("upix")
         add_syslinks("vulkan", "dl", "pthread")
     elseif is_plat("windows", "mingw") then
         add_syslinks("vulkan-1", "ws2_32", "iphlpapi")
+    elseif is_plat("macosx") then
+        add_frameworks("CoreFoundation")
     end
 
     add_includedirs("src", "$(projectdir)/share")
     add_files(
         "src/main.cpp",
         "src/app_state.cpp",
+        "src/i18n.cpp",
         "src/qrcodegen.cpp",
         "src/views/shell.cpp",
         "src/views/workbench.cpp",
@@ -57,8 +60,11 @@ target("test_app_state_jobs")
     if has_config("avif-encoder") or has_config("avif-decoder") then
         add_packages("libavif")
     end
+    if is_plat("macosx") then
+        add_frameworks("CoreFoundation")
+    end
     add_includedirs("src", "$(projectdir)/share")
-    add_files("tests/test_app_state_jobs.cpp", "src/app_state.cpp", "src/qrcodegen.cpp")
+    add_files("tests/test_app_state_jobs.cpp", "src/app_state.cpp", "src/i18n.cpp", "src/qrcodegen.cpp")
     set_targetdir("$(projectdir)/desktop/build/tests")
 
 -- Headless Geist math, slider magnet, DPI snap & motion spring test
@@ -67,5 +73,19 @@ target("test_gui_math_and_motion")
     add_tests("default", {rundir = "$(projectdir)"})
     add_packages("imgui")
     add_includedirs("src")
-    add_files("tests/test_gui_math_and_motion.cpp")
+    add_files("tests/test_gui_math_and_motion.cpp", "src/i18n.cpp")
+    if is_plat("macosx") then
+        add_frameworks("CoreFoundation")
+    end
+    set_targetdir("$(projectdir)/desktop/build/tests")
+
+-- Headless i18n locale detection, BCP-47 normalization & translation parity test
+target("test_i18n")
+    set_kind("binary")
+    add_tests("default", {rundir = "$(projectdir)"})
+    add_includedirs("src")
+    add_files("tests/test_i18n.cpp", "src/i18n.cpp")
+    if is_plat("macosx") then
+        add_frameworks("CoreFoundation")
+    end
     set_targetdir("$(projectdir)/desktop/build/tests")

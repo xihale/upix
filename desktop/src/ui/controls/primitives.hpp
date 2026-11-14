@@ -2,6 +2,7 @@
 // geometry tokens, hit testing, hover washes, hairlines, and motion springs.
 #pragma once
 
+#include "i18n.hpp"
 #include "ui/flex.hpp"
 #include "ui/geist.hpp"
 #include "ui/icons.hpp"
@@ -493,20 +494,36 @@ inline void busyArc(ImDrawList* dl, ImVec2 center, float radius, ImU32 col, floa
 inline ImU32 sceneDotColor(const char* scene) {
     const auto& t = geist::tokens();
     if (!scene || !scene[0]) return t.sceneGeneral; // empty / 通用 reads as 综合
-    if (std::strstr(scene, "动漫")) return t.sceneAnime;
-    if (std::strstr(scene, "照片") && !std::strstr(scene, "修复")) return t.scenePhoto;
-    if (std::strstr(scene, "修复")) return t.sceneRestore;
+    if (std::strstr(scene, "动漫") || std::strstr(scene, "Anime")) return t.sceneAnime;
+    if ((std::strstr(scene, "照片") && !std::strstr(scene, "修复")) ||
+        (std::strstr(scene, "Photo") && !std::strstr(scene, "Restore"))) {
+        return t.scenePhoto;
+    }
+    if (std::strstr(scene, "修复") || std::strstr(scene, "Restore")) return t.sceneRestore;
     return t.sceneGeneral;
 }
 
-// Empty / 通用 reads as 综合. Writes into `out` (NUL-terminated, cap includes NUL).
+// Localize canonical scene strings ("动漫", "照片", "修复", "通用"/"综合"/"").
+// Writes into `out` (NUL-terminated, cap includes NUL).
 inline const char* sceneLabel(const char* scene, char* out, int cap) {
-    if (!out || cap < 2) return scene ? scene : "";
-    if (!scene || !scene[0] || std::strcmp(scene, "通用") == 0) {
-        std::snprintf(out, static_cast<size_t>(cap), "综合");
-        return out;
+    const char* mapped = nullptr;
+    if (!scene || !scene[0] || std::strcmp(scene, "通用") == 0 ||
+        std::strcmp(scene, "综合") == 0 || std::strcmp(scene, "General") == 0) {
+        mapped = upix::i18n::tr(upix::i18n::Key::SceneGeneral);
+    } else if (std::strcmp(scene, "动漫") == 0 || std::strcmp(scene, "Anime") == 0) {
+        mapped = upix::i18n::tr(upix::i18n::Key::SceneAnime);
+    } else if (std::strcmp(scene, "照片") == 0 || std::strcmp(scene, "Photo") == 0) {
+        mapped = upix::i18n::tr(upix::i18n::Key::ScenePhoto);
+    } else if (std::strcmp(scene, "修复") == 0 || std::strcmp(scene, "Restore") == 0) {
+        mapped = upix::i18n::tr(upix::i18n::Key::SceneRestore);
+    } else if (std::strcmp(scene, "照片修复") == 0 || std::strcmp(scene, "Photo Restore") == 0) {
+        mapped = upix::i18n::tr(upix::i18n::Key::ScenePhotoRestore);
+    } else {
+        mapped = scene;
     }
-    return scene;
+    if (!out || cap < 2) return mapped;
+    std::snprintf(out, static_cast<size_t>(cap), "%s", mapped);
+    return out;
 }
 
 } // namespace ctl

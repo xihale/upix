@@ -106,7 +106,7 @@ struct DaemonState {
     bool loading = false;
     int pid = 0;
     int idle_secs = 300;
-    std::string label = "热引擎未启动";
+    std::string label;
 };
 
 struct Snapshot {
@@ -129,6 +129,7 @@ struct Snapshot {
     bool force = false;
     bool dark_mode = true;
     bool reduce_motion = false;
+    std::string language = "auto";    // "auto" | "zh-CN" | "en"
 
     std::string models_dir;
     std::string model_source;         // "hf-mirror", "hf", "github"
@@ -192,6 +193,7 @@ public:
     void setCustomOutDir(const std::string& dir);
     void setDarkMode(bool dark, bool persist = true);
     void setReduceMotion(bool reduce);
+    void setLanguage(const std::string& lang, bool persist = true);
 
     void setModelSource(const std::string& src);
     void refreshModels();

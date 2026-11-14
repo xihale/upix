@@ -161,15 +161,17 @@ inline ImVec2 metaChip(ImDrawList* dl, ImFont* font, ImVec2 p0, const char* labe
     return box.size();
 }
 
-inline float recChipWidth(ImFont* font, const char* label = "推荐", float padX = 5.0f) {
-    return metaChipWidth(font, label, false, padX);
+inline float recChipWidth(ImFont* font, const char* label = nullptr, float padX = 5.0f) {
+    const char* text = (label && label[0]) ? label : upix::i18n::tr(upix::i18n::Key::CommonRecommended);
+    return metaChipWidth(font, text, false, padX);
 }
 
-// Blue recommendation pill ("推荐"): t.accentSoft fill + t.accent text, borderless, radius 4px.
-inline ImVec2 recChip(ImDrawList* dl, ImFont* font, ImVec2 p0, const char* label = "推荐",
+// Blue recommendation pill ("推荐"/"Recommended"): t.accentSoft fill + t.accent text, borderless, radius 4px.
+inline ImVec2 recChip(ImDrawList* dl, ImFont* font, ImVec2 p0, const char* label = nullptr,
                       float height = geom::META_CHIP_H, float padX = 5.0f) {
     const auto& t = geist::tokens();
-    return metaChip(dl, font, p0, label, 0, t.accent, t.accentSoft, height, padX);
+    const char* text = (label && label[0]) ? label : upix::i18n::tr(upix::i18n::Key::CommonRecommended);
+    return metaChip(dl, font, p0, text, 0, t.accent, t.accentSoft, height, padX);
 }
 
 // Technical badge: px6 py2, radius 4, eyebrow label. Returns the drawn size.

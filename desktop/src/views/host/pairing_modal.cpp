@@ -1,5 +1,6 @@
 // views/host/pairing_modal.cpp — incoming device pairing approval modal laid out via flex::Layout.
 #include "views/host/internal.hpp"
+#include "i18n.hpp"
 
 #include <algorithm>
 #include <array>
@@ -59,11 +60,13 @@ void renderPairingModal(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
     constexpr float kMarginY = 16.0f;
     const float mw = std::min(432.0f, std::max(280.0f, winSize.x - kMarginX * 2.0f));
 
-    const char* heading = "新设备请求连接";
-    const char* body = "核对设备指纹";
+    using upix::i18n::Key;
+    using upix::i18n::tr;
+    const char* heading = tr(Key::HostPairHeading);
+    const char* body = tr(Key::HostPairBody);
     const char* pairTag = "PAIR";
-    const char* denyLabel = "拒绝";
-    const char* allowLabel = "允许配对";
+    const char* denyLabel = tr(Key::HostPairDeny);
+    const char* allowLabel = tr(Key::HostPairAllow);
     const auto groups = host_detail::fpGroups(snap.host.pending_fp);
 
     const ImVec2 hsz = calcText(sansMed, geist::type::BODY, heading);

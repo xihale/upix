@@ -1,4 +1,5 @@
 #include "views/common.hpp"
+#include "i18n.hpp"
 #include "views/models/grouping.hpp"
 #include "views/models/model_row.hpp"
 
@@ -38,7 +39,7 @@ EmptyStateSlots addEmptyState(upix::ui::flex::Container& parent, ImFont* sans, I
                               float colW, const char* title, bool withClearFilter, bool visible) {
     using namespace upix::ui;
     const ImVec2 tsz = calcText(sansMed, geist::type::BODY, title);
-    const ImVec2 bsz = calcText(sans, geist::type::BODY_SMALL, "清除筛选");
+    const ImVec2 bsz = calcText(sans, geist::type::BODY_SMALL, upix::i18n::tr(upix::i18n::Key::ModelsClearFilters));
     const float btnW = std::ceil(bsz.x) + 28.0f;
     const float btnH = std::max(32.0f, std::ceil(bsz.y) + 14.0f);
 
@@ -66,7 +67,8 @@ bool drawEmptyState(ImDrawList* dl, const upix::ui::flex::Layout& fx, const Empt
     drawIcon(dl, "layers", fx.rect(slots.icon).center(), 18.0f, t.mute);
     drawTextCentered(dl, sansMed, geist::type::BODY, fx.p0(slots.title), fx.p1(slots.title), t.ink, title);
     if (withClearFilter && fx.isVisible(slots.button)) {
-        return ctl::secondaryButton(dl, btnId, "清除筛选", sans, fx.p0(slots.button), fx.p1(slots.button));
+        return ctl::secondaryButton(dl, btnId, upix::i18n::tr(upix::i18n::Key::ModelsClearFilters),
+                                    sans, fx.p0(slots.button), fx.p1(slots.button));
     }
     return false;
 }
@@ -132,17 +134,19 @@ void renderModelsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
     for (const auto& m : snap.remote) {
         catalogNames.insert(m.name);
     }
-    const std::string subText = std::format(
-        "已缓存 {} / {} · {}",
+    const std::string subText = upix::i18n::fmt(
+        upix::i18n::Key::ModelsSummaryFmt,
         snap.installed.size(), catalogNames.size(), formatTotalMB(totalInstalledMB));
 
-    const ImVec2 titleSz = calcText(sansMed, geist::type::PAGE_TITLE, "模型库");
+    using upix::i18n::Key;
+    using upix::i18n::tr;
+    const ImVec2 titleSz = calcText(sansMed, geist::type::PAGE_TITLE, tr(Key::ModelsTitle));
     const ImVec2 subSz = calcText(mono, geist::type::MONO, subText.c_str());
-    const float hdrBtnH = std::max(34.0f, std::ceil(calcText(sansMed, geist::type::BODY, "导入模型").y) + 14.0f);
-    const float importW = std::ceil(calcText(sansMed, geist::type::BODY, "导入模型").x) + 22.0f;
-    const float mirrorW = std::ceil(calcText(sansMed, geist::type::BODY, "镜像源").x) + 20.0f;
-    const float refreshW = std::ceil(calcText(sansMed, geist::type::BODY, "刷新列表").x) + 20.0f;
-    const float dirW = std::ceil(calcText(sansMed, geist::type::BODY, "打开目录").x) + 20.0f;
+    const float hdrBtnH = std::max(34.0f, std::ceil(calcText(sansMed, geist::type::BODY, tr(Key::ModelsImport)).y) + 14.0f);
+    const float importW = std::ceil(calcText(sansMed, geist::type::BODY, tr(Key::ModelsImport)).x) + 22.0f;
+    const float mirrorW = std::ceil(calcText(sansMed, geist::type::BODY, tr(Key::ModelsMirror)).x) + 20.0f;
+    const float refreshW = std::ceil(calcText(sansMed, geist::type::BODY, tr(Key::ModelsRefresh)).x) + 20.0f;
+    const float dirW = std::ceil(calcText(sansMed, geist::type::BODY, tr(Key::CommonOpenDir)).x) + 20.0f;
 
     static constexpr const char* kSourceLabels[3] = {"HF-Mirror", "Hugging Face", "GitHub"};
     static constexpr const char* kSourceValues[3] = {"hf-mirror", "hf", "github"};
@@ -158,10 +162,21 @@ void renderModelsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
         maxSrcLblW = std::max(maxSrcLblW, calcText(sans, geist::type::LABEL, kSourceLabels[i]).x);
     }
     const float sourceSegW = std::max(48.0f, std::ceil(maxSrcLblW + 24.0f)) * 3.0f + ctl::geom::SEG_PAD * 2.0f;
-    const ImVec2 srcLblSz = calcText(sansMed, geist::type::BODY, "下载源");
-    const bool mirrorCompact = (colW < sourceSegW + srcLblSz.x + 60.0f);
+    const ImVec2 srcLblSz = calcText(sansMed, geist::type::BODY_SMALL, tr(Key::ModelsSourceLabel));
+    const char* srcHint = tr((sourceIdx == 0) ? Key::ModelsSourceHintHfMirror
+                             : (sourceIdx == 1) ? Key::ModelsSourceHintHf
+                                                : Key::ModelsSourceHintGh);
+    const ImVec2 srcHintSz = calcText(sans, geist::type::BODY_SMALL, srcHint);
+    const bool mirrorCompact = (colW < sourceSegW + srcLblSz.x + 220.0f);
 
-    static const char* const kTabLabels[6] = {"全部", "推荐", "动漫", "照片", "综合", "修复"};
+    const char* kTabLabels[6] = {
+        tr(Key::SceneAll),
+        tr(Key::CommonRecommended),
+        tr(Key::SceneAnime),
+        tr(Key::ScenePhoto),
+        tr(Key::SceneGeneral),
+        tr(Key::SceneRestore),
+    };
     static const char* const kTabValues[6] = {"all", "rec", "动漫", "照片", "综合", "修复"};
     int tabIdx = 0;
     for (int i = 0; i < 6; ++i) {
@@ -176,8 +191,8 @@ void renderModelsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
         tabsNeedW += std::ceil(calcText(sansMed, geist::type::BODY, kTabLabels[i]).x) + 4.0f;
     }
     tabsNeedW += tabGap * 5.0f;
-    const float toolbarH = std::max(36.0f, std::ceil(calcText(sansMed, geist::type::BODY, "全部").y) + 16.0f);
-    const float searchW = std::max(220.0f, std::ceil(calcText(sans, geist::type::BODY, "搜索模型...").x) + 64.0f);
+    const float toolbarH = std::max(36.0f, std::ceil(calcText(sansMed, geist::type::BODY, kTabLabels[0]).y) + 16.0f);
+    const float searchW = std::max(220.0f, std::ceil(calcText(sans, geist::type::BODY, tr(Key::ModelsSearchHint)).x) + 64.0f);
     const bool singleRow = (colW >= tabsNeedW + searchW + geist::space::LG);
 
     const std::string qLower = toLowerTrimmed(ui.modelsSearch);
@@ -202,7 +217,7 @@ void renderModelsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
     const bool showBanner = (!hasDownload && hasStatus) || (hasDownload && !downloadingRowVisible);
 
     const std::string bannerMsg = hasDownload
-        ? std::format("正在下载 {}", snap.downloading)
+        ? upix::i18n::fmt(Key::ModelsDownloadingBanner, snap.downloading)
         : snap.models_status;
     const ImVec2 msz = showBanner ? calcText(sans, geist::type::BODY_SMALL, bannerMsg.c_str()) : ImVec2(0.0f, 0.0f);
     const std::string pctStr = hasDownload
@@ -211,7 +226,7 @@ void renderModelsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
     const ImVec2 psz = (showBanner && hasDownload) ? calcText(mono, geist::type::MONO, pctStr.c_str()) : ImVec2(0.0f, 0.0f);
     const float pctW = (showBanner && hasDownload) ? (std::ceil(calcText(mono, geist::type::MONO, "100%").x) + 2.0f) : 0.0f;
 
-    const char* emptyTitle = hasFilter ? "无匹配模型" : "暂无可用模型";
+    const char* emptyTitle = tr(hasFilter ? Key::ModelsEmptyFiltered : Key::ModelsEmptyCatalog);
     const float bannerH = std::max(40.0f, std::ceil(std::max(msz.y, psz.y)) + 16.0f);
 
     // Pass 1: Build ONE unified page flex tree.
@@ -256,10 +271,12 @@ void renderModelsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
         .width = flex::Fixed(colW),
         .visible = gMirrorOpen,
     });
-    const auto mirTitleSlot = mirrorBar.slot(
-        mirrorCompact ? flex::Fixed(std::max(80.0f, colW - 28.0f)) : flex::Grow(1.0f, 80.0f).min(80.0f),
-        flex::Fixed(srcLblSz.y),
-        flex::AlignSelf::Center);
+    auto mirrorTextCol = mirrorBar.col({
+        .gap = 2.0f,
+        .width = mirrorCompact ? flex::Fixed(std::max(120.0f, colW - 28.0f)) : flex::Grow(1.0f, 120.0f).min(120.0f),
+    });
+    const auto mirTitleSlot = mirrorTextCol.slot(flex::Grow(1.0f), flex::Fixed(srcLblSz.y));
+    const auto mirHintSlot = mirrorTextCol.slot(flex::Grow(1.0f), flex::Fixed(srcHintSz.y));
     const auto mirSegSlot = mirrorBar.slot(
         flex::Fixed(std::min(sourceSegW, std::max(180.0f, colW - 28.0f))),
         flex::Fixed(ctl::geom::SEG_H_COMPACT),
@@ -307,7 +324,7 @@ void renderModelsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
     std::vector<GroupSlots> groupSlots;
     if (!groups.empty()) {
         const float groupHeadH = std::ceil(std::max(calcText(mono, geist::type::BODY_SMALL, "A").y,
-                                                    calcText(sansMed, geist::type::BODY_SMALL, "模型").y)) + 8.0f;
+                                                    calcText(sansMed, geist::type::BODY_SMALL, tr(Key::ModelsProbeText)).y)) + 8.0f;
         const float rowH = modelRowHeight(sansMed);
         auto groupsCol = page.col({
             .gap = geist::space::XXL,
@@ -337,22 +354,22 @@ void renderModelsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
     cdl->PushClipRect(ImVec2(paneX, paneY), winSize, true);
 
     // Draw Page Header
-    drawText(cdl, sansMed, geist::type::PAGE_TITLE, pageFx.p0(titleSlot), t.ink, "模型库");
+    drawText(cdl, sansMed, geist::type::PAGE_TITLE, pageFx.p0(titleSlot), t.ink, tr(Key::ModelsTitle));
     ellipsisText(cdl, mono, geist::type::MONO, pageFx.p0(subSlot), pageFx.rect(subSlot).w, t.mute, subText.c_str());
 
-    if (ctl::secondaryButton(cdl, ImGui::GetID("models.import"), "导入模型", sansMed,
+    if (ctl::secondaryButton(cdl, ImGui::GetID("models.import"), tr(Key::ModelsImport), sansMed,
                              pageFx.p0(impSlot), pageFx.p1(impSlot), nullptr, true, false)) {
         SDL_ShowOpenFileDialog(onFileDialog, dlgImport, window, nullptr, 0, nullptr, true);
     }
-    if (ctl::quietButton(cdl, ImGui::GetID("models.mirror"), "镜像源", sansMed,
+    if (ctl::quietButton(cdl, ImGui::GetID("models.mirror"), tr(Key::ModelsMirror), sansMed,
                          pageFx.p0(mirSlot), pageFx.p1(mirSlot), nullptr, true, false, geist::type::BODY)) {
         gMirrorOpen = !gMirrorOpen;
     }
-    if (ctl::quietButton(cdl, ImGui::GetID("models.refresh"), "刷新列表", sansMed,
+    if (ctl::quietButton(cdl, ImGui::GetID("models.refresh"), tr(Key::ModelsRefresh), sansMed,
                          pageFx.p0(refSlot), pageFx.p1(refSlot), nullptr, true, false, geist::type::BODY)) {
         app.refreshModels();
     }
-    if (ctl::quietButton(cdl, ImGui::GetID("models.open_dir"), "打开目录", sansMed,
+    if (ctl::quietButton(cdl, ImGui::GetID("models.open_dir"), tr(Key::CommonOpenDir), sansMed,
                          pageFx.p0(dirSlot), pageFx.p1(dirSlot), nullptr, true, false, geist::type::BODY)) {
         std::error_code ec;
         if (!snap.models_dir.empty()) {
@@ -365,7 +382,9 @@ void renderModelsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
         const flex::Rect mRect = mirrorBar.rect();
         ctl::flatSection(cdl, mRect.p0(), mRect.p1(), geist::radius::MD, t.surface, t.outline);
         const flex::Rect mtR = pageFx.rect(mirTitleSlot);
-        ellipsisTextCentered(cdl, sansMed, geist::type::BODY, mtR.x, mtR.y, mtR.bottom(), mtR.w, t.ink, "下载源");
+        const flex::Rect mhR = pageFx.rect(mirHintSlot);
+        ellipsisTextCentered(cdl, sansMed, geist::type::BODY_SMALL, mtR.x, mtR.y, mtR.bottom(), mtR.w, t.ink, tr(Key::ModelsSourceLabel));
+        ellipsisTextCentered(cdl, sans, geist::type::BODY_SMALL, mhR.x, mhR.y, mhR.bottom(), mhR.w, t.mute, srcHint);
         const flex::Rect segR = pageFx.rect(mirSegSlot);
         if (ctl::segmented(cdl, ImGui::GetID("models.source"), segR.p0(), segR.size(),
                            kSourceLabels, 3, sourceIdx, sans, geist::type::LABEL, false, true)) {
@@ -378,14 +397,14 @@ void renderModelsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
         const flex::Rect tbR = tb.rect();
         ctl::hairlineRule(cdl, tbR.x, tbR.right(), tbR.bottom() - hairlinePx(), t.outline);
     }
-    const flex::Rect tr = pageFx.rect(tabsSlot);
-    if (ctl::underlineTabs(cdl, ImGui::GetID("models.scene"), tr.p0(), tr.size(),
+    const flex::Rect tabsR = pageFx.rect(tabsSlot);
+    if (ctl::underlineTabs(cdl, ImGui::GetID("models.scene"), tabsR.p0(), tabsR.size(),
                            kTabLabels, 6, tabIdx, sansMed, geist::type::BODY, tabGap, false, true)) {
         ui.modelsSceneFilter = kTabValues[tabIdx];
     }
     const flex::Rect sr = pageFx.rect(searchSlot);
     ctl::searchBox(cdl, ImGui::GetID("models.search"), sr.p0(), sr.w, sr.h,
-                   ui.modelsSearch, sizeof(ui.modelsSearch), "搜索模型...", sans, true);
+                   ui.modelsSearch, sizeof(ui.modelsSearch), tr(Key::ModelsSearchHint), sans, true);
 
     // Draw Banner
     if (showBanner) {
@@ -409,7 +428,7 @@ void renderModelsPage(ImDrawList* /*dl*/, ImVec2 winSize, UiViewState& ui,
         }
 
         if (ctl::iconAction(cdl, ImGui::GetID("models.clear_status"), pageFx.p0(closeSlot), 28.0f,
-                            "x", "关闭提示", sans, 11.5f, geist::radius::MD, true, false)) {
+                            "x", tr(Key::ModelsCloseBanner), sans, 11.5f, geist::radius::MD, true, false)) {
             gDismissedBannerStatus = snap.models_status;
             app.clearModelsStatus();
         }

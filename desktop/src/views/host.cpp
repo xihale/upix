@@ -1,5 +1,6 @@
 // views/host.cpp — Remote collaboration host page unified into one flex::Layout tree.
 #include "views/host/internal.hpp"
+#include "i18n.hpp"
 
 #include <algorithm>
 
@@ -47,7 +48,7 @@ void renderRemotePage(ImDrawList* dl, ImVec2 winSize, UiViewState& ui,
     const float colX = snapPx(paneX + (paneW - colW) * 0.5f);
     const float rowOutset = std::min(10.0f, (colX - paneX) * 0.5f);
 
-    const char* pageTitle = "远程协同";
+    const char* pageTitle = upix::i18n::tr(upix::i18n::Key::HostTitle);
     const float pageScrollUsed = gPageScroll;
 
     static flex::Context pageCtx;

@@ -17,7 +17,7 @@ inline namespace wb {
 namespace {
 
 struct ActiveModelInfo {
-    const char* displayShort = "选择模型";
+    const char* displayShort = nullptr;
     const char* scene = "";
     int scale = 4;
     bool recommended = false;
@@ -28,7 +28,9 @@ struct ActiveModelInfo {
 
 ActiveModelInfo inspectActiveModel(const upix::gui::Snapshot& snap) {
     ActiveModelInfo info;
-    info.displayShort = snap.model.empty() ? "选择模型" : snap.model.c_str();
+    info.displayShort = snap.model.empty()
+        ? upix::i18n::tr(upix::i18n::Key::WbErrSelectModel)
+        : snap.model.c_str();
     auto scan = [&](const std::vector<upix::gui::ModelItem>& list, bool installedFlag) {
         for (const auto& m : list) {
             if (m.name == snap.model) {
@@ -170,10 +172,12 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
     const float dockInnerW = std::max(120.0f, inspRect.w - 40.0f);
     const float ctaPriH = ctl::geom::CTA_H;
     const float ctaSecH = std::max(ctl::geom::BTN_H + 4.0f, ctaPriH - 4.0f);
-    const float openImgBtnW = std::max(84.0f, std::ceil(calcText(sansFont, geist::type::BODY, "打开图像").x) + 24.0f);
-    const float revealBtnW = std::max(84.0f, std::ceil(calcText(sansFont, geist::type::BODY, "定位文件").x) + 24.0f);
-    const float rerunPriMinW = std::ceil(calcText(mediumFont, geist::type::BODY, "重新超分").x) + 28.0f;
-    const char* cmpOpenLabel = (activeItem && activeItem->is_dir) ? "打开目录" : "打开图像";
+    using upix::i18n::Key;
+    using upix::i18n::tr;
+    const float openImgBtnW = std::max(84.0f, std::ceil(calcText(sansFont, geist::type::BODY, tr(Key::CommonOpenImage)).x) + 24.0f);
+    const float revealBtnW = std::max(84.0f, std::ceil(calcText(sansFont, geist::type::BODY, tr(Key::CommonRevealFile)).x) + 24.0f);
+    const float rerunPriMinW = std::ceil(calcText(mediumFont, geist::type::BODY, tr(Key::InspectorCtaRerun)).x) + 28.0f;
+    const char* cmpOpenLabel = (activeItem && activeItem->is_dir) ? tr(Key::CommonOpenDir) : tr(Key::CommonOpenImage);
     const float cmpOpenMinW = std::ceil(calcText(mediumFont, geist::type::BODY, cmpOpenLabel).x) + 28.0f;
     const bool doneNeedsTwoRows = isCompare && (doneParamsChanged
         ? (dockInnerW < rerunPriMinW + geist::space::SM + openImgBtnW)
@@ -257,23 +261,23 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
     const char* modSceneLbl = ctl::sceneLabel(mod.scene, modSceneBuf, sizeof(modSceneBuf));
     const float scaleChipW = ctl::metaChipWidth(monoFont, modScaleBuf, false, 6.0f);
     const float sceneChipW = ctl::metaChipWidth(sansFont, modSceneLbl, false, 6.0f);
-    const float recChipW = mod.recommended ? ctl::recChipWidth(sansFont, "推荐", 6.0f) : 0.0f;
+    const float recChipW = mod.recommended ? ctl::recChipWidth(sansFont, tr(Key::CommonRecommended), 6.0f) : 0.0f;
 
     const ImVec2 modNameSz = calcText(mediumFont, geist::type::BODY, mod.displayShort);
 
     static StaticTextCache hdr1Cache, hdr2Cache, hdr3Cache, qlCache, clCache, slCache;
-    static StaticTextCache resetCache, ovTCache, bkTCache, outStaticCache;
-    const ImVec2 hdr1Sz = hdr1Cache.get(mediumFont, geist::type::BODY_SMALL, "模型");
-    const ImVec2 hdr2Sz = hdr2Cache.get(mediumFont, geist::type::BODY_SMALL, "输出");
-    const ImVec2 hdr3Sz = hdr3Cache.get(mediumFont, geist::type::BODY_SMALL, "导出设置");
+    static StaticTextCache dirBtnCache, resetCache, ovTCache, bkTCache, outStaticCache;
+    const ImVec2 hdr1Sz = hdr1Cache.get(mediumFont, geist::type::BODY_SMALL, tr(Key::InspectorSecModel));
+    const ImVec2 hdr2Sz = hdr2Cache.get(mediumFont, geist::type::BODY_SMALL, tr(Key::InspectorSecOutput));
+    const ImVec2 hdr3Sz = hdr3Cache.get(mediumFont, geist::type::BODY_SMALL, tr(Key::InspectorSecExport));
     const float hdr1RightH = modHeadRight ? calcText(mediumFont, geist::type::BODY_SMALL, modHeadRight).y : 0.0f;
     const float hdr1H = std::max({geist::type::BODY_SMALL, hdr1Sz.y, hdr1RightH});
     const float hdr2H = std::max(geist::type::BODY_SMALL, hdr2Sz.y);
     const float hdr3H = std::max(geist::type::BODY_SMALL, hdr3Sz.y);
 
-    const ImVec2 qlSz = fmtSpec.showQuality ? qlCache.get(sansFont, geist::type::BODY, "质量") : ImVec2{};
-    const ImVec2 clSz = fmtSpec.showChroma ? clCache.get(sansFont, geist::type::BODY, "色度抽样") : ImVec2{};
-    const ImVec2 slSz = fmtSpec.showSpeed ? slCache.get(sansFont, geist::type::BODY, "编码速度") : ImVec2{};
+    const ImVec2 qlSz = fmtSpec.showQuality ? qlCache.get(sansFont, geist::type::BODY, tr(Key::InspectorQuality)) : ImVec2{};
+    const ImVec2 clSz = fmtSpec.showChroma ? clCache.get(sansFont, geist::type::BODY, tr(Key::SettingsChroma)) : ImVec2{};
+    const ImVec2 slSz = fmtSpec.showSpeed ? slCache.get(sansFont, geist::type::BODY, tr(Key::SettingsEncodeSpeed)) : ImVec2{};
 
     auto calcSegW = [&](ImFont* font, float fontPx, const char* const* labels, int count, float minCellW) {
         float maxW = 0.0f;
@@ -284,22 +288,30 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
         return cellW * static_cast<float>(count) + ctl::geom::SEG_PAD * 2.0f;
     };
     static constexpr const char* kChromaLabels[2] = {"4:4:4", "4:2:0"};
-    static constexpr const char* kSpeedLabels[3] = {"精细", "均衡", "快速"};
+    const char* kSpeedLabels[3] = {
+        tr(Key::SettingsSpeedFine),
+        tr(Key::SettingsSpeedBalanced),
+        tr(Key::SettingsSpeedFast),
+    };
     const float chromaSegW = calcSegW(monoFont, geist::type::BODY_SMALL, kChromaLabels, 2, 64.0f);
     const float speedSegW = calcSegW(sansFont, geist::type::BODY_SMALL, kSpeedLabels, 3, 58.0f);
 
-    const ImVec2 resetSz = resetCache.get(sansFont, geist::type::BODY, "重置");
-    const float dirBtnH = std::max(32.0f, std::ceil(resetSz.y) + 8.0f);
+    const char* dirBtnLabel = hasCustom ? tr(Key::InspectorChangeDir) : tr(Key::InspectorChooseDir);
+    const ImVec2 dirBtnSz = dirBtnCache.get(sansFont, geist::type::BODY, dirBtnLabel);
+    const float dirBtnW = textBasis(dirBtnSz.x) + 20.0f;
+    const float dirBtnH = std::max(32.0f, std::ceil(dirBtnSz.y) + 8.0f);
     const float dirBoxH = std::max(44.0f, dirBtnH + 10.0f);
-    const float resetW = (hasCustom && !dirLocked) ? (textBasis(resetSz.x) + 18.0f) : 0.0f;
+    const float resetW = (hasCustom && !dirLocked)
+        ? (textBasis(resetCache.get(sansFont, geist::type::BODY, tr(Key::CommonReset)).x) + 18.0f)
+        : 0.0f;
 
     char outBuf[256] = {};
-    const char* outLabel = "跟随原图目录";
+    const char* outLabel = tr(Key::InspectorFollowOrigDir);
     ImFont* outFont = sansFont;
     float outFontPx = geist::type::BODY_SMALL;
     bool outIsStatic = false;
     if (dirLocked) {
-        outLabel = "原位覆盖";
+        outLabel = tr(Key::InspectorOverwriteInPlace);
         outIsStatic = true;
     } else if (hasCustom) {
         outLabel = snap.custom_out_dir.c_str();
@@ -325,8 +337,8 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
         ? outStaticCache.get(outFont, outFontPx, outLabel)
         : calcText(outFont, outFontPx, outLabel);
 
-    const char* ovTitle = "覆盖原图";
-    const char* bkTitle = "备份原图 (upix_orig/)";
+    const char* ovTitle = tr(Key::InspectorOverwriteOrig);
+    const char* bkTitle = tr(Key::InspectorBackupOrig);
     const ImVec2 ovTSz = ovTCache.get(sansFont, geist::type::BODY, ovTitle);
     const ImVec2 bkTSz = snap.overwrite_original ? bkTCache.get(sansFont, geist::type::BODY, bkTitle) : ImVec2{};
 
@@ -427,6 +439,7 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
         .height = flex::Fixed(dirBtnH),
         .visible = hasCustom && !dirLocked,
     });
+    const flex::Slot dirPickSlot = dirBox.slot(flex::Fixed(dirBtnW), flex::Fixed(dirBtnH));
 
     struct SwitchSlots {
         flex::Slot tSlot, swSlot;
@@ -485,6 +498,7 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
     const flex::Rect dirIconR = fx.rect(dirIconSlot);
     const flex::Rect dirPathR = fx.rect(dirPathSlot);
     const flex::Rect dirResetR = fx.rect(dirResetSlot);
+    const flex::Rect dirPickR = fx.rect(dirPickSlot);
     const flex::Rect ovTitleR = fx.rect(ovSlots.tSlot);
     const flex::Rect ovSwR = fx.rect(ovSlots.swSlot);
     const flex::Rect bkTitleR = fx.rect(bkSlots.tSlot);
@@ -510,7 +524,7 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
     const bool dark = (geist::mode() == geist::Mode::Dark);
 
     // ── Section 1: 模型 ──
-    ctl::eyebrowHeader(dl, mediumFont, hdr1R.p0(), hdr1R.w, "模型", modHeadRight,
+    ctl::eyebrowHeader(dl, mediumFont, hdr1R.p0(), hdr1R.w, tr(Key::InspectorSecModel), modHeadRight,
                        t.mute, mod.downloading ? t.ink : t.mute);
     {
         ImGui::SetCursorScreenPos(mpR.p0());
@@ -540,7 +554,7 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
         ctl::metaChip(dl, monoFont, mpScaleR.p0(), modScaleBuf, 0, t.ink, t.tagBg, ctl::geom::META_CHIP_H, 6.0f);
         ctl::metaChip(dl, sansFont, mpSceneR.p0(), modSceneLbl, 0, t.body, t.tagBg, ctl::geom::META_CHIP_H, 6.0f);
         if (mod.recommended) {
-            ctl::recChip(dl, sansFont, mpRecR.p0(), "推荐", ctl::geom::META_CHIP_H, 6.0f);
+            ctl::recChip(dl, sansFont, mpRecR.p0(), tr(Key::CommonRecommended), ctl::geom::META_CHIP_H, 6.0f);
         }
 
         if (trigClicked) {
@@ -556,9 +570,9 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
     }
 
     // ── Section 2: 输出 ──
-    ctl::eyebrowHeader(dl, mediumFont, hdr2R.p0(), "输出");
+    ctl::eyebrowHeader(dl, mediumFont, hdr2R.p0(), tr(Key::InspectorSecOutput));
 
-    const char* fmtLabels[5] = {"跟随", "PNG", "JPEG", "WebP", "AVIF"};
+    const char* fmtLabels[5] = {tr(Key::CommonFollow), "PNG", "JPEG", "WebP", "AVIF"};
     const char* fmtVals[5] = {"", "png", "jpg", "webp", "avif"};
     int fmtIdx = 0;
     if (!snap.overwrite_original) {
@@ -585,7 +599,8 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
     }
 
     if (fx.isVisible(qGroup.handle())) {
-        drawTextCenteredY(dl, sansFont, geist::type::BODY, qLblR.x, qLblR.y, qLblR.bottom(), t.body, "质量");
+        drawTextCenteredY(dl, sansFont, geist::type::BODY, qLblR.x, qLblR.y, qLblR.bottom(), t.body,
+                          tr(Key::InspectorQuality));
         int q = snap.quality;
         if (ctl::qualityInput(dl, ImGui::GetID("##q_input"), qInR.p0(), q, 1, 100, monoFont)) {
             app.setQuality(q);
@@ -599,7 +614,7 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
 
     if (fx.isVisible(chromaRow.handle())) {
         drawTextCenteredY(dl, sansFont, geist::type::BODY, chromaLblR.x, chromaLblR.y, chromaLblR.bottom(),
-                          t.body, "色度抽样");
+                          t.body, tr(Key::SettingsChroma));
         const char* chromaLabels[2] = {"4:4:4", "4:2:0"};
         const int chromaVals[2] = {444, 420};
         int chromaIdx = (snap.chroma == 444) ? 0 : 1;
@@ -611,8 +626,12 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
 
     if (fx.isVisible(speedRow.handle())) {
         drawTextCenteredY(dl, sansFont, geist::type::BODY, speedLblR.x, speedLblR.y, speedLblR.bottom(),
-                          t.body, "编码速度");
-        const char* spdLabels[3] = {"精细", "均衡", "快速"};
+                          t.body, tr(Key::SettingsEncodeSpeed));
+        const char* spdLabels[3] = {
+            tr(Key::SettingsSpeedFine),
+            tr(Key::SettingsSpeedBalanced),
+            tr(Key::SettingsSpeedFast),
+        };
         const int spdVals[3] = {4, 6, 8};
         int spdIdx = 1;
         for (int i = 0; i < 3; ++i) {
@@ -629,11 +648,11 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
 
     // ── Section 3: 导出设置 (always expanded) ──
     ctl::hairlineRule(dl, accRuleR.x, accRuleR.right(), accRuleR.y, t.outline);
-    ctl::eyebrowHeader(dl, mediumFont, hdr3R.p0(), "导出设置");
+    ctl::eyebrowHeader(dl, mediumFont, hdr3R.p0(), tr(Key::InspectorSecExport));
 
     {
         const bool resetVis = fx.isVisible(dirResetSlot);
-        const float hitRight = resetVis ? (dirResetR.x - 4.0f) : dirBoxR.right();
+        const float hitRight = resetVis ? (dirResetR.x - 4.0f) : (dirPickR.x - 4.0f);
         const ImVec2 hitP0 = snapPt(dirBoxR.p0());
         const ImVec2 hitP1 = snapPt(std::max(hitP0.x + 8.0f, hitRight), dirBoxR.bottom());
 
@@ -644,7 +663,6 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
             dirPathClicked = ImGui::InvisibleButton("##dir_box_hit", ImVec2(hitP1.x - hitP0.x, hitP1.y - hitP0.y));
             dirPathHov = ImGui::IsItemHovered();
             if (dirPathHov) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
-            ensureVisibleOnFocus(dirBoxR);
         }
         const bool dirAnyHov = !dirLocked && ctl::mouseIn(dirBoxR.p0(), dirBoxR.p1());
         const float dirPathHovT = motion::hoverFactor(ImGui::GetID("##dir_path_hov"), dirPathHov);
@@ -664,15 +682,17 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
         }
 
         if (resetVis) {
-            if (ctl::secondaryButton(dl, ImGui::GetID("##reset_outdir"), "重置", sansFont,
+            if (ctl::secondaryButton(dl, ImGui::GetID("##reset_outdir"), tr(Key::CommonReset), sansFont,
                                      dirResetR.p0(), dirResetR.p1())) {
                 app.setCustomOutDir("");
             }
             ensureVisibleOnFocus(dirResetR);
         }
-        if (dirPathClicked) {
+        if (ctl::secondaryButton(dl, ImGui::GetID("##pick_outdir"), dirBtnLabel, sansFont,
+                                 dirPickR.p0(), dirPickR.p1(), nullptr, !dirLocked) || dirPathClicked) {
             SDL_ShowOpenFolderDialog(onFileDialog, dlgOutDir, window, nullptr, false);
         }
+        ensureVisibleOnFocus(dirPickR);
     }
 
     {
@@ -752,14 +772,14 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
     case CtaMode::CancelRunning: {
         const bool canCancel = (snap.job.phase == upix::gui::JobPhase::Running);
         if (ctl::secondaryButton(dl, ImGui::GetID("##cancel_job"),
-                                 canCancel ? "取消超分" : "正在取消…", mediumFont,
+                                 canCancel ? tr(Key::InspectorCtaCancel) : tr(Key::WbPhaseCancelling), mediumFont,
                                  priR.p0(), priR.p1(), nullptr, canCancel, true)) {
             app.cancelJob();
         }
         break;
     }
     case CtaMode::DownloadMissingModel: {
-        if (ctl::primaryButton(dl, ImGui::GetID("##cta_dl_model"), "下载模型", mediumFont,
+        if (ctl::primaryButton(dl, ImGui::GetID("##cta_dl_model"), tr(Key::ModelsDownload), mediumFont,
                                priR.p0(), priR.p1(), true, "download")) {
             app.downloadModel(snap.job.missing_model);
             ui.activeTab = 1;
@@ -767,19 +787,21 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
         break;
     }
     case CtaMode::DisabledPrereq: {
-        const char* emptyLabel = snap.inputs.empty() ? "请先添加图像" : "请先选择模型";
+        const char* emptyLabel = snap.inputs.empty()
+            ? tr(Key::InspectorCtaAddImageFirst)
+            : tr(Key::InspectorCtaSelectModelFirst);
         ctl::primaryButton(dl, ImGui::GetID("##cta_disabled"), emptyLabel, mediumFont,
                            priR.p0(), priR.p1(), false);
         break;
     }
     case CtaMode::CompareChanged: {
-        if (ctl::primaryButton(dl, ImGui::GetID("##cta_rerun"), "重新超分", mediumFont,
+        if (ctl::primaryButton(dl, ImGui::GetID("##cta_rerun"), tr(Key::InspectorCtaRerun), mediumFont,
                                priR.p0(), priR.p1(), true)) {
             state.doneParamSig.clear();
             state.prevDoneOutputs.clear();
             app.startJob();
         }
-        if (hasOut && ctl::secondaryButton(dl, ImGui::GetID("##cta_open_img"), "打开图像", sansFont,
+        if (hasOut && ctl::secondaryButton(dl, ImGui::GetID("##cta_open_img"), tr(Key::CommonOpenImage), sansFont,
                                            secR.p0(), secR.p1(), nullptr, true)) {
             openFileInSystem(outPath);
         }
@@ -790,12 +812,12 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
                                priR.p0(), priR.p1(), hasOut)) {
             openFileInSystem(outPath);
         }
-        if (ctl::secondaryButton(dl, ImGui::GetID("##cta_reveal_file"), "定位文件", sansFont,
+        if (ctl::secondaryButton(dl, ImGui::GetID("##cta_reveal_file"), tr(Key::CommonRevealFile), sansFont,
                                  secR.p0(), secR.p1(), nullptr, hasOut)) {
             revealFileParentInSystem(outPath);
         }
         if (ctl::iconAction(dl, ImGui::GetID("##cta_rerun_icon"), icoR.p0(), icoR.w,
-                            "refresh", "重新超分", sansFont, 17.0f, geist::radius::MD, true, true)) {
+                            "refresh", tr(Key::InspectorCtaRerun), sansFont, 17.0f, geist::radius::MD, true, true)) {
             state.doneParamSig.clear();
             state.prevDoneOutputs.clear();
             app.startJob();
@@ -810,12 +832,12 @@ void renderInspectorPane(ImDrawList* dl, const upix::ui::flex::Rect& inspRect,
         const bool resuming = (doneCnt > 0) ||
                               (snap.job.phase == upix::gui::JobPhase::Cancelled) ||
                               isError;
-        const char* label = resuming ? "继续超分" : "开始超分";
+        const char* label = resuming ? tr(Key::InspectorCtaResume) : tr(Key::InspectorCtaStart);
         if (ctl::primaryButton(dl, ImGui::GetID("##cta_start"), label, mediumFont,
                                priR.p0(), priR.p1(), true)) {
             app.startJob();
         }
-        if (hasActiveDone && ctl::secondaryButton(dl, ImGui::GetID("##cta_open_done"), "打开图像", sansFont,
+        if (hasActiveDone && ctl::secondaryButton(dl, ImGui::GetID("##cta_open_done"), tr(Key::CommonOpenImage), sansFont,
                                                   secR.p0(), secR.p1(), nullptr, true)) {
             openFileInSystem(outPath);
         }

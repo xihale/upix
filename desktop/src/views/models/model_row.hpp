@@ -18,7 +18,7 @@ inline constexpr float kActionIconBox = 28.0f;
 
 inline float modelRowHeight(ImFont* sansMed) {
     using namespace upix::ui;
-    const float textH = std::ceil(calcText(sansMed, geist::type::BODY, "模型Ag").y);
+    const float textH = std::ceil(calcText(sansMed, geist::type::BODY, upix::i18n::tr(upix::i18n::Key::ModelsProbeText)).y);
     return std::max(ctl::geom::ROW_MIN_H, std::max(textH, ctl::geom::META_CHIP_H) + 22.0f);
 }
 
@@ -81,8 +81,10 @@ inline void drawModelRow(ImDrawList* dl, ImFont* sans, ImFont* sansMed, ImFont* 
     const std::string scaleLabel = std::format("{}×", m.scale);
     const float scaleChipW = ctl::metaChipWidth(sansMed, scaleLabel.c_str(), false, 5.0f);
     const float specColW = std::max(110.0f, scaleChipW + 5.0f + sceneChipW);
-    const float curW = current ? ctl::metaChipWidth(sansMed, "当前", true, 5.0f) : 0.0f;
-    const float recW = m.recommended ? ctl::recChipWidth(sansMed, "推荐", 5.0f) : 0.0f;
+    const char* curLabel = upix::i18n::tr(upix::i18n::Key::CommonCurrent);
+    const char* recLabel = upix::i18n::tr(upix::i18n::Key::CommonRecommended);
+    const float curW = current ? ctl::metaChipWidth(sansMed, curLabel, true, 5.0f) : 0.0f;
+    const float recW = m.recommended ? ctl::recChipWidth(sansMed, recLabel, 5.0f) : 0.0f;
 
     const std::string sizeStr = isMissingSize(m.size) ? std::string("—") : m.size;
     const ImVec2 sizeSz = calcText(mono, geist::type::MONO, sizeStr.c_str());
@@ -211,11 +213,11 @@ inline void drawModelRow(ImDrawList* dl, ImFont* sans, ImFont* sansMed, ImFont* 
     }
 
     if (fx.isVisible(curSlot)) {
-        ctl::metaChip(dl, sansMed, fx.p0(curSlot), "当前", t.accent, t.accent, t.accentSoft,
+        ctl::metaChip(dl, sansMed, fx.p0(curSlot), curLabel, t.accent, t.accent, t.accentSoft,
                       ctl::geom::META_CHIP_H, 5.0f);
     }
     if (fx.isVisible(recSlot)) {
-        ctl::recChip(dl, sansMed, fx.p0(recSlot), "推荐", ctl::geom::META_CHIP_H, 5.0f);
+        ctl::recChip(dl, sansMed, fx.p0(recSlot), recLabel, ctl::geom::META_CHIP_H, 5.0f);
     }
     if (fx.isVisible(scaleSlot)) {
         ctl::metaChip(dl, sansMed, fx.p0(scaleSlot), scaleLabel.c_str(), 0, t.ink, t.tagBg,
@@ -248,20 +250,24 @@ inline void drawModelRow(ImDrawList* dl, ImFont* sans, ImFont* sansMed, ImFont* 
         }
     } else if (installed) {
         const flex::Rect btnR = fx.rect(btnSlot);
-        if (ctl::confirmButton(dl, ImGui::GetID("del"), nullptr, "确认?", sansMed, btnR.p0(), btnR.p1(),
-                               !current, "trash", current ? nullptr : "删除模型", 14.0f)) {
+        if (ctl::confirmButton(dl, ImGui::GetID("del"), nullptr,
+                               upix::i18n::tr(upix::i18n::Key::CommonConfirmQ), sansMed, btnR.p0(), btnR.p1(),
+                               !current, "trash",
+                               current ? nullptr : upix::i18n::tr(upix::i18n::Key::ModelsDelete), 14.0f)) {
             app.removeModel(m.name);
         }
         if (current) {
             const bool delHov = mouseInPane && ctl::mouseIn(btnR.p0(), btnR.p1());
             ctl::tooltip(dl, ImGui::GetID("del_cur_tip"), btnR.p0(), btnR.p1(),
-                         "当前使用中的模型不可直接移除", sans, delHov, false);
+                         upix::i18n::tr(upix::i18n::Key::ModelsDeleteCurrentTip), sans, delHov, false);
         }
     } else {
         const bool busyDownloading = !snap.downloading.empty();
         const flex::Rect btnR = fx.rect(btnSlot);
         if (accentIconButton(dl, ImGui::GetID("dl"), btnR.p0(), kActionIconBox, "download",
-                             busyDownloading ? "正在下载其他模型" : "下载模型", sans, !busyDownloading)) {
+                             upix::i18n::tr(busyDownloading ? upix::i18n::Key::ModelsBusyDownloadingTip
+                                                            : upix::i18n::Key::ModelsDownload),
+                             sans, !busyDownloading)) {
             app.downloadModel(m.name);
         }
     }

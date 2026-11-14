@@ -1,5 +1,6 @@
 // views/host/widgets.cpp — formatting helpers, QR canvas artwork, and port input control.
 #include "views/host/internal.hpp"
+#include "i18n.hpp"
 
 #include <algorithm>
 #include <cctype>
@@ -179,7 +180,7 @@ bool portInputField(ImDrawList* dl, ImGuiID id, ImVec2 a, ImVec2 b, int port, bo
         if (runningLocked) {
             const bool hov = ctl::mouseIn(a, b);
             ctl::tooltip(dl, ctl::detail::salt(id, 4), a, b,
-                         "服务运行中端口已锁定，停止服务后可修改", sans, hov, false);
+                         upix::i18n::tr(upix::i18n::Key::HostPortLockedTip), sans, hov, false);
         }
         return false;
     }

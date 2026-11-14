@@ -89,12 +89,14 @@ void renderModelPickerModal(ImVec2 winSize, UiViewState& ui, upix::gui::AppState
         }
     };
 
+    using upix::i18n::Key;
+    using upix::i18n::tr;
     if (!snap.installed_groups.empty() || !snap.remote_groups.empty()) {
         for (const auto& g : snap.installed_groups) addGroupItems(g.label, g.items);
         for (const auto& g : snap.remote_groups) addGroupItems(g.label, g.items);
     } else {
-        if (!snap.installed.empty()) addGroupItems("已安装模型", snap.installed);
-        if (!snap.remote.empty()) addGroupItems("可下载模型", snap.remote);
+        if (!snap.installed.empty()) addGroupItems(tr(Key::ModelsGroupInstalled), snap.installed);
+        if (!snap.remote.empty()) addGroupItems(tr(Key::ModelsGroupAvailable), snap.remote);
     }
 
     flatItems.reserve(totalHits);
@@ -105,14 +107,14 @@ void renderModelPickerModal(ImVec2 winSize, UiViewState& ui, upix::gui::AppState
     const float dlgW = std::min(660.0f, std::max(320.0f, winSize.x - 48.0f));
     const float dlgH = std::min(560.0f, std::max(280.0f, winSize.y - 64.0f));
 
-    const char* manageLabel = "管理模型";
+    const char* manageLabel = tr(Key::PickerManageModels);
     const ImVec2 msz = calcText(mediumFont, geist::type::BODY_SMALL, manageLabel);
     const float inputH = std::max(30.0f, std::ceil(geist::type::BODY) + 8.0f);
     const float kBarH = std::max(50.0f, inputH + 18.0f);
     const float kFootH = std::max(44.0f, std::ceil(msz.y) + 20.0f);
-    const float kHdrH = std::max(32.0f, std::ceil(calcText(mediumFont, geist::type::BODY_SMALL, "模型").y) + 12.0f);
+    const float kHdrH = std::max(32.0f, std::ceil(calcText(mediumFont, geist::type::BODY_SMALL, tr(Key::ModelsProbeText)).y) + 12.0f);
     const float kRowH = std::max({52.0f, ctl::geom::ROW_MIN_H,
-                                  std::ceil(calcText(mediumFont, geist::type::BODY, "模型").y) + 28.0f});
+                                  std::ceil(calcText(mediumFont, geist::type::BODY, tr(Key::ModelsProbeText)).y) + 28.0f});
     constexpr float kGrpGap = 6.0f;
 
     static flex::Context modalCtx;
@@ -187,7 +189,7 @@ void renderModelPickerModal(ImVec2 winSize, UiViewState& ui, upix::gui::AppState
         if (justOpened || ImGui::IsWindowAppearing()) {
             ImGui::SetKeyboardFocusHere();
         }
-        ImGui::InputTextWithHint("##pk_q", "搜索模型…", state.search, sizeof(state.search));
+        ImGui::InputTextWithHint("##pk_q", tr(Key::ModelsSearchHint), state.search, sizeof(state.search));
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor(5);
         if (sansFont) ImGui::PopFont();
@@ -195,12 +197,12 @@ void renderModelPickerModal(ImVec2 winSize, UiViewState& ui, upix::gui::AppState
     }
     if (state.search[0] != '\0') {
         if (ctl::iconAction(mdl, ImGui::GetID("##picker_clear_q"), clearSearchR.p0(), clearSearchR.w, "x",
-                            "清除搜索", sansFont, 13.0f, geist::radius::SM, true, false)) {
+                            tr(Key::PickerClearSearch), sansFont, 13.0f, geist::radius::SM, true, false)) {
             state.search[0] = '\0';
         }
     }
     if (ctl::iconAction(mdl, ImGui::GetID("##picker_close"), closeR.p0(), closeR.w, "x",
-                        "关闭 (Esc)", sansFont, 15.0f, geist::radius::SM, true, false)) {
+                        tr(Key::PickerCloseEsc), sansFont, 15.0f, geist::radius::SM, true, false)) {
         ui.showModelPicker = false;
     }
     ctl::hHairline(mdl, dlgRect.x + hairlinePx(), dlgRect.right() - hairlinePx(),
@@ -295,7 +297,7 @@ void renderModelPickerModal(ImVec2 winSize, UiViewState& ui, upix::gui::AppState
     const ImVec2 listClipMax(listR.right() - frameInset, std::max(listR.y + 2.0f, listR.bottom() - frameInset));
     mdl->PushClipRect(listClipMin, listClipMax, true);
     if (totalHits == 0) {
-        const char* emptyTitle = "无匹配模型";
+        const char* emptyTitle = tr(Key::ModelsEmptyFiltered);
         drawTextCentered(mdl, sansFont, geist::type::BODY, listR.p0(), listR.p1(), t.mute, emptyTitle);
     } else {
         const bool dark = (geist::mode() == geist::Mode::Dark);
@@ -351,8 +353,8 @@ void renderModelPickerModal(ImVec2 winSize, UiViewState& ui, upix::gui::AppState
                 char sceneBuf[32] = {};
                 const char* sLbl = ctl::sceneLabel(m->scene.c_str(), sceneBuf, sizeof(sceneBuf));
                 const float sceneChipW = ctl::metaChipWidth(sansFont, sLbl, false, 6.0f);
-                const float recChipW = m->recommended ? ctl::recChipWidth(sansFont, "推荐", 6.0f) : 0.0f;
-                const float curChipW = showRemCurChip ? ctl::metaChipWidth(mediumFont, "当前", true, 6.0f) : 0.0f;
+                const float recChipW = m->recommended ? ctl::recChipWidth(sansFont, tr(Key::CommonRecommended), 6.0f) : 0.0f;
+                const float curChipW = showRemCurChip ? ctl::metaChipWidth(mediumFont, tr(Key::CommonCurrent), true, 6.0f) : 0.0f;
 
                 const char* sizeStr = m->size.empty() ? "—" : m->size.c_str();
                 const ImVec2 sizeSz = calcText(monoFont, geist::type::MONO, sizeStr);
@@ -466,10 +468,10 @@ void renderModelPickerModal(ImVec2 winSize, UiViewState& ui, upix::gui::AppState
                 ctl::metaChip(mdl, monoFont, scaleR.p0(), scaleBuf, 0, t.ink, t.tagBg, ctl::geom::META_CHIP_H, 6.0f);
                 ctl::metaChip(mdl, sansFont, sceneR.p0(), sLbl, 0, t.body, t.tagBg, ctl::geom::META_CHIP_H, 6.0f);
                 if (m->recommended) {
-                    ctl::recChip(mdl, sansFont, recR.p0(), "推荐", ctl::geom::META_CHIP_H, 6.0f);
+                    ctl::recChip(mdl, sansFont, recR.p0(), tr(Key::CommonRecommended), ctl::geom::META_CHIP_H, 6.0f);
                 }
                 if (showRemCurChip) {
-                    ctl::metaChip(mdl, mediumFont, curR.p0(), "当前", t.accent, t.accent, t.accentSoft,
+                    ctl::metaChip(mdl, mediumFont, curR.p0(), tr(Key::CommonCurrent), t.accent, t.accent, t.accentSoft,
                                   ctl::geom::META_CHIP_H, 6.0f);
                 }
 
@@ -491,11 +493,11 @@ void renderModelPickerModal(ImVec2 winSize, UiViewState& ui, upix::gui::AppState
                     const ImVec2 savedPos = io.MousePos;
                     if (!inListClip) io.MousePos = ImVec2(-1.0e6f, -1.0e6f);
                     dlClicked = ctl::iconAction(mdl, ImGui::GetID("##pk_dl"), btnR.p0(), kActionBox,
-                                                "download", "下载模型", sansFont, 15.0f,
+                                                "download", tr(Key::ModelsDownload), sansFont, 15.0f,
                                                 geist::radius::MD, canDl, false);
                     if (!canDl && inListClip) {
                         ctl::tooltip(mdl, ImGui::GetID("##pk_dl_busy_tip"), btnR.p0(), btnR.p1(),
-                                     "正在下载其他模型", sansFont, ctl::mouseIn(btnR.p0(), btnR.p1()), false);
+                                     tr(Key::ModelsBusyDownloadingTip), sansFont, ctl::mouseIn(btnR.p0(), btnR.p1()), false);
                     }
                     if (dlClicked) {
                         app.downloadModel(m->name);

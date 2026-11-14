@@ -2,6 +2,7 @@
 #pragma once
 
 #include "views/common.hpp"
+#include "i18n.hpp"
 #include "ui/flex.hpp"
 
 #include "imgui.h"
@@ -27,6 +28,15 @@ template <size_t N, typename... Args>
 inline const char* formatInto(char (&buf)[N], std::format_string<Args...> fmt, Args&&... args) {
     const auto res = std::format_to_n(buf, N - 1, fmt, std::forward<Args>(args)...);
     *res.out = '\0';
+    return buf;
+}
+
+template <size_t N, typename... Args>
+inline const char* formatKeyInto(char (&buf)[N], upix::i18n::Key key, Args&&... args) {
+    const std::string formatted = upix::i18n::fmt(key, std::forward<Args>(args)...);
+    const size_t copyN = std::min(formatted.size(), N - 1);
+    std::copy_n(formatted.data(), copyN, buf);
+    buf[copyN] = '\0';
     return buf;
 }
 
