@@ -1323,7 +1323,10 @@ int main(int argc, char** argv) {
     float offscreenScale = 1.0f;
     bool customSize = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--serve-daemon") == 0) {
+        if (std::strcmp(argv[i], "--version") == 0 || std::strcmp(argv[i], "-v") == 0) {
+            std::printf("upix %s\n", UPIX_VERSION);
+            return 0;
+        } else if (std::strcmp(argv[i], "--serve-daemon") == 0) {
             upix::ServeDaemonOptions opts;
             opts.models_dir = upix::default_models_dir();
             for (int j = i + 1; j < argc; ++j) {

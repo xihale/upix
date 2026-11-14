@@ -1,0 +1,262 @@
+name: Release GUI
+
+# Desktop GUI (upix) for linux-x86_64, macos-arm64, macos-x86_64, and
+# windows-x86_64 (cross-compiled via zigcc). Mirrors release-cli.yml / release-android.yml.
+on:
+  push:
+    tags:
+      - "gui-v*"
+      - "desktop-v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version without prefix (e.g. 0.2.0 or 0.2.0-beta.1). Ignored on tag push."
+        required: true
+        type: string
+        default: "0.2.0-beta.1"
+      prerelease:
+        description: "Mark GitHub release as pre-release (auto detects -beta/-alpha/-rc)."
+        required: false
+        type: choice
+        options: ["auto", "true", "false"]
+        default: "auto"
+
+# Least privilege: only `publish` needs write; every other job reads.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-gui-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  meta:
+    name: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      tag_name: ${{ steps.v.outputs.tag_name }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/gui-v* ]]; then
+            tag_name="${GITHUB_REF_NAME}"
+            version="${GITHUB_REF_NAME#gui-v}"
+          elif [[ "${GITHUB_REF}" == refs/tags/desktop-v* ]]; then
+            tag_name="${GITHUB_REF_NAME}"
+            version="${GITHUB_REF_NAME#desktop-v}"
+          else
+            version="${INPUT_VERSION#gui-v}"
+            version="${version#desktop-v}"
+            version="${version#v}"
+            tag_name="gui-v${version}"
+          fi
+          [[ "$version" =~ ^[0-9A-Za-z][0-9A-Za-z._-]*$ ]] || {
+            echo "invalid version: '${version}' (allowed: A-Za-z0-9._-)" >&2
+            exit 1
+          }
+          if [[ "${INPUT_PRERELEASE}" == "true" || "${INPUT_PRERELEASE}" == "false" ]]; then
+            prerelease="${INPUT_PRERELEASE}"
+          else
+            shopt -s nocasematch
+            if [[ "$version" == *-* || "$version" =~ (alpha|beta|rc|pre|dev|preview) ]]; then
+              prerelease="true"
+            else
+              prerelease="false"
+            fi
+          fi
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+          printf 'tag_name=%s\n' "$tag_name" >> "$GITHUB_OUTPUT"
+          printf 'prerelease=%s\n' "$prerelease" >> "$GITHUB_OUTPUT"
+
+  spirv:
+    name: spirv pack (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (v4.4.0)
+      - uses: ./.github/actions/setup-xmake
+        with:
+          cache-kind: host
+      - uses: ./.github/actions/spirv-pack
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4 (v4.6.2)
+        with:
+          name: spirv-pack
+          path: share/core/spirv_pack.bin
+          if-no-files-found: error
+          retention-days: 3
+
+  build:
+    name: compile (${{ matrix.artifact }})
+    needs: [meta, spirv]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            plat: linux
+            arch: x86_64
+            artifact: linux-x86_64
+            cache_kind: host-linux-x86_64
+            extra: --cc=gcc-14 --cxx=g++-14
+          - os: macos-latest
+            plat: macosx
+            arch: arm64
+            artifact: macos-arm64
+            cache_kind: host-macos-arm64
+            extra: ""
+          - os: macos-15-intel
+            plat: macosx
+            arch: x86_64
+            artifact: macos-x86_64
+            cache_kind: host-macos-x86_64
+            extra: ""
+          - os: ubuntu-latest
+            plat: mingw
+            arch: x86_64
+            artifact: windows-x86_64
+            cache_kind: cross-mingw-x86_64
+            extra: --toolchain=zigcc
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (v4.4.0)
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4 (v4.3.0)
+        with:
+          name: spirv-pack
+          path: share/core
+      - uses: ./.github/actions/setup-xmake
+        with:
+          cache-kind: ${{ matrix.cache_kind }}
+      - name: Install Linux GUI dev headers
+        if: matrix.plat == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libvulkan-dev libx11-dev libxcb1-dev libxext-dev libxcursor-dev \
+            libxfixes-dev libxi-dev libxrandr-dev libxrender-dev libxss-dev \
+            libwayland-dev
+      - name: Install Zig 0.17.0 & windres (Windows zigcc)
+        if: matrix.plat == 'mingw'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq llvm gcc-mingw-w64-x86-64
+          curl -fsSL https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz -o "$RUNNER_TEMP/zig.tar.xz"
+          echo "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026  $RUNNER_TEMP/zig.tar.xz" | sha256sum -c -
+          tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
+          rm -f "$RUNNER_TEMP/zig.tar.xz"
+          echo "$RUNNER_TEMP/zig-x86_64-linux-0.17.0" >> "$GITHUB_PATH"
+      - name: Build GUI
+        env:
+          UPIX_VERSION: ${{ needs.meta.outputs.version }}
+        run: xmake gui --build -p "${{ matrix.plat }}" --arch="${{ matrix.arch }}" --native-isa=n ${{ matrix.extra }}
+      - name: Pack
+        env:
+          VER: ${{ needs.meta.outputs.version }}
+          PLAT: ${{ matrix.plat }}
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          set -euo pipefail
+          if [[ "$PLAT" == "mingw" ]]; then
+            cp "$GITHUB_WORKSPACE/LICENSE" desktop/build/LICENSE
+            zip -j "upix-gui-${VER}-${ARTIFACT}.zip" desktop/build/upix.exe desktop/build/LICENSE
+          else
+            tar czf "upix-gui-${VER}-${ARTIFACT}.tar.gz" \
+              -C desktop/build upix \
+              -C "$GITHUB_WORKSPACE" LICENSE
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4 (v4.6.2)
+        with:
+          name: gui-${{ matrix.artifact }}
+          path: |
+            upix-gui-*.tar.gz
+            upix-gui-*.zip
+          if-no-files-found: error
+          retention-days: 7
+      - name: ccache stats
+        if: always()
+        run: ccache -s || true
+
+  smoke:
+    name: smoke (${{ matrix.artifact }})
+    needs: [meta, build]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact: linux-x86_64
+          - os: macos-latest
+            artifact: macos-arm64
+          - os: macos-15-intel
+            artifact: macos-x86_64
+          - os: ubuntu-latest
+            artifact: windows-x86_64
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4 (v4.3.0)
+        with:
+          name: gui-${{ matrix.artifact }}
+      - name: Unpack and verify GUI binary
+        env:
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          set -euo pipefail
+          if [[ "$ARTIFACT" == windows-* ]]; then
+            unzip -q upix-gui-*.zip
+            file upix.exe | grep -E "PE32\+ executable.*x86-64"
+            exit 0
+          fi
+          tar xzf upix-gui-*.tar.gz
+          chmod +x upix
+          if ./upix --version; then
+            exit 0
+          fi
+          case "${RUNNER_OS}" in
+            Linux)
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq \
+                libdeflate-dev libpng-dev libjpeg-dev libwebp-dev \
+                libcurl4-openssl-dev libzip-dev libomp-dev libvulkan1
+              ;;
+            macOS)
+              brew install libdeflate libpng jpeg webp libzip libomp
+              ;;
+          esac
+          ./upix --version
+
+  publish:
+    name: upload release
+    needs: [meta, smoke]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write      # create/update the release + tag
+      pull-requests: read  # generate_release_notes
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4 (v4.4.0)
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4 (v4.3.0)
+        with:
+          pattern: gui-*
+          merge-multiple: true
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2 (v2.6.2)
+        with:
+          tag_name: ${{ needs.meta.outputs.tag_name }}
+          name: Upix GUI ${{ needs.meta.outputs.version }}
+          prerelease: ${{ needs.meta.outputs.prerelease == 'true' }}
+          make_latest: ${{ needs.meta.outputs.prerelease == 'true' && 'false' || 'true' }}
+          files: |
+            upix-gui-*-linux-x86_64.tar.gz
+            upix-gui-*-macos-arm64.tar.gz
+            upix-gui-*-macos-x86_64.tar.gz
+            upix-gui-*-windows-x86_64.zip
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          target_commitish: ${{ github.sha }}
