@@ -361,4 +361,58 @@ export default {
     webnnMissingOutput: 'WebNN graph missing output node',
     webnnDispatchUnsupported: 'WebNN environment does not support graph dispatch; switch to WebGPU or WASM',
   },
+  landing: {
+    meta: {
+      title: 'Upix — Local image super-resolution',
+      description: 'Upscale images on your own device. The CLI, desktop, Android and browser apps share one model catalog, and images are never uploaded.',
+    },
+    nav: { brand: 'Upix home', cta: 'Open Studio' },
+    hero: {
+      title: 'Upscale images locally',
+      sub: 'Super-resolution on your CLI, desktop, phone and browser. Nothing is uploaded.',
+      ctaStudio: 'Open Web Studio',
+      ctaGet: 'Get the apps',
+    },
+    stage: {
+      title: 'Before and after comparison',
+      before: 'Source',
+      after: 'Restored',
+      range: 'Comparison position',
+      valueText: '{pct}% source, {rest}% restored',
+      zoom: 'Detail zoom',
+      creditLabel: 'Source page for the artwork “1999”',
+      altSource: 'Source: low-resolution illustration',
+      altRestored: 'Restored: the same illustration upscaled 4×',
+    },
+    arch: {
+      title: 'Four frontends, one model catalog',
+      offload: {
+        title: 'Encrypted LAN offload',
+        body: 'A phone pairs with a PC by scanning its QR code, then sends jobs to the desktop Vulkan GPU over an X25519 + Ed25519 handshake and an XSalsa20-Poly1305 channel.',
+      },
+      frontends: {
+        title: 'Native and browser paths',
+        body: 'The CLI, desktop (SDL3 + Dear ImGui) and Android (Compose) apps share one C++23 ncnn / Vulkan core. The browser uses WebGPU, WebNN and Zig-compiled WASM SIMD128, with models cached in IndexedDB.',
+      },
+      engine: {
+        title: 'Warm engine and XMP idempotency',
+        body: 'A resident engine keeps Vulkan and model weights in memory. On an RTX 4060, a 1024×768 image with NomosUni-SPAN-x2 takes 123.8 ms warm and 162.0 ms cold. Outputs carry an XMP marker, so upscaled images are skipped by default.',
+      },
+      models: {
+        title: 'Models on demand',
+        body: 'A built-in catalog of 34 models covers anime, photos and 1× restoration. Models download on first use, or you can import your own ncnn .param and .bin files.',
+        link: 'Browse models',
+      },
+    },
+    get: {
+      title: 'Get Upix',
+      open: 'Open',
+      download: 'Download',
+      web: { title: 'Web Studio' },
+      desktop: { title: 'Desktop' },
+      android: { title: 'Android' },
+      cli: { title: 'CLI' },
+    },
+    footer: { license: 'License' },
+  },
 };

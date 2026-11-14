@@ -61,8 +61,14 @@ function remove(key) {
 
 export function applyTheme(theme) {
   const root = document.documentElement;
-  if (theme === 'light' || theme === 'dark') root.dataset.theme = theme;
-  else delete root.dataset.theme;
+  const meta = document.querySelector('meta[name="color-scheme"]');
+  if (theme === 'light' || theme === 'dark') {
+    root.dataset.theme = theme;
+    if (meta) meta.setAttribute('content', theme);
+  } else {
+    delete root.dataset.theme;
+    if (meta) meta.setAttribute('content', 'light dark');
+  }
 }
 
 export function applyLocale(locale) {

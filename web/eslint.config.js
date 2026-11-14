@@ -10,6 +10,7 @@ export default [
       globals: {
         ...globals.browser,
         ...globals.worker,
+        __UPIX_RELEASES__: 'readonly',
         GPUBufferUsage: 'readonly',
         GPUShaderStage: 'readonly',
         GPUMapMode: 'readonly',

@@ -361,4 +361,58 @@ export default {
     webnnMissingOutput: 'WebNN 计算图缺少输出节点',
     webnnDispatchUnsupported: '当前 WebNN 环境不支持图计算调度，请改用 WebGPU 或 WASM 后端',
   },
+  landing: {
+    meta: {
+      title: 'Upix — 本地图像超分辨率',
+      description: '在本机放大图像。CLI、桌面端、Android 与浏览器共用同一套模型目录，图像不会上传。',
+    },
+    nav: { brand: 'Upix 首页', cta: '打开工作台' },
+    hero: {
+      title: '在本机放大图像',
+      sub: 'CLI、桌面端、Android 与浏览器上的超分辨率，图像不上传云端。',
+      ctaStudio: '打开网页工作台',
+      ctaGet: '获取客户端',
+    },
+    stage: {
+      title: '超分前后对比',
+      before: '原图',
+      after: '超分',
+      range: '对比位置',
+      valueText: '{pct}% 原图，{rest}% 超分',
+      zoom: '细节放大',
+      creditLabel: '作品《1999》来源页面',
+      altSource: '原图：低分辨率插画',
+      altRestored: '超分结果：4× 放大后的同一幅插画',
+    },
+    arch: {
+      title: '四个入口，一套模型目录',
+      offload: {
+        title: '局域网加密卸载',
+        body: '手机扫描电脑上的二维码完成配对，经 X25519 + Ed25519 握手和 XSalsa20-Poly1305 加密通道，把任务交给桌面 Vulkan GPU。',
+      },
+      frontends: {
+        title: '原生与浏览器两条路径',
+        body: 'CLI、桌面端（SDL3 + Dear ImGui）和 Android（Compose）共用 C++23 的 ncnn / Vulkan 核心；浏览器端使用 WebGPU、WebNN 和 Zig 编译的 WASM SIMD128，模型缓存在 IndexedDB。',
+      },
+      engine: {
+        title: '常驻引擎与 XMP 幂等',
+        body: '常驻引擎让 Vulkan 与模型权重留在内存。RTX 4060 上处理 1024×768（NomosUni-SPAN-x2）：热启动 123.8 ms，冷启动 162.0 ms。输出写入 XMP 标记，已超分的图像默认跳过。',
+      },
+      models: {
+        title: '按需下载的模型',
+        body: '内置 34 项模型目录，涵盖动漫、照片与 1× 修复；首次使用时下载，也可导入自己的 ncnn .param / .bin。',
+        link: '浏览模型',
+      },
+    },
+    get: {
+      title: '获取 Upix',
+      open: '打开',
+      download: '下载',
+      web: { title: 'Web 工作台' },
+      desktop: { title: '桌面端' },
+      android: { title: 'Android' },
+      cli: { title: 'CLI' },
+    },
+    footer: { license: '许可' },
+  },
 };

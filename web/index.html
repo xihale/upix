@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Upix Web</title>
+  <title>Upix</title>
   <meta name="description" content="Local image super-resolution in the browser with WebGPU, WASM, and WebNN.">
   <meta name="color-scheme" content="light dark">
   <meta name="theme-color" content="#fafafa" media="(prefers-color-scheme: light)">
@@ -11,11 +11,17 @@
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@100..900&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@400..600&family=Geist:wght@400..600&display=swap" rel="stylesheet">
   <script>
     try {
       const t = localStorage.getItem('upix.web.theme');
-      if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t;
+      const cs = document.querySelector('meta[name="color-scheme"]');
+      if (t === 'light' || t === 'dark') {
+        document.documentElement.dataset.theme = t;
+        if (cs) cs.setAttribute('content', t);
+      } else if (cs) {
+        cs.setAttribute('content', 'light dark');
+      }
       const p = localStorage.getItem('upix.web.locale');
       let lang = 'en';
       if (p === 'zh-CN' || p === 'en') {
@@ -43,7 +49,8 @@
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to main content</a>
-  <div id="app" class="app"></div>
+  <div id="landing" class="landing-host"></div>
+  <div id="app" class="app" hidden></div>
   <noscript><p style="padding:24px;font:14px system-ui">Upix Web 需要启用 JavaScript。/ Upix Web requires JavaScript.</p></noscript>
   <script type="module" src="./src/main.js"></script>
 </body>

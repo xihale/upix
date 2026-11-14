@@ -249,8 +249,12 @@ export function mountShell({ root, store, actions, toastHost }) {
 
   const navEl = h('nav', { class: 'topbar-nav', 'aria-label': t('nav.label') }, tabsSeg.el);
   const brandEl = h('a', {
-    class: 'brand', href: '#workbench', 'aria-label': t('nav.brandLabel'),
-    onclick: e => { e.preventDefault(); store.set({ tab: 'workbench' }); },
+    class: 'brand', href: '#top', 'aria-label': t('nav.brandLabel'),
+    onclick: e => {
+      e.preventDefault();
+      if (location.hash !== '#top') location.hash = '#top';
+      window.scrollTo(0, 0);
+    },
   }, brandMark(18), h('span', { class: 'wordmark' }, 'Upix'));
 
   const header = h('header', { class: 'topbar' },
@@ -269,7 +273,7 @@ export function mountShell({ root, store, actions, toastHost }) {
   store.subscribe(['tab'], ({ tab }) => {
     for (const [name, el] of Object.entries(views)) el.hidden = name !== tab;
     tabsSeg.set(tab);
-    if (location.hash.slice(1) !== tab) history.replaceState(null, '', `#${tab}`);
+    if (!root.hidden && location.hash.slice(1) !== tab) history.replaceState(null, '', `#${tab}`);
   });
 
   store.subscribe(['theme', 'locale'], ({ theme }) => {
@@ -372,6 +376,7 @@ export function mountShell({ root, store, actions, toastHost }) {
   fromHash();
   window.addEventListener('hashchange', fromHash);
   window.addEventListener('keydown', event => {
+    if (root.hidden) return;
     if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
     const tab = TABS[Number(event.key) - 1];
     if (!tab) return;

@@ -67,6 +67,7 @@ desktop/Testing/
 *.webp
 !docs/*.png
 !docs/*.jpg
+!web/public/images/*.webp
 # Model-effect oracle goldens (tests/model_oracle/golden/): reference images
 # committed on purpose — they are the regression baseline, not build output.
 !tests/model_oracle/golden/*.png
@@ -112,3 +113,5 @@ crates/
 target/
 dist/
 imgui.ini
+/DESIGN.md
+/web/LANDING_DESIGN.md

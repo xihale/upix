@@ -7,7 +7,7 @@
    Dark theme: pure black canvas, near-black elevated surfaces, #262626 rules. */
 
 :root {
-  color-scheme: light;
+  color-scheme: light dark;
 
   /* Canvas & surfaces: airy Geist neutral monochrome */
   --bg: #fafafa;
@@ -74,8 +74,8 @@
   --s8: 32px;
   --s10: 40px;
 
-  /* System UI + CJK sans stack, paired with Geist Mono for tabular data */
-  --font: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei',
+  /* Geist Sans + CJK sans stack, paired with Geist Mono for tabular data */
+  --font: 'Geist', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei',
     'Noto Sans SC', 'Source Han Sans SC', sans-serif;
   --mono: 'Geist Mono', ui-monospace, SFMono-Regular, Menlo, Consolas,
     'JetBrains Mono', 'Liberation Mono', 'PingFang SC', 'Noto Sans SC', monospace;
@@ -144,8 +144,13 @@
   }
 }
 
+:root[data-theme='light'],
+:root:has(> head > meta[name='color-scheme'][content='light']) {
+  color-scheme: light;
+}
+
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
+  :root:not([data-theme='light']):not(:has(> head > meta[name='color-scheme'][content='light'])) {
     color-scheme: dark;
     --bg: #000000;
     --bg-well: #000000;
@@ -203,7 +208,8 @@
   }
 }
 
-:root[data-theme='dark'] {
+:root[data-theme='dark'],
+:root:has(> head > meta[name='color-scheme'][content='dark']) {
   color-scheme: dark;
   --bg: #000000;
   --bg-well: #000000;
