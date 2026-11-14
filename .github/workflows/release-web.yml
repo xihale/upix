@@ -1,6 +1,7 @@
 name: Release Web
 
-# Static Web app (web.upix.xeed.ink) packaged on web-v* tags (or manual dispatch).
+# Static Web playground (upix.xeed.ink) packaged on web-v* tags (or manual dispatch).
+# ship.upix.xeed.ink is reserved for the future landing page (landing-v*).
 # GitHub Pages is disabled: stable web-vX.Y.Z tags are deployed via VPS webhook on gx;
 # pre-releases (e.g. web-v0.2.0-beta.1) stay GitHub-only and do not trigger gx deploy.
 on:
@@ -156,9 +157,9 @@ jobs:
             echo "Upix Web \`${VERSION}\` (\`${TAG_NAME}\`)."
             echo ""
             if [[ "$PRERELEASE" == "true" ]]; then
-              echo "- Pre-release archive only (production \`web.upix.xeed.ink\` deploys only on stable \`web-vX.Y.Z\` tags)."
+              echo "- Pre-release archive only (production \`upix.xeed.ink\` deploys only on stable \`web-vX.Y.Z\` tags)."
             else
-              echo "- Stable web release (deployed to \`https://web.upix.xeed.ink\` via VPS webhook)."
+              echo "- Stable web release (deployed to \`https://upix.xeed.ink\` via VPS webhook)."
             fi
             echo "- Static bundle containing \`index.html\`, \`assets/\`, and \`wasm/upix_wasm*.wasm\` (requires COOP \`same-origin\` + COEP \`credentialless\` when self-hosted for WASM threads)."
             echo ""
